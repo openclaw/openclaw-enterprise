@@ -149,6 +149,8 @@ async function fixture(t: TestContext) {
     providerStatus: undefined as Wire | undefined,
     statusReads: [] as Wire[],
     createMode: "normal" as "normal" | "stale-winner",
+    updateReadiness: "converge" as "converge" | "cancel-pending" | "stale-ready",
+    abortOnPending: undefined as (() => void) | undefined,
     attachMode: "normal" as
       | "normal"
       | "cas-race"
@@ -162,6 +164,20 @@ async function fixture(t: TestContext) {
       | "incarnation-race"
       | "detach-race",
     detachOnNextSandboxRead: false,
+  };
+  const advanceProviderEnvironment = () => {
+    const status = state.providerStatus!;
+    const desired = record(record(status.receipt).desired);
+    const observed = record(status.observed);
+    Object.assign(record(sandbox.status.configuration_admission), {
+      provider_env_revision: desired.provider_env_revision,
+    });
+    Object.assign(state.config!, { provider_env_revision: desired.provider_env_revision });
+    Object.assign(observed, {
+      provider_env_revision: desired.provider_env_revision,
+      sequence: String(BigInt(String(observed.sequence)) + 1n),
+    });
+    status.state = "PROVIDER_READINESS_STATE_READY";
   };
   const methods: Record<string, Handler> = {
     GetSandbox: () => {
@@ -259,11 +275,27 @@ async function fixture(t: TestContext) {
       if (!state.providerStatus) {
         return undefined;
       }
+      if (input.receipt_id !== undefined) {
+        if (input.receipt_id !== record(state.providerStatus.receipt).receipt_id) {
+          return undefined;
+        }
+        const status = structuredClone(state.providerStatus);
+        if (status.state === "PROVIDER_READINESS_STATE_PENDING") {
+          if (state.updateReadiness === "converge") {
+            // The Gateway first reports PENDING; the controlled supervisor then installs v2.
+            advanceProviderEnvironment();
+          } else if (state.updateReadiness === "cancel-pending") {
+            setImmediate(() => state.abortOnPending?.());
+          }
+        }
+        return { status };
+      }
       // A provider-only query creates a new Gateway-owned OBSERVE receipt.
       const receiptId = randomUUID();
       const receipt = record(state.providerStatus.receipt);
       receipt.receipt_id = receiptId;
       receipt.mutation_id = receiptId;
+      receipt.kind = "PROVIDER_MUTATION_KIND_OBSERVE";
       if (state.providerStatus.operation) {
         record(state.providerStatus.operation).operation_id = receiptId;
       }
@@ -302,7 +334,75 @@ async function fixture(t: TestContext) {
     },
     UpdateProvider: (input) => {
       state.updates.push(input);
-      assert.fail("deployment must not update a shared Provider");
+      const supplied = record(input.provider);
+      const metadata = record(supplied.metadata);
+      if (
+        !state.provider ||
+        metadata.name !== state.provider.metadata.name ||
+        metadata.resource_version !== state.provider.metadata.resource_version
+      ) {
+        throw Object.assign(new Error("Provider resource version changed"), {
+          code: grpc.status.ABORTED,
+        });
+      }
+      state.provider.config = {
+        ...state.provider.config,
+        ...(supplied.config as Record<string, string> | undefined),
+      };
+      state.provider.metadata.resource_version = String(
+        BigInt(state.provider.metadata.resource_version) + 1n,
+      );
+      const mutationId = randomUUID();
+      const receipts: Wire[] = [];
+      if (sandbox.spec.providers.includes(state.provider.metadata.name)) {
+        const prior = state.providerStatus;
+        assert.ok(
+          prior || sandbox.status.configuration_activated === false,
+          "An attached Provider update needs either an idle target or simulated supervisor evidence.",
+        );
+        const receiptId = randomUUID();
+        const time = { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 };
+        const priorDesired = prior && record(record(prior.receipt).desired);
+        const desired = {
+          ...(priorDesired ?? {
+            sandbox_id: sandbox.metadata.id,
+            sandbox: sandbox.metadata.name,
+            attachment_epoch: sandbox.spec.provider_attachment_epoch,
+            provider_id: state.provider.metadata.id,
+          }),
+          provider_resource_version: state.provider.metadata.resource_version,
+          ...(priorDesired && {
+            provider_env_revision: String(BigInt(String(priorDesired.provider_env_revision)) + 1n),
+          }),
+        };
+        const receipt = {
+          receipt_id: receiptId,
+          mutation_id: mutationId,
+          provider: state.provider.metadata.name,
+          workspace: namespace.name,
+          kind: "PROVIDER_MUTATION_KIND_UPDATE",
+          desired,
+          persisted_time: time,
+        };
+        receipts.push(receipt);
+        if (prior) {
+          const observed = { ...record(prior.observed) };
+          // Controlled Gateway admission and supervisor evidence advance only when v2 serves.
+          state.providerStatus = {
+            ...prior,
+            state:
+              state.updateReadiness === "stale-ready"
+                ? "PROVIDER_READINESS_STATE_READY"
+                : "PROVIDER_READINESS_STATE_PENDING",
+            receipt,
+            operation: { operation_id: receiptId, state: 2, outcome: 1, completed_time: time },
+            observed,
+            observed_time: time,
+            evaluated_time: time,
+          };
+        }
+      }
+      return { provider: state.provider, mutation_id: mutationId, target_receipts: receipts };
     },
     AttachSandboxProvider: (input) => {
       state.attaches.push(input);
@@ -451,6 +551,10 @@ async function fixture(t: TestContext) {
       tokenServiceImplementation,
     });
   const proxy = createProxy("occ/token-service");
+  proxy.bindSourceNamespaceResolver(async (sourceRef) => {
+    assert.equal(sourceRef.namespaceId, namespace.id);
+    return namespace;
+  });
   // Exercise the admitted runtime provider key separately from the catalog ModelProvider ID.
   // This controlled Gateway fixture does not qualify a real Agent or native enforcement.
   const revision = completeSandboxRevision({
@@ -482,11 +586,12 @@ async function fixture(t: TestContext) {
     signal: t.signal,
   } satisfies CredentialDeploymentContext;
   let resolutions = 0;
+  let resolvedCredential = { credential: "synthetic-material", version: "source-v1" };
   const suppliedBinding = {
     binding,
     resolveCredential: async () => {
       resolutions++;
-      return { credential: "synthetic-material", version: "source-v1" };
+      return resolvedCredential;
     },
   };
   const configure = (overrides: Partial<ConfigureInput> = {}) =>
@@ -496,6 +601,12 @@ async function fixture(t: TestContext) {
       injectionPolicies: [injection],
       ...overrides,
     });
+  const notify = (version?: string, signal: AbortSignal = t.signal) =>
+    proxy.notifyCredentialUpdated(
+      { sourceRef: binding.sourceRef, ...(version === undefined ? {} : { version }) },
+      suppliedBinding.resolveCredential,
+      signal,
+    );
   const observeServing = () => {
     assert.ok(state.provider);
     const provider = state.provider;
@@ -633,8 +744,12 @@ async function fixture(t: TestContext) {
     state,
     suppliedBinding,
     configure,
+    notify,
     observeServing,
     removeCredentialRoute,
+    setResolvedCredential: (credential: string, version: string) => {
+      resolvedCredential = { credential, version };
+    },
     resolutions: () => resolutions,
   };
 }
@@ -674,6 +789,135 @@ test("staged OpenShell Proxy rejects an unsupported TokenService before resolvin
   assert.throws(() => f.createProxy("openshell/token-service"), {
     message: "Native credential delivery requires the OCC TokenService implementation.",
   });
+});
+
+test("OpenShell Source notification leaves an absent delivery Provider absent", async (t) => {
+  const f = await fixture(t);
+  await f.notify("source-v2");
+  assert.equal(f.resolutions(), 0);
+  assert.equal(f.state.creates.length, 0);
+  assert.equal(f.state.updates.length, 0);
+});
+
+test("OpenShell Source notification rejects a mismatched Source Namespace placement", async (t) => {
+  const f = await fixture(t);
+  const proxy = f.createProxy("occ/token-service");
+  proxy.bindSourceNamespaceResolver(async () => ({ ...namespace, id: "other-namespace" }));
+
+  // Placement must resolve the same canonical Namespace as the Source before any custody read
+  // or Gateway mutation; the selected Proxy cannot treat another ready Namespace as equivalent.
+  await assert.rejects(
+    proxy.notifyCredentialUpdated(
+      { sourceRef: binding.sourceRef, version: "source-v2" },
+      f.suppliedBinding.resolveCredential,
+      t.signal,
+    ),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.resolutions(), 0);
+  assert.equal(f.state.creates.length, 0);
+  assert.equal(f.state.updates.length, 0);
+  assert.equal(f.state.attaches.length, 0);
+  assert.equal(f.state.detaches.length, 0);
+});
+
+test("OpenShell Source notification updates an attached Sandbox before its first activation", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  // The target has never been activated: Gateway admission is still pending and no supervisor
+  // can report READY yet. The idle target still receives its own UPDATE mutation receipt.
+  f.sandbox.status = {
+    phase: "SANDBOX_PHASE_PROVISIONING",
+    configuration_activated: false,
+    configuration_admission: { instance_id: randomUUID(), state: 1, policy_version: 1 },
+  };
+  f.setResolvedCredential("synthetic-material-v2", "source-v2");
+  await f.notify("source-v2");
+
+  assert.equal(f.state.updates.length, 1);
+  assert.equal(f.state.statusReads.length, 0);
+});
+
+test("OpenShell Source notification updates an attached Provider copy and confirms its target receipt", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.observeServing();
+  const profile = structuredClone(f.state.profile);
+  assert.equal((f.state.profile!.credentials as Wire[])[0]!.stable_placeholder, true);
+
+  // Simulate TokenService's authoritative Source update; this client/server fixture proves the native
+  // Proxy's UpdateProvider protocol, not propagation into a live running Harness.
+  f.setResolvedCredential("synthetic-material-v2", "source-v2");
+  await f.notify("source-v2");
+
+  assert.equal(f.resolutions(), 2);
+  assert.equal(f.state.updates.length, 1);
+  const update = record(f.state.updates[0]!.provider);
+  assert.deepEqual(record(update.metadata), {
+    name: f.state.provider!.metadata.name,
+    resource_version: "7",
+  });
+  assert.deepEqual(update.credentials, { OPENAI_API_KEY: "synthetic-material-v2" });
+  assert.deepEqual(update.config, { oce_source_version: "source-v2" });
+  assert.deepEqual(f.state.profile, profile);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.detaches.length, 0);
+  const receiptQueries = f.state.statusReads.map((read) => read.receipt_id);
+  assert.ok(receiptQueries.length >= 2);
+  assert.equal(new Set(receiptQueries).size, 1);
+  assert.equal(typeof receiptQueries[0], "string");
+});
+
+test("OpenShell Source notification stops on caller cancellation and rejects stale READY", async (t) => {
+  for (const readiness of ["cancel-pending", "stale-ready"] as const) {
+    await t.test(readiness, async (t) => {
+      const f = await fixture(t);
+      await f.configure();
+      f.observeServing();
+      f.state.updateReadiness = readiness;
+      f.setResolvedCredential("synthetic-material-v2", "source-v2");
+
+      // The Gateway has persisted v2, but its supervisor still reports the v1 environment.
+      // Cancel from controlled PENDING evidence; a stale READY must also fail closed.
+      if (readiness === "cancel-pending") {
+        const controller = new AbortController();
+        f.state.abortOnPending = () => controller.abort();
+        await assert.rejects(
+          f.notify("source-v2", controller.signal),
+          (error: unknown) => error instanceof Error && controller.signal.aborted,
+        );
+      } else {
+        await assert.rejects(f.notify("source-v2"), DependencyUnavailableError);
+      }
+      assert.equal(f.state.updates.length, 1);
+      assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
+      assert.equal(
+        record(record(f.state.providerStatus!.receipt).desired).provider_env_revision,
+        "13",
+      );
+      assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "12");
+    });
+  }
+});
+
+test("OpenShell Source notification updates a retained Provider without attached targets", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.observeServing();
+
+  // Stop removes the Sandbox policy and attachment but retains the Proxy's delivery copy.
+  // A later Source notification still updates it even though protobuf omits an empty receipt list.
+  f.removeCredentialRoute();
+  await f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
+  f.setResolvedCredential("synthetic-material-v2", "source-v2");
+  await f.notify("source-v2");
+
+  assert.equal(f.resolutions(), 2);
+  assert.equal(f.state.updates.length, 1);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.attaches.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, []);
 });
 
 test("staged OpenShell Proxy reuses a retained Provider for the next deployment without resolving or updating it", async (t) => {

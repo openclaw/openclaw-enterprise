@@ -129,6 +129,7 @@ export {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   RuntimeDiagnosticsTransportError,
   PersistedStateInvalidError,
   DeviceAuthorizationScopeMismatchError,

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-21
-last_updated_session: authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356
+updated: 2026-11-22
+last_updated_session: authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e
 ---
 
 # Agent Plugin Deployment Flow
@@ -148,31 +148,15 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save and deploy, the OpenClaw
-[credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
-passes plugin identity and connections to
-[`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts), then
-checks the returned connections against OCC-authorized sources. The description
-lists required network access; each connection identifies only requests eligible
-for credential injection. Other requests remain network-only, even on the same
-host. Discovery may be public or authenticated.
+At save and deploy, the [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts) passes plugin identity and connections to [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts). It checks the result against OCC-authorized Sources. The description separates network access from credential-eligible requests; other requests remain network-only. Discovery may be public or authenticated.
 
-OCC snapshots the Configuration, Driver and selections. The worker checks
-Driver–Harness compatibility before cutover. Gateway and worker verify artifacts
-against Compute’s package descriptors.
+OCC saves the Configuration, Driver, and selections. Worker checks Driver–Harness compatibility; Gateway and Worker verify artifacts against Compute's descriptors.
 
-- **CLI packages.** The Gateway loads skills; the Harness runs the pinned executable.
-  For Google, the [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
-  checks the guard version before attachment, and the signed guard enforces the
-  source scope and reviewed requests.
-- **Hosted MCP packages.** The worker advertises selected tools. Gateway grants
-  same-node execution; Gateway hooks and cross-node calls return structured
-  results or policy denials through Code Mode. The credential Driver attaches
-  the source, Sandbox supplies its placeholder, and OpenShell scopes requests,
-  enforces exact tool names and rejects overlapping routes.
+- **CLI packages.** Gateway loads skills; Harness runs the pinned executable. For Google, [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) checks the guard version before attachment; the signed guard enforces Source scope and approved requests.
+- **Hosted MCP packages.** Worker advertises selected tools. Gateway grants same-node execution; hooks and cross-node calls return results or policy denials through Code Mode. The credential Driver attaches the Source, Sandbox supplies its placeholder, and OpenShell scopes requests, enforces exact tool names, and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
-Withdrawal removes credential injection. Recovery preserves other attachments.
+Existing Plugin withdrawal removes credential injection; recovery preserves other attachments. The common TokenService and Credential Proxy policy path remains [work in progress](../reference/credential-sources.md#implementation-status).
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -401,6 +385,7 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-22 10:23: Distinguish existing Plugin delivery from the credential-design policy path. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)
 - 2026-11-21 22:12: Document saved-Agent access recovery. (authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356 - e9abd3462452c20c0919e8b96ae1db2f5cd79507)
 - 2026-11-21 21:19: Conflicts. (authoring-run/187efa80-5ecc-4bff-97f1-1898033f5a60 - 7ce0780b5f15899d0899a399460bc2b7ad3d6ed4)
 - 2026-11-21 15:08: Detail-ID refusal. (authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa - b0da800df32dc5311524ef462b5c94a3cbe0264e)

@@ -9,8 +9,11 @@ import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/driver
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import type {
+  CredentialProxyDriver,
   CredentialSourceReference,
+  CredentialUpdateNotification,
   InstallationSecretStore,
+  ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
@@ -18,7 +21,7 @@ import {
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
-import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -94,12 +97,31 @@ test(
       "selected-owner",
       storeIdentity,
     );
+    const notifications: {
+      notification: CredentialUpdateNotification;
+      resolved: ResolvedCredential;
+    }[] = [];
+    let controlledDeliveryFailure: Error | undefined;
+    const notify: NonNullable<CredentialProxyDriver["notifyCredentialUpdated"]> = async (
+      notification,
+      resolveCredential,
+      signal,
+    ) => {
+      signal.throwIfAborted();
+      notifications.push({ notification, resolved: await resolveCredential() });
+      if (controlledDeliveryFailure !== undefined) {
+        const error = controlledDeliveryFailure;
+        controlledDeliveryFailure = undefined;
+        throw error;
+      }
+    };
     const owner = new OCCTokenServiceDriver(
       "selected-owner",
       controller.installation.id,
       ownerStore,
       instanceId,
       state,
+      { notifyCredentialUpdated: notify },
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -403,6 +425,70 @@ test(
     assert.equal(updated.statusCode, 200, updated.body);
     assertPublicSource(updated.json().data);
     assert.equal(await resolve(), replacementMaterial);
+    assert.equal(notifications.length, 1);
+    const delivered = notifications[0]!;
+    assert.ok(delivered.resolved.version);
+
+    // Delivery happens after custody commits. A failed push reports failure without restoring
+    // the old credential or exposing the submitted value through the API, log, or audit.
+    const deliveryFailureMaterial = randomUUID();
+    material.push(deliveryFailureMaterial);
+    const deliveryLogOffset = logs.length;
+    controlledDeliveryFailure = new Error(`Controlled delivery failure ${deliveryFailureMaterial}`);
+    const failedDelivery = remember(
+      await memberRequest("PATCH", sourcePath, { secret: { opaque: deliveryFailureMaterial } }),
+    );
+    assert.equal(controlledDeliveryFailure, undefined, "the delivery failure must be reached");
+    assert.equal(failedDelivery.statusCode, 503, failedDelivery.body);
+    assert.deepEqual(failedDelivery.json().error, {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "The credential source was updated, but credential delivery failed.",
+    });
+    assert.equal(await resolve(), deliveryFailureMaterial);
+    assert.equal(notifications.length, 2);
+    const refusedDelivery = notifications[1]!;
+    assert.ok(refusedDelivery.resolved.version);
+    assert.notEqual(refusedDelivery.resolved.version, delivered.resolved.version);
+    assert.deepEqual(refusedDelivery.notification, {
+      sourceRef,
+      version: refusedDelivery.resolved.version,
+    });
+    assert.equal(refusedDelivery.resolved.credential, deliveryFailureMaterial);
+    assert.deepEqual(
+      (await pool.query("SELECT state,config FROM occ.credential_sources WHERE id=$1", [sourceId]))
+        .rows,
+      [{ state: "ready", config: { provider_preset: "openai" } }],
+    );
+    const deliveryLog = logs
+      .slice(deliveryLogOffset)
+      .find(
+        (entry) => (entry as Record<string, unknown>).event === "credential.delivery_failed",
+      ) as Record<string, unknown> | undefined;
+    assert.ok(deliveryLog, "the delivery refusal must be logged separately from custody success");
+    assert.deepEqual(
+      {
+        namespaceId: deliveryLog.namespaceId,
+        credentialSourceId: deliveryLog.credentialSourceId,
+        code: deliveryLog.code,
+      },
+      { namespaceId, credentialSourceId: sourceId, code: "CREDENTIAL_DELIVERY_FAILED" },
+    );
+    const deliveryAudit = await pool.query<{
+      actor_id: string;
+      outcome: string;
+      reason_code: string | null;
+    }>(
+      `SELECT actor_id,outcome,details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+       FROM occ.audit_events AS a WHERE namespace_id=$1 AND resource_id=$2
+         AND action='openclaw.credential_sources.update'
+         AND details->'__occAuditMetadata'->>'requestId'=$3 ORDER BY outcome`,
+      [namespaceId, sourceId, failedDelivery.headers["x-request-id"]],
+    );
+    assert.deepEqual(deliveryAudit.rows, [
+      { actor_id: authorId, outcome: "failure", reason_code: "CREDENTIAL_DELIVERY_FAILED" },
+      { actor_id: authorId, outcome: "success", reason_code: null },
+    ]);
+
     // A supplier error may include material. The API must sanitize the response, log, and durable failure audit.
     for (const [errorType, status] of [
       [ResourceStateConflictError, 409],
@@ -425,7 +511,7 @@ test(
       );
       assert.equal(refused.statusCode, status, refused.body);
       assert.equal(refused.body.includes(submittedMaterial), false);
-      assert.equal(await resolve(), replacementMaterial);
+      assert.equal(await resolve(), deliveryFailureMaterial);
       assert.deepEqual(
         (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [sourceId]))
           .rows[0].config,
@@ -502,7 +588,7 @@ test(
       }),
     );
     assert.equal(combinedReduction.statusCode, 409, combinedReduction.body);
-    assert.equal(await resolve(), replacementMaterial);
+    assert.equal(await resolve(), deliveryFailureMaterial);
     const unknownPreset = remember(
       await memberRequest("PATCH", sourcePath, {
         config: { provider_preset: "unknown" },

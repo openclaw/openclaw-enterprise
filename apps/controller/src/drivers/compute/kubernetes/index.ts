@@ -6915,9 +6915,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !this.protectedExecution?.admits(revision, source) ||
       (plan?.repositoryGit && !this.protectedExecution.sandbox.repositoryAccess)
     ) {
-      throw new DependencyUnavailableError(
-        "Protected execution is unavailable without its exact paired Compute release.",
-      );
+      const message =
+        "Protected execution is unavailable without its exact paired Compute release.";
+      if (
+        source === "stored" &&
+        revision.executionAdmission.mode === "unprotected" &&
+        revision.repositoryCredentials !== undefined
+      ) {
+        // The selected configuration cannot run this stored native admission.
+        throw new ConfigurationFailure(message);
+      }
+      throw new DependencyUnavailableError(message);
     }
   }
 
@@ -7185,6 +7193,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandbox = this.sandboxDriverForRevision(revision);
     if (!sandbox?.observeHarness) {
+      if (
+        this.preparedRepositoryIngress &&
+        this.sandboxDriver === undefined &&
+        revision.sandboxDriverId === undefined &&
+        revision.executionAdmission.mode === "unprotected" &&
+        revision.repositoryCredentials !== undefined &&
+        revision.repositoryCredentials.standingApprovalId === undefined &&
+        revision.harness.id === "codex" &&
+        revision.harness.mode === "dedicated"
+      ) {
+        return withComputeAbortSignal(signal, () => this.observePreparedNativeRuntime(revision));
+      }
       return { state: "unknown" };
     }
     return withComputeAbortSignal(signal, async () => {
@@ -7200,6 +7220,97 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       return sandbox.observeHarness!({ ...context, revision });
     });
+  }
+
+  /** Verify the retained Compute-owned runtime through readbacks alone. */
+  private async observePreparedNativeRuntime(
+    revision: Readonly<AgentRevision>,
+  ): Promise<SandboxHarnessObservation> {
+    const namespace = await this.ownedRepositoryNamespace(revision);
+    const enrollment = this.nodeEnrollment;
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (namespace === undefined || enrollment === undefined || endpoint === undefined) {
+      return { state: "unknown" };
+    }
+    const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
+    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
+    const gatewayOwner = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const consumer = this.repositoryConsumer(revision);
+    const [gateway, harness, node] = await Promise.all([
+      this.getOwned("Deployment", gatewayName, gatewayNamespace, gatewayOwner),
+      this.getOwned("Deployment", consumer.name, namespace, consumer.owner),
+      this.getOwned(
+        "Secret",
+        this.workspaceNodeName(revision),
+        namespace,
+        this.workspaceNodeOwnership(revision),
+      ),
+    ]);
+    const device = recordedWorkspaceNodeDeviceId(node?.data?.deviceId);
+    if (
+      !gateway ||
+      !harness ||
+      !device ||
+      gateway.metadata.deletionTimestamp !== undefined ||
+      harness.metadata.deletionTimestamp !== undefined ||
+      gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id ||
+      gateway.metadata.annotations?.[AGENT_REVISION_ANNOTATION] !== String(revision.revision) ||
+      !this.deploymentReady(harness) ||
+      !this.deploymentRolledOut(harness) ||
+      node?.metadata.deletionTimestamp !== undefined ||
+      node?.data?.[WORKSPACE_NODE_ENROLLED_REVISION_KEY] !==
+        Buffer.from(revision.id).toString("base64") ||
+      node?.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY] !== undefined
+    ) {
+      return { state: "unknown" };
+    }
+    const [gatewayReady, gatewayPod, harnessPod] = await Promise.all([
+      this.gatewayReady(gatewayOwner, gatewayName, gatewayNamespace, undefined, gateway),
+      this.privateStatusPod(revision, gatewayNamespace, "gateway", true),
+      this.privateStatusPod(revision, namespace, "agent", true),
+    ]);
+    if (
+      !gatewayReady ||
+      !gatewayPod ||
+      !harnessPod ||
+      !(await enrollment.isConnected(endpoint, device, this.operationSignal()))
+    ) {
+      return { state: "unknown" };
+    }
+    // The Pod identities bracket the connection and status reads. Sample each
+    // status after the connection check so a newly held failure is visible.
+    const [gatewayStatus, harnessStatus] = await Promise.all([
+      this.readPrivatePodStatus(gatewayNamespace, "gateway", RUNTIME_STATUS_PATH, gatewayPod),
+      this.readPrivatePodStatus(namespace, "agent", RUNTIME_STATUS_PATH, harnessPod),
+    ]);
+    const [currentGateway, currentHarness] = await Promise.all([
+      this.privateStatusPod(revision, gatewayNamespace, "gateway", true),
+      this.privateStatusPod(revision, namespace, "agent", true),
+    ]);
+    if (
+      !gatewayStatus ||
+      !harnessStatus ||
+      !this.samePrivateStatusPod(gatewayPod, currentGateway, "gateway") ||
+      !this.samePrivateStatusPod(harnessPod, currentHarness, "agent") ||
+      this.cachedRuntimeFailureEvidence(
+        gatewayStatus.status,
+        revision,
+        "gateway",
+        gatewayStatus.podUid,
+      ) ||
+      this.cachedRuntimeFailureEvidence(
+        harnessStatus.status,
+        revision,
+        "agent",
+        harnessStatus.podUid,
+      )
+    ) {
+      return { state: "unknown" };
+    }
+    const status = asRecord(gatewayStatus.status);
+    return status?.workspaceNodeId === device && status.workspaceNodeFailure === undefined
+      ? { state: "running" }
+      : { state: "unknown" };
   }
 
   /** Resolve the same selected Sandbox and exact owned Namespace for observation or withdrawal. */
@@ -11983,6 +12094,53 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
+  private async privateStatusPod(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    container: "agent" | "gateway",
+    requireReady = false,
+  ): Promise<KubernetesRecord | undefined> {
+    const pods = (await this.revisionPods(revision, namespace, container)).filter(
+      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
+    );
+    if (pods.length !== 1) {
+      return undefined;
+    }
+    const pod = pods[0]!;
+    if (!requireReady) {
+      return pod;
+    }
+    const status = asRecord(pod.status);
+    return status?.phase === "Running" &&
+      isNonEmptyString(status.podIP) &&
+      this.podContainerId(pod, container) !== undefined &&
+      findContainerStatus(status.containerStatuses, container)?.ready === true &&
+      Array.isArray(status.conditions) &&
+      status.conditions.some((condition: unknown) => {
+        const value = asRecord(condition);
+        return value?.type === "Ready" && value.status === "True";
+      })
+      ? pod
+      : undefined;
+  }
+
+  private samePrivateStatusPod(
+    before: KubernetesRecord,
+    after: KubernetesRecord | undefined,
+    container: "agent" | "gateway",
+  ): boolean {
+    const original = asRecord(before.metadata);
+    const current = asRecord(after?.metadata);
+    return (
+      current !== undefined &&
+      isNonEmptyString(original?.name) &&
+      isNonEmptyString(original.uid) &&
+      current.name === original.name &&
+      current.uid === original.uid &&
+      this.podContainerId(after, container) === this.podContainerId(before, container)
+    );
+  }
+
   private async privateStatusReadback(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
@@ -12004,13 +12162,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     namespace = container === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
-    const pods = (await this.revisionPods(revision, namespace, container)).filter(
-      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
-    );
-    if (pods.length !== 1) {
+    const pod = await this.privateStatusPod(revision, namespace, container);
+    if (pod === undefined) {
       return undefined;
     }
-    const pod = pods[0]!;
+    const status = await this.readPrivatePodStatus(namespace, container, path, pod);
+    if (status === undefined) {
+      return undefined;
+    }
+    const current = await this.privateStatusPod(revision, namespace, container);
+    return this.samePrivateStatusPod(pod, current, container) ? status : undefined;
+  }
+
+  private async readPrivatePodStatus(
+    namespace: KubernetesNamespaceAddress,
+    container: "agent" | "gateway",
+    path: PrivateStatusPath,
+    pod: KubernetesRecord,
+  ): Promise<PrivateStatusReadback | undefined> {
     const metadata = asRecord(pod.metadata);
     const podName = metadata?.name;
     const podUid = metadata?.uid;
@@ -12031,22 +12200,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       { namespace: namespace.name, podName, container, path },
     );
     if (response === undefined) {
-      return undefined;
-    }
-    const latestPods = (await this.revisionPods(revision, namespace, container)).filter(
-      (candidate) => asRecord(candidate.metadata)?.deletionTimestamp === undefined,
-    );
-    if (latestPods.length !== 1) {
-      return undefined;
-    }
-    const latestMetadata = asRecord(latestPods[0]!.metadata);
-    const latestContainerId = this.podContainerId(latestPods[0], container);
-    if (
-      latestMetadata?.name !== podName ||
-      latestMetadata.uid !== podUid ||
-      latestMetadata.deletionTimestamp !== undefined ||
-      latestContainerId !== containerId
-    ) {
       return undefined;
     }
     return { status: response.body, podUid, containerId };
@@ -14050,9 +14203,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     gatewayName: string,
     namespace: KubernetesNamespaceAddress,
     preparingRevisionId?: string,
+    observedDeployment?: ManagedKubernetesObject,
   ): Promise<boolean> {
     const clients = await this.clients(namespace.plane);
-    const deployment = await this.getOwned("Deployment", gatewayName, namespace, ownership);
+    const deployment =
+      observedDeployment ?? (await this.getOwned("Deployment", gatewayName, namespace, ownership));
     if (deployment === undefined) {
       return false;
     }

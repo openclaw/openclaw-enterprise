@@ -227,6 +227,37 @@ func TestDeployNamesANewRevisionTheDeployerCannotRead(t *testing.T) {
 
 func TestOrdinaryDeployLostResponseAdvisesCheckingRevisions(t *testing.T) {
 	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy"
+	notices := runOCCWithDroppedReply(t, path, "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
+	if !strings.Contains(notices, "agent revisions "+testAgentID) || !strings.Contains(notices, "agent deployment-status "+testAgentID+" REVISION_ID") || strings.Contains(notices, "recover-first-deployment") {
+		t.Errorf("stderr = %q, want guidance to check the Agent's revisions", notices)
+	}
+}
+
+func TestNamespaceCreateLostResponseAdvisesCheckingNamespaces(t *testing.T) {
+	const name = "team-support"
+	const existing = "adopted-support"
+	notices := runOCCWithDroppedReply(t, "/namespaces", "namespace", "create", name, "--existing-namespace", existing)
+	for _, want := range []string{
+		"Namespace creation outcome is unconfirmed",
+		"Do not resend",
+		"same connection options",
+		"occ namespace list",
+		"occ namespace get ID",
+		"request may still commit",
+		"permissions may hide the Namespace",
+		"check the audit log",
+	} {
+		if !strings.Contains(notices, want) {
+			t.Errorf("stderr = %q, want %q", notices, want)
+		}
+	}
+	if strings.Contains(notices, name) || strings.Contains(notices, existing) {
+		t.Error("the recovery notice echoed a create argument")
+	}
+}
+
+func runOCCWithDroppedReply(t *testing.T, path string, args ...string) string {
+	t.Helper()
 	var calls atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -235,7 +266,7 @@ func TestOrdinaryDeployLostResponseAdvisesCheckingRevisions(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		// Consume the deploy request, then drop the connection before sending a reply.
+		// A server that received the request can commit it even if the reply is lost.
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			t.Error(err)
 			return
@@ -247,26 +278,33 @@ func TestOrdinaryDeployLostResponseAdvisesCheckingRevisions(t *testing.T) {
 		}
 		_ = connection.Close()
 	})
-	out, notices, err := runOCCAgainst(t, handler, "--ca-bundle=", "--namespace", testNamespaceID, "--output", "json", "agent", "deploy", testAgentID)
+	out, notices, err := runOCCAgainst(t, handler, append([]string{"--ca-bundle=", "--output", "json"}, args...)...)
 	if !errors.Is(err, io.EOF) || calls.Load() != 1 || out != "" {
 		t.Fatalf("error = %v, requests = %d, stdout = %q; want the transport error, one POST, and no output", err, calls.Load(), out)
 	}
-	if !strings.Contains(notices, "agent revisions "+testAgentID) || !strings.Contains(notices, "agent deployment-status "+testAgentID+" REVISION_ID") || strings.Contains(notices, "recover-first-deployment") {
-		t.Errorf("stderr = %q, want guidance to check the Agent's revisions", notices)
-	}
 	if strings.Contains(notices+err.Error(), "test-key") {
-		t.Error("the deploy failure exposed the service key")
+		t.Error("the failure exposed the service key")
 	}
+	return notices
 }
 
 func TestOrdinaryDeployRefusalKeepsAPIError(t *testing.T) {
 	post := "POST /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy"
+	assertMutationRefusalKeepsAPIError(t, post, "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
+}
+
+func TestNamespaceCreateRefusalKeepsAPIError(t *testing.T) {
+	assertMutationRefusalKeepsAPIError(t, "POST /namespaces", "namespace", "create", "team-support")
+}
+
+func assertMutationRefusalKeepsAPIError(t *testing.T, post string, args ...string) {
+	t.Helper()
 	out, notices, requests, err := runOCCWithNotices(t, map[string]string{
 		post: `raw:403 {"error":{"code":"FORBIDDEN","message":"The operation is not permitted."}}`,
-	}, "--ca-bundle=", "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
+	}, append([]string{"--ca-bundle="}, args...)...)
 	var apiErr *occclient.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || !slices.Equal(requests, []string{post}) {
-		t.Fatalf("error = %v, requests = %v; want HTTP 403 from one deploy POST", err, requests)
+		t.Fatalf("error = %v, requests = %v; want HTTP 403 from one %s", err, requests, post)
 	}
 	if out != "" || notices != "" {
 		t.Errorf("stdout = %q, stderr = %q; a refusal should carry only the API error", out, notices)
