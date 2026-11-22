@@ -4848,7 +4848,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     },
   );
   const endpoint = "https://models.example.test/api/v1";
-  for (const [bind, modelEndpoint, cluster] of [
+  for (const [bind, modelEndpoint, cluster, nodes] of [
     [undefined, undefined],
     ["auto", undefined],
     ["lan", undefined],
@@ -4857,6 +4857,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     ["lan", endpoint],
     [undefined, undefined, executionCluster],
     [undefined, endpoint, executionCluster],
+    [undefined, undefined, undefined, { commands: { allow: ["camera.snap"], deny: ["sms.send"] } }],
   ]) {
     const computeOptions = {
       ...(cluster === undefined ? {} : { executionCluster: cluster }),
@@ -4884,6 +4885,9 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     if (bind !== undefined) {
       revision.configuration.gateway.bind = bind;
     }
+    if (nodes !== undefined) {
+      revision.configuration.gateway.nodes = nodes;
+    }
     state.ready = true;
     assert.equal((await driver.prepareRevision(revision, context)).ready, true);
     const documentKey = [...objects.keys()].find((key) =>
@@ -4893,35 +4897,58 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     assert.equal(current.data["execution-ca.pem"], computeOptions.executionCluster?.caBundle);
     const rendered = JSON.parse(current.data["openclaw.json"]);
     assert.equal(rendered.gateway.bind, "lan");
+    // Every Gateway denies the node command that runs Claude Code (finding 3523); the
+    // Configuration's own node command entries stay.
+    assert.deepEqual(rendered.gateway.nodes, {
+      commands: {
+        ...(nodes === undefined ? {} : { allow: ["camera.snap"] }),
+        deny: [...(nodes === undefined ? [] : ["sms.send"]), "agent.cli.claude.run.v1"],
+      },
+    });
     if (modelEndpoint !== undefined) {
       assert.equal(rendered.agents.defaults.model, "codex/openai-compatible/gpt-5");
       assert.equal(revision.configuration.agents.defaults.model, "codex/gpt-5");
     }
-    // Earlier controllers wrote an omitted or auto bind as submitted; that rendering differed
-    // from the current one only in this key. Kubernetes refuses edits to an immutable
-    // ConfigMap, so re-preparing a revision prepared then (as maintenance and recovery do)
-    // must keep that document instead of failing.
-    const earlier = structuredClone(rendered);
+    // Earlier controllers wrote gateway.nodes as submitted (before finding 3523) and, before
+    // that, an omitted or auto bind as submitted; those renderings differed from the current
+    // one only in these keys. Kubernetes refuses edits to an immutable ConfigMap, so
+    // re-preparing a revision prepared then (as maintenance and recovery do) must keep that
+    // document instead of failing.
+    const beforeDeny = structuredClone(rendered);
+    if (nodes === undefined) {
+      delete beforeDeny.gateway.nodes;
+    } else {
+      beforeDeny.gateway.nodes = nodes;
+    }
+    const keep = async (document) => {
+      const kept = {
+        ...current,
+        data: { ...current.data, "openclaw.json": JSON.stringify(document) },
+      };
+      objects.set(documentKey, structuredClone(kept));
+      assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+      assert.deepEqual(objects.get(documentKey).data, kept.data, "the earlier document stays");
+    };
+    const writes = records.length;
+    await keep(beforeDeny);
+    const earlier = structuredClone(beforeDeny);
     if (bind === "auto") {
       earlier.gateway.bind = bind;
     } else {
       delete earlier.gateway.bind;
     }
-    const kept = {
-      ...current,
-      data: { ...current.data, "openclaw.json": JSON.stringify(earlier) },
-    };
-    objects.set(documentKey, structuredClone(kept));
-    const writes = records.length;
     if (bind === "lan") {
       // An explicit lan bind always rendered lan: nothing earlier to keep.
+      objects.set(documentKey, {
+        ...structuredClone(current),
+        data: { ...current.data, "openclaw.json": JSON.stringify(earlier) },
+      });
       await assert.rejects(
         driver.prepareRevision(revision, context),
         /Refusing invalid immutable Kubernetes ConfigMap gateway-/,
       );
     } else {
-      assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-      assert.deepEqual(objects.get(documentKey).data, kept.data, "the earlier document stays");
+      await keep(earlier);
     }
     assert.equal(
       records.slice(writes).some(({ kind }) => kind === "ConfigMap"),
@@ -4929,7 +4956,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
       "an immutable gateway document is never rewritten",
     );
     if (modelEndpoint !== undefined && bind !== "lan") {
-      // The earlier-document allowance changes only bind. It cannot erase the
+      // The earlier-document allowance changes only bind and gateway.nodes. It cannot erase the
       // source endpoint projection while adopting an immutable revision.
       const unprojected = structuredClone(earlier);
       unprojected.agents.defaults.model = "codex/gpt-5";
@@ -6761,14 +6788,15 @@ async function exerciseEmbeddedReplacement(scenario) {
       gatewayPod.initContainers.some(({ name }) => name === "prepare-claude-code-settings"),
       false,
     );
-    // Other runtimes keep the Configuration's node commands.
-    assert.equal(
+    // A Gateway that did not select Claude Code denies the node command too: an authorized
+    // sender can still switch a session to the runtime at chat time (finding 3523).
+    assert.deepEqual(
       JSON.parse(
         objects.get(key("ConfigMap", `${gatewayName}-rev-${digest(replacement.id)}`)).data[
           "openclaw.json"
         ],
       ).gateway.nodes,
-      undefined,
+      { commands: { deny: ["agent.cli.claude.run.v1"] } },
     );
   }
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);

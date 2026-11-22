@@ -1514,8 +1514,9 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
 // The node command that runs a session's Claude Code turn on a paired node. A session whose
 // exec host is node (an authorized sender's `/exec host=node node=<id>`, which no Configuration
 // setting governs) places Claude Code there, and the pinned OpenClaw skips tool mediation for it
-// (src/agents/cli-runner/execution-target.ts, prepare-tool-policy.ts). Embedded OpenClaw, the
-// only mode this runtime runs in, denies it, so such a turn fails instead.
+// (src/agents/cli-runner/execution-target.ts, prepare-tool-policy.ts). Every Gateway denies it,
+// not only one whose models select Claude Code: an authorized sender can switch any session to
+// the runtime at chat time (`/model <ref> --runtime claude-cli`, finding 3523). Such a turn fails.
 const NODE_CLAUDE_CODE_RUN_COMMAND = "agent.cli.claude.run.v1";
 
 // gateway.nodes with NODE_CLAUDE_CODE_RUN_COMMAND added to commands.deny, which outranks any allow.
@@ -3437,6 +3438,24 @@ function gatewayConfigurationDocument(
     delete openai.apiKey;
   }
   return document;
+}
+
+// Until finding 3523, Compute rendered gateway.nodes as submitted (without the node command deny)
+// in every Gateway whose models do not select Claude Code, the only ones an earlier controller
+// prepared. Like the lan bind below, such a revision keeps that document until it is deployed again.
+function gatewayDocumentBeforeNodeDeny(
+  submitted: OpenClawConfigurationDocument,
+  rendered: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  const earlier = structuredClone(rendered);
+  const gateway = asRecord(earlier.gateway) as Record<string, OpenClawConfigurationValue>;
+  const nodes = asRecord(submitted.gateway)?.nodes;
+  if (nodes === undefined) {
+    delete gateway.nodes;
+  } else {
+    gateway.nodes = structuredClone(nodes);
+  }
+  return earlier;
 }
 
 // Until finding 996, Compute rendered an omitted or auto gateway.bind as submitted. A revision
@@ -7629,7 +7648,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       pluginRuntime?.runtime,
     );
     const document = JSON.stringify(nativeDocument);
-    const earlierDocument = gatewayDocumentBeforeLanBind(nativeConfiguration, nativeDocument);
+    const beforeNodeDeny = gatewayDocumentBeforeNodeDeny(nativeConfiguration, nativeDocument);
+    const earlierDocuments = [
+      JSON.stringify(beforeNodeDeny),
+      gatewayDocumentBeforeLanBind(nativeConfiguration, beforeNodeDeny),
+    ].filter((earlier) => earlier !== undefined);
     const pluginStatusContainer =
       sandboxDriver?.provisionHarness === undefined &&
       pluginRuntime !== undefined &&
@@ -7666,9 +7689,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         gatewayOwnership,
         gatewayNamespace,
         undefined,
-        earlierDocument === undefined
-          ? []
-          : [{ [CONFIGURATION_DOCUMENT]: earlierDocument, ...executionCaData }],
+        earlierDocuments.map((earlier) => ({
+          [CONFIGURATION_DOCUMENT]: earlier,
+          ...executionCaData,
+        })),
       ),
     );
     if (pluginRuntime !== undefined) {
@@ -15085,11 +15109,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               },
             }
           : {}),
+        nodes: denyNodeClaudeCodeRuns(gateway.nodes),
         // Omitted and auto resolve to loopback unless OpenClaw detects a container,
         // and containerd on cgroup v2 leaves no marker it recognizes (finding 996).
-        ...(selectsClaudeCodeRuntime(configuration)
-          ? { nodes: denyNodeClaudeCodeRuns(gateway.nodes) }
-          : {}),
         bind: gateway.bind === "custom" ? "custom" : "lan",
         trustedProxies: [...this.options.network.gatewayTrustedProxyCidrs],
         allowRealIpFallback: true,

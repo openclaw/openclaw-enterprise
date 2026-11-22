@@ -53,7 +53,9 @@ on a node without a setting: the `/exec host=node node=<id>` directive, or
 `sessions.patch` or `sessions.create` with a node. The gateway therefore denies
 the node command that runs Claude Code
 (`gateway.nodes.commands.deny` gets `agent.cli.claude.run.v1`), and such a turn
-fails.
+fails. Every Agent's gateway on Kubernetes Compute has this deny, whether or not
+its models select Claude Code, because a chat command can switch a session to
+the runtime.
 
 OpenClaw's system prompt replaces Claude Code's own. Each turn's `TMPDIR`,
 `TMP` and `TEMP` point at `.openclaw/tmp` in the session's or Agent's
