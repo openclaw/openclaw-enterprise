@@ -19,6 +19,7 @@ import {
   type SandboxDriver,
   type SandboxFacet,
   type SandboxNetworkGrant,
+  type RepositoryNetworkPolicyCeiling,
   type SandboxPolicy,
   type SandboxPolicyRecommendations,
   type SandboxPolicySnapshot,
@@ -40,6 +41,7 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 interface SandboxPolicyDependencies {
+  readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
@@ -437,6 +439,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         capability: revision === null ? null : (driver?.networkPolicy ?? null),
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
+        repositoryNetworkPolicyCeiling: dependencies.repositoryCeiling(namespaceId),
         repositoryNetworkPolicySaveSupported:
           state.sandboxPolicies.supportsRepositoryNetworkPolicy === true &&
           policy.repositoryNetworkPolicy !== undefined,

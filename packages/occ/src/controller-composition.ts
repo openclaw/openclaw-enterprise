@@ -1,4 +1,8 @@
 import {
+  parseRepositoryNetworkPolicyCeiling,
+  type RepositoryNetworkPolicyCeiling,
+} from "@openclaw-enterprise/contracts";
+import {
   reconcileNamespaceLifecycle,
   type NamespaceLifecycleBinding,
   type NamespaceLifecycleEvidence,
@@ -178,6 +182,7 @@ export interface ControllerOptions {
   };
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
@@ -373,7 +378,10 @@ function initializeInstallationDrivers(
   installation: Installation,
   options: Pick<
     ControllerOptions,
-    "namespaceLifecycleBindings" | "sandboxNetworkPolicyCeiling" | "driverConfigurations"
+    | "namespaceLifecycleBindings"
+    | "repositoryNetworkPolicyCeiling"
+    | "sandboxNetworkPolicyCeiling"
+    | "driverConfigurations"
   >,
   hasBuiltInRepositoryPolicy: () => boolean,
 ) {
@@ -783,6 +791,8 @@ export function createControllerComposition(
     { record: workRecorder.record, requestAuditId: currentRequestAuditId },
   );
   const sandboxPolicyOperations = createSandboxPolicyOperations({
+    repositoryCeiling: (namespaceId) =>
+      repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,
     ceiling: sandboxNetworkPolicyCeiling,
     authority,
@@ -858,6 +868,9 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
+      options.repositoryNetworkPolicyCeiling ?? [],
+    ),
     drivers,
     selectedRepository: () => publicController.selectedDriver("repo"),
     selectedCompute,
