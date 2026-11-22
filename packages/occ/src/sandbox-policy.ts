@@ -563,7 +563,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     const target = { kind: "agent", id: agentId, namespaceId } as const;
     const sandboxPolicy = policyResource(namespaceId, agentId);
     const explicitList = repositoryNetworkPolicy !== undefined;
-    return transact(async (state) => {
+    const save = async (state: PlatformUnitOfWork) => {
       if (explicitList) {
         await holdAuthority(state);
       }
@@ -600,6 +600,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         await state.sandboxPolicies.find(namespaceId, agentId),
         expectedVersion,
       );
+      // An empty list can start scoped policy or withdraw it. Check read access
+      // before branching on the saved list so a caller cannot tell which applies.
       if (clearsRepository) {
         await authorize(principalId, "read", sandboxPolicy, iam, decide);
       }
@@ -668,7 +670,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         throw new ResourceStateConflictError("The policy changed.");
       }
       return updated;
-    });
+    };
+    return transact(save, { readCommitted: explicitList });
   }
 
   async function applyAgentSandboxPolicy(

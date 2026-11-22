@@ -10,6 +10,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 
 import { ResourceStateConflictError, ScopeViolationError } from "./errors.ts";
+import { RepositoryPolicyDeploymentConflict } from "./repository-network-policy.ts";
 
 export type ConfigurationOwnership = Readonly<
   Pick<Configuration, "id" | "namespaceId" | "kind" | "generation" | "secretBindings" | "createdAt">
@@ -37,10 +38,7 @@ export function soleHarnessSource(agent: Readonly<Agent>) {
 }
 
 function unsupportedComputeRepositoryPolicy(): ResourceStateConflictError {
-  return new ResourceStateConflictError(
-    "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
-    [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
-  );
+  return new RepositoryPolicyDeploymentConflict("incompatible_compute");
 }
 
 function unsupportedProtectedRepositoryPolicy(): ResourceStateConflictError {

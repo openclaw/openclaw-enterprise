@@ -1,3 +1,8 @@
+import { credentialSourceMetadata } from "./credential-source-metadata.ts";
+import {
+  credentialGatewayOperation,
+  CREDENTIAL_GATEWAY_TIMEOUT_MS,
+} from "./credential-source-drivers.ts";
 import type {
   AuditEvent,
   CredentialGatewayDriver,
@@ -44,7 +49,6 @@ type GatewaySourceContext = {
 interface DeviceAuthorizationDependencies {
   readonly installationId: string;
   readonly cipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
-  readonly gatewayTimeoutMs: number;
   readonly nextSessionId: () => string;
   readonly timestamp: () => string;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
@@ -52,7 +56,6 @@ interface DeviceAuthorizationDependencies {
   readonly hasDriver: (capability: "credential_gateway" | "credential_refresh") => boolean;
   readonly credentialGatewayDriver: () => CredentialGatewayDriver;
   readonly credentialRefreshDriver: () => CredentialRefreshDriver;
-  readonly credentialGatewayOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly credentialSourceContext: (
     namespaceId: string,
     id: string,
@@ -68,9 +71,6 @@ interface DeviceAuthorizationDependencies {
     audit?: SourceAudit,
     registrationAudit?: SourceAudit,
   ) => Promise<Readonly<CredentialSourceMetadata>>;
-  readonly credentialSourceMetadata: (
-    source: Readonly<CredentialSource>,
-  ) => Readonly<CredentialSourceMetadata>;
 }
 
 export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependencies) {
@@ -147,8 +147,8 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
         "Device authorization is unavailable for the selected Drivers.",
       );
     }
-    const types = await deps.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(deps.gatewayTimeoutMs) }),
+    const types = await credentialGatewayOperation(() =>
+      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
     );
     const supported = types.filter(
       (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === harnessId,
@@ -292,7 +292,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
     ) as Pick<CredentialSourceDeviceAuthorization, "verificationUrl" | "userCode">;
     const response = (status: "pending" | "ready", expiresAt = session.expiresAt) => ({
       session: { id: sessionId, namespaceId },
-      ...(status === "ready" ? { source: deps.credentialSourceMetadata(context.source).ref } : {}),
+      ...(status === "ready" ? { source: credentialSourceMetadata(context.source).ref } : {}),
       status,
       expiresAt,
       intervalSeconds: session.intervalSeconds,

@@ -263,8 +263,7 @@ checks finite-grant expiry and worker restart after installation.
 
 Codex Sandbox and guided native OpenClaw first-Agent tests use production
 Drivers. Neither qualifies a production installation. Run the separate native
-Sandbox test with the k3d helper below. It uses a test-only compatibility
-bridge. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
+Sandbox test with the k3d helper below. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
 
 Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
 across a worker restart, isolation from another Agent, and disabling edits while
@@ -300,8 +299,8 @@ In CI, custom endpoints require focused upstream, refresh, withdrawal, or Gatewa
 tool-policy tests; native provider files require a guided first-Agent test.
 Whole-lane CI preparation rejects either override before setup.
 
-Both commands use the test-only bridge. `test` requires an authorized
-`OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
+Both commands disable ServiceAccount token projection for the OpenShell Harness.
+`test` requires an authorized `OPENAI_API_KEY`. `demo` prompts for one if it is unset. `demo` leaves the
 proven environment running and opens the Control UI and OCE console on loopback.
 It leaves the dedicated worker slot free for the first browser session.
 Run `./scripts/k3d down --harness openclaw` to remove it. Codex and native OpenClaw
@@ -341,7 +340,7 @@ retain stage timings.
 After checking Local Setup's ready default Namespace, the test runs distinct
 Codex and native Agents concurrently with separate `openai` sources using
 `OPENAI_API_KEY`. Native OpenClaw uses the pinned runtime,
-and production Drivers without the k3d helper's compatibility bridge. Both
+and production Drivers. Both
 operations drain before shared denial checks and teardown.
 
 For a custom service, set

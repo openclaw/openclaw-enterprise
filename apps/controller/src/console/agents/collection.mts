@@ -215,6 +215,19 @@ function agentNameLink(item: AgentRead, context: AgentNavigation) {
   return node;
 }
 
+// Leave text composition (including the final IME keydown) and browser shortcuts alone.
+function plainKey(event: KeyboardEvent) {
+  return !(
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.keyCode === 229 ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  );
+}
+
 export function renderAgentList(context: AgentListContext) {
   const { view } = context;
   // Row actions replace an Agent with the API's response, so the table shows its new state.
@@ -222,12 +235,34 @@ export function renderAgentList(context: AgentListContext) {
   const search = element("input", {
     type: "search",
     "aria-label": "Search Agents",
+    "aria-description":
+      "Down Arrow to browse results. Enter opens a single match. Escape clears search.",
+    "data-refocus-key": "agent-search",
     placeholder: "Search Agents by name or ID",
   });
   const savedSearch = context.drafts.get("agent-search");
   search.value = typeof savedSearch === "string" ? savedSearch : "";
   context.drafts.track("agent-search", () => search.value || undefined);
   context.drafts.unsavedWhen("agent-search", () => false);
+  const keyHint = (key: string, label: string) =>
+    element("span", {}, element("kbd", {}, key), " ", label);
+  const browseHint = keyHint("↓", "Browse");
+  const openHint = keyHint("Enter", "Open");
+  const clearHint = keyHint("Esc", "Clear");
+  const hints = element(
+    "div",
+    { className: "agent-search-keys", "aria-hidden": "true" },
+    browseHint,
+    openHint,
+    clearHint,
+  );
+  const nameHints = element(
+    "div",
+    { className: "agent-name-keys", "aria-hidden": "true" },
+    keyHint("↑ ↓", "Browse"),
+    keyHint("Enter", "Open"),
+    keyHint("Esc", "Search"),
+  );
   const rows = element("div");
   const feedback = element("div", { className: "agent-list-feedback" });
   const deployments = new Map<string, ReturnType<typeof readDeployment>>();
@@ -322,7 +357,14 @@ export function renderAgentList(context: AgentListContext) {
   const notReadyNoteShown = notReadyNote !== null;
   describeCreate();
   view.replaceChildren(
-    element("div", { className: "collection-toolbar" }, search, create),
+    element(
+      "div",
+      { className: "collection-toolbar agent-list-toolbar" },
+      search,
+      hints,
+      nameHints,
+      create,
+    ),
     ...(notReadyNote ? [notReadyNote] : []),
     ...(createDenied ? [createDeniedNote] : []),
     feedback,
@@ -504,8 +546,8 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "span",
             {
-              className: "resource-id agent-deployment-note",
-              ...(failure ? { title: failure } : {}),
+              className: "agent-deployment-note",
+              ...(failure ? { title: failure, "data-tone": "danger" } : {}),
             },
             failure ??
               (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
@@ -996,6 +1038,7 @@ export function renderAgentList(context: AgentListContext) {
   function render() {
     cells.clear();
     rowControls.clear();
+    hints.hidden = !!notReady?.missing;
     if (notReady?.missing) {
       rows.replaceChildren();
       return;
@@ -1004,6 +1047,9 @@ export function renderAgentList(context: AgentListContext) {
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    openHint.hidden = !query || matches.length !== 1;
+    browseHint.hidden = !openHint.hidden || !matches.length;
+    clearHint.hidden = !search.value;
     const shown = new Set(matches.map((item) => item.id));
     retireHidden(deployments, shown, (reads) => reads.row);
     retireHidden(permissionReads, shown, (row) => row);
@@ -1066,9 +1112,28 @@ export function renderAgentList(context: AgentListContext) {
       ),
     );
     const body = element("tbody");
-    for (const item of matches) {
+    for (const [index, item] of matches.entries()) {
       readPermissions(item);
       const name = agentNameLink(item, context);
+      name.setAttribute(
+        "aria-description",
+        "Up or Down Arrow to browse. Escape returns to search.",
+      );
+      name.addEventListener("keydown", (event) => {
+        if (!plainKey(event)) {
+          return;
+        }
+        if (event.key === "Escape" || (event.key === "ArrowUp" && index === 0)) {
+          event.preventDefault();
+          search.focus();
+        } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          const next = matches[index + (event.key === "ArrowUp" ? -1 : 1)];
+          if (next) {
+            rowControls.get(next.id)?.name.focus();
+          }
+        }
+      });
       // A refocus that rebuilds the list returns focus to the same row's control (finding D814).
       name.dataset.refocusKey = `${item.id} name`;
       const actions = rowActions(item);
@@ -1130,7 +1195,7 @@ export function renderAgentList(context: AgentListContext) {
         // On a phone each cell shows its column's name (console.css, `data-label`).
         element(
           "td",
-          { "data-label": "Execution mode" },
+          { className: "agent-execution-mode", "data-label": "Execution mode" },
           item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
         ),
         current,
@@ -1204,6 +1269,33 @@ export function renderAgentList(context: AgentListContext) {
     }
   });
   search.addEventListener("input", render);
+  search.addEventListener("keydown", (event) => {
+    if (!plainKey(event)) {
+      return;
+    }
+    if (event.key === "Escape" && search.value) {
+      event.preventDefault();
+      search.value = "";
+      render();
+      return;
+    }
+    const first = rowControls.values().next().value?.name;
+    if (event.key === "ArrowDown" && first) {
+      event.preventDefault();
+      first.focus();
+    } else if (
+      event.key === "Enter" &&
+      !event.repeat &&
+      search.value.trim() &&
+      first &&
+      rowControls.size === 1
+    ) {
+      // Follow the same link as a row click so Back restores focus to its name.
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+      first.click();
+    }
+  });
   const carried =
     context.resumed &&
     keptRefusal?.namespaceId === context.namespaceId &&
