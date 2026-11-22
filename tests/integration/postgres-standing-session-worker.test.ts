@@ -262,6 +262,8 @@ test(
     let eligible = true;
     const deliveries: Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>[] = [];
     let retainedBindings = 0;
+    const resumeRetained = Promise.withResolvers<void>();
+    let pauseRetainedPreparation = false;
     driver.allowsStandingApproval = () => eligible;
     const events: { event?: string; code?: string; revisionId?: string; workId?: string }[] = [];
     const compute = {
@@ -271,12 +273,17 @@ test(
         r: Parameters<ComputeDriver["prepareRevision"]>[0],
         context?: ComputeRevisionContext,
       ) {
+        let retained = false;
         for (const binding of context?.repositoryCredentials ?? []) {
           if (binding.kind === "new") {
             deliveries.push(binding);
           } else {
             retainedBindings++;
+            retained = true;
           }
+        }
+        if (retained && pauseRetainedPreparation) {
+          await resumeRetained.promise;
         }
         return f.compute.prepareRevision(r);
       },
@@ -322,17 +329,24 @@ test(
     assert.ok(maintenanceKey);
     await f.advanceMaintenance(revision);
     const writer = await f.observerPool.connect();
+    pauseRetainedPreparation = true;
     let committed = false;
     try {
+      await start();
+      // Automation supervision now takes the same Namespace lock before preparation.
+      // Pause the controlled Compute observation only after it receives the retained binding,
+      // then lock the Namespace so the next waiter is captureExecution's real authorization.
+      await waitFor("maintenance prepared the retained binding", async () =>
+        retainedBindings > retainedBefore ? true : undefined,
+      );
       await writer.query("BEGIN");
       const locked = await writer.query(
         "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id=$1 FOR UPDATE",
         [f.namespace.id],
       );
       assert.equal(locked.rowCount, 1);
-      await start();
-      // Ready retained preparation reaches captureExecution's authorized transaction.
-      // Flip permission only after PostgreSQL observes its Namespace lock wait.
+      resumeRetained.resolve();
+      // Flip permission only after PostgreSQL observes the authorized transaction waiting.
       await waitForLockWaiter(
         f.observerPool,
         locked.rows[0].pid,
@@ -351,6 +365,7 @@ test(
       await writer.query("COMMIT");
       committed = true;
     } finally {
+      resumeRetained.resolve();
       if (!committed) {
         await writer.query("ROLLBACK");
       }
