@@ -1,26 +1,21 @@
 # Agents
 
-An Agent is a named AI workload in a [Namespace](namespaces.md). It has its own
-identity, Agent revision history, and gateway. Its permissions do not grant
-access across Namespaces.
+An Agent is a named workload with its own identity, revision history, and gateway in one [Namespace](namespaces.md). Its permissions do not cross Namespaces.
 
-Use a [Preset](presets.md) to copy launch settings into an Agent draft.
+A [Preset](presets.md) supplies draft launch settings.
 
 [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md), choose
 [Compute](../guides/topics/agent-compute.md), manage
 [versions](../guides/topics/agent-revisions.md), or
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creation saves identity and exact Namespace-owned Configuration with `active`
-status and `stopped` desired runtime state. No Agent revision is
-created and no workload or model starts until an authorized caller requests
-[deployment](#identity-and-deployment).
+Creation saves the identity and exact Namespace-owned Configuration with `active` status and `stopped` desired runtime state. Authorized [deployment](#identity-and-deployment) creates the first revision and starts the workload.
 
 ## Supported operations
 
 Operations beneath `/namespaces/:namespaceId/agents` return `201` for creation,
 `200` for reads/updates, and `202` for deployment, stop, or deletion. Deployment
-returns the saved Agent revision (`AgentRevision`). Stop sets
+returns the saved `AgentRevision`. Stop sets
 `desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
 See [API schemas, envelopes, and permissions](api.md).
 
@@ -186,7 +181,7 @@ For dedicated Codex with a Credential Gateway, use
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
 It must also be listed in `credentialSources`.
 
-Replacement involving staged managed credentials returns `409` before queuing work. After a selected launch fails, complete Stop before retrying.
+Replacing a revision from or to managed credential delivery currently returns `409` before queueing. Complete Stop before deploying again. See [implementation status](credential-sources.md#implementation-status).
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor

@@ -98,7 +98,7 @@ Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-p
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
 retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
-absent. For a staged revision, stop removes the bound Credential Proxy deployment after the Harness stops and retains the target record until removal succeeds.
+absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source and Provider copy.
 
 ### Plugin startup status
 
@@ -169,15 +169,9 @@ the resolved namespace carries the Agent ID, Agent revision ID, and `agent` work
 labels used by the active Service selector, plus all supplied Harness
 requirement labels, and reports `Ready=True`. Zero candidates, multiple live
 candidates (including one Ready and one unready), or a single unready candidate
-leave preparation at `ready: false`. For a staged credential revision, Compute
-can report `preparedForCredentialActivation` after preparing an idle target and fresh launch inputs.
-Worker selects the revision and authorizes the source before activation starts
-the Harness. The authenticated Gateway operator route is available during preparation
-for node enrollment; Compute publishes user chat and delegated browser routes only after the Harness is serving and
-the node is ready. Staged managed-credential replacement is unsupported. Other
-unready revisions cannot activate. Pods with a valid
-deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
-role do not count.
+leave preparation at `ready: false`. Pods with a valid deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or role do not count.
+
+For managed credential delivery, Compute prepares an idle Sandbox and reports `preparedForCredentialActivation` only after the network policy matches, the Credential Proxy reports ready, and the Sandbox has fresh launch inputs. Worker selects the Agent revision and authorizes the Credential Source before Compute activates the Harness. Compute keeps the authenticated Gateway operator route available during node enrollment. It publishes user chat and delegated browser routes only after it verifies the runtime and workspace node. See [Credential Source implementation status](../credential-sources.md#implementation-status) for current limits. Other unready revisions cannot activate.
 
 Malformed or incomplete Pod lists, invalid identities or conditions, duplicate
 condition types, contradictory Harness labels, and pagination with more results

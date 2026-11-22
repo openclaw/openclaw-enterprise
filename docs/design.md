@@ -99,7 +99,7 @@ These approved requirements are not established by the implemented architecture:
 | Shared context               | The shared layer for knowledge retrieval, grounding, session history, and long-term memory is planned.                                                                                                                                                                                                                                                 |
 | External admission           | Sessions and service keys authenticate to OCC. The separate OpenClaw Access Gateway (OAG) and trusted-ingress admission protocol remain planned. See [access design](design/access.md).                                                                                                                                                                |
 | Agent Identity               | The Agent Identity component is planned. Agents own ServicePrincipals and may receive projected Kubernetes tokens. OCC token verification, identity exchange, and workload API authentication remain deferred. See [authorization](reference/authorization.md#principals).                                                                             |
-| Model mediation              | Model Registry and Router are planned additions. Harnesses receive scoped model credentials. General `InferenceDriver` mediation, restricted model egress, and credential-free execution remain planned; OpenShell credential substitution is not a supported deployment substitute. See [runtime isolation](reference/security/runtime-isolation.md). |
+| Model mediation              | Model Registry and Router, general `InferenceDriver` mediation, and credential-free inference remain planned. Managed credential delivery covers a limited path and does not establish qualification. See [credential status](reference/credential-sources.md#implementation-status) and [runtime isolation](reference/security/runtime-isolation.md). |
 | Runtime trust                | Separate placement is implemented; general mutually authenticated, workload-bound transport and complete two-cluster runtime acceptance remain pending. See [Kubernetes Compute](reference/drivers/kubernetes-compute.md).                                                                                                                             |
 | Resource and policy coverage | Agent-owned SandboxPolicy network additions are implemented. General shared containment policies, the published Harness and Channel resource model, and Restrictions across every integration remain beyond the current contracts. See [resource requirements](design/resources.md) and [Sandbox contract](reference/drivers/sandbox.md).              |
 
@@ -190,9 +190,7 @@ An optional SandboxDriver participates through Compute and can provision a
 dedicated Harness. Its cleanup for each Agent revision and Namespace must complete before
 Compute releases the corresponding infrastructure.
 
-A CredentialGatewayDriver holds registered model credentials and supplies
-attachments for each Agent revision to its paired Sandbox; activation waits for applied
-attachments. The OpenShell development profile implements a plugin-free
+The credential redesign assigns Source and credential custody to TokenService. OCC admits Source access and separate network and credential injection policies; a selected Credential Proxy and Sandbox prepare and enforce delivery before activation. The implemented model path and remaining work are listed in [credential design status](reference/credential-sources.md#implementation-status). Existing Credential Gateway delivery remains available for its recorded Sources and supplies attachments to its paired Sandbox; activation waits for applied attachments. The OpenShell development profile implements a plugin-free
 dedicated Codex path through experimental provider files and bearer passthrough.
 Real activation remains conditional on the documented identity, storage,
 admission, and gateway-authentication preconditions. See
@@ -216,8 +214,7 @@ mounts and NetworkPolicies do not restrict a namespace administrator.
 Kubernetes uses restricted Pod security, scoped ServiceAccounts, and
 NetworkPolicies. Controller credentials remain trusted within their granted
 tenant namespaces: workload-write authority can expose Secrets indirectly.
-Model credentials currently reach the executing Harness, and same-cluster
-Codex transport uses capability-token `ws://`, not mutually authenticated TLS.
+In direct model authentication paths, the credential reaches the executing Harness. The managed Proxy path gives the Harness a placeholder and keeps the credential in trusted delivery custody. Same-cluster Codex transport uses capability-token `ws://`, not mutually authenticated TLS.
 [Security](reference/security.md) and
 [runtime isolation](reference/security/runtime-isolation.md) own these limits.
 

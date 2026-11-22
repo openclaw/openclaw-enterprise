@@ -1,45 +1,24 @@
 # OpenShell SandboxDriver
 
-For development, use [OpenShell v0.1.8](https://github.com/NVIDIA/OpenShell/tree/v0.1.8),
-the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md) and dedicated
-Codex or native OpenClaw. Embedded OpenClaw is unsupported.
-OCC owns Agents, revisions, Namespaces, routing, credentials and authorization.
-Model credentials use the [Credential Gateway](openshell-credential-gateway.md) or [Credential Proxy](credential-proxy.md).
-Revision providers supply node enrollment and Codex files.
-[Production qualification](#qualification-contract) remains open.
+Development requires [OpenShell v0.1.8](https://github.com/NVIDIA/OpenShell/tree/v0.1.8), the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md), and dedicated Codex or native OpenClaw. Embedded OpenClaw is unsupported. OCC owns Agents, revisions, Namespaces, routing, credentials, and authorization. A [Credential Gateway](openshell-credential-gateway.md) or [Credential Proxy](credential-proxy.md) delivers model credentials; see [implementation status](../credential-sources.md#implementation-status). Revision Providers supply enrollment and Codex files. [Production qualification](#qualification-contract) remains open.
 
-Namespace-owned gateways use [setup](openshell-sandbox/namespace-gateway.md); Gateway settings below describe operator-owned gateways.
+See [setup](openshell-sandbox/namespace-gateway.md) for Namespace-owned gateways. Settings below cover operator-owned gateways.
 
 ## Ownership model
 
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
-- `supportsHarnessExecutionMode` declares OpenClaw support.
-  Operator mode requires `kubernetes.userNamespaces: false` and at most
-  one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
-  [mode support contract](sandbox.md#harness-mode-support) and
-  [managed-mode bootstrap](kubernetes-openshell-compute.md#lifecycle-and-retained-files).
-- `configureAgent` pins the main Agent workspace to the configured Sandbox data
-  mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
-  app-server containment policy.
-- `validateWorkspaceSetup` admits initial files only for that projected workspace
-  with a single main Agent (or an omitted roster). Compute retains runtime-storage
-  and identity checks; the Sandbox privately initializes the same mount.
-- In `operator` mode, `ensureNamespace` applies configured labels, workspace
-  resources, and NetworkPolicies, then owns the exact active Workspace. A
-  [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md)
-  only verifies them.
-- `provisionHarness` creates a Sandbox with [credential attachments](openshell-sandbox/harness-providers.md#credential-attachments) and runtime Provider, validates Codex routing, and returns its reference. Codex exposes app-server; OpenClaw connects outbound with status until node enrollment. [Workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
-- Staged `provisionStagedHarness` creates an idle target; preparation installs launch inputs, and activation starts the Harness through a fresh `ExecSandbox`. See the [staged lifecycle](../../flows/credential-source-lifecycle.md#pending-native-integration).
+- `supportsHarnessExecutionMode` declares OpenClaw support. Operator mode requires `kubernetes.userNamespaces: false` and at most one ServiceAccount in `gateway.operatorWorkspaceResources`; see [mode support](sandbox.md#harness-mode-support) and [managed-mode bootstrap](kubernetes-openshell-compute.md#lifecycle-and-retained-files).
+- `configureAgent` pins either dedicated Harness’s main workspace to the Sandbox data mount before OCC saves the revision. Codex retains app-server containment policy.
+- `validateWorkspaceSetup` admits initial files only for that workspace and one main Agent (or no roster). Compute checks storage and identity; Sandbox initializes the mount.
+- In `operator` mode, `ensureNamespace` applies labels, workspace resources, and NetworkPolicies and owns the active Workspace. A [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md) only verifies them.
+- `provisionHarness` creates and returns a Sandbox with [credential attachments](openshell-sandbox/harness-providers.md#credential-attachments) and a runtime Provider, validating Codex routing. Codex exposes app-server; native OpenClaw connects outward to Gateway and may expose a failure endpoint until enrollment. [Workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) precedes execution.
+- `provisionStagedHarness` creates an idle Sandbox for managed credentials. After policy and Provider readiness, Compute installs launch inputs with `prepareStagedHarness`. `activateStagedHarness` passes current Provider placeholders via fresh `ExecSandbox`; the supervisor starts the Harness.
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
-- `cleanup` derives the stable Sandbox identity during Agent revision retirement, even
-  without its Pod. Namespace cleanup verifies Workspace ownership and
-  removes the Workspace and configured resources before Compute deletes the
-  Kubernetes namespace.
+- `cleanup` derives Sandbox identity on retirement, even without its Pod. Namespace cleanup verifies ownership and removes the Workspace and configured resources before Compute deletes the namespace.
 
-Compute requires ready workloads and matching revision routes before serving traffic.
-Workers use the stored `sandboxDriverId` for provisioning and cleanup.
+Compute serves only ready workloads with matching revision routes. Workers provision and clean up by stored `sandboxDriverId`.
 
 ## OpenShell containment facets
 
@@ -104,23 +83,11 @@ drivers:
                 tls: skip
 ```
 
-Omit `policy.filesystem` for the default. Read-only paths include `/bin`, `/usr`,
-`/lib`, `/proc`, `/dev/urandom`, `/etc`, `/var/log`, `/app`, and `/opt/devtools`.
-Writable paths include `/tmp`, `/dev/null`, the image workdir, approved writable
-mounts, and `/sandbox/.openclaw-runtime`.
+Without `policy.filesystem`, read-only paths include `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`, `/var/log`, `/app`, and `/opt/devtools`. Writable paths include `/tmp`, `/dev/null`, the image workdir, approved mounts, and `/sandbox/.openclaw-runtime`.
 
-An explicit policy replaces these defaults. The Driver still adds required
-mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
-`policy.filesystem.readOnly` for packaged native tools.
+An explicit policy replaces defaults; the Driver adds required mounts, the runtime root, and `/tmp`. Include `/opt/devtools` in `policy.filesystem.readOnly` for packaged native tools. Deploy a new revision to change an existing Sandbox’s launch policy.
 
-An existing Sandbox keeps its launch policy. Deploy a new Agent revision to
-apply a different policy.
-
-Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
-`kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
-The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
-Provider template resource keys take precedence. Verify CPU, memory, and
-ephemeral storage on the rendered Agent container.
+Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Use quoted non-negative quantities in `kubernetes.agentResources`. Ephemeral-storage defaults are `256Mi` request and `1Gi` limit; Provider template keys take precedence. Verify CPU, memory, and ephemeral storage on the rendered Agent container.
 
 `kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
