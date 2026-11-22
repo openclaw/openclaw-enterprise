@@ -247,11 +247,20 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean }} [options]
+ * `tokenSource` selects the token authority: the registry names `github-token`, the chart mounts
+ * this (fake) fine-grained value from `repositoryCredentials.tokenSecretName`, and the origin
+ * accepts it in place of an App-issued token. Native Git only.
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, tokenSource?: string }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
-  { onSetupStep, witnessIssuedGit = false, allowStandingApprovals = false, nativeGit = false } = {},
+  {
+    onSetupStep,
+    witnessIssuedGit = false,
+    allowStandingApprovals = false,
+    nativeGit = false,
+    tokenSource = undefined,
+  } = {},
 ) {
   return ownFirstAgentWork(t)(
     installOpenShellGit(t, {
@@ -259,18 +268,20 @@ export function createOpenShellGitInstallation(
       witnessIssuedGit,
       allowStandingApprovals,
       nativeGit,
+      tokenSource,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit },
+  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, tokenSource },
 ) {
   assert.ok(
     !nativeGit || !allowStandingApprovals,
     "Native Git requires the finite selected-repository fixture",
   );
+  assert.ok(tokenSource === undefined || nativeGit, "A token source lends to native Git only");
   if (nativeGit) {
     assert.equal(process.env.OPENAI_API_KEY, "fixture-only-no-model-call");
     assert.ok(process.env.OCC_TEST_OPENAI_MODEL, "Select the model used by the startup probe");
@@ -533,6 +544,9 @@ async function installOpenShellGit(
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
+  if (tokenSource !== undefined) {
+    origin.network.acceptStaticToken(tokenSource);
+  }
   const originPort = Number(new URL(origin.origin).port);
   const metadata = (name) => ({ name, namespace: platform });
   const fixtureService = (name, port) => [
@@ -616,8 +630,9 @@ async function installOpenShellGit(
     version: 1,
     backendId: "repository-backend",
     providerInstanceId: "isolated-git-fixture",
-    appId: origin.appId,
-    githubInstallationId: origin.installationId,
+    ...(tokenSource === undefined
+      ? { appId: origin.appId, githubInstallationId: origin.installationId }
+      : { authority: { kind: "github-token" } }),
     maximumDurationSeconds: 600,
     ...(allowStandingApprovals && { allowStandingApprovals: true }),
     repositories: repositoryScopes.map((scope) => ({
@@ -676,9 +691,11 @@ async function installOpenShellGit(
     configMap("git-fixture-registry-v1", { "registry.json": JSON.stringify(registry) }),
     destinationCa,
     configMap("git-gateway-public-key", { "gateway-public.pem": publicKey }),
-    privateSecret("git-fixture-app", {
-      "private-key.pem": origin.privateKey.export({ type: "pkcs8", format: "pem" }),
-    }),
+    tokenSource === undefined
+      ? privateSecret("git-fixture-app", {
+          "private-key.pem": origin.privateKey.export({ type: "pkcs8", format: "pem" }),
+        })
+      : privateSecret("git-fixture-token", { token: tokenSource }),
     {
       apiVersion: "v1",
       kind: "Secret",
@@ -772,7 +789,9 @@ async function installOpenShellGit(
     },
     preparedGitHub: {
       custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
-      privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
+      ...(tokenSource === undefined
+        ? { privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem" }
+        : { tokenPath: "/etc/openclaw/prepared-repository/token" }),
       apiOrigin: "https://api.github.com",
       issuerCaPath: "/etc/openclaw/prepared-repository-ca/ca.crt",
     },
@@ -811,8 +830,9 @@ async function installOpenShellGit(
     backendId: "repository-backend",
     registryConfigMapName: "git-fixture-registry-v1",
     registryKey: "registry.json",
-    appKeySecretName: "git-fixture-app",
-    appKeyKey: "private-key.pem",
+    ...(tokenSource === undefined
+      ? { appKeySecretName: "git-fixture-app", appKeyKey: "private-key.pem" }
+      : { appKeySecretName: "", tokenSecretName: "git-fixture-token", tokenKey: "token" }),
     preparedCustodySecretName: "git-fixture-custody",
     preparedProviderCaConfigMapName: "git-fixture-ca",
     upstreamCidrs: [`${bridge}/32`],

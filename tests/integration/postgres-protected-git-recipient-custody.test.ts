@@ -782,10 +782,18 @@ test(
       installationAccess: _installation,
       ...fields
     } = peer.registry;
+    // A token registry admits only native Git registrations (registry load refuses others).
     const registry = {
       ...fields,
       backendId: f.registry.backendId,
       authority: { kind: "github-token" as const },
+      repositories: fields.repositories.map((repository) => ({
+        ...repository,
+        namespaces: repository.namespaces.map((policy) => ({
+          ...policy,
+          nativeGit: "v1" as const,
+        })),
+      })),
     };
     const binding = resolveGitHubRepositoryBinding(registry, {
       namespaceId,

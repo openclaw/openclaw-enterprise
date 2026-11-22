@@ -816,6 +816,24 @@ export async function startSkipperPrivateGitOrigin({
             assert.ok(issuedNetwork && !shortenNextToken);
             shortenNextToken = true;
           },
+          /**
+           * Accept an operator's static token (a fake fine-grained value) for A, B and C, as the
+           * issued token is: requests carry its index, and the digest search covers it.
+           * @param {string} value
+           */
+          acceptStaticToken(value) {
+            assert.ok(issuedNetwork);
+            const index = authority.acceptStatic(value);
+            issuedGit?.set(index, value);
+            const basicPayload = Buffer.from(`x-access-token:${value}`).toString("base64");
+            for (const form of [value, basicPayload]) {
+              issuedFingerprints.push([
+                Buffer.byteLength(form),
+                createHash("sha256").update(form).digest("hex"),
+              ]);
+            }
+            return index;
+          },
           issuedCredentialFingerprints() {
             assert.ok(issuedNetwork);
             return issuedFingerprints.map(
