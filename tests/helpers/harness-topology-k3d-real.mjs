@@ -1326,12 +1326,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
-  const modelAuthentication = await resolveTopologyModelAuthentication(
-    mode,
-    harnessId,
-    options.modelAuthentication,
-  );
-  const modelCredential = modelAuthentication.credential();
   if (mode === "dedicated") {
     assert.match(
       controllerImage ?? "",
@@ -1339,6 +1333,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       "Dedicated storage requires the imported controller image for node enrollment through routing.",
     );
   }
+  const modelAuthentication = await resolveTopologyModelAuthentication(
+    mode,
+    harnessId,
+    options.modelAuthentication,
+  );
+  const modelCredential = modelAuthentication.credential();
   const kubeconfig = await validatePrerequisites();
   const identifier = randomUUID();
   let credentials =
