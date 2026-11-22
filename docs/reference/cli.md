@@ -23,7 +23,7 @@ its environment variable; `--namespace=` does so for Installation-scoped
 The service-key JSON must contain a nonempty `data.key` with no line breaks.
 The client sends it as `x-api-key` and does not follow redirects.
 Host letter case does not change same-origin redirect advice. Use a trusted
-HTTPS endpoint unless connecting to a local loopback development Installation.
+HTTPS endpoint unless connecting to a loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.
 
@@ -85,7 +85,7 @@ and `FILE` with a JSON file path. `--file` requires local JSON, not stdin or YAM
 | `occ agent get ID`                                                                        | Reads an Agent's desired state, selected version and [Harness Sandbox status](drivers/sandbox.md#harness-sandbox-status).                                                                                                                                                                                                                                                                         |
 | `occ agent create --file FILE`                                                            | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                                                         | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
-| `occ agent apply --file FILE`                                                             | Creates or updates the Agent named in the file. See [Apply an Agent](../guides/topics/agent-apply.md).                                                                                                                                                                                                                                                                                            |
+| `occ agent apply --file FILE`                                                             | Creates or updates the named Agent. See [Apply an Agent](../guides/topics/agent-apply.md).                                                                                                                                                                                                                                                                                                        |
 | `occ agent deploy ID [--harness-overrides FILE] [--retain-harness-overrides REVISION_ID]` | Requests deployment once and creates an immutable version. With neither override flag, uses current Installation defaults. See [Harness destinations](../guides/topics/agent-revisions.md#choose-a-harness-destination).                                                                                                                                                                          |
 | `occ agent deploy-first ID --configuration ID --generation N --key KEY`                   | Admits the reviewed first deployment and returns its receipt. On an uncertain reply, prints a read-only recovery command without resending. See [first deployment](../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery).                                                                                                                                            |
 | `occ agent recover-first-deployment ID --configuration ID --generation N --key KEY`       | Reads the original receipt without deploying. A missing receipt does not authorize a retry.                                                                                                                                                                                                                                                                                                       |
@@ -208,7 +208,7 @@ occ agent logs agt_... --source gateway --follow -o json | jq -r .message
 
 ## Output and errors
 
-Table output is meant for people; it prints `-` for unset fields and `No
+Table output is for people; it prints `-` for unset fields and `No
 resources found.` for an empty list. A cell holding an invisible or control
 character, such as a bidirectional override in a name, is printed quoted with
 that character escaped; so is a value that starts with `"`. JSON and YAML print the exact resource or array
@@ -222,14 +222,14 @@ the status and, when present, the API error code and message, and the
 ([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
 up to one hour are accepted and rounded up to whole seconds for notices and
 waits; an expired or invalid date keeps the normal follow interval. It does not print
-the server's request ID. To capture that ID for a failed request, use the
+the server's request ID; to capture it, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
 OCC's `403` names the grant you lack. A generic `403` from an older OCC gets a
 `hint:` line naming the grants the command needs, and a Namespace-scoped key
 used elsewhere gets one naming its Namespace. A create's hint says only an
-Installation administrator can create that resource. OCC refuses a missing ID the same
-way as one you cannot read.
+Installation administrator can create that resource. OCC refuses a missing ID like one
+you cannot read.
 
 ## Local development
 
