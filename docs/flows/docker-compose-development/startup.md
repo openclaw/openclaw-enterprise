@@ -400,13 +400,13 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
-`internal/occdev/openshell_k3d.go:upK3d` reports selected
-`controller-image-import` failures after cleanup.
+After cleanup, `internal/occdev/openshell_k3d.go:upK3d` may report
+`controller-image-import` or `codex-sandbox-preparation` failures.
 `internal/occdev/startup_failure.go` preserves routing details;
 `concurrently` retains sibling cleanup failures.
-Helpers and CI retain one allowlisted final failure record, including older formats.
+Helpers and CI retain one allowlisted final [failure record](../../reference/cli/local-development.md),
+including older formats.
 Ambiguity, success and cleanup yield none; stdout is unauthenticated.
-[Field meanings](../../reference/cli/local-development.md).
 
 - `node --test tests/integration/dev-up-compose-startup.test.ts tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,

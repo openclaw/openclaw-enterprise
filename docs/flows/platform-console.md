@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-21
+last_updated_session: authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d
 ---
 
 # Platform console request flow
@@ -137,48 +137,50 @@ Disabling Debug mode stops new reads. See the
 ### 2. Resolve the session before private reads
 
 `agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
-Interactive targets, modified clicks, and selected text retain their behavior.
+Interactive targets, modified clicks, and selected text retain behavior.
 
-`loadPage` starts with `GET /api/auth/session`. Opening an Agent shows **Loading
-agent details…** and **Back to Agents**. Back cancels once. Refocus waits. Loading
-delays are 400 ms for other Agent routes and 250 ms for other visits or Refresh.
-A visible loading page stays for 300 ms or longer.
+`loadPage` reads `GET /api/auth/session`. Opening an Agent shows **Loading agent
+details…** and **Back to Agents**. Back cancels once. Refocus waits. Other Agent
+routes delay loading 400 ms. Other visits or Refresh delay it 250 ms. Visible
+loading lasts at least 300 ms.
 
-Return and refocus hold the view inert. **Still checking…** appears after one
+Return and refocus hold views inert. **Still checking…** appears after one
 second. Up to 16 views retain drafts and disclosures by route, Namespace, and
-session. Changed reads, newly readable Namespaces, and Refresh rebuild. A cancelled
-return preserves the view. A cancelled Refresh discards it. Discovery, passwords,
-mutations, and pending or failed reads prevent reuse. Read-only POSTs permit reuse.
+session. Changed reads, newly readable Namespaces, and Refresh rebuild. Cancelled
+returns preserve views. Cancelled Refresh discards them.
+Discovery, passwords, mutations, and pending or failed reads prevent reuse.
+Read-only POSTs permit reuse.
 
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
 reads. Focus and visibility share the check. Navigation cancels it. Detail errors
-hide protected content. A 5xx permits one retry unless a refusal, 429, or delay
-takes precedence. Narrowed access rebuilds. Both reused and replacement views
+hide protected content. A 5xx permits one retry unless refusal, 429, or delay
+takes precedence. Narrowed access rebuilds. Reused and replacement views
 require confirmed Agent permissions for grant-dependent controls.
 
-Persistent detail errors show a warning with the confirmed Agent name. **Retry**
-starts foreground admission after the latest deadline. Expiry opens sign-in.
+Persistent errors warn with the confirmed Agent name. **Retry** starts
+foreground admission after the latest deadline. Expiry opens sign-in.
 Refusals remove private content.
 
 `api-client.mts:createApiClient` preserves abort and socket failures through
 response bodies without replay.
 
-**Back to Agents** waits for admission and the collection. The newest readable
-versions supply the rows. `agents/collection.mts:currentRevision` reads off-page
-current versions. `deniedReadsFor` retains 403s. Reused deployment cells show
-**Reading deployment…** after 250 ms for at least 150 ms. Focus returns to the
-cell. Pending or failed reads resume. Search cancels reads for rows it hides
-(`collection.mts:retireHidden`). A row shown again reads once.
+**Back to Agents** awaits admission and rows for newest readable versions.
+`agents/collection.mts:currentRevision` reads versions off-page. `deniedReadsFor`
+retains 403s. Reused deployment cells show **Reading deployment…** after 250 ms
+for at least 150 ms and regain focus. Pending or failed reads resume. Search
+cancels hidden reads (`collection.mts:retireHidden`). Redisplayed rows read once.
 
-A changed user or session key clears private state. A missing session opens login.
-See [sign-in and return](platform-console/sign-in-return.md) for recovery.
+Changed users or session keys clear private state. Missing sessions
+[open sign-in](platform-console/sign-in-return.md).
 
-After authentication, `GET /namespaces` keeps the URL selection or picks the
-first ready and readable Namespace. Unreadable IDs stay unavailable.
+`GET /namespaces` selects the URL Namespace or first ready, readable Namespace.
+Unreadable IDs stay unavailable. Unscoped Agent URLs require matching requested
+Agent and selected or probed Namespace IDs plus a nonempty Configuration ID.
+Malformed replies cannot establish absence. Back restarts interrupted lookups.
 `shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
 closes the drawer without focusing its toggle. An open drawer blocks scrolling.
-`createShell` preserves navigation presses across renders. A Namespace switch
-returns Agent detail and creation to Agents.
+`createShell` preserves navigation presses across renders. Namespace switches
+return Agent detail and creation to Agents.
 
 ### 3. Authorize the selected page resource
 
@@ -367,6 +369,8 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
+- 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 

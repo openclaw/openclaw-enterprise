@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-21
+last_updated_session: authoring-run/187efa80-5ecc-4bff-97f1-1898033f5a60
 ---
 
 # Agent Plugin Deployment Flow
@@ -69,31 +69,32 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
-Harness, Agent `create`, and stored-source `operate`. Wrong Namespace `400`,
-missing Secret `404`, unavailable explicit CredentialSource `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) rejects
+cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explicit
+CredentialSources (`409`). Saved discovery requires dedicated Agents.
+Unavailable bound sources return `404`. Only hosted catalogs need credentials.
 
-Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
-require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs require credentials;
-curated catalogs do not.
+OpenShell metadata/exports use operator mTLS. External Gateways support
+`withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
+Cancellation discards late credentials.
 
-OpenShell uses operator mTLS for metadata and exports. External Gateways may use
-`withSourceToken`. OCC checks source and Gateway ownership, then rechecks authority,
-attachment, and catalog before dispatch. Owners refresh credentials. Cancellation
-discards late credentials.
+`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools` reads tokens via the Secret Driver,
+rechecking target and grants around `tools/list`. `driverPolicy.toolNames` pins upstream names.
 
-`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools`
+Closing cancels. Account changes clear results. Harness changes clear
+selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+cap size/time, reject redirects/credential echoes, set `Cache-Control: no-store`.
+Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
+Console rejects missing/mismatched detail IDs with retry.
 
-Managed MCP uses Secret Driver, rechecking before `tools/list`.
-`driverPolicy.toolNames` pins upstream names across runtimes.
+On `409 RESOURCE_CONFLICT`, [Console](../../apps/controller/src/console/agents/plugin-discovery.mts)
+retires stale **Add**, preserves drafts and offers **Load plugins** (catalog), **Load tools** (connection)
+or **Retry tools** (details).
 
-Closing cancels. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size and time, reject redirects and credential echoes, and set `Cache-Control: no-store`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; explicit `true` without skills remains unavailable.
-Details reject unmatched MCP/scheduled tasks. Optional stdio
-`NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
+`requires_local_executor`. `true` requires skills. Details reject unmatched
+MCP/scheduled tasks. Invalid `plugin/list` stops optional stdio
+`NativeCodexPluginCatalogReader`.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -388,6 +389,9 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-21 21:19: Conflicts. (authoring-run/187efa80-5ecc-4bff-97f1-1898033f5a60 - 7ce0780b5f15899d0899a399460bc2b7ad3d6ed4)
+- 2026-11-21 15:08: Detail-ID refusal. (authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa - b0da800df32dc5311524ef462b5c94a3cbe0264e)
+- 2026-11-21 12:38: Document rejection of duplicate hosted catalog selections. (authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68 - 7dd321619d7400e144f805ec7b9bde5e98b59ed2)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 

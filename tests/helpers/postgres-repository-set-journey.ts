@@ -109,9 +109,10 @@ type NarrowPreparation = Pick<
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowPreparation) => Promise<void>,
 ) {
-  await repositoryGitJourney(t, import.meta.url, undefined, {}, exercise);
+  await repositoryGitJourney(t, testUrl, undefined, {}, exercise);
 }
 
 type NarrowPolicy = {
