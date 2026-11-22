@@ -650,7 +650,7 @@ export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocumen
 // it, when a policy does.
 interface ModelPolicyResolution {
   readonly runtime: string | undefined;
-  readonly policy?: () => string;
+  readonly policy?: (() => string) | undefined;
 }
 
 /**
