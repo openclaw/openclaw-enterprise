@@ -251,25 +251,22 @@ with that code; other work keeps its attempt budget.
 `apps/controller/src/worker.ts:ControllerWorker.finishPublishedRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
-`transactWithQueue()` renews the exact claim before atomically publishing
-Namespace readiness or completed deletion, lifecycle evidence and queue completion.
-Failed provisioning can transition to failed; incomplete deletion cannot publish
-successful deletion.
+After claim renewal, one transaction records Namespace readiness or deletion,
+lifecycle evidence, and queue completion. Provisioning can record failure.
+Deletion succeeds only after cleanup completes.
 
-After preparation, `activationOrder: beforeCommit` activates before the database
-pointer changes; otherwise an implemented activation stage runs, in development
-and production, after the claim-protected compare-and-set of
-`Agent.activeRevisionId`, and the first dedicated version stays inactive until
-commit. If the comparison fails, the transaction records an
-`ACTIVE_REVISION_CHANGED` retry. The worker uses the committed result to decide
-whether to activate, stop, or finish reporting the attempt.
+With `activationOrder: beforeCommit`, the Driver activates before changing
+`Agent.activeRevisionId`. Other Drivers with activation run it after commit
+in development and production. The first dedicated revision stays inactive
+until commit. A failed compare-and-set records an `ACTIVE_REVISION_CHANGED`
+retry. The committed result tells the worker whether to activate, stop, or
+report the attempt.
 
-Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
-v6 `request-hook-observed` hold for Git material leaves the original work queued
-until that revision reports ready. The worker then activates it and retires its
+A v5 `online-request` or v6 `request-hook-observed` hold leaves work queued until
+the selected revision is ready. The worker activates it and retires its
 predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
-selection and claim, appends evidence, and completes work. Retries recheck the
-active candidate before effects; claim loss cannot turn plugin failure into success.
+the claim and selection, appends evidence, and completes work. Retries recheck
+the selected revision before effects. Claim loss prevents completion.
 
 Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
 After captured cleanup, it clears `activeRevisionId` only if it still identifies
