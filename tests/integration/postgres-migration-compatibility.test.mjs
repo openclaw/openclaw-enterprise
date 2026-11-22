@@ -2639,6 +2639,44 @@ test(
   },
 );
 
+test(
+  "Restored published prefixes upgrade to a reviewed completed catalog",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const { entries } = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    // A logical restore prints some constraints differently and an upgrade keeps that
+    // spelling, so each new migration must qualify upgrading every accepted restore.
+    const prefixes = [51];
+    for (let prefix = 63; prefix < entries.length; prefix += 1) {
+      prefixes.push(prefix);
+    }
+    for (const prefix of prefixes) {
+      // A subtest per prefix drops its databases before the next one is built.
+      await context.test(`restored prefix ${prefix} upgrades to completed`, async (subtest) => {
+        const previous = await historyDatabase(subtest, fixture, "previous", { prefix });
+        const restored = await restoreHistoryArchive(
+          subtest,
+          fixture,
+          await dumpHistoryArchive(fixture, previous),
+        );
+        const upgrade = await runHistoryMigration(restored, "production");
+        assert.equal(upgrade.ok, true);
+        assert.notEqual(upgrade.history, "completed");
+        subtest.diagnostic(
+          `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+        );
+        assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
+      });
+    }
+  },
+);
+
 registerPostgresMigrationCredentialLineageRefusalCase({
   requiresHistoryPostgres,
   migrationHistoryFixture,
