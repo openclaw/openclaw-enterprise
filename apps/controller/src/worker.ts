@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { hasOnlyScopedRepositoryRevisions, reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
-  assertExecutionReleaseAllowed,
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
@@ -27,13 +26,12 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { OAuthAccountTokens } from "./backends/token-service/oauth-connection.ts";
 import { installSelectedSandboxDrivers } from "./composition/sandbox-drivers.ts";
-import { isSandboxFacet, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
+import { isSandboxFacet } from "@openclaw-enterprise/contracts";
 import type {
   Agent,
   AgentRevision,
   AgentRevisionMetadata,
   CredentialSource,
-  CredentialSourceSnapshot,
   AuditEvent,
   AuthorizationDecision,
   AuthorizationRequest,
@@ -44,6 +42,7 @@ import type {
   PluginDriver,
   ComputeReadiness,
   RepositoryPolicyDriver,
+  ResourceRef,
   NativeRepositorySender,
   RepositoryCredentialMaterialRef,
   ComputeRevisionContext,
@@ -61,9 +60,7 @@ import type {
   CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
-  ResolvedHarnessAuth,
   RuntimeFailureEvidence,
-  SecretEnvironmentProjection,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -143,6 +140,14 @@ import {
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
 import { DeploymentTimings } from "./worker/deployment-timing.ts";
+import {
+  createRevisionCredentialResolver,
+  revisionHarnessSourceId,
+  revisionSecretBindings,
+  UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT,
+  validateExecutionAdmission,
+  validateRepositoryNetworkPolicy,
+} from "./worker/revision-inputs.ts";
 import {
   isStopYieldedCode,
   PredecessorStopYieldedError,
@@ -259,7 +264,6 @@ function requireClaimRenewal(renewed: ClaimedWork | undefined): void {
 }
 
 const INCOMPATIBLE_REPOSITORY_HISTORY = "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE";
-const UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT = "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED";
 
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
@@ -604,6 +608,10 @@ interface DispatchResult {
   readonly authorization?: AuthorizationRequest;
 }
 
+function deniedAuthorization(authorization: AuthorizationRequest, decision: AuthorizationDecision) {
+  return { outcome: "permanent", code: "AUTHORIZATION_DENIED", authorization, decision } as const;
+}
+
 interface RevisionDispatchResult extends DispatchResult {
   readonly candidateNotStarted?: true;
   /** Terminal preparation requires durable retirement of this exact revision. */
@@ -871,12 +879,6 @@ function revisionCredentialSourceIds(revision: Readonly<AgentRevision>): readonl
       .map(({ sourceId }) => sourceId)
       .filter((sourceId) => sourceId !== harnessSourceId),
   ];
-}
-
-function revisionHarnessSourceId(revision: Readonly<AgentRevision>): string | undefined {
-  return revision.harnessAuth.method === "credential_source"
-    ? revision.harnessAuth.sourceId
-    : undefined;
 }
 
 interface AgentDeletionDispatchResult extends DispatchResult {
@@ -1237,16 +1239,6 @@ function convergenceDeadlineResultData(
   });
 }
 
-function revisionSecretBindings(
-  revision: Readonly<AgentRevision>,
-): { readonly bindings: SecretBindings } | { readonly result: RevisionDispatchResult } {
-  try {
-    return { bindings: normalizeSecretBindings(revision.secretBindings) };
-  } catch {
-    return { result: { outcome: "permanent", code: "INVALID_SECRET_BINDINGS" } };
-  }
-}
-
 function uniqueSecretRefs(bindings: SecretBindings): SecretReference[] {
   const refs = new Map<string, SecretReference>();
   for (const { source } of Object.values(bindings)) {
@@ -1281,6 +1273,9 @@ export class ControllerWorker {
   private readonly queueOptions: PostgresWorkQueueOptions;
   private readonly iamDriverId: string;
   private readonly iam: IAMDriver;
+  private readonly resolveRevisionSecretContext: ReturnType<
+    typeof createRevisionCredentialResolver
+  >;
   private readonly secretDriverId: string | undefined;
   private readonly configuredServiceAccountDriverId: string | undefined;
   private readonly nativeWorkerSupport: NativeWorkerSupport | undefined;
@@ -1557,6 +1552,13 @@ export class ControllerWorker {
         this.untouchedCandidate = undefined;
       },
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
+    });
+    this.resolveRevisionSecretContext = createRevisionCredentialResolver({
+      state: this.state,
+      compute: this.compute,
+      secretDriverId: this.secretDriverId,
+      credentialGateway: this.credentialGateway,
+      proxyDriver: this.proxyDriver,
     });
   }
 
@@ -2034,6 +2036,11 @@ export class ControllerWorker {
     return decision;
   }
 
+  private async checkGrant(driver: IAMDriver, authorization: AuthorizationRequest) {
+    const decision = await this.iamDecision(driver, authorization);
+    return decision.allowed ? undefined : deniedAuthorization(authorization, decision);
+  }
+
   private requireDeploymentAuthorization(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
@@ -2123,8 +2130,8 @@ export class ControllerWorker {
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
-      this.validateExecutionAdmission(revision);
-      await this.validateRepositoryNetworkPolicy(revision);
+      validateExecutionAdmission(this.compute, revision);
+      await validateRepositoryNetworkPolicy(this.compute, revision);
     }
     signal.throwIfAborted();
     const applyStage = async () => {
@@ -2181,18 +2188,13 @@ export class ControllerWorker {
             resource: { kind: "namespace", id: installation.id },
           }
         : exact;
-    if (!state.identities.some((identity) => identity.id === claim.actorId)) {
-      const decision = await this.iamDecision(driver, request);
+    const actorPresent = state.identities.some((identity) => identity.id === claim.actorId);
+    const decision = await this.iamDecision(driver, request);
+    if (!actorPresent) {
       return { outcome: "permanent", code: "ACTOR_REVOKED", decision, authorization: request };
     }
-    const decision = await this.iamDecision(driver, request);
     if (!decision.allowed) {
-      return {
-        outcome: "permanent",
-        code: "AUTHORIZATION_DENIED",
-        decision,
-        authorization: request,
-      };
+      return deniedAuthorization(request, decision);
     }
     if (claim.namespaceTarget === "ready") {
       if (namespace.existingNamespace !== undefined) {
@@ -2201,24 +2203,14 @@ export class ControllerWorker {
           action: "administer",
           resource: { kind: "installation", id: installation.id },
         };
-        const adminDecision = await this.iamDecision(driver, adminRequest);
-        if (!adminDecision.allowed) {
-          return {
-            outcome: "permanent",
-            code: "AUTHORIZATION_DENIED",
-            decision: adminDecision,
-            authorization: adminRequest,
-          };
+        const refusal = await this.checkGrant(driver, adminRequest);
+        if (refusal !== undefined) {
+          return refusal;
         }
       }
       const exactDecision = await this.iamDecision(driver, exact);
       if (exactDecision.evidence.restrictionIds.length > 0) {
-        return {
-          outcome: "permanent",
-          code: "AUTHORIZATION_DENIED",
-          decision: exactDecision,
-          authorization: exact,
-        };
+        return deniedAuthorization(exact, exactDecision);
       }
     }
     return undefined;
@@ -2312,8 +2304,8 @@ export class ControllerWorker {
     if (!this.revisionPluginDriverAvailable(revision)) {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
-    this.validateExecutionAdmission(revision);
-    await this.validateRepositoryNetworkPolicy(revision);
+    validateExecutionAdmission(this.compute, revision);
+    await validateRepositoryNetworkPolicy(this.compute, revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
@@ -3475,12 +3467,7 @@ export class ControllerWorker {
       return { outcome: "permanent", code: "ACTOR_REVOKED", authorization, decision };
     }
     if (!decision.allowed) {
-      return {
-        outcome: "permanent",
-        code: "AUTHORIZATION_DENIED",
-        authorization,
-        decision,
-      };
+      return deniedAuthorization(authorization, decision);
     }
     return undefined;
   }
@@ -5612,14 +5599,9 @@ export class ControllerWorker {
     if (identity === undefined) {
       return { outcome: "permanent", code: "INVALID_AGENT_PRINCIPAL" };
     }
-    const decision = await this.iamDecision(driver, authorization);
-    if (!decision.allowed) {
-      return {
-        outcome: "permanent",
-        code: "AUTHORIZATION_DENIED",
-        authorization,
-        decision,
-      };
+    const refusal = await this.checkGrant(driver, authorization);
+    if (refusal !== undefined) {
+      return refusal;
     }
 
     // After publication the original deployment claim can resume solely to
@@ -5640,14 +5622,9 @@ export class ControllerWorker {
           action,
           resource: { kind, id, namespaceId: agent.namespaceId },
         };
-        const decision = await this.iamDecision(driver, request);
-        if (!decision.allowed) {
-          return {
-            outcome: "permanent",
-            code: "AUTHORIZATION_DENIED",
-            authorization: request,
-            decision,
-          };
+        const refusal = await this.checkGrant(driver, request);
+        if (refusal !== undefined) {
+          return refusal;
         }
       }
     }
@@ -5675,14 +5652,9 @@ export class ControllerWorker {
         namespaceId: revision.namespaceId,
       },
     };
-    const configurationDecision = await this.iamDecision(driver, configurationAuthorization);
-    if (!configurationDecision.allowed) {
-      return {
-        outcome: "permanent",
-        code: "AUTHORIZATION_DENIED",
-        authorization: configurationAuthorization,
-        decision: configurationDecision,
-      };
+    const refusal = await this.checkGrant(driver, configurationAuthorization);
+    if (refusal !== undefined) {
+      return refusal;
     }
 
     if (revision.harnessAuth === undefined || revision.harnessAuth === null) {
@@ -5723,46 +5695,14 @@ export class ControllerWorker {
         )
       ).map(({ credentialSourceId }) => credentialSourceId),
     );
-    for (const sourceId of revisionCredentialSourceIds(revision)) {
-      if (withdrawnSourceIds.has(sourceId)) {
-        continue;
-      }
+    const sources: ResourceRef[] = revisionCredentialSourceIds(revision)
+      .filter((id) => !withdrawnSourceIds.has(id))
+      .map((id) => ({ kind: "credential_source", id, namespaceId: revision.namespaceId }));
+    for (const resource of [...sources, ...refs]) {
       for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
-        const sourceAuthorization: AuthorizationRequest = {
-          principalId,
-          action: "operate",
-          resource: {
-            kind: "credential_source",
-            id: sourceId,
-            namespaceId: revision.namespaceId,
-          },
-        };
-        const sourceDecision = await this.iamDecision(driver, sourceAuthorization);
-        if (!sourceDecision.allowed) {
-          return {
-            outcome: "permanent",
-            code: "AUTHORIZATION_DENIED",
-            authorization: sourceAuthorization,
-            decision: sourceDecision,
-          };
-        }
-      }
-    }
-    for (const ref of refs) {
-      for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
-        const secretAuthorization: AuthorizationRequest = {
-          principalId,
-          action: "operate",
-          resource: ref,
-        };
-        const secretDecision = await this.iamDecision(driver, secretAuthorization);
-        if (!secretDecision.allowed) {
-          return {
-            outcome: "permanent",
-            code: "AUTHORIZATION_DENIED",
-            authorization: secretAuthorization,
-            decision: secretDecision,
-          };
+        const refusal = await this.checkGrant(driver, { principalId, action: "operate", resource });
+        if (refusal !== undefined) {
+          return refusal;
         }
       }
     }
@@ -5780,15 +5720,7 @@ export class ControllerWorker {
           namespaceId: revision.namespaceId,
         },
       };
-      const accountDecision = await this.iamDecision(driver, accountAuthorization);
-      if (!accountDecision.allowed) {
-        return {
-          outcome: "permanent",
-          code: "AUTHORIZATION_DENIED",
-          authorization: accountAuthorization,
-          decision: accountDecision,
-        };
-      }
+      return this.checkGrant(driver, accountAuthorization);
     }
     return undefined;
   }
@@ -5987,360 +5919,6 @@ export class ControllerWorker {
         driver.harnessId === revision.harness.id &&
         pluginRuntimeHarnessRequirement(driver.implementation, revision.harness) === undefined,
     );
-  }
-
-  private validateExecutionAdmission(revision: AgentRevision): void {
-    if (this.compute.validateExecutionAdmission === undefined) {
-      assertExecutionReleaseAllowed(revision);
-    } else {
-      this.compute.validateExecutionAdmission(revision, "stored");
-    }
-  }
-
-  private async validateRepositoryNetworkPolicy(revision: AgentRevision): Promise<void> {
-    if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
-      if (this.compute.validateProtectedRepositoryNetworkPolicy === undefined) {
-        throw new DependencyUnavailableError(
-          "The selected Compute cannot enforce this repository network policy.",
-        );
-      }
-      await this.compute.validateProtectedRepositoryNetworkPolicy(revision);
-    }
-  }
-
-  private async resolveRevisionCredentialSource(
-    revision: Readonly<AgentRevision>,
-    snapshot: CredentialSourceSnapshot,
-  ) {
-    const { namespaceId, id: revisionId } = revision;
-    const { sourceId } = snapshot;
-    return this.state.read(async (view) => {
-      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      const withdrawal = await view.credentialSources.findCredentialWithdrawal(
-        namespaceId,
-        revisionId,
-        sourceId,
-      );
-      return {
-        source:
-          withdrawal === undefined &&
-          source?.state === "ready" &&
-          credentialSourceMatchesSnapshot(source, snapshot)
-            ? source
-            : undefined,
-        withdrawal,
-      };
-    });
-  }
-
-  private async resolveRevisionSecretContext(
-    revision: Readonly<AgentRevision>,
-    operation: "reconcile" | "withdraw",
-  ): Promise<
-    { readonly context: ComputeRevisionContext } | { readonly result: RevisionDispatchResult }
-  > {
-    try {
-      this.validateExecutionAdmission(revision);
-    } catch {
-      return { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } };
-    }
-    // Withdrawal can remove existing access even when the placement cannot install the policy.
-    if (operation === "reconcile") {
-      try {
-        await this.validateRepositoryNetworkPolicy(revision);
-      } catch {
-        return {
-          result: {
-            outcome: "permanent",
-            code:
-              revision.executionAdmission.mode === "unprotected"
-                ? UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT
-                : "EXECUTION_ADMISSION_UNAVAILABLE",
-          },
-        };
-      }
-    }
-    const bindings = revisionSecretBindings(revision);
-    if ("result" in bindings) {
-      return { result: bindings.result };
-    }
-    const secretDriverId = this.secretDriverId;
-    if (
-      Object.keys(bindings.bindings).length > 0 &&
-      (typeof secretDriverId !== "string" || revision.secretDriverId !== secretDriverId)
-    ) {
-      return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
-    }
-
-    const resolved = await this.state.read(async (view) => {
-      const projections: SecretEnvironmentProjection[] = [];
-      for (const [name, binding] of Object.entries(bindings.bindings)) {
-        const secret = await view.secrets.findSecret(binding.source.namespaceId, binding.source.id);
-        if (
-          secret === undefined ||
-          secret.namespaceId !== revision.namespaceId ||
-          secret.driverId !== secretDriverId ||
-          secret.backendRef.namespaceName.trim().length === 0 ||
-          secret.backendRef.name.trim().length === 0 ||
-          secret.backendRef.key.trim().length === 0 ||
-          secret.backendRef.uid.trim().length === 0
-        ) {
-          return undefined;
-        }
-        projections.push({
-          name,
-          secretId: secret.id,
-          namespaceId: secret.namespaceId,
-          agentId: revision.agentId,
-          backendRef: secret.backendRef,
-        });
-      }
-      return projections;
-    });
-
-    if (resolved === undefined) {
-      return { result: { outcome: "permanent", code: "SECRET_BINDING_UNAVAILABLE" } };
-    }
-
-    let harnessAuth: ResolvedHarnessAuth;
-    if (isSecretHarnessAuth(revision.harnessAuth)) {
-      const auth = revision.harnessAuth;
-      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
-        return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
-      }
-      const secret = await this.state.read((view) =>
-        view.secrets.findSecret(auth.source.namespaceId, auth.source.id),
-      );
-      if (
-        secret === undefined ||
-        secret.namespaceId !== revision.namespaceId ||
-        secret.namespaceId !== auth.source.namespaceId ||
-        secret.id !== auth.source.id ||
-        secret.driverId !== secretDriverId ||
-        secret.backendRef.namespaceName.trim().length === 0 ||
-        secret.backendRef.name.trim().length === 0 ||
-        secret.backendRef.key.trim().length === 0 ||
-        secret.backendRef.uid.trim().length === 0
-      ) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      // Admission verifies the physical source. Workers project authoritative
-      // OCC metadata without requiring permission to read backend Secret values.
-      harnessAuth = { ...auth, backendRef: secret.backendRef };
-    } else if (revision.harnessAuth.method === "credential_source") {
-      const auth = revision.harnessAuth;
-      if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      if (source.egress !== undefined) {
-        const control = this.proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
-          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
-        }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
-      } else {
-        harnessAuth = { ...auth, source };
-      }
-    } else {
-      harnessAuth = revision.harnessAuth;
-    }
-    const credentialSources: Readonly<CredentialSource>[] = [];
-    for (const snapshot of revision.credentialSources ?? []) {
-      // The Harness source is listed too; it resolves above through the Harness binding.
-      if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
-        continue;
-      }
-      const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;
-      if (
-        sourceOwner !==
-        (snapshot.credentialProxyId === undefined
-          ? this.credentialGateway?.id
-          : this.proxyDriver?.id)
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
-      // A withdrawn non-model source stays detached; the revision keeps running without it.
-      if (withdrawal !== undefined) {
-        continue;
-      }
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
-      }
-      credentialSources.push(source);
-    }
-    const workspaceSetup = await this.state.read((view) =>
-      view.workspaceSetups.find(revision.namespaceId, revision.agentId),
-    );
-    if (workspaceSetup !== undefined && this.compute.supportsWorkspaceSetup !== true) {
-      return { result: { outcome: "permanent", code: "WORKSPACE_SETUP_UNSUPPORTED" } };
-    }
-    return {
-      context: {
-        ...(revision.egressPlan === undefined
-          ? {}
-          : {
-              recordEgressInstallation: async (installation) => {
-                await this.state.transactWithQueue(async (state, queue) => {
-                  const namespace = await state.namespaces.lockNamespace(revision.namespaceId);
-                  const agent = await state.agents.lockAgent(
-                    revision.namespaceId,
-                    revision.agentId,
-                  );
-                  if (
-                    namespace?.status !== "ready" ||
-                    agent?.status !== "active" ||
-                    agent.desiredRuntimeState !== "running" ||
-                    agent.servicePrincipalId !== revision.servicePrincipalId
-                  ) {
-                    throw new Error("The protected execution is no longer current.");
-                  }
-                  const current = await state.credentialSources.findRevisionEgressInstallation(
-                    revision.namespaceId,
-                    revision.id,
-                  );
-                  const active = await state.credentialSources.findEgressInstallation(
-                    installation.sender.id,
-                    installation.sandboxId,
-                  );
-                  // Re-observing a current receipt cannot reactivate a retired execution.
-                  if (
-                    current &&
-                    isDeepStrictEqual(active, current) &&
-                    isDeepStrictEqual(current, {
-                      ...installation,
-                      installedAt: current.installedAt,
-                    })
-                  ) {
-                    return;
-                  }
-                  const newest = (
-                    await state.revisions.listRevisionMetadata(
-                      revision.namespaceId,
-                      revision.agentId,
-                    )
-                  ).at(-1);
-                  const deployment = await queue.findWork(
-                    `agent_revision:${revision.id}:reconcile`,
-                  );
-                  if (
-                    newest?.id !== revision.id ||
-                    deployment === undefined ||
-                    deployment.state === "failed_permanent" ||
-                    current ||
-                    !isDeepStrictEqual(installation.plan, revision.egressPlan) ||
-                    (
-                      await state.credentialSources.listCredentialWithdrawals(
-                        revision.namespaceId,
-                        revision.id,
-                      )
-                    ).some(({ credentialSourceId }) =>
-                      revision.egressPlan?.routes.some(
-                        (route) => route.binding.source.source.id === credentialSourceId,
-                      ),
-                    )
-                  ) {
-                    throw new Error("Egress receipt does not match the current admitted policy.");
-                  }
-                  await state.credentialSources.recordEgressInstallation(installation);
-                });
-              },
-              currentEgressInstallation: () =>
-                this.state.read(async (view) => {
-                  const { namespaceId, agentId, servicePrincipalId, id } = revision;
-                  const namespace = await view.namespaces.findNamespace(namespaceId);
-                  const agent = await view.agents.findAgent(namespaceId, agentId);
-                  const newest = (
-                    await view.revisions.listRevisionMetadata(namespaceId, agentId)
-                  ).at(-1);
-                  const current = await view.revisions.findRevision(namespaceId, agentId, id);
-                  if (
-                    namespace?.status !== "ready" ||
-                    agent?.status !== "active" ||
-                    agent.desiredRuntimeState !== "running" ||
-                    agent.servicePrincipalId !== servicePrincipalId ||
-                    newest?.id !== id ||
-                    current?.executionAdmission.mode !== "protected" ||
-                    !isDeepStrictEqual(current.egressPlan, revision.egressPlan)
-                  ) {
-                    if (revision.egressPlan?.policyReductionVersion !== undefined) {
-                      throw new DependencyUnavailableError(
-                        "The protected execution is no longer current.",
-                      );
-                    }
-                    return undefined;
-                  }
-                  const withdrawals = await view.credentialSources.listCredentialWithdrawals(
-                    namespaceId,
-                    id,
-                  );
-                  const reductions = await view.credentialSources.listCredentialPolicyReductions(
-                    namespaceId,
-                    id,
-                  );
-                  if (
-                    reductions.some((reduction) => !reduction.observed) ||
-                    (revision.egressPlan?.policyReductionVersion &&
-                      withdrawals.some(
-                        (withdrawal) =>
-                          revision.egressPlan?.routes.some(
-                            (route) =>
-                              route.binding.source.source.id === withdrawal.credentialSourceId,
-                          ) &&
-                          !reductions.some(
-                            (reduction) =>
-                              reduction.bindingId ===
-                                `policy:source:${withdrawal.credentialSourceId}` &&
-                              reduction.observed,
-                          ),
-                      ))
-                  ) {
-                    throw new DependencyUnavailableError(
-                      "Credential policy reduction is not observed.",
-                    );
-                  }
-                  const receipt = await view.credentialSources.findRevisionEgressInstallation(
-                    namespaceId,
-                    id,
-                  );
-                  if (receipt === undefined) {
-                    return undefined;
-                  }
-                  const active = await view.credentialSources.findEgressInstallation(
-                    receipt.sender.id,
-                    receipt.sandboxId,
-                  );
-                  return isDeepStrictEqual(active, receipt) ? receipt : undefined;
-                }),
-            }),
-        secretEnvironment: Object.freeze(resolved),
-        harnessAuth,
-        ...(credentialSources.length === 0
-          ? {}
-          : { credentialSources: Object.freeze(credentialSources) }),
-        ...(workspaceSetup === undefined ? {} : { workspaceSetup }),
-      },
-    };
   }
 
   /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
