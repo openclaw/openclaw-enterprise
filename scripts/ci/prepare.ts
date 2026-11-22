@@ -1234,6 +1234,10 @@ async function prepareRuntimeSmokeCodexSeccompProfile(
     throw new Error("Codex seccomp preparation did not publish an absolute Docker profile path.");
   }
   env.OCC_TEST_CODEX_SECCOMP_PROFILE = seccomp.dockerProfilePath;
+  env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
+  env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
+  env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = runtimeImage.reference;
+  env.OCC_TEST_KUBERNETES_AGENT_IMAGE = runtimeImage.reference;
   env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE = seccomp.profileName;
   cluster.codexSeccompProfile = seccomp.profileName;
   cluster.codexSeccompProfiles = seccomp.nodes;

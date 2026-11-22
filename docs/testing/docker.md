@@ -170,6 +170,15 @@ For a prepared [Image Runtime Startup lane](../../scripts/ci/test-suites/images-
 before cleanup. The runner supplies the profile, and the tests check its path and SHA-256
 against the preparation record. Cleanup removes the file with the run-owned cluster directory.
 
+The lane includes `automation-model-only-dispatch.test.ts` for both Harnesses.
+Embedded OpenClaw uses Docker; Codex uses the lane's qualified k3d node with
+separate Gateway and Agent filesystems. A local synthetic provider drives the
+stock runtime without external network access. Ordinary chat must write a file;
+a scheduled empty tool cap must advertise no tools, reject the injected call,
+and leave the file absent. Codex checks shell and Code Mode dispatch separately.
+These controls do not establish app, MCP, messaging or delegation coverage and
+do not replace the [real-model QA scenario](ci/qa-advisory.md).
+
 For a standalone run of the default Codex version where Docker's default profile blocks
 the sandbox, obtain the reviewed manual file separately from the image export and set
 `OCC_TEST_CODEX_SECCOMP_PROFILE` to its path. The [smoke helper](../../tests/helpers/runtime-image-startup.ts)
