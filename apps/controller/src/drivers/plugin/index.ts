@@ -84,6 +84,15 @@ const EMPTY_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   properties: {},
 });
 
+// Earlier Codex profiles rendered the hosted default explicitly.
+const CODEX_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    catalogSource: { type: "string", enum: ["hosted"] },
+  },
+});
+
 const CODEX_POLICY_SCHEMA: JSONSchema = deepFreeze({
   type: "object",
   additionalProperties: false,
@@ -332,7 +341,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly harnessId = "codex" as const;
-  static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
+  static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
   readonly discoveryCredential = "required" as const;
   // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.

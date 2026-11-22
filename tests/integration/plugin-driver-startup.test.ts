@@ -47,9 +47,12 @@ test("Installation startup registers each configured plugin catalog and rejects 
   await assert.rejects(load(t, [selections[0], selections[0]]), /duplicates another Plugin Driver/);
 });
 
-test("Installation requires authenticated Codex discovery without catalog configuration", async (t) => {
-  const loaded = await load(t, [{ id: "codex-plugin", configuration: {} }]);
-  assert.equal(loaded.pluginDrivers?.[0]?.discoveryCredential, "required");
+test("Installation requires authenticated Codex discovery with the previous hosted profile and the default", async (t) => {
+  for (const configuration of [{ catalogSource: "hosted" }, {}]) {
+    const loaded = await load(t, [{ id: "codex-plugin", configuration }]);
+    assert.deepEqual(loaded.installation.drivers.plugin?.[0]?.configuration, configuration);
+    assert.equal(loaded.pluginDrivers?.[0]?.discoveryCredential, "required");
+  }
 });
 
 test("Installation rejects untrusted PluginDriver packages, unknown selections and configuration", async (t) => {
@@ -67,9 +70,12 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
       { id: "codex-plugin", configuration: { arbitrarySource: "https://example.test/plugin" } },
       refusal("", "UNKNOWN_FIELD", "Configuration does not satisfy additionalProperties."),
     ],
+    ...["openai-curated", "unknown"].map((catalogSource) => [
+      { id: "codex-plugin", configuration: { catalogSource } },
+      refusal("/catalogSource", "INVALID_VALUE", "Configuration does not satisfy enum."),
+    ]),
     ...[
-      { catalogSource: "openai-curated" },
-      { catalogSource: "hosted" },
+      { catalogSource: "hosted", codexExecutable: "/tmp/codex", codexHome: "/tmp/codex-home" },
       { codexExecutable: "/tmp/codex" },
       { codexHome: "/tmp/codex-home" },
       { requestTimeoutMs: 10_000 },
