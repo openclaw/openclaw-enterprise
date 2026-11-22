@@ -207,6 +207,14 @@ export async function verifyQaAgentAutomations(
       assert.ok(response.status === 200 || response.status === 404);
       return response.status === 404;
     });
+    // Native one-shot deletion does not retire OCC's standing grant. The
+    // authorized DELETE records definite absence while preserving run history.
+    const retired = await request(
+      "DELETE",
+      `/${saved.id}?expectedConfigRevision=${encodeURIComponent(saved.configRevision)}`,
+    );
+    assert.equal(retired.status, 404);
+    assert.equal(asRecord(retired.envelope?.error)?.code, "NOT_FOUND");
     assert.ok((await runs(saved.id))?.runs.some((value) => value.runId === run.runId));
     pending.delete(saved.id);
     const result = { id: saved.id, runId: run.runId };
