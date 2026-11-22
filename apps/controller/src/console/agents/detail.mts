@@ -5962,7 +5962,23 @@ export async function renderAgentDetail(
         );
       }
       let currentConfigurationEntry: HTMLButtonElement | null = null;
+      let snapshotHeading: HTMLElement | null = null;
       if (!draft) {
+        const draftLinks = element(
+          "div",
+          { className: "agent-toolbar-actions" },
+          versionLink("Draft credentials", "draft", "credentials"),
+          versionLink("Draft repositories", "draft", "repositories"),
+        );
+        const canReadDraft = () =>
+          callerPermissions?.configurationRead === true && !agent.configurationReadError;
+        draftLinks.hidden = !canReadDraft();
+        snapshotHeading = element(
+          "div",
+          { className: "agent-version-heading" },
+          element("h2", {}, "Configuration snapshot"),
+          draftLinks,
+        );
         // A caller who may not edit the Configuration opens the draft to read it; the entry does
         // not offer an editor it has none of (finding 2436).
         const entryLabel = () =>
@@ -5981,6 +5997,7 @@ export async function renderAgentDetail(
         followConfigurationAccess(() => {
           if (context.isCurrent() && entry.isConnected) {
             entry.textContent = entryLabel();
+            draftLinks.hidden = !canReadDraft();
           }
         });
         currentConfigurationEntry = entry;
@@ -5989,7 +6006,7 @@ export async function renderAgentDetail(
         element(
           "section",
           { className: "agent-card" },
-          element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
+          snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
           repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)

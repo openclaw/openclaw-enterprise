@@ -2751,10 +2751,29 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // Draft-only tabs open on this Agent, even for a reader. Back keeps the saved version.
+  const snapshotUrl = page.url();
+  for (const name of ["Credentials", "Repositories"]) {
+    await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+    const link = snapshot.getByRole("link", { name: `Draft ${name.toLowerCase()}` });
+    assert.equal(await link.isVisible(), true);
+    await link.press("Enter");
+    await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+    const selected = page.getByRole("tab", { name, selected: true });
+    assert.equal(await hasFocus(selected), true);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
+    await page.goBack();
+    await page.waitForURL(snapshotUrl);
+  }
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
+  // A readable version alone does not grant access to the draft.
+  revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+  await page.goto(snapshotUrl);
+  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  assert.equal(await snapshot.getByRole("link", { name: /^Draft / }).count(), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
@@ -2797,8 +2816,11 @@ test("a late permission answer relabels a reader's version entry and skips plugi
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
   // Until the answer lands the page assumes an editor.
   await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  const draftLinks = snapshot.getByRole("link", { name: /^Draft (credentials|repositories)$/ });
+  assert.equal(await draftLinks.count(), 0);
   firstAnswer.release();
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  assert.equal(await draftLinks.count(), 2);
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
