@@ -190,8 +190,8 @@ export async function readOwnedOpenShellPushedProvider(input: {
   return provider;
 }
 
-/** Initialize or refresh the owned pushed copy from this binding's authorized Source. */
-export async function prepareOpenShellPushedProvider(input: {
+/** Initialize or refresh the Proxy's Provider copy from an authorized OCC TokenService Source. */
+export async function prepareOccTokenServiceProviderCopy(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
     | "getWorkspace"
