@@ -47,6 +47,7 @@ import {
   calendarPlugin,
   pluginCapabilities,
   pluginDetailIdentityRefusal,
+  pluginDiscoveryConflict,
   pluginSetup,
 } from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
@@ -102,6 +103,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     emptyBackends?: boolean;
     namespaceName?: string;
     navigationAgentHistory?: true;
+    navigationAgentLookupMismatch?: true;
     namespaceStatus?: NamespaceStatus;
     namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
     candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
@@ -126,6 +128,18 @@ const currentVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
+const unscopedHistoricalAgentLink = {
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
+  namespaceName: "Z history holder",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+} as const;
+const defaultNamespaceAgentMiss = {
+  method: "GET",
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
+  status: 404,
+  code: "NOT_FOUND",
+} as const;
 // A SOUL.md long enough to scroll; its first line names the version that serves it.
 const soulVersion = (version: string) =>
   `# SOUL.md served by ${version}\n\n` +
@@ -404,19 +418,9 @@ const authoredScenarios = {
   navigationAgentHistory: {
     group: "Pages/Navigation",
     name: "Return to an interrupted Agent link",
-    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
-    namespaceName: "Z history holder",
+    ...unscopedHistoricalAgentLink,
     navigationAgentHistory: true,
-    deployed: true,
-    candidateDeploymentStatus: "succeeded",
-    rules: [
-      {
-        method: "GET",
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
-        status: 404,
-        code: "NOT_FOUND",
-      },
-    ],
+    rules: [defaultNamespaceAgentMiss],
     description:
       "A shared Agent link has no Namespace. Leave while the Console looks in another Namespace, then use Back to reopen the linked version and Deployment tab. API responses are simulated.",
     steps: [
@@ -424,6 +428,29 @@ const authoredScenarios = {
       "Wait for the delayed read to finish. The Agents list stays open.",
       "Use browser Back. Research assistant opens in Z history holder with version 6 and Deployment selected. Check This version’s deployment record.",
       "Use Forward. The same Agents list returns. Reset story to repeat.",
+    ],
+  } satisfies LocalScenario,
+  navigationAgentLookupMismatch: {
+    ...unscopedHistoricalAgentLink,
+    group: "Pages/Navigation",
+    name: "Recover from a mismatched Agent lookup",
+    navigationAgentLookupMismatch: true,
+    rules: [
+      defaultNamespaceAgentMiss,
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        once: true,
+      },
+    ],
+    description:
+      "A shared Agent link has no Namespace. In this simulation, the holder’s first read fails and a sibling Namespace returns the holder’s Agent.",
+    steps: [
+      "Open the preview in its own tab. Check Agent not in this Namespace, with A history default selected and no namespace parameter in the URL.",
+      "Choose Switch Namespace. Focus moves to the Namespace selector. Leave A history default selected.",
+      "Choose Refresh in the Console. Research assistant opens in Z history holder, with version 6 and Deployment selected. Check This version’s deployment record.",
     ],
   } satisfies LocalScenario,
   navigationSlowRecheck: {
@@ -998,6 +1025,35 @@ const authoredScenarios = {
       "Select Calendar. Its details show List events, and Add Calendar is available.",
     ],
     gap: "Catalog responses and the saved Agent are simulated.",
+  } satisfies LocalScenario,
+  pluginsCatalogConflict: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin catalog changed while loading",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryConflict.catalogRule],
+    description: "Reload the available plugins after the saved Agent's catalog read is refused.",
+    steps: [
+      "Wait for List events and enabled Add Calendar. Choose Load plugins to simulate the catalog conflict.",
+      "Check that the message points to Load plugins and shows a request ID. Calendar is no longer listed, so its old Add action cannot be reopened.",
+      "Choose Load plugins again, then open Calendar. Wait for List events and enabled Add Calendar.",
+      "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
+    ],
+    gap: "The saved Agent and catalog responses are simulated.",
+  } satisfies LocalScenario,
+  pluginsDetailsConflict: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin details changed while loading",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryConflict.detailsRule],
+    description: "Retry tool discovery for Calendar after the first details read is refused.",
+    steps: [
+      "Check that Calendar stays selected and Add Calendar is disabled. The message points to Retry tools and shows a request ID.",
+      "Choose Retry tools for Calendar. List events appears, the error clears, and Add Calendar becomes available.",
+      "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
+    ],
+    gap: "The saved Agent and tool details are simulated.",
   } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,

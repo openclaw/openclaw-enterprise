@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-21
-last_updated_session: authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083
+last_updated_session: authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d
 ---
 
 # Platform console request flow
@@ -164,20 +164,19 @@ Refusals remove private content.
 `api-client.mts:createApiClient` preserves abort and socket failures through
 response bodies without replay.
 
-**Back to Agents** awaits admission and collection rows from the newest readable
-versions. `agents/collection.mts:currentRevision` reads current versions off-page.
-`deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
-after 250 ms for at least 150 ms and regain focus. Pending or failed reads resume.
-Search cancels hidden-row reads
-(`collection.mts:retireHidden`). Redisplayed rows read once.
+**Back to Agents** awaits admission and rows for newest readable versions.
+`agents/collection.mts:currentRevision` reads versions off-page. `deniedReadsFor`
+retains 403s. Reused deployment cells show **Reading deployment…** after 250 ms
+for at least 150 ms and regain focus. Pending or failed reads resume. Search
+cancels hidden reads (`collection.mts:retireHidden`). Redisplayed rows read once.
 
-Changed users or session keys clear private state. Missing sessions open login.
-See [sign-in and return](platform-console/sign-in-return.md).
+Changed users or session keys clear private state. Missing sessions
+[open sign-in](platform-console/sign-in-return.md).
 
-After authentication, `GET /namespaces` keeps the URL selection or picks the
-first ready, readable Namespace. Unreadable IDs stay unavailable. Unscoped Agent
-URLs gain Namespace scope only after matching Agent reads. Back can restart
-interrupted lookups.
+`GET /namespaces` selects the URL Namespace or first ready, readable Namespace.
+Unreadable IDs stay unavailable. Unscoped Agent URLs require matching requested
+Agent and selected or probed Namespace IDs plus a nonempty Configuration ID.
+Malformed replies cannot establish absence. Back restarts interrupted lookups.
 `shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
 closes the drawer without focusing its toggle. An open drawer blocks scrolling.
 `createShell` preserves navigation presses across renders. Namespace switches
@@ -370,6 +369,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
 - 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)

@@ -593,6 +593,15 @@ function takeLinkedVersionView(key: string) {
   return linked;
 }
 
+export function matchesAgentIdentity(
+  value: unknown,
+  agentId: string,
+  namespaceId: string | null,
+): boolean {
+  const { id, namespaceId: actualNamespaceId, configurationId } = responseFields(value);
+  return id === agentId && actualNamespaceId === namespaceId && Boolean(configurationId);
+}
+
 export async function renderAgentDetail(
   context: DetailContext,
   {
@@ -611,11 +620,10 @@ export async function renderAgentDetail(
   // a read as write preflight or a write response as confirmation. A metadata-only Agent or
   // revision is still readable; its saved configuration and editing controls remain unavailable.
   function agentForPage(value: unknown): PageAgent {
-    const result = value as AgentRead | null;
-    if (result?.id !== agentId || result.namespaceId !== namespaceId || !result.configurationId) {
+    if (!matchesAgentIdentity(value, agentId, namespaceId)) {
       throw new Error("The response did not identify this Agent. Reload to check its saved state.");
     }
-    return result;
+    return value as AgentRead;
   }
   const readAgent = (source: Pick<DetailContext, "request"> = context) =>
     source.request(path).then(agentForPage);
