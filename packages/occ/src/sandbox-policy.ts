@@ -906,6 +906,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     sandbox: SandboxDriver | undefined,
     executionAdmission: ExecutionAdmission,
     repositoryCredentials: boolean,
+    policyAlreadyAuthorized = false,
   ): Promise<SandboxPolicySnapshot | undefined> {
     const policyScope = { repositoryCredentials };
     // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
@@ -915,11 +916,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
     const protectedExecution = executionAdmission.mode === "protected";
     if (policy !== undefined && policy.additions.length > 0) {
-      await dependencies.authority.authorize(principalId, "read", {
-        kind: "sandbox_policy",
-        id: policy.id,
-        namespaceId: agent.namespaceId,
-      });
+      if (!policyAlreadyAuthorized) {
+        await dependencies.authority.authorize(principalId, "read", {
+          kind: "sandbox_policy",
+          id: policy.id,
+          namespaceId: agent.namespaceId,
+        });
+      }
       if (protectedExecution) {
         throw new ProtectedExecutionNetworkPolicyError("deploy");
       }

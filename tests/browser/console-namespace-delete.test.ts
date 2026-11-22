@@ -5,7 +5,7 @@ import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
-import { restrict } from "../helpers/iam-grants.ts";
+import { grantRole, restrict } from "../helpers/iam-grants.ts";
 
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -442,6 +442,83 @@ test("a Namespace deletion confirmation opened during a background poll closes w
   // Its opener left with the row, so focus goes to the outcome, not the page.
   assert.equal(await hasFocus(page.locator(".namespace-deletion-outcome")), true);
 });
+
+for (const focus of [
+  "Search Namespaces",
+  "Clear search",
+  "Create Namespace",
+  "surviving search",
+] as const) {
+  test(`a Namespace cleanup poll preserves focus from ${focus}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Finishing cleanup");
+    const { credentials, principal } = await fixture.createNamespaceMember(
+      "cleanup-reader",
+      namespace.id,
+      [["read", "namespace"]],
+    );
+    if (focus === "surviving search") {
+      const remaining = await fixture.createNamespace("Unaffected team", { ready: true });
+      grantRole(fixture.policy, principal.id, {
+        id: "read-unaffected-team",
+        namespaceId: remaining.id,
+        permissions: { namespace: ["read"] },
+      });
+    }
+    const path = `/namespaces/${namespace.id}`;
+    assert.equal((await fixture.request("DELETE", path)).status, 202);
+    const event = fixture.auditSink
+      .list()
+      .find((entry: AuditEvent) => entry.action === "openclaw.namespaces.delete");
+    assert.ok(event);
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, "/console/namespaces", credentials);
+    const pending = page.getByRole("link", { name: namespace.name, exact: true });
+    await pending.waitFor();
+    const url = fixture.origin + path;
+    const poll = await holdRequests(t, page, url, { method: "GET", once: true });
+    await poll.requested;
+
+    const search = page.getByRole("searchbox", { name: "Search Namespaces" });
+    const control =
+      focus === "Clear search" || focus === "Create Namespace"
+        ? page.getByRole("button", { name: focus, exact: true })
+        : search;
+    await search.fill("no matching team");
+    await page.getByRole("heading", { name: "No matching Namespaces" }).waitFor();
+    assert.equal(await pending.count(), 0);
+    await control.focus();
+    assert.equal(await hasFocus(control), true);
+
+    await fixture.controller.handleNamespaceLifecycle(event.actorId, namespace.id, "deleted");
+    const response = page.waitForResponse(
+      (answer) => answer.url() === url && answer.request().method() === "GET",
+    );
+    poll.release();
+    assert.equal((await response).status(), 404);
+    await page
+      .getByText("Finishing cleanup was deleted. Its name remains reserved.", { exact: true })
+      .waitFor();
+    if (focus === "surviving search") {
+      assert.equal(await search.inputValue(), "no matching team");
+      assert.equal(await hasFocus(search), true);
+      await page.getByRole("heading", { name: "No matching Namespaces" }).waitFor();
+      await search.fill("Unaffected");
+      await page.getByRole("link", { name: "Unaffected team", exact: true }).waitFor();
+    } else {
+      await page.getByRole("heading", { name: "No readable Namespaces" }).waitFor();
+      assert.equal(await search.count(), 0);
+      const next =
+        focus === "Create Namespace" ? control : page.locator(".namespace-deletion-outcome");
+      assert.equal(
+        await hasFocus(next),
+        true,
+        `focus after the last row disappeared from ${focus}`,
+      );
+    }
+    assert.equal(pathRequests(requests, "DELETE", path).length, 0);
+  });
+}
 
 test("returning to an unchanged Namespaces page reads each row's delete permission once", async (t) => {
   const fixture = await createConsoleAppFixture(t);

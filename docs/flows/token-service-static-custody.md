@@ -1,14 +1,14 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-21
-last_updated_session: authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a
+last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
 ---
 
 # Managed static credential source custody flow
 
 ## Overview
 
-A caller enrolls a credential through the authenticated Namespace Source API. The selected TokenService creates and owns the CredentialSource and its credential. OpenClaw Control Plane (OCC) authorizes requests and governs IAM, Agent bindings, destination policy, and audit. This flow ends at Source retirement; managed Agent runtime delivery remains unavailable.
+A caller enrolls a credential through the authenticated Namespace Source API. The selected TokenService creates and owns the CredentialSource and its credential. OpenClaw Control Plane (OCC) authorizes requests and governs IAM, Agent bindings, destination policy, and audit. This flow covers Source custody; the [credential lifecycle flow](credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision) owns staged Agent admission and delivery.
 
 ## Entry Points
 
@@ -68,7 +68,7 @@ OCC authorizes exact DELETE, refuses blocking references, and commits `deleting`
 
 `packages/occ/src/agent-credential-access.ts:authorizeAgentCredentialSources`
 
-An authorized Agent draft can bind a ready same-Namespace Source by ID without resolving credentials. Managed deployment refuses before saving a revision or queuing work. Source creation and draft binding do not establish runtime credential delivery or a model turn.
+An authorized Agent draft can bind a ready same-Namespace Source by ID without resolving credentials. Admission can freeze its approved model route in a revision. Source creation and draft binding do not establish runtime credential delivery or a model turn.
 
 ## Debugging and Verification
 
@@ -86,6 +86,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 21:55: Link staged Agent admission to its lifecycle owner. (01a1ec21-b384-7472-887f-945ae0ab16fc - 91de87598)
 
 - 2026-11-21 21:33: Authorize Source creation in the manager and clarify DELETE retry authority. (authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a - 930293d2b18205276dcd78aec52414e0c9fdc616)
 
