@@ -4305,23 +4305,34 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     }
     // There is deliberately no second chat.send: only native startup recovery can
     // admit the continuation whose final answer this observer waits for.
+    const description = `automatic interrupted-turn completion after ${replacement}`;
+    let lastObservation = () => "history=unavailable";
     const recovered = await waitFor(
-      `automatic interrupted-turn completion after ${replacement}`,
+      () => `${description} (${lastObservation()})`,
       async () => {
         const history = await readAvailableGatewayHistory(topology, interrupted.sessionKey, 100);
         if (history === undefined) {
+          lastObservation = () => "history=unavailable";
           return undefined;
         }
         const { session } = await gatewayCall(topology, "sessions.describe", {
           key: interrupted.sessionKey,
         });
-        return !session.hasActiveRun &&
+        const hasAnswer = (nonce) =>
           history.messages.some(
-            (message) =>
-              message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
-          )
-          ? history
-          : undefined;
+            (message) => message.role === "assistant" && messageText(message).trim() === nonce,
+          );
+        lastObservation = () => {
+          const answered = hasAnswer(interrupted.nonce);
+          const restarted = history.messages.some(
+            (message) => message.__openclaw?.continuation?.source === "restart",
+          );
+          const queued = queuedNonce === undefined ? "none" : hasAnswer(queuedNonce);
+          const active =
+            typeof session.hasActiveRun === "boolean" ? session.hasActiveRun : "unknown";
+          return `active=${active} restart=${restarted} answer=${answered} queuedAnswer=${queued}`;
+        };
+        return !session.hasActiveRun && hasAnswer(interrupted.nonce) ? history : undefined;
       },
     );
     assert.equal(

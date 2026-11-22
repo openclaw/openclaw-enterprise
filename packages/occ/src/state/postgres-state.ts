@@ -1,6 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  admitRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
@@ -8,7 +9,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
+import type { RepositoryNetworkPolicy, SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   AgentRepository,
   AgentRevisionRepository,
@@ -45,7 +46,7 @@ import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   AccessBinding,
   Agent,
@@ -60,7 +61,6 @@ import type {
   AgentRevision,
   AuditEvent,
   CredentialSource,
-  TokenServiceRegistration,
   Group,
   GroupMembership,
   Identity,
@@ -618,7 +618,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id, cs.registration, cs.registration_dispatched_at,
+  cs.token_service_instance_id,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -698,12 +698,6 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
           ...(row.token_service_instance_id == null
             ? {}
             : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
-          ...(row.registration == null
-            ? {}
-            : { registration: jsonObject(row.registration) as TokenServiceRegistration }),
-          ...(row.registration_dispatched_at == null
-            ? {}
-            : { registrationDispatchedAt: timestamp(row, "registration_dispatched_at") }),
         }
       : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
@@ -760,6 +754,44 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
   });
 }
 
+type StoredExecutionAdmission = AgentRevision["executionAdmission"] & {
+  readonly repositoryNetworkPolicyVersion?: unknown;
+};
+
+function executionAdmissionFromRow(
+  stored: StoredExecutionAdmission,
+  policy: RepositoryNetworkPolicy | undefined,
+  egressPlan: AgentRevision["egressPlan"],
+): AgentRevision["executionAdmission"] {
+  try {
+    const { repositoryNetworkPolicyVersion, ...admission } = stored;
+    const hasReaderVersion = Object.hasOwn(stored, "repositoryNetworkPolicyVersion");
+    // Bind the storage-only marker to the policy and supported execution mode
+    // before exposing a scoped revision to Worker.
+    if (
+      hasReaderVersion !== (policy !== undefined) ||
+      (hasReaderVersion &&
+        (admission.mode !== "unprotected" ||
+          policy?.version !== 1 ||
+          repositoryNetworkPolicyVersion !== policy.version ||
+          !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
+    ) {
+      throw new Error("Invalid persisted repository network policy reader version.");
+    }
+    const executionAdmission = hasReaderVersion ? admission : stored;
+    assertExecutionAdmission({
+      executionAdmission,
+      ...(egressPlan === undefined ? {} : { egressPlan }),
+    });
+    return executionAdmission;
+  } catch {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
+    );
+  }
+}
+
 function revisionFromRow(
   row: PostgresRow,
   metadata = revisionMetadataFromRow(row),
@@ -776,32 +808,25 @@ function revisionFromRow(
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
     egress_plan?: AgentRevision["egressPlan"];
-    execution_admission: AgentRevision["executionAdmission"];
+    execution_admission: StoredExecutionAdmission;
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
     plugins?: AgentRevision["plugins"];
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
-  try {
-    assertExecutionAdmission({
-      executionAdmission: admitted.execution_admission,
-      ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
-    });
-  } catch {
-    throw new SavedConfigurationReadError(
-      "configuration",
-      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
-    );
-  }
+  const executionAdmission = executionAdmissionFromRow(
+    admitted.execution_admission,
+    admitted.sandbox_policy?.repositoryNetworkPolicy,
+    admitted.egress_plan,
+  );
   // Older readers require an exact Harness-auth shape, rejecting the protected
   // reader version before handing a revision to Compute. It grants no authority.
   const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
-  const protectedAdmission = admitted.execution_admission.mode === "protected";
+  const protectedAdmission = executionAdmission.mode === "protected";
   if (
     Object.hasOwn(admitted, "service_account") ||
-    protectedExecutionVersion !==
-      (protectedAdmission ? admitted.execution_admission.version : undefined) ||
+    protectedExecutionVersion !== (protectedAdmission ? executionAdmission.version : undefined) ||
     !validHarnessAuthSnapshot(harnessAuth, text(row, "namespace_id"))
   ) {
     throw new SavedConfigurationReadError(
@@ -867,7 +892,7 @@ function revisionFromRow(
       ? {}
       : { repositoryCredentials: admitted.repository_credentials }),
     harnessAuth,
-    executionAdmission: admitted.execution_admission,
+    executionAdmission,
     ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
     ...(admitted.credential_sources === undefined
       ? {}
@@ -1904,16 +1929,20 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  /** Select Read Committed when protected reads must see commits made while waiting for locks. */
   async transactWithQueue<T>(
     work: (
       state: PlatformUnitOfWork,
       queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     ) => Promise<T>,
-    options: PostgresWorkQueueOptions = {},
+    options: PostgresWorkQueueOptions & { readonly readCommitted?: boolean } = {},
   ): Promise<T> {
-    const queueOptions = { ...this.queueOptions, ...options };
-    return this.execute(false, async (state, context) =>
-      work(state, this.bindQueue(context, queueOptions)),
+    const { readCommitted, ...queueOverrides } = options;
+    const queueOptions = { ...this.queueOptions, ...queueOverrides };
+    return this.execute(
+      false,
+      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+      readCommitted,
     );
   }
 
@@ -3232,32 +3261,30 @@ export class PostgresPlatformState implements PlatformStateStore {
             "Credential source Secret inputs must reference exact Secrets.",
           );
         }
-        await client.query(
-          `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, registration, registration_dispatched_at)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, $13)`,
-          [
-            source.id,
-            source.namespaceId,
-            source.name,
-            source.type,
-            JSON.stringify(source.config),
-            source.driverId ?? null,
-            source.state,
-            source.createdAt,
-            source.egress === undefined ? null : JSON.stringify(source.egress),
-            source.ownerCapability,
-            source.ownerCapability === "token_service"
-              ? (source.tokenServiceInstanceId ?? null)
-              : null,
-            source.ownerCapability === "token_service" && source.registration !== undefined
-              ? JSON.stringify(source.registration)
-              : null,
-            source.ownerCapability === "token_service"
-              ? (source.registrationDispatchedAt ?? null)
-              : null,
-          ],
-        );
+        try {
+          await client.query(
+            `INSERT INTO occ.credential_sources
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11)`,
+            [
+              source.id,
+              source.namespaceId,
+              source.name,
+              source.type,
+              JSON.stringify(source.config),
+              source.driverId ?? null,
+              source.state,
+              source.createdAt,
+              source.egress === undefined ? null : JSON.stringify(source.egress),
+              source.ownerCapability,
+              source.ownerCapability === "token_service"
+                ? (source.tokenServiceInstanceId ?? null)
+                : null,
+            ],
+          );
+        } catch (error) {
+          throw databaseError(error);
+        }
         if (secretInputs.length > 0) {
           await client.query(
             `INSERT INTO occ.credential_source_secrets
@@ -3310,25 +3337,6 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return findCredentialSource(namespaceId, credentialSourceId);
       },
-      setCredentialSourceRegistrationDispatch: async (
-        namespaceId,
-        credentialSourceId,
-        dispatchedAt,
-      ) => {
-        const result = await client.query(
-          `UPDATE occ.credential_sources SET registration_dispatched_at=$3
-          WHERE namespace_id=$1 AND id=$2 AND token_service_instance_id IS NOT NULL AND registration IS NULL AND state=$4
-            AND (($3::timestamptz IS NULL AND registration_dispatched_at IS NOT NULL)
-              OR ($3::timestamptz IS NOT NULL AND registration_dispatched_at IS NULL))`,
-          [
-            namespaceId,
-            credentialSourceId,
-            dispatchedAt ?? null,
-            dispatchedAt === undefined ? "deleting" : "registering",
-          ],
-        );
-        return result.rowCount === 1;
-      },
       updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
         const result = await client.query(
           "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND token_service_instance_id IS NOT NULL",
@@ -3338,18 +3346,13 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? findCredentialSource(namespaceId, credentialSourceId)
           : undefined;
       },
-      markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
+      markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
         const updated = await client.query(
-          `UPDATE occ.credential_sources AS cs SET state = 'ready', registration=$3::jsonb, config=COALESCE($4::jsonb,cs.config)
+          `UPDATE occ.credential_sources AS cs SET state = 'ready'
            FROM occ.namespaces AS n
            WHERE cs.namespace_id = $1 AND cs.id = $2 AND cs.state = 'registering'
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
-          [
-            namespaceId,
-            credentialSourceId,
-            registration === undefined ? null : JSON.stringify(registration),
-            config === undefined ? null : JSON.stringify(config),
-          ],
+          [namespaceId, credentialSourceId],
         );
         return updated.rowCount === 1
           ? findCredentialSource(namespaceId, credentialSourceId)
@@ -3714,6 +3717,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const sandboxPolicies: SandboxPolicyRepository = {
+      supportsRepositoryNetworkPolicy: true,
       find: async (namespaceId, agentId) => {
         const row = rows(
           (
@@ -4244,6 +4248,12 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The AgentRevision execution admission is missing or inconsistent.",
           );
         }
+        const repositoryPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+        if (repositoryPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
+          throw new ScopeViolationError(
+            "Repository network policy requires unprotected execution.",
+          );
+        }
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
@@ -4359,7 +4369,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                       protectedExecutionVersion: revision.executionAdmission.version,
                     }
                   : revision.harnessAuth,
-              execution_admission: revision.executionAdmission,
+              execution_admission:
+                repositoryPolicy === undefined
+                  ? revision.executionAdmission
+                  : {
+                      ...revision.executionAdmission,
+                      repositoryNetworkPolicyVersion: 1,
+                    },
               ...(revision.egressPlan === undefined ? {} : { egress_plan: revision.egressPlan }),
               ...(revision.credentialSources === undefined
                 ? {}

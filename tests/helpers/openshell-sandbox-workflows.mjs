@@ -6,6 +6,7 @@ import {
   assertOpenShellModelId,
   normalizeOpenShellModelId,
 } from "../../scripts/ci/openshell-model-inputs.ts";
+import { openShellGatewayErrorForm } from "../../scripts/ci/reporter-measurements.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
@@ -5330,7 +5331,12 @@ async function requestGatewayTurns(context, topology, harnessId, recordCheckpoin
       recordCheckpoint?.("credential-absence", nonces.length);
       assert.equal(body.includes(modelCredential), false);
       assert.equal(body.includes(gatewayPassword), false);
-      recordCheckpoint?.("http-status", nonces.length, response.status);
+      recordCheckpoint?.(
+        "http-status",
+        nonces.length,
+        response.status,
+        openShellGatewayErrorForm(response, body),
+      );
       if (response.status !== 200) {
         request.finishedAtMs = Date.now();
         const diagnostic = await gatewayTurnFailureDiagnostic(topology, gatewayPassword).catch(
@@ -7773,9 +7779,9 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
 }
 
 /**
- * Makes the model provider unreachable: cluster DNS sends the model host to a Service with no
- * endpoints, so OpenShell's connection to it is refused. The turn must fail without exposing
- * the key, and the same running Harness must complete a turn once the provider is back.
+ * Point the model hostname at a Service intended to have no endpoints and require the
+ * Gateway turn request to reject. After DNS restoration, require a matching reply
+ * and the original active revision.
  */
 async function assertModelProviderOutageFailsClosed(topology) {
   if (!modelEndpointSupportsDnsProofs()) {
@@ -7786,9 +7792,15 @@ async function assertModelProviderOutageFailsClosed(topology) {
   }
   const { request, namespaceId, untrustedTls } = topology;
   const agentPath = `/namespaces/${namespaceId}/agents/${topology.agent.id}`;
-  const current = await request("GET", agentPath);
-  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const current = await request("GET", agentPath).catch(() => {
+    throw new Error("Could not read the Agent before the model outage.");
+  });
+  assert.equal(current.status, 200, "Could not read the Agent before the model outage.");
   const revisionId = current.data.activeRevisionId;
+  assert.ok(
+    typeof revisionId === "string" && revisionId.trim(),
+    "model outage requires an active revision",
+  );
   // `kubectl create service clusterip` selects app=<name>, which no Pod carries.
   await kubectl(
     "create",
@@ -7798,32 +7810,55 @@ async function assertModelProviderOutageFailsClosed(topology) {
     "--namespace",
     untrustedTls.namespace,
     ...[...new Set([443, modelPort])].map((port) => `--tcp=${port}:${port}`),
-  );
-  const outage = await resource("service", "model-outage", untrustedTls.namespace);
+  ).catch(() => {
+    throw new Error("Could not create the model outage Service.");
+  });
+  let restoreDns = false;
   let rejected = false;
   let observation;
   let failure;
+  let stage = "Service read";
   try {
-    await setModelProviderDns(topology, outage.spec.clusterIP);
+    const outage = await resource("service", "model-outage", untrustedTls.namespace);
+    const address = outage.spec.clusterIP;
+    assert.ok(isIP(address), "model outage requires a Service address");
+    restoreDns = true;
+    stage = "DNS override";
+    await setModelProviderDns(topology, address);
+    stage = "Gateway Pod lookup";
+    const gatewayPod = await currentGatewayPod(topology);
+    assert.ok(gatewayPod, "model outage requires a Gateway Pod");
+    stage = "turn observation";
+    const turnRequest = {
+      namespace: topology.gatewayPlacement,
+      gatewayPod,
+      providerModel,
+      prompt: `Reply with exactly OCC-OPENSHELL-OUTAGE-${randomUUID()}.`,
+    };
+    // A rejected request still cannot distinguish a provider outage from a client
+    // deadline or transport failure. Never count failed setup or serialization as rejection.
+    let result;
     try {
-      observation = JSON.stringify(
-        await requestCodexTurnFromGatewayPod({
-          namespace: topology.gatewayPlacement,
-          gatewayPod: await currentGatewayPod(topology),
-          providerModel,
-          prompt: `Reply with exactly OCC-OPENSHELL-OUTAGE-${randomUUID()}.`,
-        }),
-      );
+      result = await requestCodexTurnFromGatewayPod(turnRequest);
     } catch (error) {
       rejected = true;
       observation = error instanceof Error ? error.message : String(error);
     }
-  } catch (error) {
-    failure = error;
+    if (!rejected) {
+      observation = JSON.stringify(result);
+    }
+  } catch {
+    failure = new Error(`Model outage ${stage} failed.`);
   }
-  // Restore DNS before any assertion; keep the first error if both steps fail.
+  // Restore DNS first and attempt Service deletion even if restoration fails.
+  if (restoreDns) {
+    try {
+      await setModelProviderDns(topology, undefined);
+    } catch {
+      failure ??= new Error("Model outage DNS restoration failed.");
+    }
+  }
   try {
-    await setModelProviderDns(topology, undefined);
     await kubectl(
       "delete",
       "service",
@@ -7832,8 +7867,8 @@ async function assertModelProviderOutageFailsClosed(topology) {
       untrustedTls.namespace,
       "--ignore-not-found",
     );
-  } catch (error) {
-    failure ??= error;
+  } catch {
+    failure ??= new Error("Model outage Service deletion failed.");
   }
   if (failure !== undefined) {
     throw failure;
@@ -7841,11 +7876,18 @@ async function assertModelProviderOutageFailsClosed(topology) {
   const nonce = `OCC-OPENSHELL-RECOVERED-${randomUUID()}`;
   const recovered = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
-    gatewayPod: await currentGatewayPod(topology),
+    gatewayPod: await currentGatewayPod(topology).catch(() => {
+      throw new Error("Model outage recovery Pod lookup failed.");
+    }),
     providerModel,
     prompt: `Reply with exactly ${nonce}.`,
+  }).catch(() => {
+    throw new Error("Model outage recovery turn failed.");
   });
-  const after = await request("GET", agentPath);
+  const after = await request("GET", agentPath).catch(() => {
+    throw new Error("Could not read the Agent after the model outage.");
+  });
+  assert.equal(after.status, 200, "Could not read the Agent after the model outage.");
   const observed = {
     turnRejected: rejected,
     recoveredTurn: new RegExp(nonce).test(String(record(recovered).assistant)),
@@ -7857,13 +7899,17 @@ async function assertModelProviderOutageFailsClosed(topology) {
   assert.equal(
     String(observation).includes(modelCredential),
     false,
-    "a failed model turn must not expose the model key",
+    "the outage request must not expose the model key",
   );
   assert.equal(JSON.stringify(recovered).includes(modelCredential), false);
-  assert.equal(rejected, true, "a model turn must fail while the provider is unreachable.");
-  // The outage is the provider's, not the Harness's: the same revision serves the next turn.
-  assert.equal(observed.recoveredTurn, true, "the running Harness must recover with the provider.");
-  assert.equal(observed.sameRevision, true, "recovery must not need a redeploy.");
+  assert.equal(
+    rejected,
+    true,
+    "the outage turn request must reject while the DNS override is active.",
+  );
+  // Recovery must succeed on the original revision.
+  assert.equal(observed.recoveredTurn, true, "the recovery turn must return the expected reply.");
+  assert.equal(observed.sameRevision, true, "the active revision must match its pre-outage value.");
 }
 
 /**
@@ -9728,6 +9774,7 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
+            enableCompatibilityBridges: false,
             observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
@@ -9857,7 +9904,7 @@ export function registerProviderLifecycleTest(workflow) {
               context,
               topology,
               "codex",
-              (checkpoint, turn, status) => {
+              (checkpoint, turn, status, replyForm) => {
                 if (checkpoint === null) {
                   failure = null;
                   return;
@@ -9865,6 +9912,7 @@ export function registerProviderLifecycleTest(workflow) {
                 failure = {
                   checkpoint,
                   turn,
+                  replyForm,
                   status:
                     Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
                 };

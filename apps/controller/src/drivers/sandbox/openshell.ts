@@ -4163,12 +4163,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment challenge does not match the admitted execution.",
       );
     }
-    const deliver = async (): Promise<boolean> => {
+    const deliver = async (body: Readonly<Record<string, unknown>>): Promise<boolean> => {
       const released = await client.postServiceDocument(
         service.url,
         HARNESS_EGRESS_ENROLLMENT_PATH,
         context.transportToken,
-        await release(startupId),
+        body,
         context.signal,
       );
       // A restarted Harness refuses the old challenge. The next reconcile observes
@@ -4185,9 +4185,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       return true;
     };
     if (preview) {
-      await this.openShellGit!.releasePreview(context.revision.id, startupId, deliver);
+      await this.openShellGit!.releasePreview(
+        context.revision.id,
+        startupId,
+        { prepare: () => release(startupId), deliver },
+        context.signal,
+      );
     } else {
-      await deliver();
+      await deliver(await release(startupId));
     }
   }
 

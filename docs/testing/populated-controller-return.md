@@ -112,7 +112,15 @@ HTTP 200 with the original Installation ID counts as a successful observation.
 A successful sample includes `requestId` when the `x-request-id` header and
 `meta.requestId` match and have the controller’s request ID format. The client omits
 the ID if it contains a known protected value. To identify the serving Pod, find
-that ID in a corresponding `http.completed` record from a known Pod. Samples without the ID still count as successful.
+that ID in a corresponding `http.completed` record from a known Pod. Samples
+without the ID still count as successful.
+
+For a successful sample with a validated request ID, `upstreamSocketReused`
+reports whether the rehearsal proxy reused its HTTP connection to the API.
+An absent field means reuse is unknown. Even a fresh client connection to
+the proxy can reach the old Pod over a pooled upstream connection.
+A successful read on the new Pod alone cannot establish that the old Pod has drained.
+
 Response bodies and credentials are omitted. If recording fails, the test reports
 the write failure alongside any upgrade failure, preserving the upgrade as the
 primary cause.

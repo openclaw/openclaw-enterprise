@@ -202,7 +202,7 @@ export function createShell({
     return svg;
   }
 
-  // A 20 px line icon for the icon-only buttons of the phone top bar and drawer.
+  // Navigation and drawer controls share a 24-unit drawing grid.
   function lineIcon(d: string) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "line-icon");
@@ -613,7 +613,12 @@ export function createShell({
     }
     const credentialAdministration =
       feature === connectionTemplatesPage || feature === oauthClientsPage;
-    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
+    const icons = {
+      agents:
+        "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
+      secrets: "M15 14a6 6 0 1 0-5-5l-7 7v5h5v-3h3v-3l1.5-1.5Q14 14 15 14z M17 7h.01",
+      namespaces: "m3 7 9-5 9 5-9 5z M3 12l9 5 9-5M3 17l9 5 9-5",
+    };
     for (const name of ["agents", "secrets", "namespaces"] as const) {
       const link = element(
         "a",
@@ -624,7 +629,7 @@ export function createShell({
             ? { "aria-current": "page" }
             : {}),
         },
-        element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
+        lineIcon(icons[name]),
         pages[name],
       );
       followPage(link, name);
@@ -639,7 +644,7 @@ export function createShell({
           target: "_blank",
           rel: "noopener noreferrer",
         },
-        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        lineIcon("M2 12h5l3-8 4 16 3-8h5"),
         "Observability",
         externalLinkIcon(),
       );
