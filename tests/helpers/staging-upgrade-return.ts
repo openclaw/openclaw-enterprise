@@ -1,6 +1,10 @@
-import { migrationEntry } from "../../scripts/lib/selected-image-migration.ts";
+import {
+  migrationEntry,
+  selectedImageMigrationEntry,
+} from "../../scripts/lib/selected-image-migration.ts";
 import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -23,6 +27,29 @@ import { Check } from "typebox/value";
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
+
+// Both c0b09b2e and 4835e8bf ship these bytes at
+// deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs.
+const legacyRehearsalLoaderHash =
+  "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202";
+
+export function rehearsalMigrationProbeArgs(args: readonly string[] = []) {
+  if (!migrationEntry(args)) {
+    const [evaluate, program, separator, option, ...extra] = args;
+    if (
+      evaluate !== "-e" ||
+      separator !== "--" ||
+      !program ||
+      extra.length !== 0 ||
+      (option !== undefined && option !== "--expect-empty" && option !== "--require-current") ||
+      sha256Hex(program) !== legacyRehearsalLoaderHash
+    ) {
+      return undefined;
+    }
+  }
+  // The retained Job is evidence only. Use the current loader's guarded-mode check.
+  return [...selectedImageMigrationEntry, "--check"];
+}
 
 type ControllerImage = {
   reference: string;
@@ -1145,8 +1172,8 @@ export async function rehearsePopulatedReturn({
     assert.ok(migration, "initializer is missing its migration container");
     assert.equal(migration.image, image.reference, "migration probe must use the selected image");
     assert.ok(migration.env, "initializer migration container is missing its environment");
-    const entry = migration.args && migrationEntry(migration.args);
-    assert.ok(entry, "initializer has an unsupported migration entry point");
+    const args = rehearsalMigrationProbeArgs(migration.args);
+    assert.ok(args, "initializer has an unsupported migration entry point");
     const probeSecret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -1173,7 +1200,8 @@ export async function rehearsePopulatedReturn({
         containers: [
           {
             ...migration,
-            args: [...entry, "--check"],
+            command: ["node"],
+            args,
             env: [
               ...migration.env.filter(({ name }) => name !== "OCC_MIGRATION_DATABASE_URL"),
               {

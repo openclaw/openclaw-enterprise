@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -24,6 +25,7 @@ import {
   assertReturnedAgents,
   assertRunningController,
   measureUpgradeAvailability,
+  rehearsalMigrationProbeArgs,
   returnedDatabaseConnections,
   returnedAgentSnapshot,
   selectRehearsalControllers,
@@ -151,6 +153,55 @@ async function scratch(t: TestContext) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("return migration probe replaces the exact historical loader with the guarded current loader", async (t) => {
+  // Unmodified loader from the c0b09b2e and 4835e8bf charts.
+  const legacyProgram = String.raw`const command = require("./package.json").scripts?.["db:migrate:production"];
+const entry = /^(?:NODE_ENV=production )?node (scripts\/migrate-production\.(?:mjs|ts))$/.exec(
+  command ?? "",
+)?.[1];
+if (!entry) {
+  throw new Error("The image does not declare a supported production migration command.");
+}
+process.argv.splice(1, 0, entry);
+import("./" + entry);
+`;
+  const legacyArgs = ["-e", legacyProgram, "--"];
+  const args = rehearsalMigrationProbeArgs(legacyArgs);
+  assert.deepEqual(args, [...selectedImageMigrationEntry, "--check"]);
+  assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty"]), args);
+  assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--require-current"]), args);
+  assert.deepEqual(rehearsalMigrationProbeArgs(["scripts/migrate-production.mjs"]), args);
+  assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram + "\n", "--"]), undefined);
+  assert.equal(
+    rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty", "--check"]),
+    undefined,
+  );
+  assert.equal(rehearsalMigrationProbeArgs([...legacyArgs, "--check"]), undefined);
+  assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram]), undefined);
+  assert.equal(rehearsalMigrationProbeArgs(), undefined);
+
+  const directory = await scratch(t);
+  await mkdir(join(directory, "scripts"));
+  const packageFile = join(directory, "package.json");
+  const entryReceipt = join(directory, "migration-entered.json");
+  const command = "node scripts/migrate-production.ts";
+  await writeFile(
+    join(directory, "scripts", "migrate-production.ts"),
+    'import { writeFileSync } from "node:fs"; writeFileSync("migration-entered.json", JSON.stringify(process.argv.slice(2)));',
+  );
+  const declareMigration = (script: string) =>
+    writeFile(packageFile, JSON.stringify({ scripts: { "db:migrate:production": script } }));
+  await declareMigration(command);
+  await assert.rejects(
+    runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 }),
+    /does not declare support for production migration mode arguments/u,
+  );
+  await assert.rejects(stat(entryReceipt), { code: "ENOENT" });
+  await declareMigration(`NODE_ENV=production ${command}`);
+  await runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 });
+  assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--check"]);
+});
 
 test("release checkout admission rejects hidden edits and ignored execution inputs before Docker", async (t) => {
   const directory = await scratch(t);
