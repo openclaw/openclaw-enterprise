@@ -146,7 +146,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     const mounts = [
       processProgram,
       "development.ts",
-      "default-users-iam.mjs",
+      "default-users-iam.ts",
       "secret-driver.ts",
     ].flatMap((file) => [
       "--mount",
