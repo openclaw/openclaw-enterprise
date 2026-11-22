@@ -2512,7 +2512,7 @@ export class ControllerWorker {
     let stoppedRevision: Readonly<AgentRevision> | undefined;
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
     if (cleanupRevisionId === undefined) {
-      await this.finalizeNamespace(claim, undefined, {
+      await this.finalize(claim, undefined, {
         outcome: "permanent",
         code: "INVALID_TARGET",
       });
@@ -2935,7 +2935,7 @@ export class ControllerWorker {
 
   private async processNamespace(claim: ClaimedWork): Promise<void> {
     if (claim.agentId !== undefined || claim.namespaceTarget === undefined) {
-      await this.finalizeNamespace(claim, undefined, {
+      await this.finalize(claim, undefined, {
         outcome: "permanent",
         code: "INVALID_TARGET",
       });
@@ -2946,7 +2946,7 @@ export class ControllerWorker {
     try {
       namespace = await this.state.read((view) => view.namespaces.findNamespace(claim.namespaceId));
       if (namespace?.status !== expectedNamespaceStatus(claim.namespaceTarget)) {
-        await this.finalizeNamespace(claim, namespace, {
+        await this.finalize(claim, namespace, {
           outcome: "success",
           code: "SUPERSEDED_TARGET",
         });
@@ -2954,7 +2954,7 @@ export class ControllerWorker {
       }
       const denied = await this.authorizeNamespace(claim, namespace);
       if (denied !== undefined) {
-        await this.finalizeNamespace(claim, namespace, denied);
+        await this.finalize(claim, namespace, denied);
         return;
       }
       if (!(await this.renewClaim(claim))) {
@@ -2971,7 +2971,7 @@ export class ControllerWorker {
       }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
-    await this.finalizeNamespace(claim, namespace, result);
+    await this.finalize(claim, namespace, result);
   }
 
   private async authorizeNamespace(
@@ -3087,7 +3087,7 @@ export class ControllerWorker {
     });
   }
 
-  private async finalizeNamespace(
+  private async finalize(
     claim: ClaimedWork,
     namespace: Readonly<Namespace> | undefined,
     result: NamespaceDispatchResult,
@@ -4643,7 +4643,7 @@ export class ControllerWorker {
           await this.finalizeRevision(claim, { ...result, candidateNotStarted: true });
         } else if (result.code === INCOMPATIBLE_REPOSITORY_HISTORY) {
           // This Worker cannot safely settle any effects of a prior incompatible claim.
-          await this.finalizeNamespace(claim, undefined, result);
+          await this.finalize(claim, undefined, result);
         } else {
           await this.finalizeRevision(claim, result);
         }

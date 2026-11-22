@@ -246,7 +246,7 @@ with that code; other work keeps its attempt budget.
 
 ### 6. Persist the result and finish version activation
 
-`apps/controller/src/worker.ts:ControllerWorker.finalizeNamespace`,
+`apps/controller/src/worker.ts:ControllerWorker.finalize`,
 `apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
