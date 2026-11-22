@@ -5,6 +5,7 @@ import type {
   SandboxPolicy,
   SandboxFacet,
 } from "@openclaw-enterprise/contracts";
+import type { PlatformUnitOfWork } from "@openclaw-enterprise/occ";
 import type { ResourceHandlers } from "./types.ts";
 
 const recommendationLimiter = new RuntimeLogLimiter();
@@ -76,12 +77,14 @@ export const sandboxPolicyHandlers = {
     reply,
     request,
     setAuditReadTarget,
+    resolveHarness,
   }) {
     const view = await controller.getAgentSandboxPolicy(
       context.actorId,
       namespaceId,
       params.agentId!,
       params.facet as SandboxFacet,
+      resolveHarness,
     );
     setAuditReadTarget({
       kind: "sandbox_policy",
@@ -131,10 +134,11 @@ export const sandboxPolicyHandlers = {
     reply,
     request,
     mutationEvent,
+    resolveHarness,
   }) {
     const repositoryNetworkPolicy = body!.repositoryNetworkPolicy as
       readonly RepositoryNetworkGrant[] | undefined;
-    const policy = await controller.transact(async (unit) => {
+    const save = async (unit: PlatformUnitOfWork) => {
       const updated = await controller.updateAgentSandboxPolicy(
         context.actorId,
         namespaceId,
@@ -143,6 +147,7 @@ export const sandboxPolicyHandlers = {
         body!.expectedVersion as number,
         body!.additions as readonly SandboxNetworkGrant[],
         repositoryNetworkPolicy,
+        resolveHarness,
       );
       await unit.audit.append(
         mutationEvent(
@@ -158,6 +163,10 @@ export const sandboxPolicyHandlers = {
         ),
       );
       return updated;
+    };
+    // The save and its audit share this transaction, including the IAM lock wait.
+    const policy = await controller.transact(save, {
+      readCommitted: repositoryNetworkPolicy !== undefined,
     });
     // An additions-only writer may lack permission to read the saved repository grants.
     reply.send({

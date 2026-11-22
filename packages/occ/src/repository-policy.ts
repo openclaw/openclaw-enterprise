@@ -1,12 +1,8 @@
-import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
-import type { RepositoryNetworkPolicyCeiling } from "@openclaw-enterprise/contracts";
+import type { createCredentialSourceDrivers } from "./credential-source-drivers.ts";
 import {
-  delegatedRepositoryCeiling,
-  repositoryGrantAuthority,
-  type RepositoryGrantPolicy,
-} from "./repository-network-policy.ts";
-import { isDeepStrictEqual } from "node:util";
-import {
+  type ConfigurationDriver,
+  type ResourceRef,
+  type RepositoryNetworkPolicyCeiling,
   isInstallationRepositoryProfile,
   type Agent,
   type BackendDefinition,
@@ -25,6 +21,20 @@ import {
   codexRepositoryBrokerNetworkProxy,
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
+import type { InstalledDriver } from "./installed-driver.ts";
+import { type HarnessResolver, validateRepositoryTopology } from "./agent-harness-topology.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import { exactConfiguration } from "./configuration-operations.ts";
+import { driverOperation } from "./driver-operation.ts";
+import {
+  readRepositoryEditTopology,
+  repositoryPolicySaveValidator,
+  type RepositoryPolicyResolution,
+  delegatedRepositoryCeiling,
+  repositoryGrantAuthority,
+  type RepositoryGrantPolicy,
+} from "./repository-network-policy.ts";
+import { isDeepStrictEqual } from "node:util";
 import {
   asRecord,
   hasControlCharacter,
@@ -37,7 +47,6 @@ import {
   validRepositoryAccess,
   validRepositoryRevisionState,
 } from "./repository-credential-validation.ts";
-import { validateRepositoryTopology } from "./agent-harness-topology.ts";
 import {
   DependencyUnavailableError,
   DriverSelectionError,
@@ -68,6 +77,11 @@ interface SelectedRepositoryPolicyOwner {
 }
 
 interface RepositoryPolicyDependencies {
+  readonly configurationDriver: () => ConfigurationDriver;
+  readonly credentialSourceOwner: ReturnType<
+    typeof createCredentialSourceDrivers
+  >["credentialSourceOwner"];
+  readonly selectedProxyOwner: () => InstalledDriver;
   readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
@@ -521,7 +535,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   ):
     | {
         readonly driver: RepositoryPolicyDriver;
-        readonly resolution: RepositoryCredentialResolution;
+        readonly resolution: RepositoryPolicyResolution;
+        readonly unchanged: () => boolean;
       }
     | undefined {
     if (bindings === undefined) {
@@ -599,7 +614,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     ) {
       throw new RepositoryBindingSelectionError();
     }
-    return { driver, resolution: immutableCopy(resolution) };
+    return { driver, resolution: immutableCopy(resolution), unchanged: owner.unchanged };
   }
 
   function repositoryBindingSelections(
@@ -631,7 +646,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     harness: RevisionHarnessDescriptor,
     sandboxDriverId: string | undefined,
     admittedAtWallMs: number,
-  ): RepositoryRevisionState | undefined {
+  ) {
     const resolved = resolveRepositoryBindings(
       agent.namespaceId,
       agent.repositoryBindings,
@@ -652,7 +667,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         "The selected repository credential Driver returned an invalid admission snapshot.",
       );
     }
-    return immutableCopy(snapshot);
+    const { selectedRepositoryNetworkGrants: selectedGrants } = resolved.resolution;
+    return { credentials: immutableCopy(snapshot), selectedGrants };
   }
 
   // Recheck administer after the Namespace and Agent row locks.
@@ -868,30 +884,97 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
   }
 
-  function requireDeploymentRepositoryOwner(
-    namespaceId: string,
-    grants: readonly RepositoryNetworkGrant[],
-  ) {
-    const owner = repositoryPermissionOwner(installationRepositoryAdmission);
-    const authority = repositoryGrantAuthority(
-      namespaceId,
-      owner?.admission?.policy,
-      owner?.unchanged,
-    );
-    const approved = () =>
-      authority?.unchanged() === true && authority.approvesAll(grants) && authority.unchanged();
-    if (!approved()) {
-      throw new ResourceStateConflictError(
-        "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
-      );
+  function readGrantAuthority(namespaceId: string, admission = installationRepositoryAdmission) {
+    try {
+      const owner = admission && repositoryPermissionOwner(admission);
+      return repositoryGrantAuthority(namespaceId, owner?.admission?.policy, owner?.unchanged);
+    } catch {
+      return undefined;
     }
-    return approved;
+  }
+
+  async function qualifyRepositoryEdit(
+    state: PlatformReadView | PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    version: number,
+    canRead: (target: ResourceRef) => Promise<boolean>,
+    resolveHarness: HarnessResolver | undefined,
+  ) {
+    const { namespaceId, repositoryBindings: bindings } = agent;
+    const admission = installationRepositoryAdmission;
+    if (!admission || !resolveHarness || !bindings?.length) {
+      return undefined;
+    }
+    try {
+      const compute = dependencies.selectedCompute();
+      const owner = dependencies.selectedProxyOwner();
+      const validate = repositoryPolicySaveValidator(compute, owner);
+      if (!validate) {
+        return undefined;
+      }
+      const authority = readGrantAuthority(namespaceId, admission);
+      if (authority === undefined) {
+        return undefined;
+      }
+      const configuration = dependencies.configurationDriver();
+      const { resolveBindings } = admission.policy;
+      const topology = await readRepositoryEditTopology(agent, resolveHarness, canRead, {
+        configurationOwnership: (id) =>
+          "audit" in state
+            ? state.configurations.lockConfiguration(namespaceId, id)
+            : state.configurations.findConfiguration(namespaceId, id),
+        configuration: async (metadata) =>
+          exactConfiguration(
+            await driverOperation(() =>
+              configuration.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
+            ),
+            metadata,
+          ),
+        credentialSource: (id) =>
+          "audit" in state
+            ? state.credentialSources.lockCredentialSource(namespaceId, id)
+            : state.credentialSources.findCredentialSource(namespaceId, id),
+      });
+      if (!topology) {
+        return undefined;
+      }
+      const { harness, source } = topology;
+      const sourceDriver = dependencies.credentialSourceOwner(source).driver;
+      const resolve = () => resolveRepositoryBindings(namespaceId, bindings, "saved", admission);
+      const repository = resolve();
+      if (!repository) {
+        return undefined;
+      }
+      const ownerSelected = () =>
+        repository.unchanged() && admission.policy.resolveBindings === resolveBindings;
+      const ownersCurrent = () =>
+        ownerSelected() &&
+        isDeepStrictEqual(resolve()?.resolution, repository.resolution) &&
+        ownerSelected() &&
+        dependencies.selectedCompute() === compute &&
+        dependencies.selectedProxyOwner() === owner &&
+        dependencies.configurationDriver() === configuration &&
+        dependencies.credentialSourceOwner(source).driver === sourceDriver;
+      return validate(
+        harness,
+        source,
+        repository.resolution,
+        dependencies.repositoryNetworkPolicyCeiling,
+        authority,
+        version,
+        ownersCurrent,
+      );
+    } catch {
+      // Driver refusals can contain protected configuration and binding details.
+      return undefined;
+    }
   }
 
   return {
     namespaceRepositoryNetworkPolicyCeiling,
-    requireDeploymentRepositoryOwner,
+    qualifyRepositoryEdit,
     repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,
+    repositoryGrantAuthority: readGrantAuthority,
     bindInstallation,
     hasBuiltInRepositoryPolicy,
     builtInBackendDriver,

@@ -19,6 +19,7 @@ export const CreatePending = { ...story("namespaceCreatePending") };
 export const CreateUnknown = { ...story("namespaceCreateUnknown") };
 export const CreateSuccess = { ...story("namespaceCreateSuccess") };
 export const CreateUnreadable = { ...story("namespaceCreateUnreadable") };
+export const CreateAccessUnconfirmed = { ...story("namespaceCreateAccessUnconfirmed") };
 
 export const DeleteNamespace = { ...story("namespaceDelete") };
 export const DeleteConfirmation = { ...story("namespaceDeleteConfirmation") };
