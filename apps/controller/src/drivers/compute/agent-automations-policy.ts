@@ -5,21 +5,17 @@ import type {
   AgentRevision,
 } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
+import { AUTOMATION_NO_MCP_PLUGIN_IDS } from "./agent-automation-guard.ts";
 import {
   trustedAnonymousMcpEndpointDescriptor,
   type TrustedAnonymousMcpEndpoint,
 } from "./agent-automation-endpoints.ts";
 import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../gateway/agent-automations-runtime.ts";
 
-// These manifests contain no MCP declarations at the qualified OpenClaw source.
+export { AUTOMATION_NO_MCP_PLUGIN_IDS };
+
 // A nonempty native allowlist excludes other plugin IDs. Native slot/channel
 // exceptions and local load paths are refused below.
-export const AUTOMATION_NO_MCP_PLUGIN_IDS = Object.freeze([
-  "openai",
-  "codex",
-  "file-transfer",
-  "memory-core",
-] as const);
 const noMcpPluginIds = new Set<string>(AUTOMATION_NO_MCP_PLUGIN_IDS);
 const immutableImage = /^.+@sha256:[a-f0-9]{64}$/u;
 const literal = /^[A-Za-z][A-Za-z0-9_-]*$/u;

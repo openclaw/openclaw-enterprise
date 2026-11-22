@@ -1,4 +1,10 @@
-import { AUTOMATION_NO_MCP_PLUGIN_IDS } from "./agent-automations-policy.ts";
+// These bundled plugins contain no MCP declarations at the qualified OpenClaw source.
+export const AUTOMATION_NO_MCP_PLUGIN_IDS = Object.freeze([
+  "openai",
+  "codex",
+  "file-transfer",
+  "memory-core",
+] as const);
 
 export const AGENT_AUTOMATION_GUARD_VERSION = "oce-automation-origin-v1";
 

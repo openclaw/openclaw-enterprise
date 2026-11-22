@@ -2285,6 +2285,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [86, "CREATE TRIGGER"],
                 [85, "ALTER TABLE"],
                 [83, "GRANT"],
                 [82, "CREATE TRIGGER"],

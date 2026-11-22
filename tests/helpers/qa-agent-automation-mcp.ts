@@ -95,7 +95,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
   registerQaSecret(session.cookie);
   const headers = authenticatedHeaders(session, { origin: f.consoleUrl });
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}/automations`;
-  const pending = new Set<string>();
+  const pending = new Map<string, string>();
   const originalInstallation = structuredClone(f.configuration);
   let changedInstallation = false;
   async function request(
@@ -238,8 +238,24 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     assert.equal(response.status, 201, "OCC must admit a discovered, approved MCP grant");
     assert.ok(Check(AgentAutomationSchema, response.data));
     const job = response.data as AgentAutomationData;
-    pending.add(job.id);
+    pending.set(job.id, job.configRevision);
     return job;
+  }
+  async function retireMissingOneShot(job: AgentAutomationData) {
+    await f.waitFor(
+      "native one-shot disappearance",
+      async () => (await request("GET", `/${job.id}`)).status === 404 || undefined,
+      60_000,
+    );
+    // Native disappearance alone leaves the grant active. An authorized DELETE retires
+    // the ownership row while preserving the native NOT_FOUND response and run history.
+    const removed = await request(
+      "DELETE",
+      `/${job.id}?expectedConfigRevision=${encodeURIComponent(job.configRevision)}`,
+    );
+    assert.equal(removed.status, 404);
+    assert.equal((await request("GET", `/${job.id}/runs?limit=20`)).status, 200);
+    pending.delete(job.id);
   }
   async function waitRun(id: string) {
     return f.waitFor(
@@ -548,7 +564,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       assert.equal(admitted.status, 201, "a fresh session and restored exact grant must admit");
       assert.ok(Check(AgentAutomationSchema, admitted.data));
       const operatorJob = admitted.data as AgentAutomationData;
-      pending.add(operatorJob.id);
+      pending.set(operatorJob.id, operatorJob.configRevision);
       assert.ok(
         (await nativeJobs()).some(
           (job) => job.declarationKey === `occ-automation:${operatorJob.id}`,
@@ -711,12 +727,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       "service revocation must produce no accepted effect",
     );
     await denyService(false);
-    await f.waitFor(
-      "denied one-shot grant retirement",
-      async () => (await request("GET", `/${deniedJob.id}`)).status === 404 || undefined,
-      60_000,
-    );
-    pending.delete(deniedJob.id);
+    await retireMissingOneShot(deniedJob);
     const fireAt = Date.now() + 20_000;
     const revoked = await create("A deleted job must not call MCP", {
       schedule: { kind: "at", at: new Date(fireAt).toISOString() },
@@ -794,13 +805,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       native = await observer();
     }
 
-    // A completed one-shot can disappear natively before OCC retires its grant.
-    await f.waitFor(
-      "one-shot grant retirement",
-      async () => (await request("GET", `/${job.id}`)).status === 404 || undefined,
-      60_000,
-    );
-    pending.delete(job.id);
+    await retireMissingOneShot(job);
     const standing = await create("Paused standing grant", {
       enabled: false,
       schedule: { kind: "every", everyMs: 86_400_000 },
@@ -910,12 +915,25 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     const wider = structuredClone(currentConfig.values);
     wider.mcp.servers.approved.toolFilter.include.push("sibling_probe");
     wider.tools.gatewayPolicy.allow.push("approved__sibling_probe");
-    await f.api("PATCH", configPath, { values: wider });
-    const widened = await transport.rawRequest("POST", deployPath, { headers, timeout: 40_000 });
-    assert.equal(
-      widened.response.status,
-      409,
-      "an active paused grant must not gain a newly approved tool",
+    agent.configuration = await f.api("PATCH", configPath, { values: wider });
+    await native.close();
+    native = undefined;
+    await f.deployAndWait(agent);
+    native = await observer();
+    const widenedPage = await native.client.request<{ jobs: unknown[] }>("cron.list", {
+      includeDisabled: true,
+      includeDeliveryPreviews: false,
+      limit: 200,
+      offset: 0,
+    });
+    const persisted = widenedPage.jobs
+      .map(asRecord)
+      .filter((value) => value?.declarationKey === `occ-automation:${standing.id}`);
+    assert.equal(persisted.length, 1, "the standing job must survive the successor revision");
+    assert.deepEqual(
+      asRecord(persisted[0]!.payload)?.toolsAllow,
+      ["approved__parity_probe"],
+      "a wider successor catalog must not widen the captured native cap",
     );
     const narrower = structuredClone(currentConfig.values);
     narrower.tools.gatewayPolicy.allow = [];
@@ -979,18 +997,18 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     failures.push(error);
   }
   try {
-    for (const id of pending) {
+    for (const [id, lastRevision] of pending) {
       const current = await request("GET", `/${id}`);
-      if (current.status === 404) {
-        continue;
+      let revision = lastRevision;
+      if (current.status !== 404) {
+        assert.ok(Check(AgentAutomationSchema, current.data));
+        revision = (current.data as AgentAutomationData).configRevision;
       }
-      assert.ok(Check(AgentAutomationSchema, current.data));
-      const revision = (current.data as AgentAutomationData).configRevision;
       const result = await request(
         "DELETE",
         `/${id}?expectedConfigRevision=${encodeURIComponent(revision)}`,
       );
-      assert.equal(result.status, 204);
+      assert.equal(result.status, current.status === 404 ? 404 : 204);
     }
   } catch (error) {
     failures.push(error);
