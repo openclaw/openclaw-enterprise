@@ -40,7 +40,7 @@ is administrator-injected text; it does not prove model generation.
 Regenerate it from an available immutable image with native profile support:
 
 ```sh
-node scripts/generate-native-profile-state-fixture.mjs \
+node scripts/generate-native-profile-state-fixture.ts \
   --image '<runtime-repository>@sha256:<digest>' \
   --out /tmp/native-profile-fixture
 ```

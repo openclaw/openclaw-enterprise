@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-21
+last_updated_session: authoring-run/16cfa409-7c14-4f52-9167-3e897f919125
 ---
 
 # Harness Authentication Binding Flow
@@ -37,7 +37,7 @@ graph TD
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
   S --> T["Check gateway readiness; model auth remains unverified"]
-  TS["Internal TokenService registration"] --> B
+  TS["Public TokenService Source enrollment"] --> B
   B -->|TokenService delivery unavailable| TSX["409 before Agent revision"]
   B -->|supported binding| C["Authorize and freeze binding in Agent revision"]
   C --> D["Worker rechecks grants and source ownership"]
@@ -96,12 +96,12 @@ Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
 
-Agent create and PATCH can also save a ready, [internally registered TokenService source](token-service-static-custody.md).
+Agent create and PATCH can also save a ready [TokenService Source](token-service-static-custody.md) enrolled through the public API.
 The caller must have exact source `operate`, the source must belong to the Agent's
 Namespace, and the selected TokenService must own its recorded instance. The same
 source must be selected by `harnessAuth` and listed in `credentialSources`; a
-TokenService source cannot be attached for another use. Public enrollment and
-picker discovery remain unavailable.
+TokenService Source cannot be attached for another use. Console picker discovery
+remains unavailable.
 
 When PATCH changes Harness authentication but keeps the source list, OCC checks
 the previous Harness source without taking a source row lock. If that source
@@ -130,7 +130,7 @@ dedicated Codex and the paired Sandbox and Credential Gateway. Deployment and
 guided provisioning reject unsupported combinations before admitting work or
 stopping predecessors.
 
-For an internal TokenService source, deployment rechecks the caller's and Agent
+For a TokenService Source, deployment rechecks the caller's and Agent
 principal's exact source `operate`, then returns `409` before saving an Agent
 revision because this owner has no revision delivery path. When Native IAM gives
 the Agent principal a missing source grant during deployment, the refusal rolls
@@ -330,12 +330,16 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 
 ## Changelog
 
+- 2026-11-21 11:45: Preserve the extracted Agent flow and public Source enrollment link. (authoring-run/16cfa409-7c14-4f52-9167-3e897f919125 - 7533013d1061c433e27883818cf69f955239c43f)
+
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 
 - 2026-11-20 16:18: Update source pointers for the device login workflow. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
+
+- 2026-11-20 16:18: Link public TokenService Source enrollment and preserve the staged delivery limit. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 27b47ccbf7223c303b844af151c9712082380919)
 
 - 2026-11-20 06:28: Trace retained Harness source checks and failed deploy grant rollback. (authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd - 0d220dfad528032b978eaa8e9cb55885686add44)
 

@@ -6,6 +6,7 @@ import {
   assertOpenShellModelId,
   normalizeOpenShellModelId,
 } from "../../scripts/ci/openshell-model-inputs.ts";
+import { openShellGatewayErrorForm } from "../../scripts/ci/reporter-measurements.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
@@ -5330,7 +5331,12 @@ async function requestGatewayTurns(context, topology, harnessId, recordCheckpoin
       recordCheckpoint?.("credential-absence", nonces.length);
       assert.equal(body.includes(modelCredential), false);
       assert.equal(body.includes(gatewayPassword), false);
-      recordCheckpoint?.("http-status", nonces.length, response.status);
+      recordCheckpoint?.(
+        "http-status",
+        nonces.length,
+        response.status,
+        openShellGatewayErrorForm(response, body),
+      );
       if (response.status !== 200) {
         request.finishedAtMs = Date.now();
         const diagnostic = await gatewayTurnFailureDiagnostic(topology, gatewayPassword).catch(
@@ -9768,6 +9774,7 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
+            enableCompatibilityBridges: false,
             observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
@@ -9897,7 +9904,7 @@ export function registerProviderLifecycleTest(workflow) {
               context,
               topology,
               "codex",
-              (checkpoint, turn, status) => {
+              (checkpoint, turn, status, replyForm) => {
                 if (checkpoint === null) {
                   failure = null;
                   return;
@@ -9905,6 +9912,7 @@ export function registerProviderLifecycleTest(workflow) {
                 failure = {
                   checkpoint,
                   turn,
+                  replyForm,
                   status:
                     Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
                 };
