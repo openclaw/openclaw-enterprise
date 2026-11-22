@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -689,6 +690,75 @@ test(
       result.includes("digest=" + createHash("sha256").update(payload).digest("hex")),
       result,
     );
+  },
+);
+
+test(
+  "policy proxy connections release capacity after upstream EOF with half-open clients",
+  { timeout: 15000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "strands-policy-capacity-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const request = "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n";
+    const refusal = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let requests = 0;
+    const upstream = createTcpServer((socket) => {
+      socket.on("error", () => socket.destroy());
+      socket.once("data", () => {
+        requests++;
+        socket.end(refusal);
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    t.after(() => upstream.close());
+
+    const manifest = join(directory, "manifest.json");
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        command: ["/bin/sh", "-c", 'printf "%s\\n" "$HTTP_PROXY" >&2; exec /bin/sleep 15'],
+        environment: {},
+        workspace: directory,
+        port: 1,
+      }),
+    );
+    const inner = spawn(
+      process.execPath,
+      [new URL("../../deploy/runtime/strands-box/inner.mjs", import.meta.url).pathname, manifest],
+      {
+        env: { HTTPS_PROXY: "http://127.0.0.1:" + tcpPort(upstream) },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    t.after(() => inner.kill());
+    const output = createInterface({ input: inner.stderr });
+    t.after(() => output.close());
+    const [proxyUrl]: unknown[] = await once(output, "line");
+    assert.ok(typeof proxyUrl === "string");
+    const proxy = new URL(proxyUrl);
+
+    const attempts = MAX_CHANNELS * 2 + 4;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const client = connect({
+        host: proxy.hostname,
+        port: Number(proxy.port),
+        allowHalfOpen: true,
+      });
+      // Keep the write half open after the proxy sends EOF, until all attempts complete.
+      t.after(() => client.destroy());
+      client.setEncoding("utf8");
+      let response = "";
+      client.on("data", (chunk: string) => {
+        response += chunk;
+      });
+      client.setTimeout(3000, () => client.destroy(new Error("Timed out waiting for proxy EOF")));
+      const ended = once(client, "end");
+      client.write(request);
+      await ended;
+      client.setTimeout(0);
+      assert.equal(response, refusal, `request ${attempt}`);
+    }
+    assert.equal(requests, attempts);
   },
 );
 

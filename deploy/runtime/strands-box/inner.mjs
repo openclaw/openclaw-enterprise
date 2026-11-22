@@ -164,8 +164,10 @@ const proxy = createServer((socket) => {
     proxySockets.add(upstream);
     upstream.once("close", () => {
       proxySockets.delete(upstream);
-      // pipe() ends the downstream socket after flushing a complete response.
-      if (!upstream.readableEnded) {
+      if (upstream.readableEnded) {
+        // Flush the complete response and release capacity even if the client keeps writing.
+        socket.destroySoon();
+      } else {
         socket.destroy();
       }
     });
