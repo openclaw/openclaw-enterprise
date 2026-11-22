@@ -426,3 +426,4 @@ export {
   agentAutomationGrantSupported,
   validAgentAutomationToolGrant,
 } from "./agent-automation-policy.ts";
+export { hasOnlyScopedRepositoryRevisions } from "./repository-network-policy.ts";

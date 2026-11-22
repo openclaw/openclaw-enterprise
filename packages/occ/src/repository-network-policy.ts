@@ -1,3 +1,4 @@
+import type { AgentRevisionRead } from "@openclaw-enterprise/contracts";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
 
@@ -123,4 +124,18 @@ export function delegatedRepositoryCeiling(
     // Keep saved grants readable for withdrawal if delegated approvals cannot be checked.
     return [];
   }
+}
+
+// Stop retires the active pointer. A provider can still complete an earlier
+// unscoped write after its Worker loses the claim. Retained revisions identify
+// every deployment that could have targeted this Agent's shared resources.
+export function hasOnlyScopedRepositoryRevisions(
+  history: readonly Readonly<AgentRevisionRead>[],
+): boolean {
+  return history.every(
+    (revision, index) =>
+      !("configurationReadError" in revision) &&
+      revision.revision === index + 1 &&
+      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+  );
 }

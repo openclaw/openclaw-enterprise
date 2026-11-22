@@ -103,9 +103,40 @@ async function verifyLiveApplicationSnapshot(
   assert.deepEqual(await readPolicy(), applied);
 }
 
+function protectedSuccessor(revision: AgentRevision, installationId: string): AgentRevision {
+  const id = `rev_${randomUUID()}`;
+  assert.ok(revision.sandboxDriverId);
+  return {
+    ...revision,
+    id,
+    revision: revision.revision + 1,
+    executionAdmission: { version: 3, mode: "protected" },
+    egressPlan: {
+      id: "repository-policy-protected-plan",
+      generation: 1,
+      execution: {
+        installationId,
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: id,
+        servicePrincipalId: revision.servicePrincipalId,
+        executionId: randomUUID(),
+      },
+      sandboxDriverId: revision.sandboxDriverId,
+      egressDriverId: "test-egress",
+      driver: {
+        id: "test-egress",
+        implementation: "test",
+        configurationId: "a".repeat(64),
+      },
+      routes: [],
+    },
+  };
+}
+
 export async function verifyMemoryRepositoryPolicyPersistence(): Promise<void> {
   const state = new InMemoryPlatformState();
-  const { namespace, agent, revision } = await seedPlatformState(state);
+  const { installation, namespace, agent, revision } = await seedPlatformState(state);
   await verifyLiveApplicationSnapshot(state, namespace.id, agent.id, revision.id);
 
   const nextRevision = { ...revision, id: `rev_${randomUUID()}`, revision: revision.revision + 1 };
@@ -127,22 +158,25 @@ export async function verifyMemoryRepositoryPolicyPersistence(): Promise<void> {
     desired,
   );
 
-  // Saving a policy cannot enable a scoped revision or admit an unscoped successor.
-  for (const input of [
-    nextRevision,
-    { ...nextRevision, sandboxDriverId: snapshot.driverId, sandboxPolicy: snapshot },
-  ]) {
-    await assert.rejects(
-      state.transact((unit) => unit.revisions.createRevision(input)),
-      ScopeViolationError,
-    );
-  }
-  assert.equal(
-    await state.read((view) =>
-      view.revisions.findRevision(namespace.id, agent.id, nextRevision.id),
-    ),
-    undefined,
-  );
+  const createRevision = (input: AgentRevision) =>
+    state.transact((unit) => unit.revisions.createRevision(input));
+  const readRevision = (id: string) =>
+    state.read((view) => view.revisions.findRevision(namespace.id, agent.id, id));
+
+  // An empty grant list still requires a scoped snapshot and enforcement.
+  await assert.rejects(createRevision(nextRevision), ScopeViolationError);
+  assert.equal(await readRevision(nextRevision.id), undefined);
+  const scoped = { ...nextRevision, sandboxDriverId: snapshot.driverId, sandboxPolicy: snapshot };
+  const created = await createRevision(scoped);
+  assert.deepEqual(await readRevision(scoped.id), created);
+  assert.deepEqual(created.sandboxPolicy?.repositoryNetworkPolicy, denyAll);
+
+  const protectedRevision = protectedSuccessor(scoped, installation.id);
+  await assert.rejects(createRevision(protectedRevision), {
+    name: ScopeViolationError.name,
+    message: /Repository network policy requires unprotected execution/,
+  });
+  assert.equal(await readRevision(protectedRevision.id), undefined);
 }
 
 export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<void> {
@@ -167,17 +201,33 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   assert.ok(original);
   assert.equal(Object.hasOwn(original, "repositoryNetworkPolicy"), false);
 
-  const {
-    rows: [stored],
-  } = await pool.query<{
-    admitted_spec: {
-      execution_admission: unknown;
-      harness_auth: Record<string, unknown>;
-    };
-  }>("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id]);
-  assert.ok(stored);
-  assert.deepEqual(stored.admitted_spec.execution_admission, revision.executionAdmission);
-  const insertStoredRevision = storedRevisionWriter(pool, revision.id);
+  const readStoredSpec = async (id: string) => {
+    const {
+      rows: [row],
+    } = await pool.query<{
+      admitted_spec: {
+        execution_admission: unknown;
+        harness_auth: Record<string, unknown>;
+        egress_plan?: unknown;
+      };
+    }>("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [id]);
+    assert.ok(row);
+    return row.admitted_spec;
+  };
+  const stored = await readStoredSpec(revision.id);
+  assert.deepEqual(stored.execution_admission, revision.executionAdmission);
+  const insertStoredRevision = (
+    candidate: Pick<AgentRevision, "id" | "revision">,
+    spec: Record<string, unknown>,
+  ) =>
+    pool.query(
+      `INSERT INTO occ.agent_revisions
+        (id,namespace_id,agent_id,revision_number,backend_id,admitted_spec,gateway_managed_mode,admitted_at)
+       SELECT $1,namespace_id,agent_id,$2,backend_id,
+         admitted_spec || $3::jsonb,gateway_managed_mode,now()
+       FROM occ.agent_revisions WHERE id=$4`,
+      [candidate.id, candidate.revision, JSON.stringify(spec), revision.id],
+    );
   const readerVersionConstraint = "agent_revisions_repository_policy_reader_version";
   await assert.rejects(
     insertStoredRevision(
@@ -262,84 +312,94 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
     sandboxDriverId: baseSnapshot.driverId,
     sandboxPolicy: { ...baseSnapshot, repositoryNetworkPolicy: admitted },
   };
+  const createRevision = (input: AgentRevision) =>
+    state.transact((unit) => unit.revisions.createRevision(input));
+  await assert.rejects(createRevision(nextRevision), ScopeViolationError);
+  assert.equal(await readRevision(nextRevision.id), undefined);
+  await assert.rejects(
+    createRevision({
+      ...scopedUnprotectedRevision,
+      sandboxPolicy: {
+        ...baseSnapshot,
+        repositoryNetworkPolicy: { ...admitted, identity: "stale" },
+      },
+    }),
+    ScopeViolationError,
+  );
+
+  const marker = { repositoryNetworkPolicyVersion: admitted.version };
+  const storedAdmission = { ...scopedUnprotectedRevision.executionAdmission, ...marker };
+  // The storage-only marker must never become part of the public execution admission.
+  await assert.rejects(
+    createRevision({ ...scopedUnprotectedRevision, executionAdmission: storedAdmission }),
+    ScopeViolationError,
+  );
+  const scoped = await createRevision(scopedUnprotectedRevision);
+  assert.deepEqual((await readStoredSpec(scoped.id)).execution_admission, storedAdmission);
+  assert.deepEqual(await readRevision(scoped.id), scoped);
+  assert.deepEqual(scoped.executionAdmission, revision.executionAdmission);
+  assert.deepEqual(scoped.sandboxPolicy?.repositoryNetworkPolicy, admitted);
+
   const installation = await state.loadInstallation();
   assert.ok(installation);
-  const protectedId = `rev_${randomUUID()}`;
-  const scopedProtectedRevision: AgentRevision = {
-    ...scopedUnprotectedRevision,
-    id: protectedId,
-    revision: scopedUnprotectedRevision.revision + 1,
-    executionAdmission: { version: 3, mode: "protected" },
-    egressPlan: {
-      id: "repository-policy-protected-plan",
-      generation: 1,
-      execution: {
-        installationId: installation.id,
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        revisionId: protectedId,
-        servicePrincipalId: revision.servicePrincipalId,
-        executionId: randomUUID(),
-      },
-      sandboxDriverId: baseSnapshot.driverId,
-      egressDriverId: "test-egress",
-      driver: {
-        id: "test-egress",
-        implementation: "test",
-        configurationId: "a".repeat(64),
-      },
-      routes: [],
+  const protectedRevision = protectedSuccessor(scopedUnprotectedRevision, installation.id);
+  await assert.rejects(createRevision(protectedRevision), {
+    name: ScopeViolationError.name,
+    message: /Repository network policy requires unprotected execution/,
+  });
+  assert.equal(await readRevision(protectedRevision.id), undefined);
+
+  const scope = { sandbox_driver_id: baseSnapshot.driverId, sandbox_policy: scoped.sandboxPolicy };
+  const protectedSpec: Record<string, unknown> = {
+    ...scope,
+    egress_plan: protectedRevision.egressPlan,
+    harness_auth: {
+      ...stored.harness_auth,
+      protectedExecutionVersion: protectedRevision.executionAdmission.version,
     },
   };
-
-  // The storage adapter must refuse admission before it can return a revision for deployment.
-  for (const candidate of [nextRevision, scopedUnprotectedRevision, scopedProtectedRevision]) {
+  // Both scoped modes require the marker even when a row comes from a newer writer.
+  const ordinarySpec = { ...scope, execution_admission: scoped.executionAdmission };
+  const ordinaryProbe = { id: `rev_${randomUUID()}`, revision: protectedRevision.revision + 1 };
+  await assert.rejects(insertStoredRevision(ordinaryProbe, ordinarySpec), {
+    code: "23514",
+    constraint: readerVersionConstraint,
+  });
+  await assert.rejects(
+    insertStoredRevision(protectedRevision, {
+      ...protectedSpec,
+      execution_admission: protectedRevision.executionAdmission,
+    }),
+    { code: "23514", constraint: readerVersionConstraint },
+  );
+  for (const repositoryNetworkPolicyVersion of [2, null, "1"]) {
     await assert.rejects(
-      state.transact((unit) => unit.revisions.createRevision(candidate)),
-      ScopeViolationError,
-    );
-    assert.equal(await readRevision(candidate.id), undefined);
-  }
-
-  for (const scoped of [scopedUnprotectedRevision, scopedProtectedRevision]) {
-    const spec: Record<string, unknown> = {
-      sandbox_driver_id: scoped.sandboxDriverId,
-      sandbox_policy: scoped.sandboxPolicy,
-      ...(scoped.egressPlan === undefined
-        ? {}
-        : {
-            egress_plan: scoped.egressPlan,
-            harness_auth: {
-              ...stored.admitted_spec.harness_auth,
-              protectedExecutionVersion: scoped.executionAdmission.version,
-            },
-          }),
-    };
-    // The database rejects a scoped snapshot if it would appear readable to
-    // an older worker. The positive insert below proves the reader refusal is
-    // independent of the constraints and rejects an otherwise valid row.
-    await assert.rejects(
-      insertStoredRevision(scoped, { ...spec, execution_admission: scoped.executionAdmission }),
+      insertStoredRevision(ordinaryProbe, {
+        ...ordinarySpec,
+        execution_admission: { ...storedAdmission, repositoryNetworkPolicyVersion },
+      }),
       { code: "23514", constraint: readerVersionConstraint },
     );
-    assert.equal(
-      (
-        await insertStoredRevision(scoped, {
-          ...spec,
-          execution_admission: {
-            ...scoped.executionAdmission,
-            repositoryNetworkPolicyVersion: admitted.version,
-          },
-        })
-      ).rowCount,
-      1,
-    );
-    await assert.rejects(readRevision(scoped.id), (error: unknown) => {
-      assert.ok(error instanceof PersistedStateInvalidError);
-      assert.match(error.message, /Persisted AgentRevision execution admission/);
-      return true;
-    });
   }
+  await assert.rejects(
+    insertStoredRevision(ordinaryProbe, {
+      ...ordinarySpec,
+      execution_admission: { ...storedAdmission, unexpected: true },
+    }),
+    { code: "23514", constraint: "agent_revisions_execution_admission" },
+  );
+  // A valid future row passes the database constraints but remains unreadable
+  // to this State adapter until Worker can enforce scoped protected execution.
+  const result = await insertStoredRevision(protectedRevision, {
+    ...protectedSpec,
+    execution_admission: { ...protectedRevision.executionAdmission, ...marker },
+  });
+  assert.equal(result.rowCount, 1);
+  await assert.rejects(readRevision(protectedRevision.id), (error: unknown) => {
+    assert.ok(error instanceof PersistedStateInvalidError);
+    assert.match(error.message, /Persisted AgentRevision execution admission/);
+    return true;
+  });
 
   const denyAll = { ...desired, version: desired.version + 1, repositoryNetworkPolicy: [] };
   // The user can withdraw existing grants even after losing the Sandbox Driver.
@@ -361,6 +421,34 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   assert.equal(
     (await readRevision(revision.id))?.sandboxPolicy?.repositoryNetworkPolicy,
     undefined,
+  );
+  assert.deepEqual(
+    (await readRevision(scoped.id))?.sandboxPolicy?.repositoryNetworkPolicy,
+    admitted,
+  );
+
+  const admittedDenyAll = snapshotPolicy([]);
+  assert.ok(admittedDenyAll);
+  const denyAllRevision: AgentRevision = {
+    ...scopedUnprotectedRevision,
+    id: `rev_${randomUUID()}`,
+    revision: protectedRevision.revision + 1,
+    sandboxPolicy: { ...baseSnapshot, repositoryNetworkPolicy: admittedDenyAll },
+  };
+  // Even with the correct grants and identity, admission must use the saved version.
+  await assert.rejects(createRevision(denyAllRevision), ScopeViolationError);
+  const denied = await createRevision({
+    ...denyAllRevision,
+    sandboxPolicy: {
+      ...baseSnapshot,
+      version: denyAll.version,
+      repositoryNetworkPolicy: admittedDenyAll,
+    },
+  });
+  assert.deepEqual((await readStoredSpec(denied.id)).execution_admission, storedAdmission);
+  assert.deepEqual(
+    (await readRevision(denied.id))?.sandboxPolicy?.repositoryNetworkPolicy,
+    admittedDenyAll,
   );
 }
 
@@ -483,23 +571,16 @@ export async function editStoredRepositoryGrants(
   assert.equal(activated.rowCount, 1);
   const revisionRead = () =>
     state.read((view) => view.revisions.findRevision(namespace.id, agent.id, id));
-  await assert.rejects(revisionRead(), PersistedStateInvalidError);
+  assert.deepEqual(
+    (await revisionRead())?.sandboxPolicy?.repositoryNetworkPolicy,
+    snapshotPolicy(grants),
+  );
   const observed = await view();
   assert.deepEqual(observed.policy, preserved);
   assert.equal(observed.repositoryNetworkPolicySaveSupported, true);
-  assert.equal(observed.defaults, null);
-  assert.equal(observed.protectedExecution, null);
-  assert.equal(observed.capability, null);
-  assert.match(observed.unavailableReason, /cannot read the active revision/);
-  assert.equal(observed.defaultsRevisionId, undefined);
-  assert.equal(observed.deployedPolicyVersion, undefined);
-  const edit = await inject("PUT", path, {
-    expectedVersion: preserved.version,
-    additions: [addition],
-  });
-  assert.equal(edit.statusCode, 409, edit.body);
-  assert.equal(edit.json().error.message, observed.unavailableReason);
-  assert.deepEqual(await stored(), preserved);
+  assert.deepEqual(observed.defaults, revision.sandboxPolicy.defaults);
+  assert.equal(observed.defaultsRevisionId, id);
+  assert.equal(observed.deployedPolicyVersion, preserved.version);
   const apply = await inject("POST", path + "/apply", {
     expectedVersion: preserved.version,
     revisionId: id,
@@ -532,7 +613,10 @@ export async function editStoredRepositoryGrants(
   };
   assert.deepEqual(await stored(), cleared);
   assert.deepEqual(await read(), cleared);
-  await assert.rejects(revisionRead(), PersistedStateInvalidError);
+  assert.deepEqual(
+    (await revisionRead())?.sandboxPolicy?.repositoryNetworkPolicy,
+    snapshotPolicy(grants),
+  );
   const regrant = await inject("PUT", path, {
     ...withdrawal,
     expectedVersion: cleared.version,

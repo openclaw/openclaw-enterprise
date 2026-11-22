@@ -1,6 +1,7 @@
 import { validAgentAutomationToolGrant } from "../agent-automation-policy.ts";
 import type { AgentAutomationOwnership } from "@openclaw-enterprise/contracts";
 import type { AgentAutomationRepository } from "../ports/agent-automations.ts";
+import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -3496,11 +3497,19 @@ function repositories(
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
       await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
       const key = agentKey(revision.namespaceId, revision.agentId);
+      const policy = snapshot.sandboxPolicies.get(key);
+      const grants = policy?.repositoryNetworkPolicy;
+      const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      if (admittedPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
+        throw new ScopeViolationError("Repository network policy requires unprotected execution.");
+      }
       if (
-        snapshot.sandboxPolicies.get(key)?.repositoryNetworkPolicy !== undefined ||
-        revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
       ) {
-        throw new ScopeViolationError("Repository network policy revisions are unsupported.");
+        throw new ScopeViolationError(
+          "Revision repository network policy must match the saved policy.",
+        );
       }
       const previous = snapshot.revisions.get(key) ?? [];
       if (previous.some((existing) => existing.id === revision.id)) {

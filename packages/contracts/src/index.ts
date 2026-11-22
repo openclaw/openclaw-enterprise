@@ -1566,6 +1566,7 @@ export type {
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
+  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,
@@ -1821,3 +1822,4 @@ export type {
   AgentAutomationSummary,
   AgentAutomationRunsPage,
 } from "./api/agent-automations.ts";
+export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";

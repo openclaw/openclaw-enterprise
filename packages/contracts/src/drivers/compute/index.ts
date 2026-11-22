@@ -38,7 +38,11 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
+import type {
+  ProtectedRepositoryNetworkPolicyContext,
+  SandboxNamespaceContext,
+  SandboxHarnessObservation,
+} from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 import type { AgentAutomationToolGrant } from "../../agent-automations.ts";
 
@@ -258,6 +262,13 @@ export interface ComputeDriver extends Driver {
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;
+  /**
+   * Side-effect-free check that Compute preserves the explicit repository policy boundary
+   * on the selected execution topology. Throw or reject for an unsupported topology.
+   */
+  validateProtectedRepositoryNetworkPolicy?(
+    context: ProtectedRepositoryNetworkPolicyContext,
+  ): void | Promise<void>;
   /**
    * After release is refused, select a withdrawal only for a grant this Compute previously
    * admitted. Selection is side-effect free. The worker runs the withdrawal under the active

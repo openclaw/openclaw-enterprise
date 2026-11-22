@@ -170,6 +170,11 @@ Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository del
 
 PUT preserves omitted `repositoryNetworkPolicy`. To withdraw an existing policy's grants, submit `additions: []` and `repositoryNetworkPolicy: []` with `expectedVersion`, editing enabled and normal authorization. Withdrawal remains available after Driver capability loss. First saves and edits that grant access require further Driver support. Explicit policies, including `[]`, block deployment before credential provisioning and block live application. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
 
+After refusing a scoped replacement before its first provider call, the Worker
+can maintain the serving predecessor if the deployment has no earlier attempt.
+If earlier work could have changed the Gateway, the Worker keeps that repair
+blocked. Stop the Agent and confirm its workload has retired.
+
 ## Denials and recommendations
 
 The console's **Policy denials** tab uses the existing bounded, exact-revision
