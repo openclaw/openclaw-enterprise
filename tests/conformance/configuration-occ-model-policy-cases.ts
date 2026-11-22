@@ -309,7 +309,9 @@ export function registerConfigurationModelPolicyCases(): void {
         `Configuration setting ${path} restricts Claude Code's native file or web tools, which the Claude Code agent runtime ignores: remove the restriction or use the default agent runtime.`,
       );
     const natives = ["group:fs", "group:web"];
-    for (const [tools, path] of [
+    type Tools = OpenClawConfigurationDocument;
+    type Entries = OpenClawConfigurationDocument | undefined;
+    const refused: [Tools, string][] = [
       [{ deny: ["write"] }, "tools.deny"],
       [{ deny: ["exec", "Edit"] }, "tools.deny"],
       [{ deny: ["web_*"] }, "tools.deny"],
@@ -328,10 +330,11 @@ export function registerConfigurationModelPolicyCases(): void {
         { byProvider: { "anthropic/claude-sonnet-4-5": { allow: ["read"] } } },
         'tools.byProvider["anthropic/claude-sonnet-4-5"].allow',
       ],
-    ]) {
+    ];
+    for (const [tools, path] of refused) {
       assert.throws(() => resolveConfiguredAgentRuntimeId(claudeCode({ tools })), refusal(path));
     }
-    for (const [tools, entries, path] of [
+    const refusedEntries: [Tools, Entries, string][] = [
       [{}, { ops: { tools: { deny: ["write"] } } }, "agents.entries.ops.tools.deny"],
       // The entry's profile and alsoAllow each fall back to the top-level one.
       [{}, { ops: { tools: { profile: "minimal" } } }, "agents.entries.ops.tools.profile"],
@@ -345,13 +348,14 @@ export function registerConfigurationModelPolicyCases(): void {
         { ops: {} },
         "tools.byProvider.anthropic.profile",
       ],
-    ]) {
+    ];
+    for (const [tools, entries, path] of refusedEntries) {
       assert.throws(
         () => resolveConfiguredAgentRuntimeId(claudeCode({ tools }, entries)),
         refusal(path),
       );
     }
-    for (const [tools, entries] of [
+    const admitted: [Tools, Entries][] = [
       [{ deny: ["exec", "process"] }, undefined],
       [{ deny: ["bash", "sessions_*", "group:runtime"] }, undefined],
       [{ allow: ["*"] }, undefined],
@@ -364,7 +368,8 @@ export function registerConfigurationModelPolicyCases(): void {
       [{ byProvider: { openai: { deny: ["write"] } } }, undefined],
       [{ profile: "minimal" }, { ops: { tools: { profile: "full" } } }],
       [{ profile: "minimal" }, { ops: { tools: { alsoAllow: natives } } }],
-    ]) {
+    ];
+    for (const [tools, entries] of admitted) {
       assert.equal(resolveConfiguredAgentRuntimeId(claudeCode({ tools }, entries)), "claude-cli");
     }
     // A long byProvider key is cut so the refusal stays within the error contract's cap.
@@ -390,14 +395,18 @@ export function registerConfigurationModelPolicyCases(): void {
   test("Compute recognises a Claude Code selection without resolving the model policy", () => {
     // The lenient scan runs before validation, so partial or conflicting documents still answer.
     for (const values of [
-      { agents: { defaults: { models: { "anthropic/x": { agentRuntime: { id: "claude-cli" } } } } } },
+      {
+        agents: { defaults: { models: { "anthropic/x": { agentRuntime: { id: "claude-cli" } } } } },
+      },
       {
         agents: {
           entries: { ops: { models: { "anthropic/x": { agentRuntime: { id: "claude-cli" } } } } },
         },
       },
       { models: { providers: { anthropic: { agentRuntime: { id: "claude-cli" } } } } },
-      { models: { providers: { anthropic: { models: [{ agentRuntime: { id: "claude-cli" } }] } } } },
+      {
+        models: { providers: { anthropic: { models: [{ agentRuntime: { id: "claude-cli" } }] } } },
+      },
     ]) {
       assert.equal(selectsClaudeCodeRuntime(values), true);
     }

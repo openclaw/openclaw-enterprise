@@ -58,19 +58,11 @@ graph TD
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`
-(`packages/occ/src/configured-harness.ts:resolveConfiguredAgentRuntimeId`),
+OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`,
 and validates primary/fallback routes and Harness modes. Fallbacks preserve native order,
 primary provider and Harness. Only unambiguous built-in configuration defaults
-to embedded OpenClaw. The `claude-cli` runtime (Claude Code) needs an `anthropic/*`
-model and embedded execution and maps to the `openclaw` Harness
-(`harnessIdForAgentRuntime`). Compute's `harnessAuthEnvironment` passes
-`OPENCLAW_HARNESS_AGENT_RUNTIME` and `OCE_AGENT_RUNTIME_TELEMETRY` to the gateway.
-The `prepare-claude-code-settings` init container (`CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT`)
-writes Claude Code's managed settings and configuration skeleton to a memory volume,
-mounted read-only at `/etc/claude-code` and `/home/node/.claude`;
-`verifyClaudeCodeRuntime` checks both. Transcripts use the `claude-projects` subPath.
-See the [Claude Code runtime](../reference/claude-code-runtime.md).
+to embedded OpenClaw. `claude-cli` ([Claude Code](../reference/claude-code-runtime.md)) needs an
+`anthropic/*` model and embedded OpenClaw.
 Missing/ambiguous policies, unsupported IDs and incompatible modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
@@ -360,8 +352,6 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-11-22 12:00: Trace the Claude Code agent runtime (`claude-cli`). (feat/claude-code-harness)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
