@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
+import {
+  checkDedicatedHarnessClaim,
+  checkPinnedScratchAdmission,
+  checkScratchRequirements,
+} from "./kubernetes-workspace-storage-cases.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { routedRevision, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 
-const claimVolume = "openclaw-workspace";
 const nodeName = "workspace-node-111111111111-222222222222";
-const nodePath = "/home/node/.openclaw-node";
-const homePath = "/home/node/.codex";
 const owner = { namespaceId: "ns-test", agentId: "agent-test", revisionId: "revision-test" };
 const setup = {
   id: "setup-test",
@@ -24,35 +22,26 @@ const setup = {
 
 function render(loginMode, node, initialSetup, environment = {}, scratch) {
   const driver = createTestKubernetesComputeDriver("harness-workspace", { channelRuntime: true });
-  const deployment = driver.deployment(
-    "test-agent",
-    owner,
-    { name: "test", plane: "control" },
-    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    "agent",
-    "agent",
+  const deployment = driver.deployment({
+    name: "test-agent",
+    ownership: owner,
+    namespace: { name: "test", plane: "control" },
+    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "agent",
+    role: "agent",
     environment,
-    "info",
-    undefined,
-    false,
-    undefined,
-    { loginMode, environment: [] },
-    [],
-    [],
-    undefined,
-    [],
-    initialSetup ? setup : undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
+    loggingLevel: "info",
+    harnessAuth: { loginMode, environment: [] },
+    enabledChannels: [],
+    workspaceSetup: initialSetup ? setup : undefined,
+    codexLaunch: {
       providerOwned: scratch !== undefined,
       protected: false,
       withNode: node === "setup-file",
       workspaceSetup: initialSetup,
     },
     scratch,
-  );
+  });
   const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
   if (node === "setup-file") {
     driver.addWorkspaceNode(deployment, nodeName, undefined, revision, true);
@@ -63,149 +52,28 @@ function render(loginMode, node, initialSetup, environment = {}, scratch) {
   return { driver, deployment, pod: deployment.spec.template.spec };
 }
 
-test("dedicated Harness shares one claim while preserving private subpaths", async (t) => {
-  for (const loginMode of ["api_key", "codex_pat", "chatgptAuthTokens"]) {
-    for (const node of ["none", "setup-file", "native"]) {
-      for (const initialSetup of [false, true]) {
-        await t.test(`${loginMode} ${node} setup=${initialSetup}`, () => {
-          const { pod } = render(loginMode, node, initialSetup);
-          const claimVolumes = pod.volumes.filter((volume) => volume.persistentVolumeClaim);
-          assert.equal(claimVolumes.length, 1, "one volume for the Harness claim");
-          assert.equal(claimVolumes[0].name, claimVolume);
-          const volumeNames = new Set(pod.volumes.map(({ name }) => name));
-          assert.equal(volumeNames.size, pod.volumes.length);
-          for (const container of [...pod.initContainers, ...pod.containers]) {
-            for (const mount of container.volumeMounts) {
-              assert(volumeNames.has(mount.name), `dangling mount ${mount.name}`);
-            }
-          }
-          const mounts = pod.containers[0].volumeMounts;
-          const workspaceMounts = mounts.filter(({ name }) => name === claimVolume);
-          const expected = [
-            ["workspace", "/home/node/workspace"],
-            ["generated-images", "/home/node/.codex/generated_images"],
-            ["codex-sessions", "/home/node/.codex/sessions"],
-            ...(node === "none" ? [] : [[nodeName, nodePath]]),
-          ];
-          assert.deepEqual(
-            workspaceMounts.map(({ subPath, mountPath }) => [subPath, mountPath]),
-            expected,
-          );
-          // Authentication remains Pod-local for every supported login mode.
-          assert(!mounts.some(({ mountPath }) => mountPath === homePath));
-          assert(workspaceMounts.every(({ readOnly }) => readOnly === false));
-          const privateInit = pod.initContainers.find(
-            ({ name }) => name === "prepare-private-state",
-          );
-          assert.deepEqual(
-            privateInit.volumeMounts
-              .filter(({ name }) => name === claimVolume)
-              .map(({ mountPath, subPath }) => [mountPath, subPath]),
-            [["/harness-workspace-state", undefined]],
-          );
-          assert.equal(pod.securityContext.runAsUser, 1000);
-          assert.equal(pod.securityContext.runAsGroup, 1000);
-          const setupInit = pod.initContainers.find(({ name }) => name === "initialize-workspace");
-          assert.equal(Boolean(setupInit), initialSetup);
-          if (setupInit) {
-            assert.deepEqual(
-              setupInit.volumeMounts
-                .filter(({ name }) => name === claimVolume)
-                .map(({ subPath, mountPath }) => [subPath, mountPath]),
-              expected.filter(([subPath]) => subPath !== nodeName),
-            );
-            assert(!setupInit.volumeMounts.some(({ mountPath }) => mountPath === homePath));
-          }
-          if (node !== "none") {
-            // Run the actual generated init program against task-owned directories.
-            const root = mkdtempSync(join(tmpdir(), "harness-init-"));
-            try {
-              for (const dir of ["runtime-state", "runtime-temporary", "harness-workspace-state"]) {
-                mkdirSync(join(root, dir));
-              }
-              const script = privateInit.args[0]
-                .replaceAll("/runtime-state", `${root}/runtime-state`)
-                .replaceAll("/runtime-temporary", `${root}/runtime-temporary`)
-                .replaceAll("/harness-workspace-state", `${root}/harness-workspace-state`);
-              const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
-              assert.equal(result.status, 0, result.stderr);
-              const stat = statSync(join(root, "harness-workspace-state", nodeName));
-              assert.equal(stat.mode & 0o777, 0o700);
-              assert.equal(stat.uid, process.getuid());
-            } finally {
-              rmSync(root, { recursive: true, force: true });
-            }
-          }
-        });
-      }
-    }
-  }
-});
+test("dedicated Harness shares one claim while preserving private subpaths", (t) =>
+  checkDedicatedHarnessClaim(t, render, nodeName));
 
 // The shared launch description supplies operator-mode mounts directly, without
 // reconstructing them from a Kubernetes Deployment. Keep scratch on a separate PVC.
-test("scratch requirements keep the durable workspace and exact admitted writable claim", () => {
-  const scratch = {
-    namespaceId: owner.namespaceId,
-    agentId: owner.agentId,
-    namespace: "test",
-    claimName: "operator-scratch",
-    claimUid: "scratch-uid",
-  };
-  const { driver, pod } = render("api_key", "none", false, {}, scratch);
-  const launch = driver.harnessLaunch({
-    name: "test-agent",
-    ownership: owner,
-    image: "agent:local",
-    serviceAccountName: "agent",
-    environment: {},
-    loggingLevel: "info",
-    auth: { loginMode: "api_key", environment: [] },
-    provider: true,
-  });
-  const requirements = driver.sandboxRequirements(launch, owner.agentId, [], scratch);
-  const expected = {
-    claimName: scratch.claimName,
-    subPath: "scratch",
-    mountPath: "/sandbox/scratch",
-    readOnly: false,
-  };
-  assert.deepEqual(
-    requirements.workspaceMounts.find(({ mountPath }) => mountPath === "/sandbox/scratch"),
-    expected,
-  );
-  assert.equal(
-    requirements.workspaceMounts.filter(({ claimName }) => claimName === scratch.claimName).length,
-    1,
-  );
-  assert(
-    requirements.workspaceMounts.some(
-      ({ mountPath, claimName }) =>
-        mountPath === "/home/node/workspace" && claimName !== scratch.claimName,
-    ),
-  );
-  assert.deepEqual(
-    pod.volumes.find(({ name }) => name === "openclaw-scratch"),
-    {
-      name: "openclaw-scratch",
-      persistentVolumeClaim: { claimName: scratch.claimName },
-    },
-  );
-  assert.deepEqual(
-    pod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-scratch"),
-    {
-      name: "openclaw-scratch",
-      mountPath: expected.mountPath,
-      subPath: expected.subPath,
-      readOnly: false,
-    },
-  );
-  assert(
-    !driver
-      .sandboxRequirements(launch, owner.agentId)
-      .workspaceMounts.some(({ mountPath }) => mountPath === "/sandbox/scratch"),
-  );
-});
+test("scratch requirements keep the durable workspace and exact admitted writable claim", () =>
+  checkScratchRequirements(render, owner, (driver, ownership) => {
+    const launch = driver.harnessLaunch({
+      name: "test-agent",
+      ownership,
+      image: "agent:local",
+      serviceAccountName: "agent",
+      environment: {},
+      loggingLevel: "info",
+      auth: { loginMode: "api_key", environment: [] },
+      provider: true,
+    });
+    return (scratch) =>
+      scratch === undefined
+        ? driver.sandboxRequirements(launch, ownership.agentId)
+        : driver.sandboxRequirements(launch, ownership.agentId, [], scratch);
+  }));
 
 function scratchCompute(bindings) {
   const sandbox = new OpenShellSandboxDriver(
@@ -260,38 +128,13 @@ function scratchRevision(driver) {
   return routedRevision(driver, { sandboxDriverId: "scratch-openshell" });
 }
 
-test("scratch admission pins exact scope and never inherits a later operator selection", () => {
-  const original = scratchCompute([operatorBinding]);
-  const admitted = scratchRevision(original);
-  const replacement = scratchCompute([
-    { ...operatorBinding, claimName: "replacement", claimUid: "new-uid" },
-  ]);
-  const withoutScratch = scratchRevision(scratchCompute());
-  assert.deepEqual(replacement.scratchAdmission(admitted).binding, operatorBinding);
-  assert.equal(
-    replacement.codexLaunch(admitted, replacement.sandboxDriver).openShellProgram,
-    "ordinary",
-  );
-  assert.equal(replacement.runtimeAdmission(admitted), undefined);
-  assert.equal(original.scratchAdmission(withoutScratch).binding, undefined);
-  assert.equal(
-    scratchCompute().scratchAdmission(admitted).runtime,
-    original.scratchAdmission(admitted).runtime,
-  );
-  const sibling = routedRevision(original, {
-    agentId: "sibling",
-    sandboxDriverId: "scratch-openshell",
-  });
-  assert.equal(original.scratchAdmission(sibling).binding, undefined);
-  assert.throws(
-    () => original.scratchAdmission({ ...admitted, namespaceId: "foreign" }),
-    /scratch volume admission is invalid/,
-  );
-  assert.throws(
-    () => original.scratchAdmission({ ...admitted, agentId: "foreign" }),
-    /scratch volume admission is invalid/,
-  );
-});
+test("scratch admission pins exact scope and never inherits a later operator selection", () =>
+  checkPinnedScratchAdmission(scratchCompute, scratchRevision, operatorBinding, {
+    scratchAdmission: (driver, revision) => driver.scratchAdmission(revision),
+    sandboxDriver: (driver) => driver.sandboxDriver,
+    codexLaunch: (driver, revision, sandbox) => driver.codexLaunch(revision, sandbox),
+    runtimeAdmission: (driver, revision) => driver.runtimeAdmission(revision),
+  }));
 
 test("saved scratch admissions preserve legacy launch selection and reject misordered launch markers", () => {
   const driver = scratchCompute([operatorBinding]);

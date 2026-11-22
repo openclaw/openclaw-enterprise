@@ -143,6 +143,8 @@
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
+        "memory State admits only unprotected revisions with repository network policy",
+        "PostgreSQL saves repository network policy and fences scoped revision admission by execution mode",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
         "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
@@ -201,7 +203,7 @@
     {
       "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
       "expectedTests": [
-        "Agent drafts authorize the staged source and refuse unsupported revision delivery"
+        "public managed Source enrollment sanitizes custody and reaches authorized Agent binding and staged delivery refusal"
       ]
     },
     {
@@ -633,6 +635,9 @@
       "expectedTests": [
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
+        "Agent policy HTTP preserves and withdraws stored repository grants",
+        "scoped deployment channel observes IAM revocation after the writer lock",
+        "scoped deployment admission observes IAM revocation after the writer lock",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]

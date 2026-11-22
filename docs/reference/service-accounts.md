@@ -235,8 +235,10 @@ and its causes' class and code. The logging Collector exports only the event and
 
 ## Evidence and related references
 
-The [controller domain operations](../../packages/occ/src/index.ts) own account
-admission, association, deletion, and version snapshots. The
+The [account operations](../../packages/occ/src/service-account-operations.ts)
+admit and delete accounts. [Harness authentication](../../packages/occ/src/harness-auth.ts)
+checks the Agent's account binding and saves the credential version in its
+revision. The
 [ChatGPT Driver](../../apps/controller/src/drivers/service-account/chatgpt.ts)
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.

@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { repositoryRetirementWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import type {
-  PlatformReadView,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformReadView } from "../../packages/occ/src/ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callbackGate } from "../helpers/wait-for.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
@@ -724,6 +722,160 @@ for (const viewport of [
     },
   );
 }
+
+const pendingDeploymentNotice = "A deployment is queued or in progress.";
+const cleanupDeploymentNotice = "Deployment resource cleanup needs attention.";
+
+async function openDeploymentNotice(t: TestContext) {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+  const member = await fixture.createNamespaceMember("notice-reader", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  await trackSettledFetches(page);
+  const configuration = detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration");
+  const banner = page.locator(".agent-deployment-attention");
+  const link = banner.getByRole("link", { name: "View deployment", exact: true });
+  const configurationTab = page.getByRole("tab", { name: "Configuration", selected: true });
+
+  async function readRecord(
+    pending: ReturnType<typeof responseTo>,
+    deploymentId: string,
+    status: "queued" | "failed",
+    cleanup: "queued" | null = null,
+  ) {
+    const response = await pending;
+    assert.equal(response.status(), 200);
+    const { data } = await response.json();
+    assert.equal(data.namespaceId, namespace.id);
+    assert.equal(data.agentId, agent.id);
+    assert.equal(data.deploymentId, deploymentId);
+    assert.equal(data.status, status);
+    assert.equal(data.cleanup?.status ?? null, cleanup);
+  }
+
+  const initial = responseTo(page, "GET", url);
+  await login(page, fixture, configuration, member.credentials);
+  await readRecord(initial, revisionId, "queued");
+  await configurationTab.waitFor();
+  await banner.getByText(pendingDeploymentNotice, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
+
+  async function focusLink() {
+    const mounted = await link.elementHandle();
+    assert.ok(mounted);
+    // Traverse the native Tab order so Enter uses the browser's current focus.
+    for (let step = 0; step < 60 && !(await hasFocus(mounted)); step++) {
+      await page.keyboard.press("Tab");
+    }
+    assert.equal(await hasFocus(mounted), true, "Tab reaches View deployment");
+    return mounted;
+  }
+
+  async function assertDeploymentOpened(expectedRevisionId: string) {
+    await page.getByRole("tab", { name: "Deployment", selected: true }).waitFor();
+    const location = new URL(page.url());
+    assert.equal(location.pathname, configuration.pathname);
+    assert.equal(location.searchParams.get("namespace"), namespace.id);
+    assert.equal(location.searchParams.get("revision"), expectedRevisionId);
+    assert.equal(location.searchParams.get("tab"), "deployment");
+  }
+
+  return {
+    page,
+    fixture,
+    namespace,
+    agent,
+    revisionId,
+    url,
+    control,
+    banner,
+    link,
+    configurationTab,
+    focusLink,
+    readRecord,
+    assertDeploymentOpened,
+    pollMs: DEPLOYMENT_POLL_MS,
+  };
+}
+
+test("View deployment keeps keyboard focus when the same deployment starts cleanup", async (t) => {
+  const {
+    page,
+    revisionId,
+    url,
+    control,
+    banner,
+    link,
+    focusLink,
+    readRecord,
+    assertDeploymentOpened,
+    pollMs,
+  } = await openDeploymentNotice(t);
+  const original = await focusLink();
+  const route = page.url();
+  const href = await original.getAttribute("href");
+
+  // Change the fixture's worker records and let the browser's existing poll read the Controller.
+  control.failed = true;
+  control.cleanup = "queued";
+  const polled = responseTo(page, "GET", url);
+  await page.clock.runFor(pollMs);
+  await readRecord(polled, revisionId, "failed", "queued");
+  await banner.getByText(cleanupDeploymentNotice, { exact: true }).waitFor();
+  assert.equal(page.url(), route);
+  assert.equal(await link.getAttribute("href"), href);
+  const keptFocus = await hasFocus(original);
+  await page.keyboard.press("Enter");
+  assert.equal(keptFocus, true, "the original View deployment link keeps focus");
+  await assertDeploymentOpened(revisionId);
+  await page
+    .locator(".version-deployment-record")
+    .getByText("Recorded outcome: Failed", { exact: true })
+    .waitFor();
+});
+
+test("View deployment opens the new latest revision without taking focus", async (t) => {
+  const {
+    page,
+    fixture,
+    namespace,
+    agent,
+    revisionId,
+    url,
+    control,
+    banner,
+    link,
+    configurationTab,
+    focusLink,
+    readRecord,
+    assertDeploymentOpened,
+    pollMs,
+  } = await openDeploymentNotice(t);
+  const route = page.url();
+  await configurationTab.focus();
+  assert.equal(await hasFocus(configurationTab), true);
+
+  // Admit a separate revision so the terminal poll refreshes the overview and targets its record.
+  const next = await fixture.deployAgent(namespace.id, agent.id);
+  const nextUrl = `${url.slice(0, -revisionId.length)}${next.id}`;
+  control.failed = true;
+  const terminal = responseTo(page, "GET", url);
+  const latest = responseTo(page, "GET", nextUrl);
+  await page.clock.runFor(pollMs);
+  await readRecord(terminal, revisionId, "failed");
+  await readRecord(latest, next.id, "queued");
+  await banner.getByText(pendingDeploymentNotice, { exact: true }).waitFor();
+  assert.equal(page.url(), route);
+  assert.equal(await hasFocus(configurationTab), true, "the reader's focus stays on Configuration");
+  const href = await link.getAttribute("href");
+  assert.ok(href);
+  assert.equal(new URL(href, page.url()).searchParams.get("revision"), next.id);
+  await focusLink();
+  await page.keyboard.press("Enter");
+  await assertDeploymentOpened(next.id);
+});
 
 // A failed deploy keeps polling while its retire cleanup is pending. Its cleanup's progress and a
 // recovered read are routine: the reader's fold and focus stay; the cleanup's result reveals.

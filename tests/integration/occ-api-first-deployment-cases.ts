@@ -681,3 +681,15 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
     }),
   );
 }
+
+export {
+  assertCapturedAdmission,
+  assertFirstDeploymentRecoveryUnchanged,
+  expectMalformedRejection,
+  installScalarCapture,
+  malformedIntents,
+  runStockDeployRetry,
+  runUnreadyNamespace,
+  verifyOrdinaryDeploy,
+  verifyValidAdmission,
+} from "./occ-api-first-deployment-intent-cases.ts";

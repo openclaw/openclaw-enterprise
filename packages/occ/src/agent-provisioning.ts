@@ -18,9 +18,8 @@ import {
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
-import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
-import type { ControllerWork } from "./state/controller-work.ts";
-import { controllerWorkLeaseActive } from "./state/controller-work.ts";
+import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
+import { controllerWorkLeaseActive, type ControllerWork } from "./controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
 
@@ -292,4 +291,45 @@ export function canonicalProvisioningJson(input: unknown): string {
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([key, value]) => `${JSON.stringify(key)}:${canonicalProvisioningJson(value)}`)
     .join(",")}}`;
+}
+
+export function validExecutionMode(value: unknown): value is HarnessExecutionMode {
+  return value === "embedded" || value === "dedicated";
+}
+
+export function normalizeGatewayManagedMode(value: unknown, defaultValue?: boolean): boolean {
+  const mode = value === undefined ? defaultValue : value;
+  if (typeof mode !== "boolean") {
+    throw new ScopeViolationError("The Agent Gateway managed mode must be a boolean.");
+  }
+  return mode;
+}
+
+export function parseProvisioningPlan(record: Readonly<AgentProvisioningRecord>): {
+  readonly configuration: AgentProvisioningConfigurationInput;
+  readonly harnessAuth: HarnessAuthBinding | null;
+  readonly executionMode: HarnessExecutionMode;
+  readonly gatewayManagedMode: boolean;
+} {
+  const plan = asRecord(record.plan);
+  let configuration: AgentProvisioningConfigurationInput;
+  try {
+    configuration = normalizeProvisioningConfiguration(plan?.configuration);
+  } catch (error) {
+    // A stored plan that no longer validates is not the caller's invalid request.
+    if (error instanceof SecretBindingValidationError) {
+      throw new ScopeViolationError("The accepted provisioning plan is no longer valid.");
+    }
+    throw error;
+  }
+  const executionMode = plan?.executionMode;
+  if (!validExecutionMode(executionMode)) {
+    throw new ScopeViolationError("The provisioning execution mode is invalid.");
+  }
+  return {
+    configuration,
+    harnessAuth: normalizeProvisioningHarnessAuth(plan?.harnessAuth ?? null),
+    executionMode,
+    gatewayManagedMode: normalizeGatewayManagedMode(plan?.gatewayManagedMode, true),
+  };
 }

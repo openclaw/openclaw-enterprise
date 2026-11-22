@@ -156,9 +156,9 @@ Choose a file with its desktop tab or the phone **Workspace file** dropdown.
 The description explains its role. Switching files keeps unsaved text and each
 file's indicator shows Unsaved, Loading, Missing, Read-only, or Needs attention.
 Each editor loads independently. Its status reports loading, success, or failure.
-**Reload** replaces unsaved edits with current contents. **Save** immediately
-creates or replaces that one file; it does not deploy a version. Save is disabled
-until appropriate loaded, changed state is available.
+If the editor warns that the file changed while you were away, review your draft
+before choosing **Save** to replace the file or **Reload** to discard your edits.
+Save creates or replaces only the selected file and does not deploy a version.
 
 Each file allows up to 16 KiB of valid UTF-8 text. Concurrent saves use the last
 writer's contents. Reading requires Agent `read`, saving requires `operate`, and

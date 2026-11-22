@@ -6,7 +6,6 @@ import type {
   RepositoryWorkerRestartDisposition,
 } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
-import type { TokenServiceRegistration } from "./drivers/token-service/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
@@ -54,6 +53,8 @@ export type {
   CredentialSourceControl,
   CredentialUpdateNotification,
   CredentialProxyDriver,
+  LegacyEgressProxyDriver,
+  CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {
   CredentialProxyBinding,
@@ -163,6 +164,16 @@ export {
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
 } from "./sandbox-policy.ts";
+export {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicyCeiling,
+  isCanonicalRepositoryGrantList,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 
 export type {
   OAuthClient,
@@ -331,7 +342,8 @@ export interface OpenShellBackendDefinition {
   readonly configuration: OpenShellBackendConfiguration;
   readonly drivers: {
     readonly sandbox: string;
-    readonly credential_gateway: string;
+    /** Legacy credential Source owner, when selected. The Gateway service is configured separately. */
+    readonly credential_gateway?: string;
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
@@ -588,10 +600,6 @@ type CredentialSourceOwner =
       readonly driverId?: never;
       /** Present for registrations owned by an Installation-selected credential store. */
       readonly tokenServiceInstanceId?: string;
-      /** Private owner receipt, recorded only after registration succeeds. */
-      readonly registration?: TokenServiceRegistration;
-      /** Durable dispatch fence for a registration whose owner write may be uncertain. */
-      readonly registrationDispatchedAt?: string;
     };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
@@ -1248,6 +1256,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
     configuration: immutableCopy(revision.configuration),
+    ...(revision.sandboxPolicy === undefined
+      ? {}
+      : { sandboxPolicy: immutableCopy(revision.sandboxPolicy) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
@@ -1558,6 +1569,7 @@ export type {
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
+  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,
@@ -1642,7 +1654,6 @@ export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-provi
 export {
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
-  TokenServiceSourceMetadata,
 } from "./api/token-service-sources.ts";
 export {
   PushAgentCredentialsBody,
@@ -1733,9 +1744,7 @@ export type {
 export type {
   TokenServiceSourceRef,
   InstallationClientSecretRef,
-  TokenServiceRegistration,
   TokenServiceSourceInstance,
-  RegisteredTokenServiceSource,
   SourceLifecycleConfig,
   SourceRegistrationInput,
   SourceUpdate,
@@ -1788,3 +1797,6 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
+
+export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";
+export { admitSandboxRepositoryNetworkPolicy } from "./sandbox-policy.ts";

@@ -61,6 +61,7 @@ import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
+import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -445,6 +446,8 @@ async function startInClusterControllers(
     apiConfiguration,
     authBaseURL,
     controller,
+    controllerImage: selectedControllerImage = controllerImage,
+    databaseUrl: selectedDatabaseUrl = databaseUrl,
     controllerPort,
     databaseAddress,
     events,
@@ -457,7 +460,7 @@ async function startInClusterControllers(
   },
 ) {
   const databaseServiceName = "occ-test-postgres";
-  const inClusterDatabaseUrl = new URL(databaseUrl);
+  const inClusterDatabaseUrl = new URL(selectedDatabaseUrl);
   inClusterDatabaseUrl.hostname = `${databaseServiceName}.${platformNamespace}.svc`;
   inClusterDatabaseUrl.port = "5432";
   const kubernetesEndpoint = await resource("endpoints", "kubernetes", "default");
@@ -478,7 +481,7 @@ async function startInClusterControllers(
       authBaseURL,
       authSecret,
       controller,
-      controllerImage,
+      controllerImage: selectedControllerImage,
       databaseAddress,
       databaseServiceName,
       inClusterDatabaseUrl,
@@ -509,7 +512,7 @@ async function startInClusterControllers(
   }
   await applyManifest(JSON.stringify(manifests), {
     redactions: [
-      databaseUrl,
+      selectedDatabaseUrl,
       authSecret,
       workspaceGateway.apiKey,
       ...(oidc ? [oidc.clientSecret] : []),
@@ -654,6 +657,49 @@ async function startInClusterControllers(
     pod: pods[0],
     url: forwarding.url,
     worker,
+    async stop() {
+      const port = Number(new URL(forwarding.url).port);
+      await worker.stop();
+      await forwarding.stop();
+      await kubectl(
+        "delete",
+        "deployment",
+        name,
+        "--namespace",
+        platformNamespace,
+        "--cascade=foreground",
+        "--wait=true",
+        "--timeout=120s",
+      );
+      const remaining = await resources("pods", platformNamespace);
+      assert.equal(
+        remaining.filter(({ metadata }) =>
+          [labels, workerLabels].some((expected) =>
+            Object.entries(expected).every(([key, value]) => metadata.labels?.[key] === value),
+          ),
+        ).length,
+        0,
+        "both old controller writers must have no remaining Pods before migration",
+      );
+      return port;
+    },
+    async imageReceipt() {
+      const current = await resources("pods", platformNamespace);
+      return [labels, workerLabels].map((expected) => {
+        const matching = current.filter(({ metadata }) =>
+          Object.entries(expected).every(([key, value]) => metadata.labels?.[key] === value),
+        );
+        assert.equal(matching.length, 1);
+        const pod = matching[0];
+        const container = pod.spec.containers.find(
+          ({ name }) => name === "api" || name === "worker",
+        );
+        assert.equal(container.image, selectedControllerImage);
+        const status = pod.status.containerStatuses.find(({ name }) => name === container.name);
+        assert.match(status.imageID, /sha256:[a-f0-9]{64}$/);
+        return { uid: pod.metadata.uid, image: container.image, imageID: status.imageID };
+      });
+    },
     async restart() {
       const previousUid = activeApiPod.metadata.uid;
       const port = Number(new URL(forwarding.url).port);
@@ -692,8 +738,8 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
     platformNamespace,
-    gatewayImage,
-    codexImage,
+    gatewayImage: options.images?.runtime ?? gatewayImage,
+    codexImage: options.images?.runtime ?? codexImage,
     codexSeccompProfile,
     cluster: "k3d-production-harness-topology",
   });
@@ -1236,6 +1282,11 @@ function registerProductionTopologyCleanups(context, operations) {
 async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
   // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
   const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
+  const controllerImage =
+    options.images?.controller ?? process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+  const gatewayImage =
+    options.images?.runtime ?? process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ?? runtimeImage;
+  const databaseUrl = options.databaseUrl ?? process.env.OCC_TEST_DATABASE_URL;
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   if (mode === "dedicated") {
@@ -1247,7 +1298,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   }
   const kubeconfig = await validatePrerequisites();
   const identifier = randomUUID();
-  const credentials =
+  let credentials =
     options.credentials ??
     Object.freeze({
       email: `admin-kubernetes-${hash(identifier)}@example.test`,
@@ -1270,6 +1321,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
   let restartInClusterApi;
+  let activeInClusterControllers;
+  let baselineInitialization;
   const workerOptions = {
     pollIntervalMs: 50,
     leaseDurationMs: 60_000,
@@ -1388,6 +1441,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     workspaceGateway === undefined
       ? {}
       : {
+          images: options.images,
           namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
@@ -1551,10 +1605,28 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     }, options.oidc);
     oidc = { ...options.oidc, address };
   }
-  let activeInstallation = await platformState.loadInstallation();
+  // The upgrade database has roles/schemas only. Let the old image own its
+  // first migration and bootstrap before the current observer reads any tables.
+  let activeInstallation =
+    options.upgrade === undefined ? await platformState.loadInstallation() : undefined;
 
   let createdFreshInstallation = false;
-  if (activeInstallation !== undefined) {
+  if (options.upgrade !== undefined) {
+    baselineInitialization = await initializeNativeUpgradeInstallation(context, {
+      image: options.upgrade.initializerImages.baseline,
+      migrationUrl: options.upgrade.migrationUrl,
+      databaseUrl,
+      email: credentials.email,
+      authSecret,
+      authBaseURL: controllerAuthBaseURL,
+      agentDomain: nativeAdmin.domain,
+      installationName,
+    });
+    credentials = baselineInitialization.credentials;
+    activeInstallation = await platformState.loadInstallation();
+    assert.ok(activeInstallation, "the old image must persist the initial Installation");
+    createdFreshInstallation = true;
+  } else if (activeInstallation !== undefined) {
     await ensureHarnessAdminPrincipal(
       observerPool,
       createPostgresControllerAuth,
@@ -1603,6 +1675,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       apiConfiguration,
       authBaseURL: controllerAuthBaseURL,
       controller,
+      controllerImage,
+      databaseUrl,
       databaseAddress,
       controllerPort: options.controllerPort,
       events,
@@ -1613,6 +1687,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       workerOptions,
       workspaceGateway,
     });
+    activeInClusterControllers = controllerApi;
     inClusterWorker = controllerApi.worker;
     restartInClusterApi = controllerApi.restart;
     controllerApiPod = controllerApi.pod;
@@ -2401,7 +2476,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     platformNamespace,
     gatewayImage,
     workspaceGateway,
-    controllerApiPod,
+    get controllerApiPod() {
+      return controllerApiPod;
+    },
     workspaceRequest,
     publicGithubRead,
     approvedClient,
@@ -2413,6 +2490,73 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     adminRequest: (...args) => adminRequest(...args),
     request: (...args) => request(...args),
     restartControllerApi,
+    async upgradeInstallation() {
+      assert.ok(
+        options.upgrade && activeInClusterControllers,
+        "only the explicit old-to-new fixture may replace controller software",
+      );
+      const before = await activeInClusterControllers.imageReceipt();
+      const port = await activeInClusterControllers.stop();
+      const candidate = {
+        controller: process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+        runtime: process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ?? runtimeImage,
+      };
+      assert.notEqual(
+        candidate.controller,
+        controllerImage,
+        "upgrade must replace the old controller image",
+      );
+      const candidateInitialization = await initializeNativeUpgradeInstallation(context, {
+        image: options.upgrade.initializerImages.candidate,
+        migrationUrl: options.upgrade.migrationUrl,
+        databaseUrl,
+        email: credentials.email,
+        authSecret,
+        authBaseURL: controllerAuthBaseURL,
+        agentDomain: nativeAdmin.domain,
+        installationName,
+        expectedInstallationId: activeInstallation.id,
+      });
+      const next = structuredClone(apiConfiguration);
+      // This is an operator Installation image configuration change. Agent
+      // configuration and browser credentials are changed only by normal deploy.
+      next.drivers.compute.configuration.images.gateway = candidate.runtime;
+      next.drivers.compute.configuration.images.agent = candidate.runtime;
+      activeInClusterControllers = await startInClusterControllers(context, {
+        apiConfiguration: next,
+        authBaseURL: controllerAuthBaseURL,
+        controller,
+        controllerImage: candidate.controller,
+        databaseUrl,
+        databaseAddress,
+        controllerPort: port,
+        events,
+        nativeAdminDomain: nativeAdmin.domain,
+        nativeAdminEnabled: nativeAdmin.enabled,
+        oidc,
+        platformNamespace,
+        workerOptions,
+        workspaceGateway,
+      });
+      inClusterWorker = activeInClusterControllers.worker;
+      controllerApiPod = activeInClusterControllers.pod;
+      controllerUrl = activeInClusterControllers.url;
+      restartInClusterApi = activeInClusterControllers.restart;
+      adminRequest = await requestFactory(credentials);
+      request = adminRequest;
+      assert.equal((await platformState.loadInstallation()).id, activeInstallation.id);
+      const after = await activeInClusterControllers.imageReceipt();
+      assert.ok(after.every((pod) => before.every((old) => old.uid !== pod.uid)));
+      return {
+        before,
+        after,
+        initialization: {
+          baseline: baselineInitialization.receipt,
+          candidate: candidateInitialization.receipt,
+        },
+      };
+    },
+    controllerImageReceipt: () => activeInClusterControllers.imageReceipt(),
     stopWorkerObservation: () => inClusterWorker?.stopObservation(),
     events,
     agent: topologyAgent,
@@ -4161,23 +4305,34 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     }
     // There is deliberately no second chat.send: only native startup recovery can
     // admit the continuation whose final answer this observer waits for.
+    const description = `automatic interrupted-turn completion after ${replacement}`;
+    let lastObservation = () => "history=unavailable";
     const recovered = await waitFor(
-      `automatic interrupted-turn completion after ${replacement}`,
+      () => `${description} (${lastObservation()})`,
       async () => {
         const history = await readAvailableGatewayHistory(topology, interrupted.sessionKey, 100);
         if (history === undefined) {
+          lastObservation = () => "history=unavailable";
           return undefined;
         }
         const { session } = await gatewayCall(topology, "sessions.describe", {
           key: interrupted.sessionKey,
         });
-        return !session.hasActiveRun &&
+        const hasAnswer = (nonce) =>
           history.messages.some(
-            (message) =>
-              message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
-          )
-          ? history
-          : undefined;
+            (message) => message.role === "assistant" && messageText(message).trim() === nonce,
+          );
+        lastObservation = () => {
+          const answered = hasAnswer(interrupted.nonce);
+          const restarted = history.messages.some(
+            (message) => message.__openclaw?.continuation?.source === "restart",
+          );
+          const queued = queuedNonce === undefined ? "none" : hasAnswer(queuedNonce);
+          const active =
+            typeof session.hasActiveRun === "boolean" ? session.hasActiveRun : "unknown";
+          return `active=${active} restart=${restarted} answer=${answered} queuedAnswer=${queued}`;
+        };
+        return !session.hasActiveRun && hasAnswer(interrupted.nonce) ? history : undefined;
       },
     );
     assert.equal(

@@ -33,8 +33,14 @@ test(
         after: t.after.bind(t),
         diagnostic: t.diagnostic.bind(t),
       } as TestContext;
-      const fixture = await createOpenShellGitInstallation(context, { witnessIssuedGit: true });
+      const fixture = await createOpenShellGitInstallation(context, {
+        witnessIssuedGit: true,
+        onSetupStep: (step) => {
+          phase = step;
+        },
+      });
       const { origin, gatewayClient, workspace, checkpoint } = fixture;
+      phase = "deploy finite Agent";
       const a = await deployFiniteAgent(context, fixture);
       const remaining = () => {
         context.signal.throwIfAborted();
@@ -50,6 +56,7 @@ test(
         remaining();
         assert.deepEqual((await a.readExecution()).identity, a.original.identity);
       };
+      phase = "discover Git executable";
       const execute = createManagedWorkloadExec(context, {
         backend: fixture.gatewayBackend,
         gatewayClient,

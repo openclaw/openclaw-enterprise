@@ -11,13 +11,23 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import {
+  editStoredRepositoryGrants,
+  verifyScopedDeploymentTransition,
+  verifyChannelPolicyHandoff,
+  verifyDeploymentAuthorityAfterWait,
+} from "./postgres-state-repository-network-policy-case.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
 
-async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
+async function createPolicyApp(
+  t,
+  recordOperations = false,
+  { laxDriver = false, poolOptions } = {},
+) {
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
@@ -94,6 +104,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     label: "sandbox-policy",
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
     sandboxDriver,
+    poolOptions,
     controllerOptions: {
       sandboxNetworkPolicyCeiling: [grant, providerRefusalGrant],
       recordOperations,
@@ -199,7 +210,7 @@ test(
         }
         if (scenario.protected) {
           const proxyConfiguration = { middlewareName: "integrity", authorityScope: "execution" };
-          const proxy = new OpenShellCredentialProxyDriver(proxyConfiguration, {
+          const proxy = new OpenShellLegacyEgressProxyDriver(proxyConfiguration, {
             id: sandboxDriver.id,
             sandbox: sandboxDriver,
             backend: {
@@ -1143,3 +1154,42 @@ test(
     );
   },
 );
+
+test(
+  "Agent policy HTTP preserves and withdraws stored repository grants",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    await editStoredRepositoryGrants(fixture, fixture.grant);
+  },
+);
+
+test(
+  "scoped deployment refuses an Agent with unscoped history after confirmed retirement",
+  requiresPostgres,
+  async (t) => {
+    await verifyScopedDeploymentTransition(await createPolicyApp(t, true));
+  },
+);
+
+test(
+  "Channel credential handoff respects a concurrent Secret permission revocation",
+  requiresPostgres,
+  async (t) => {
+    await verifyChannelPolicyHandoff(await createPolicyApp(t));
+  },
+);
+
+for (const boundary of /** @type {const} */ (["channel", "admission"])) {
+  test(
+    `scoped deployment ${boundary} observes IAM revocation after the writer lock`,
+    requiresPostgres,
+    async (t) => {
+      const fixture = await createPolicyApp(t, true, {
+        poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
+      });
+      Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
+      await verifyDeploymentAuthorityAfterWait(fixture, boundary);
+    },
+  );
+}

@@ -38,6 +38,7 @@ on:
       - scripts/ci/prepare-inputs.ts
       - scripts/ci/warm-image-cache.ts
       - scripts/ci/prepare-command.ts
+      - scripts/ci/command-supervision.ts
       - scripts/ci/image-build-cache.ts
       - scripts/ci/fixture-support-images.ts
       - scripts/ci/k3d-preparation.ts
