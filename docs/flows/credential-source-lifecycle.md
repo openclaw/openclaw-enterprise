@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-22
-last_updated_session: 01a1eae9-8497-74d2-a9c7-9bc93809e94a
+last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
 ---
 
 # Credential source lifecycle flow
@@ -61,7 +61,7 @@ OCC requires exact `credential_source:operate` for a new binding to a ready Sour
 
 ### 4. Resolve the source at dispatch
 
-`apps/controller/src/composition/installation-config.ts:composeInstallationConfiguration`, `apps/controller/src/drivers/credential-proxy/openshell.ts:OpenShellCredentialProxyDriver`, `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
+`apps/controller/src/composition/installation-config.ts:composeInstallationConfiguration`, `apps/controller/src/drivers/credential-proxy/openshell.ts:OpenShellCredentialProxyDriver`, `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker/revision-inputs.ts:createRevisionCredentialResolver`
 
 Composition passes the Installation-selected TokenService implementation to the native Proxy. The Proxy accepts only OCC TokenService and rejects unsupported implementations during construction, before credential resolution or Gateway access.
 
@@ -71,7 +71,7 @@ Worker checks actor and Agent grants, selected Driver identity, Source ownership
 
 Stop deletes the Sandbox before asking the Proxy to remove the frozen bindings, and retains the target record until removal succeeds. Full native model-request qualification remains pending.
 
-The native Proxy compares the binding and injection policy with the frozen v8 admission and checks the target before resolving material. The binding uses the runtime provider key, which is distinct from the catalog ModelProvider ID. For pushed delivery, the Proxy resolves the current Source credential and version once. It creates the OpenShell Provider delivery copy or updates its material and version together if the retained copy is stale. An unchanged version needs no push. The Proxy attaches the Provider, validates the receipt, and checks identity, version, and membership before returning a runtime placeholder projection.
+The native Proxy compares the binding and injection policy with the frozen v8 admission and checks the target before resolving material. The binding uses the runtime provider key, which is distinct from the catalog ModelProvider ID. For pushed delivery, the Proxy resolves the current Source credential and version only when it creates the OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating the credential. The Proxy attaches the Provider, validates the receipt, and checks identity, version, and membership before returning a runtime placeholder projection.
 
 Native status checks the loaded source policy and effective enforced route, configuration admission, attached Provider identity and resource version, and the supervisor's matching credential, policy, environment, and serving observation. The Gateway creates an internal `OBSERVE` receipt for this status query. The Provider's Source version identifies the last delivered material; status does not independently query TokenService or detect a later missed push. The [Proxy reference](../reference/drivers/credential-proxy.md) records the temporary executable and Bearer deviations.
 
@@ -100,6 +100,7 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 
 ## Changelog
 
+- 2026-11-22 11:54: Restore first-use-only Provider delivery and update the Worker resolver source pointer. (01a1ec21-b384-7472-887f-945ae0ab16fc - 2c2c13373)
 - 2026-11-22 08:39: Bind native delivery to the selected OCC TokenService implementation before Gateway access. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - f3a2121af)
 - 2026-11-21 22:19: Integrate TokenService-owned Source enrollment and Worker startup with native Proxy delivery and cleanup. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 86772f7b5)
 - 2026-11-21 22:05: Refresh retained pushed Providers during configuration and confirm Gateway authority before cleanup. (authoring-run/068f73af-8c65-4481-b861-0f2d1fc3fb46 - 82926b330)

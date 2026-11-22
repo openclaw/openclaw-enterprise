@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 const run = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 
-function credentialInputs(directory, password = "openclaw-development-password") {
+export function credentialInputs(directory, password = "openclaw-development-password") {
   const passwordPath = join(directory, "admin-password-input");
   const keyPath = join(directory, "admin-service-key-input");
   for (const [path, value] of [

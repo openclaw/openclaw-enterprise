@@ -104,7 +104,21 @@ message GetServiceRequest {
   WorkspaceSelector workspace_scope = 3;
 }
 
+// Inline template fields from the pinned upstream openshell.proto.
+message SandboxTemplate {
+  string image = 1;
+  string runtime_class_name = 2;
+  string agent_socket = 3;
+  map<string, string> labels = 4;
+  map<string, string> annotations = 5;
+  map<string, string> environment = 6;
+  google.protobuf.Struct resources = 7;
+  optional bool user_namespaces = 10;
+  google.protobuf.Struct driver_config = 11;
+}
+
 message SandboxSpec {
+  SandboxTemplate template = 6;
   SandboxPolicy policy = 7;
   repeated string providers = 8;
   SandboxRestartPolicy restart_policy = 15;

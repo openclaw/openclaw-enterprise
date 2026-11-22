@@ -190,7 +190,7 @@ export async function readOwnedOpenShellPushedProvider(input: {
   return provider;
 }
 
-/** Initialize or refresh the Proxy's Provider copy from an authorized OCC TokenService Source. */
+/** Reuse the Proxy's Provider copy, or initialize it from an authorized OCC TokenService Source. */
 export async function prepareOccTokenServiceProviderCopy(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
@@ -199,7 +199,6 @@ export async function prepareOccTokenServiceProviderCopy(input: {
     | "getProviderProfile"
     | "importProviderProfile"
     | "createProvider"
-    | "updateProviderCredentialsConditionally"
   >;
   readonly workspace: string;
   readonly namespaceId: string;
@@ -241,7 +240,9 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   const profileVersion = checkProfile(stored, profile);
   // Another deployment may have completed initialization while the profile was being imported.
   const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
-  const current = prior && checkProvider(prior, binding, workspace, owner.id, profileVersion);
+  if (prior) {
+    return checkProvider(prior, binding, workspace, owner.id, profileVersion);
+  }
   let resolved: ResolvedCredential;
   try {
     resolved = await input.resolveCredential();
@@ -269,34 +270,6 @@ export async function prepareOccTokenServiceProviderCopy(input: {
       credentialExpirationTimes: { [binding.projection.environment]: resolved.expiresAt },
     }),
   };
-  if (current) {
-    if (current.sourceVersion === resolved.version) {
-      return current;
-    }
-    if (!client.updateProviderCredentialsConditionally) {
-      refuse();
-    }
-    let updated: OpenShellProviderResponse;
-    try {
-      updated = await client.updateProviderCredentialsConditionally(
-        transfer,
-        current.resourceVersion,
-        signal,
-      );
-    } catch {
-      signal.throwIfAborted();
-      refuse();
-    }
-    const prepared = checkProvider(updated, binding, workspace, owner.id, profileVersion);
-    if (
-      prepared.id !== current.id ||
-      BigInt(prepared.resourceVersion) <= BigInt(current.resourceVersion) ||
-      prepared.sourceVersion !== resolved.version
-    ) {
-      refuse();
-    }
-    return prepared;
-  }
   let provider: OpenShellProviderResponse | undefined;
   try {
     provider = await client.createProvider(transfer, signal);

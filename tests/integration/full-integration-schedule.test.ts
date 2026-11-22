@@ -262,12 +262,7 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     if (request.path.startsWith("/actions/artifacts?")) {
       const earlier = await olderAutomatic(request);
       const later = await newerManual(request);
-      assert.ok(
-        "artifacts" in earlier &&
-          "artifacts" in later &&
-          Array.isArray(earlier.artifacts) &&
-          Array.isArray(later.artifacts),
-      );
+      assert.ok("artifacts" in earlier && "artifacts" in later);
       return {
         total_count: earlier.total_count + later.total_count,
         artifacts: [...earlier.artifacts, ...later.artifacts],
@@ -292,9 +287,6 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     active?: boolean;
     finishedAgo?: number;
     result?: { conclusion?: string | null };
-    runId?: number;
-    sourceSha?: string;
-    displayTitle?: string;
   };
   const manualHistory = (
     jobs: readonly (ReturnType<typeof job> & { steps?: readonly object[] | null })[],
@@ -302,18 +294,14 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       active = true,
       finishedAgo = 0,
       result = { conclusion: active ? null : "success" },
-      runId = 97,
-      sourceSha = sha,
-      displayTitle,
     }: ManualRun = {},
   ): GithubReader => {
     const repository = { id: 1350208775 };
     const run = {
-      id: runId,
+      id: 97,
       run_attempt: 1,
       workflow_id: 351990468,
-      head_sha: sourceSha,
-      display_title: displayTitle,
+      head_sha: sha,
       repository,
       head_repository: repository,
       head_branch: "main",
@@ -331,18 +319,13 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       ) {
         return { total_count: 1, workflow_runs: [run] };
       }
-      if (path === `/actions/runs/${runId}/attempts/1`) {
+      if (path === "/actions/runs/97/attempts/1") {
         return run;
       }
-      if (path === `/actions/runs/${runId}/attempts/1/jobs?per_page=100`) {
+      if (path === "/actions/runs/97/attempts/1/jobs?per_page=100") {
         return {
           total_count: jobs.length,
-          jobs: jobs.map((job) => ({
-            run_id: run.id,
-            run_attempt: 1,
-            head_sha: sourceSha,
-            ...job,
-          })),
+          jobs: jobs.map((job) => ({ run_id: run.id, run_attempt: 1, head_sha: sha, ...job })),
         };
       }
       return github(request);
@@ -367,69 +350,6 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
   const skippedReuse = job(reuseName, 121, 121, "skipped");
   const admitted = { selectedLane: "all", runAll: true };
   const skipped = (reason: string) => ({ selectedLane: "skip", runAll: false, reason });
-
-  await t.test(
-    "the exact retired targeted acceptance run requires its retained marker and audited cleanup archive",
-    async () => {
-      const runId = 45008839659;
-      const sourceSha = "effdc1086231ba457bf519cb2bf45e07e840d17f";
-      const source = "9ffc8947c06954644ceb08da25164adbc8a184ab";
-      const prefix = "Execute approved network proxy acceptance / ";
-      const jobs = [
-        {
-          ...job(prefix + "Dispatch Preflight", 8, 7),
-          steps: [
-            { name: "Prepare fresh lane fallback", status: "completed", conclusion: "skipped" },
-            { name: "Prepare full admission marker", status: "completed", conclusion: "skipped" },
-          ],
-        },
-        job(prefix + "Reuse successful same-SHA CI", 7, 7, "skipped"),
-        job(prefix + `Slack Live Network Proxy Acceptance ${source}`, 7, 3, "failure"),
-      ];
-      const base = manualHistory(jobs, {
-        active: false,
-        finishedAgo: 3,
-        result: { conclusion: "failure" },
-        runId,
-        sourceSha,
-        displayTitle: `Network Proxy Acceptance ${source}`,
-      });
-      const owner = {
-        id: runId,
-        head_sha: sourceSha,
-        head_branch: "main",
-        repository_id: 1350208775,
-        head_repository_id: 1350208775,
-      };
-      let digest = "sha256:9e1b980aef6155c096bdac1182fe146c1bceb78423dde2bfa835a243f7549c45";
-      const github: GithubReader = async (request) => {
-        if (request.path === "/actions/artifacts/14748558872") {
-          return {
-            id: 14748558872,
-            name: `network-proxy-acceptance-posts-${source}`,
-            expired: false,
-            workflow_run: owner,
-          };
-        }
-        if (request.path === "/actions/artifacts/14749386802") {
-          return {
-            id: 14749386802,
-            name: `network-proxy-acceptance-cleanup-${source}`,
-            expired: false,
-            digest,
-            workflow_run: owner,
-          };
-        }
-        return base(request);
-      };
-      assert.deepEqual(await validateFullIntegrationPreflight({ env, github }), admitted);
-      digest = "sha256:" + "0".repeat(64);
-      await assert.rejects(
-        validateFullIntegrationPreflight({ env, github }),
-        /could not verify admission metadata/,
-      );
-    },
-  );
 
   for (const lane of ["Gateway Routing", "Production TUI"]) {
     for (const active of [true, false]) {

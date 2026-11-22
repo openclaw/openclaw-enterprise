@@ -227,7 +227,9 @@ administrators [share Agents](agent-sharing.md) from the **Access** tab.
 **Stop Agent**, in the **Danger zone** card at the end of the **Configuration** tab, opens a confirmation explaining that shutdown interrupts running
 work but preserves version history, credentials, gateway state, and workspace
 files. A chat that was mid-reply can keep showing the reply as in progress;
-reload it after the Agent is deployed again. **Cancel** closes it without a
+reload it after the Agent is deployed again. If the reply is missing,
+[check for resumed work and completed actions](../../reference/agents/interrupted-turns.md)
+before repeating the task. **Cancel** closes the confirmation without a
 write. Confirming requires `operate` permission on this Agent, regardless of the
 viewed version or tab.
 

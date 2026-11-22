@@ -1004,14 +1004,11 @@ export async function deploymentSandboxPolicy(
 ): Promise<Readonly<SandboxPolicy> | undefined> {
   const policy = await state.sandboxPolicies.find(namespaceId, agentId);
   if (policy?.repositoryNetworkPolicy !== undefined) {
-    await authority.authorize(principalId, "read", {
-      kind: "sandbox_policy",
-      id: policy.id,
-      namespaceId,
-    });
-    throw new ResourceStateConflictError(
-      "This Installation cannot enforce the saved repository network policy. Deploy with an Installation that supports it.",
-    );
+    const target = { kind: "agent", id: agentId, namespaceId } as const;
+    const resource = policyResource(namespaceId, agentId);
+    await authority.authorize(principalId, "read", resource);
+    await authority.authorize(principalId, "manage_policy", target);
+    await authority.authorize(principalId, "update", resource);
   }
   return policy;
 }
