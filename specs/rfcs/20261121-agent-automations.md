@@ -63,7 +63,9 @@ credential reference/identity, permitted
 actions and standing approval identity. Refuse wildcard or pattern grants,
 ambiguous names, missing identity evidence and tools outside either policy.
 Bind all entries to the exact Namespace, Agent and provisioning revision.
-Keep credential values out of this record. A rotated secret for the same authorized workload identity can qualify after revalidation.
+Keep credential values out of this record. Reusing a Secret identifier does not
+prove an unchanged workload identity; this pilot does not qualify general
+credential rotation.
 
 Use read-only `sessions.list` for the selected native `agentId`, with explicit
 row, page, response-size and time limits enforced by the adapter. Exclude cron,
@@ -94,14 +96,15 @@ OpenClaw Harness and ordinary dedicated Codex Harness independently. Current
 managed MCP Sandbox and Codex app topologies cannot supply this contract.
 Ordinary chat and native administration keep their existing policies.
 
-The dedicated Codex pilot supports only HTTPS MCP endpoints without credentials.
-The Compute setting `automations.trustedAnonymousMcpEndpoints` explicitly lists
+On both Harnesses, HTTPS MCP endpoints must have no credentials and appear in
+the Compute setting `automations.trustedAnonymousMcpEndpoints`. This list contains
 exact normalized HTTPS endpoints; wildcards and credentials are forbidden. Each
 entry attests the same anonymous principal and permitted actions regardless of
-whether the Gateway or Agent contacts the service. It is not an inference from
-tool annotations or successful discovery. Credentialed MCP and dedicated stdio
-are outside this pilot. Removing an endpoint from this list blocks new
-qualification and successor startup; it does not revoke an already running job.
+whether the Gateway or Agent contacts the service. Tool annotations or successful
+discovery cannot establish this attestation. Dedicated Codex supports only this
+HTTPS path; embedded OpenClaw additionally supports same-process stdio. General
+credentialed MCP and dedicated stdio are outside the pilot. Removing an endpoint
+blocks new qualification and successor startup; it does not revoke a running job.
 
 Upstream [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
 and [Codex native tool construction](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523)
