@@ -304,6 +304,10 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
+                  },
+                  {
                     "page": "guides/credential-proxy",
                     "label": "Set Up Credential Proxy"
                   },
@@ -1370,6 +1374,7 @@
               "flows/cli-publication",
               "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
+              "flows/github-actions-testing/network-proxy-acceptance",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",
               "flows/repository-credentials",

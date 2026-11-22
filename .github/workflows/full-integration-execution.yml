@@ -6,6 +6,15 @@ on:
       lane:
         type: string
         default: ""
+      network_proxy_acceptance:
+        type: boolean
+        default: false
+      network_proxy_clearance_run:
+        type: string
+        default: ""
+      network_proxy_clearance_attempt:
+        type: string
+        default: "1"
 
 permissions:
   contents: read
@@ -47,6 +56,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
+          INPUT_NETWORK_PROXY_ACCEPTANCE: ${{ inputs.network_proxy_acceptance }}
+          INPUT_NETWORK_PROXY_CLEARANCE_RUN: ${{ inputs.network_proxy_clearance_run }}
+          INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT: ${{ inputs.network_proxy_clearance_attempt }}
         run: |
           node scripts/ci/full-integration-preflight.ts
       - name: Prepare fresh lane fallback
@@ -434,31 +446,105 @@ jobs:
       cancel-in-progress: false
       queue: max
     needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack') }}
+    if: ${{ !cancelled() && !inputs.network_proxy_acceptance && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack') }}
     timeout-minutes: 50
     environment: integration-main
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
       OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
       OCC_TEST_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
-      OCC_TEST_SLACK_SENDER_BOT_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
-      SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Refuse unresolved acceptance cleanup before using Slack fixture credentials
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/network-proxy-acceptance.ts quarantine
       - uses: ./.github/actions/run-ci-lane
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OCC_TEST_SLACK_SENDER_BOT_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         with:
           lane: slack
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: 50
+
+  slack-network-proxy-acceptance:
+    name: Slack Live Network Proxy Acceptance 9ffc8947c06954644ceb08da25164adbc8a184ab
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: preflight
+    if: ${{ !cancelled() && inputs.network_proxy_acceptance == true && inputs.network_proxy_clearance_run == '' && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane == 'slack' }}
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      pull-requests: read
+      checks: read
+    concurrency:
+      group: full-integration-slack-live
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 180
+    environment: integration-main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/network-proxy-acceptance
+        with:
+          github-token: ${{ github.token }}
+          model-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-pat: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          slack-app-token: ${{ secrets.SLACK_APP_TOKEN }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          slack-sender-token: ${{ secrets.SLACK_SENDER_TOKEN }}
+          channel-id: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
+          model: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+          codex-model: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+          node-base-image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
+  slack-network-proxy-clearance:
+    name: ${{ format('Slack Live Network Proxy Clearance 9ffc8947c06954644ceb08da25164adbc8a184ab run {0} attempt {1}', inputs.network_proxy_clearance_run, inputs.network_proxy_clearance_attempt) }}
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && inputs.network_proxy_acceptance == true && inputs.network_proxy_clearance_run != '' && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane == 'slack' }}
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    concurrency:
+      group: full-integration-slack-live
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Record protected clearance after independent fixture teardown verification
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_LANE: slack
+          INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+          INPUT_NETWORK_PROXY_CLEARANCE_RUN: ${{ inputs.network_proxy_clearance_run }}
+          INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT: ${{ inputs.network_proxy_clearance_attempt }}
+        run: node scripts/ci/network-proxy-acceptance.ts clearance
 
   openshell-build-inputs:
     name: OpenShell Build Inputs
@@ -588,7 +674,7 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: logging-collector
-          profile: images
+          profile: baseline
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: 30
@@ -723,6 +809,7 @@ jobs:
           SKIPPER_GATEWAY_CATEGORY: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_category }}
           SKIPPER_GATEWAY_FETCH_ELAPSED_MS: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_fetch_elapsed_ms }}
           SKIPPER_GATEWAY_TRANSPORT_CAUSE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_transport_cause }}
+          SKIPPER_GATEWAY_LISTENER: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_listener }}
           SKIPPER_RUNTIME_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_runtime_signal }}
           SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS: ${{ steps.installed-skipper-proof.outputs.skipper_model_fixture_selected_terminal_success }}
           SKIPPER_MODEL_REQUEST_OBSERVATION: ${{ steps.installed-skipper-proof.outputs.skipper_model_request_observation }}
@@ -750,6 +837,33 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  network-proxy-acceptance-aggregate:
+    name: Network Proxy Acceptance Result
+    needs: [preflight, slack-network-proxy-acceptance]
+    if: ${{ always() && inputs.network_proxy_acceptance == true && inputs.network_proxy_clearance_run == '' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require successful acceptance execution
+        if: needs.slack-network-proxy-acceptance.result != 'success'
+        run: exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: network-proxy-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/network-proxy-acceptance-result
+      - name: Validate exact candidate and stage evidence
+        run: node scripts/ci/network-proxy-acceptance.ts aggregate "$RUNNER_TEMP/network-proxy-acceptance-result/receipt.json"
+
   full-aggregate:
     name: Full Integration Aggregate
     env:
@@ -775,7 +889,7 @@ jobs:
       - qa-matrix
       - dev-up-k3d
       - skipper-prepared-git-installed
-    if: ${{ always() && needs.preflight.outputs.selected_lane != 'skip' && (github.event_name != 'schedule' || needs.preflight.result == 'success') }}
+    if: ${{ always() && !inputs.network_proxy_acceptance && needs.preflight.outputs.selected_lane != 'skip' && (github.event_name != 'schedule' || needs.preflight.result == 'success') }}
     steps:
       - name: Require validated selection
         if: needs.preflight.result != 'success' || needs.preflight.outputs.selected_lane == ''

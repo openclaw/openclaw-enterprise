@@ -69,7 +69,12 @@ export function bindPlatformUnitOfWork(
       "save",
       "authorize",
     ]),
-    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find", "save"]),
+    sandboxPolicies: Object.freeze({
+      ...bindRepository(repositories.sandboxPolicies, lifetime, ["find", "save"]),
+      ...(repositories.sandboxPolicies.supportsRepositoryNetworkPolicy === true
+        ? { supportsRepositoryNetworkPolicy: true as const }
+        : {}),
+    }),
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",
       "getInstallation",
@@ -170,7 +175,6 @@ export function bindPlatformUnitOfWork(
       "createCredentialSource",
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
-      "setCredentialSourceRegistrationDispatch",
       "updateCredentialSourceConfig",
       "replaceCredentialSourceSecrets",
       "recordEgressInstallation",
