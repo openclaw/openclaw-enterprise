@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-22
-last_updated_session: authoring-run/3ab053df-6573-4709-94ef-7e3feb6a77f2
+last_updated_session: authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f
 ---
 
 # Credential source lifecycle flow
@@ -57,7 +57,7 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to the exact Source, confirms its TokenService instance, and gives Credential Proxy a resolver limited to that Source.
 
-The OpenShell Proxy resolves the current credential and version from TokenService. It creates or refreshes an OpenShell Provider, which is a delivery copy, and attaches it to the Sandbox. The Harness receives a placeholder. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
+The OpenShell Proxy resolves the credential and version from TokenService only when it creates an absent OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating its credential, then attaches the Provider to the Sandbox. The [status table](../reference/credential-sources.md#implementation-status) records the stale-copy limitation until Source-scoped push exists. The Harness receives a placeholder. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
 
 ### 4. Activate and stop the Agent
 
@@ -91,6 +91,10 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 12:08: Explain first-use Provider creation and the accepted stale-copy limitation. (authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f - a6b923bad)
+
+- 2026-11-22 11:54: Restore first-use-only Provider delivery and update the Worker resolver source pointer. (01a1ec21-b384-7472-887f-945ae0ab16fc - 2c2c13373)
 
 - 2026-11-22 10:07: Explain Source authorization, policy, delivery, activation, and cleanup in runtime order. (authoring-run/3ab053df-6573-4709-94ef-7e3feb6a77f2 - 591f2311a)
 

@@ -125,7 +125,7 @@ Kubernetes Configuration requests.
 
 `packages/occ/src/agent-provisioning-worker.ts:observeProvisioningDeployment`
 
-At handoff, provisioning saves the first Agent revision ID and stays `running`.
+Handoff records the first revision in its Read Committed admission transaction.
 Provisioning waits without using attempts. On success, PostgreSQL
 marks provisioning `succeeded`.
 If the claim has an audit attempt ID, PostgreSQL saves `openclaw.controller_work.completed`

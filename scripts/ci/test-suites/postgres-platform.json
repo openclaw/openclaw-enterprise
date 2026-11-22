@@ -636,6 +636,8 @@
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP preserves and withdraws stored repository grants",
+        "scoped deployment channel observes IAM revocation after the writer lock",
+        "scoped deployment admission observes IAM revocation after the writer lock",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]

@@ -1198,12 +1198,13 @@ function renderAgentForm(
     id: "provider-credential-secret",
     label: "Model credential Secret",
     getCurrentSource: () => modelCredentialSource,
+    onPendingChange: () => updateControls(),
     onSecretSelected(secret) {
+      edited = true;
       modelCredentialSource = secret.ref;
       modelCredentialSecret = secret;
       resetPluginDiscovery();
       feedback.textContent = "";
-      updateControls();
     },
     createSecretName: () => {
       const agentName = name.value.trim();
@@ -1217,6 +1218,11 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  // The picker owns validation and reports an accepted choice above. Searching its list
+  // must not clear the field's validity or mark the draft as edited.
+  for (const event of ["input", "change"]) {
+    modelCredentialField.addEventListener(event, (search) => search.stopPropagation());
+  }
   let secretNameConflict: string | null = null;
   const secretConflictMessage = element("p", { className: "status-body" });
   const ownsSecretRecovery = () =>
@@ -1699,7 +1705,7 @@ function renderAgentForm(
     apiKey.value = "";
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
-    modelCredentialPicker.refresh();
+    modelCredentialPicker.resetSelection();
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
@@ -3328,7 +3334,9 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
+    const checkingSecret = modelCredentialPicker.pendingStatus();
     const submitUnavailable =
+      Boolean(checkingSecret) ||
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -3344,18 +3352,19 @@ function renderAgentForm(
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
-    let submitReason: HTMLElement | null = null;
+    let submitReason: HTMLElement | null = checkingSecret;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
       (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
       submitReason = capabilityStatus;
-      submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
       submitReason = accessStatus;
-      submit.setAttribute("aria-describedby", accessStatus.id);
+    }
+    if (submitReason) {
+      submit.setAttribute("aria-describedby", submitReason.id);
     } else {
       submit.removeAttribute("aria-describedby");
     }
@@ -3838,6 +3847,7 @@ function renderAgentForm(
       input.setCustomValidity(workspaceFileProblem(filename, input.value));
     }
     if (
+      modelCredentialPicker.pendingStatus() ||
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||

@@ -2670,12 +2670,18 @@ export async function renderAgentDetail(
     if (deploymentAttention.dataset.message !== attentionKey) {
       deploymentAttention.dataset.message = attentionKey;
     }
-    if (needsAttention && deploymentAttention.dataset.rendered !== attentionKey) {
-      deploymentAttention.dataset.rendered = attentionKey;
-      deploymentAttention.replaceChildren(
-        element("p", {}, attentionText),
-        versionLink("View deployment", latest.id, "deployment"),
-      );
+    if (needsAttention) {
+      const message = deploymentAttention.firstElementChild;
+      if (message && deploymentAttention.dataset.rendered === latest.id) {
+        // Update the status without removing the link from the keyboard's focus.
+        setText(message, attentionText);
+      } else {
+        deploymentAttention.dataset.rendered = latest.id;
+        deploymentAttention.replaceChildren(
+          element("p", {}, attentionText),
+          versionLink("View deployment", latest.id, "deployment"),
+        );
+      }
     }
     if (!latest) {
       showRecovery(null);

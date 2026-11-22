@@ -222,7 +222,7 @@ The tool retains installation resources on exit.
 
 ### 5. Render only the exact gateway's projection
 
-`apps/controller/src/worker.ts:ControllerWorker.resolveRevisionSecretContext`
+`apps/controller/src/worker/revision-inputs.ts:createRevisionCredentialResolver`
 
 [ControllerWorker](../../apps/controller/src/worker.ts) rechecks
 consumption authority and resolves Agent revision refs from OCC metadata before each

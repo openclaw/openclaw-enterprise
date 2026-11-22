@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-22
-last_updated_session: authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c
+last_updated_session: authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e
 ---
 
 # Platform console request flow
@@ -205,6 +205,11 @@ server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
 until the page shows it. Create and replacement wait for Namespace readiness.
 Mutations use the tracked request client and Secret API, never a Driver.
 
+`console.mts:loadPage` restores a retained Secrets query after a changed recheck or
+history return for the same session and Namespace. `secrets.mts:renderSecrets` filters
+freshly authorized rows. On refocus, `focusInShownView` restores the search selection
+or focused result by Secret ID, falling back to search. **Refresh** clears the query.
+
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
 and clears it after the request, dismissal, or view retention
 (`console.mjs:clearPasswordInputs`). Pending requests block navigation and
@@ -376,6 +381,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 11:17: Trace Secrets search restoration. (authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e - b4bf1f79813c391977b4f58eb92e5241a8eaa8b8)
 
 - 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
 

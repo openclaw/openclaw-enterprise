@@ -54,7 +54,8 @@ export function secretsScenarios({
         "The library shows names and IDs. The privacy notice explains why stored values are never returned. Simulated UI proof.",
       steps: [
         "Search by name or ID. Tab to a result and press Enter; its dialog names the Namespace and lists consumers.",
-        "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
+        "Create a Secret with a dummy value. Search for it and select part of the query. Switch windows and return. The search keeps its selection when the library reloads.",
+        "Open the result, replace the value, then delete the Secret. Switch Namespace and check that the search stays with its own library.",
       ],
     },
     secretsMobile: {

@@ -123,19 +123,20 @@ export const POD_LABELS_NOT_PERMITTED_DETAILS =
   "pod labels not permitted by the gateway's allowed_pod_labels: ";
 
 /**
- * OpenShell refused a mutation because OCC's gateway identity holds its maximum of 1000
- * durable request admissions. Completed admissions free up 24 h after completion, so the
- * worker holds the revision pending without spending attempts; admissions left unresolved
- * never expire, so a limit still reached at the deployment deadline fails it.
+ * OpenShell refused a mutation because OCC's gateway identity holds the Gateway's limit of
+ * durable request admissions (`mutation_admission_limit_per_caller`; OCE's values set 5000,
+ * OpenShell's default is 1000). Completed admissions free up after the replay window (default
+ * 24 h), so the worker holds the revision pending without spending attempts; admissions left
+ * unresolved never expire, so a limit still reached at the deployment deadline fails it.
  */
 export class OpenShellAdmissionLimitError extends TransientDependencyError {
   constructor(method: string, cause: unknown) {
     super(
       "sandbox_admission",
       "unavailable",
-      `OpenShell refused ${method}: the controller's gateway identity holds OpenShell's limit of 1000 durable request admissions. ` +
-        "Completed admissions free up 24 h after completion; unresolved ones never expire and OpenShell has no reset API, " +
-        "so if the limit persists, investigate the unresolved admissions in the OpenShell gateway database, then redeploy.",
+      `OpenShell refused ${method}: the controller's gateway identity holds the Gateway's limit of durable request admissions. ` +
+        "Completed admissions free up after the Gateway's replay window; unresolved ones never expire and OpenShell has no reset API, " +
+        "so if the limit persists, raise mutation_admission_limit_per_caller or investigate the unresolved admissions in the OpenShell gateway database, then redeploy.",
       { cause },
     );
     this.name = "OpenShellAdmissionLimitError";
