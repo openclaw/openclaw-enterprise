@@ -314,9 +314,6 @@ export async function updateOccTokenServiceProviderCopy(input: {
 > {
   const { client, workspace, sourceRef, signal } = input;
   signal.throwIfAborted();
-  if (sourceRef.kind !== "credential_source" || !sourceRef.id || !sourceRef.namespaceId) {
-    refuse();
-  }
   const owner = await client.getWorkspace(workspace, signal);
   if (
     owner?.name !== workspace ||
@@ -343,7 +340,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
   }
   const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment));
   const current = checkProvider(existing, sourceRef, workspace, owner.id, profileVersion);
-  if (input.version !== undefined && input.version === current.sourceVersion) {
+  if (input.version === current.sourceVersion) {
     // TODO(manual retry): observe a persisted push without retransferring credential material.
     refuse();
   }

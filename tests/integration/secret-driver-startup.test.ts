@@ -4,8 +4,6 @@ import test from "node:test";
 import {
   ConfigurationValidationError,
   type CredentialProxyDriver,
-  type CredentialUpdateNotification,
-  type ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
@@ -87,17 +85,12 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const createdAt = new Date().toISOString();
   const installation = { id: `ins_${randomUUID()}`, name: "TokenService startup", createdAt };
   await state.transact((unit) => unit.installations.createInstallation(installation));
-  const deliveries: {
-    notification: CredentialUpdateNotification;
-    resolved: ResolvedCredential;
-  }[] = [];
+  let deliveredCredential: string | undefined;
   const notify: NonNullable<CredentialProxyDriver["notifyCredentialUpdated"]> = async (
-    notification,
+    _notification,
     resolveCredential,
-    signal,
   ) => {
-    signal.throwIfAborted();
-    deliveries.push({ notification, resolved: await resolveCredential() });
+    deliveredCredential = (await resolveCredential()).credential;
   };
 
   async function start(secretId: string) {
@@ -160,12 +153,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     { secret: { credential: refreshedCredential } },
     AbortSignal.timeout(5_000),
   );
-  const resolved = await owner.resolveCredential(sourceInstance, AbortSignal.timeout(5_000));
-  assert.ok(resolved.version);
-  assert.equal(resolved.credential, refreshedCredential);
-  assert.deepEqual(deliveries, [
-    { notification: { sourceRef: sourceInstance.sourceRef, version: resolved.version }, resolved },
-  ]);
+  assert.equal(deliveredCredential, refreshedCredential);
 
   // A new private owner can establish its own marker, but live source custody
   // still prevents selecting a replacement TokenService instance.

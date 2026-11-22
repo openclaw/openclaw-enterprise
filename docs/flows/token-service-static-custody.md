@@ -93,8 +93,6 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 
 - 2026-11-22 12:16: Combine staged deployment with Source updates through the selected native Proxy. (authoring-run/c68f6f42-f163-4903-80e4-815e23cd470d - 403ad1bbacb79d2c504026c696a343d29bfa948a)
 
-- 2026-11-22 19:55: Trace TokenService startup, update notification, and committed custody after delivery failure. (authoring-run/5e786e89-290e-40b6-b353-e1acd7eda604 - cb00a8ef63892aae7c6b1445e831a33003396565)
-
 - 2026-11-21 21:55: Link staged Agent admission to its lifecycle owner. (01a1ec21-b384-7472-887f-945ae0ab16fc - 91de87598)
 
 - 2026-11-21 21:33: Authorize Source creation in the manager and clarify DELETE retry authority. (authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a - 930293d2b18205276dcd78aec52414e0c9fdc616)

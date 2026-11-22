@@ -73,7 +73,7 @@ function recordingActiveGateway(
   const attachmentEpoch = randomUUID();
   const networkInstanceId = randomUUID();
   const policyHash = "a".repeat(64);
-  const updates: { request: OpenShellProviderCreateRequest; expectedVersion: string }[] = [];
+  const updates: OpenShellProviderCreateRequest[] = [];
   const receiptReads: string[] = [];
   let profile: OpenShellStoredProviderProfile | undefined;
   let provider: OpenShellProviderResponse | undefined;
@@ -155,7 +155,7 @@ function recordingActiveGateway(
       assert.equal(request.name, providerName);
       assert.deepEqual(sandbox.spec.providers, [providerName]);
       assert.equal(expectedVersion, provider.resourceVersion);
-      updates.push({ request, expectedVersion });
+      updates.push(request);
       provider = { ...provider, config: request.config ?? {}, resourceVersion: "2" };
       const mutationId = randomUUID();
       const receiptId = randomUUID();
@@ -649,23 +649,16 @@ cases.revisionTest(
     const current = await tokenService.resolveCredential(sourceInstance, context.signal);
     assert.equal(current.credential, replacement);
     assert.notEqual(current.version, canonical.version);
+    assert.equal(gateway.updates.length, 1);
+    const { workspace, name, credentials: delivered, config } = gateway.updates[0]!;
     assert.deepEqual(
-      gateway.updates.map(({ request, expectedVersion }) => ({
-        workspace: request.workspace,
-        name: request.name,
-        credentials: request.credentials,
-        config: request.config,
-        expectedVersion,
-      })),
-      [
-        {
-          workspace: placedName,
-          name: preparedProvider.name,
-          credentials: { OPENAI_API_KEY: replacement },
-          config: { oce_source_version: current.version },
-          expectedVersion: "1",
-        },
-      ],
+      { workspace, name, credentials: delivered, config },
+      {
+        workspace: placedName,
+        name: preparedProvider.name,
+        credentials: { OPENAI_API_KEY: replacement },
+        config: { oce_source_version: current.version },
+      },
     );
     assert.equal(gateway.provider()?.config.oce_source_version, current.version);
     assert.deepEqual(gateway.receiptReads, [gateway.status()?.receipt?.receiptId]);

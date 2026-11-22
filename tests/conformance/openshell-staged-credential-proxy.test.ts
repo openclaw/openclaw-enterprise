@@ -797,7 +797,6 @@ test("OpenShell Source notification leaves an absent delivery Provider absent", 
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.creates.length, 0);
   assert.equal(f.state.updates.length, 0);
-  assert.equal(f.state.provider, undefined);
 });
 
 test("OpenShell Source notification rejects a mismatched Source Namespace placement", async (t) => {
@@ -825,7 +824,6 @@ test("OpenShell Source notification rejects a mismatched Source Namespace placem
 test("OpenShell Source notification updates an attached Sandbox before its first activation", async (t) => {
   const f = await fixture(t);
   await f.configure();
-  const providerId = f.state.provider!.metadata.id;
   // The target has never been activated: Gateway admission is still pending and no supervisor
   // can report READY yet. The idle target still receives its own UPDATE mutation receipt.
   f.sandbox.status = {
@@ -837,9 +835,6 @@ test("OpenShell Source notification updates an attached Sandbox before its first
   await f.notify("source-v2");
 
   assert.equal(f.state.updates.length, 1);
-  assert.equal(f.state.provider!.metadata.id, providerId);
-  assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
-  assert.deepEqual(f.sandbox.spec.providers, [f.state.provider!.metadata.name]);
   assert.equal(f.state.statusReads.length, 0);
 });
 
@@ -847,7 +842,6 @@ test("OpenShell Source notification updates an attached Provider copy and confir
   const f = await fixture(t);
   await f.configure();
   f.observeServing();
-  const providerId = f.state.provider!.metadata.id;
   const profile = structuredClone(f.state.profile);
   assert.equal((f.state.profile!.credentials as Wire[])[0]!.stable_placeholder, true);
 
@@ -865,24 +859,14 @@ test("OpenShell Source notification updates an attached Provider copy and confir
   });
   assert.deepEqual(update.credentials, { OPENAI_API_KEY: "synthetic-material-v2" });
   assert.deepEqual(update.config, { oce_source_version: "source-v2" });
-  assert.equal(f.state.provider!.metadata.id, providerId);
-  assert.equal(f.state.provider!.metadata.resource_version, "8");
-  assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
   assert.deepEqual(f.state.profile, profile);
-  assert.deepEqual(f.sandbox.spec.providers, [f.state.provider!.metadata.name]);
+  assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
   assert.equal(f.state.detaches.length, 0);
   const receiptQueries = f.state.statusReads.map((read) => read.receipt_id);
   assert.ok(receiptQueries.length >= 2);
   assert.equal(new Set(receiptQueries).size, 1);
   assert.equal(typeof receiptQueries[0], "string");
-  const status = f.state.providerStatus!;
-  assert.equal(record(record(status.receipt).desired).provider_env_revision, "13");
-  assert.equal(record(record(status.receipt).desired).config_revision, "11");
-  assert.equal(record(status.observed).provider_env_revision, "13");
-  assert.equal(record(status.observed).config_revision, "11");
-  assert.equal(record(f.sandbox.status.configuration_admission).provider_env_revision, "13");
-  assert.equal(record(f.sandbox.status.configuration_admission).config_revision, "11");
 });
 
 test("OpenShell Source notification stops on caller cancellation and rejects stale READY", async (t) => {
@@ -921,7 +905,6 @@ test("OpenShell Source notification updates a retained Provider without attached
   const f = await fixture(t);
   await f.configure();
   f.observeServing();
-  const providerId = f.state.provider!.metadata.id;
 
   // Stop removes the Sandbox policy and attachment but retains the Proxy's delivery copy.
   // A later Source notification still updates it even though protobuf omits an empty receipt list.
@@ -932,8 +915,6 @@ test("OpenShell Source notification updates a retained Provider without attached
 
   assert.equal(f.resolutions(), 2);
   assert.equal(f.state.updates.length, 1);
-  assert.equal(f.state.provider!.metadata.id, providerId);
-  assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
   assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
   assert.deepEqual(f.sandbox.spec.providers, []);

@@ -93,7 +93,7 @@ DELETE requires exact `credential_source:delete` and rejects blocking Agent, rev
 
 ## Debugging and Verification
 
-Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It covers real Fastify routes, PostgreSQL, Native IAM, TokenService custody, sanitized reads, update and denial audit, retirement, Source POST, and staged Agent admission. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers the pointer and activation authorization with controlled Compute. Kubernetes transport is simulated; these tests do not prove native delivery or a model turn. The [custody flow](token-service-static-custody.md#debugging-and-verification) owns detailed Source verification.
+Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It covers real Fastify routes, PostgreSQL, Native IAM, TokenService custody, sanitized reads, update and denial audit, retirement, Source POST, and staged Agent admission. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers activation and an authenticated PATCH while the Agent uses the Source. It exercises the selected native Proxy with controlled Compute, a simulated existing Provider attachment, and a recording Gateway client. It proves Provider update and receipt dispatch under controlled Gateway responses; it does not prove live OpenShell, supervisor delivery, or a model turn. The [custody flow](token-service-static-custody.md#debugging-and-verification) owns detailed Source verification.
 
 ## Related docs
 
@@ -109,9 +109,6 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 ## Changelog
 
 - 2026-11-22 12:21: Combine committed Source notification with native Provider receipt readiness. (authoring-run/52979f29-7db2-44bf-a8e4-3a7d8a6b9134 - 4df883ed81bb92632f909d76346d7874ec2761c5)
-- 2026-11-22 12:16: Connect committed Source replacement to native Proxy delivery and allow active-bound credential updates. (authoring-run/c68f6f42-f163-4903-80e4-815e23cd470d - 403ad1bbacb79d2c504026c696a343d29bfa948a)
-- 2026-11-22 20:17: Describe asynchronous native Provider pushes and the remaining caller, retry, and live-proof dependencies. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - a6b923bad)
-- 2026-11-22 20:14: Describe direct native Provider pushes and the remaining caller, retry, and live-proof dependencies. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - a6b923bad)
 - 2026-11-22 11:54: Restore first-use-only Provider delivery and update the Worker resolver source pointer. (01a1ec21-b384-7472-887f-945ae0ab16fc - 2c2c13373)
 - 2026-11-22 08:39: Bind native delivery to the selected OCC TokenService implementation before Gateway access. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - f3a2121af)
 - 2026-11-21 22:19: Integrate TokenService-owned Source enrollment and Worker startup with native Proxy delivery and cleanup. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 86772f7b5)

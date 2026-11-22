@@ -173,25 +173,21 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       if (sandbox.configurationActivated === false) {
         continue;
       }
-      let status = await client.getSandboxProviderStatus(
-        workspace,
-        sandbox.name,
-        provider.name,
-        signal,
-        receipt.receipt_id,
-      );
+      const readStatus = () =>
+        client.getSandboxProviderStatus(
+          workspace,
+          sandboxName,
+          provider.name,
+          signal,
+          receipt.receipt_id,
+        );
+      let status = await readStatus();
       while (
         status.state === "PROVIDER_READINESS_STATE_PENDING" ||
         status.state === "PROVIDER_READINESS_STATE_PERSISTED"
       ) {
         await delay(250, undefined, { signal });
-        status = await client.getSandboxProviderStatus(
-          workspace,
-          sandbox.name,
-          provider.name,
-          signal,
-          receipt.receipt_id,
-        );
+        status = await readStatus();
       }
       sandbox = await readTarget();
       const desired = status.receipt?.desired;
