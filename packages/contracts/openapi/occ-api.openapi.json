@@ -23507,7 +23507,7 @@
             "headers": {
               "Location": {
                 "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
-                "schema": { "schema": { "type": "string" } }
+                "schema": { "type": "string" }
               }
             }
           },
@@ -23598,7 +23598,7 @@
             "headers": {
               "Location": {
                 "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
-                "schema": { "schema": { "type": "string" } }
+                "schema": { "type": "string" }
               }
             }
           }
@@ -23760,7 +23760,7 @@
             "headers": {
               "Location": {
                 "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
-                "schema": { "schema": { "type": "string" } }
+                "schema": { "type": "string" }
               }
             }
           }
@@ -24362,7 +24362,7 @@
             "headers": {
               "Location": {
                 "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
-                "schema": { "schema": { "type": "string" } }
+                "schema": { "type": "string" }
               }
             }
           }

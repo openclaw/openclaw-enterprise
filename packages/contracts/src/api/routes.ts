@@ -191,11 +191,10 @@ const mutationErrors = {
 } as const;
 
 const automationLocationHeader = {
-  Location: {
+  Location: Type.String({
     description:
       "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
-    schema: Type.String(),
-  },
+  }),
 };
 const automationMutationErrors = {
   ...createErrors,
