@@ -364,11 +364,16 @@ export function registerPostgresMigrationTransactionCommandCases({
           await exited;
         }
       } finally {
-        if (ddl) await db.app.query("ROLLBACK");
-        else await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
+        if (ddl) {
+          await db.app.query("ROLLBACK");
+        } else {
+          await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
+        }
       }
     }
-    if (ddl) assert.deepEqual(await historySnapshot(db), before);
+    if (ddl) {
+      assert.deepEqual(await historySnapshot(db), before);
+    }
   }
 
   test(
