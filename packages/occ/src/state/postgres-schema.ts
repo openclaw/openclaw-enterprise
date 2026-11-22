@@ -762,7 +762,7 @@ export const agentRevisions = occSchema.table(
       sql`COALESCE(
         jsonb_typeof(${table.admittedSpec}->'execution_admission') = 'object'
         AND (${table.admittedSpec}->'execution_admission') ?& ARRAY['version', 'mode']
-        AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode' - 'repositoryNetworkPolicyVersion') = '{}'::jsonb
         AND (
           (${table.admittedSpec}->'execution_admission'->>'mode' = 'unprotected'
             AND ${table.admittedSpec} #> '{execution_admission,version}' = '2'::jsonb
@@ -797,6 +797,14 @@ export const agentRevisions = occSchema.table(
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
               ))
         ), false)`,
+    ),
+    check(
+      "agent_revisions_repository_policy_reader_version",
+      sql`CASE WHEN (${table.admittedSpec}->'sandbox_policy') ? 'repositoryNetworkPolicy'
+      THEN ${table.admittedSpec} #> '{execution_admission,repositoryNetworkPolicyVersion}' IS NOT DISTINCT FROM '1'::jsonb
+        AND ${table.admittedSpec} #> '{sandbox_policy,repositoryNetworkPolicy,version}' IS NOT DISTINCT FROM '1'::jsonb
+      ELSE NOT COALESCE((${table.admittedSpec}->'execution_admission') ? 'repositoryNetworkPolicyVersion', false)
+    END`,
     ),
     check(
       "agent_revisions_admitted_snapshot",
@@ -2421,7 +2429,8 @@ export const sandboxPolicies = occSchema.table(
       .onUpdate("restrict"),
     check(
       "sandbox_policies_document_valid",
-      sql`occ.sandbox_policy_is_valid(${table.document}, ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})`,
+      sql`occ.sandbox_policy_is_valid(${table.document} - 'repositoryNetworkPolicy', ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})
+        AND (NOT (${table.document} ? 'repositoryNetworkPolicy') OR occ.sandbox_repository_grants_are_valid(${table.document}->'repositoryNetworkPolicy'))`,
     ),
   ],
 );

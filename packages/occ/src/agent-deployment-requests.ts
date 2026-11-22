@@ -1,3 +1,4 @@
+import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import { createHash } from "node:crypto";
 import type {
   AuditEvent,
@@ -217,6 +218,13 @@ function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
           "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
+      await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        target.namespaceId,
+        agent.id,
+      );
       return { metadata };
     });
     if (initial.receipt !== undefined) {
