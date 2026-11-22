@@ -14,20 +14,37 @@ and `scripts/render-installation-profile.ts` between the deployed and candidate
 source. If the deployed release predates the TypeScript renderer, compare its
 `scripts/render-installation-profile.mjs` implementation with the candidate
 TypeScript file. Decide which changes to adopt and apply them as a separate
-change, not during an image upgrade. Run these commands from a checkout of the installed
-controller's source commit, not the release checkout, and keep the image
-references in `values.yaml` unchanged:
+change, not during an image upgrade. Run the apply block from a checkout of the
+installed controller's source commit. Keep the image references in `values.yaml`
+unchanged.
 
-Run the setup once for each reviewed change. If
+This procedure requires a mutable Installation Secret.
+
+Run the backup block once for each reviewed change. Use Bash with GNU `dd`. If
 `/secure/occ/installation.yaml.before` already exists, preserve it and reconcile
-the previous change before continuing. During recovery, use that original backup;
-do not repeat the backup command after editing `installation.yaml`.
+the previous change before continuing.
+
+```bash
+set -euo pipefail
+(
+  umask 077
+  dd if=/secure/occ/installation.yaml of=/secure/occ/installation.yaml.before conv=excl
+)
+```
+
+If backup creation fails, stop before editing or applying the change. A failed
+copy can leave an incomplete backup.
+
+Edit `/secure/occ/installation.yaml` and review the diff. Replace both occurrences
+of `<reviewed-context>` with the same reviewed Kubernetes context and run the
+entire apply block in Bash.
+Before applying or undoing the change, unset `HELM_KUBEAPISERVER`,
+`HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME`, `HELM_KUBEINSECURE_SKIP_TLS_VERIFY`,
+`HELM_KUBETOKEN`, `HELM_KUBEASUSER` and `HELM_KUBEASGROUPS`.
 
 ```bash
 set -euo pipefail
 cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision
-cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
-# Edit /secure/occ/installation.yaml and review the diff, then:
 OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
 OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
 OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)"
@@ -60,14 +77,17 @@ kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
 
 Undo a refused change right away, since a restarted API Pod reads the Secret.
 The check skips Kubernetes Compute preflight, database checks and the ChatGPT
-admin-key file; if the new API logs `startup-error`, undo the change too.
+admin-key file. If the new API logs `startup-error`, undo the change too.
+
+To undo the change, copy the original backup at
+`/secure/occ/installation.yaml.before` back to `/secure/occ/installation.yaml`.
+If the copy succeeds, run the entire apply block with the same reviewed context.
+Do not repeat the backup or edit.
 
 The patch replaces only the Installation key and keeps the Secret's
 `openclaw.dev/installation-id` annotation. Do not re-create the Secret with
 `kubectl apply`: if its last applied configuration carries that annotation,
 apply deletes it and the next upgrade refuses the Secret. Settings that
 shape Agent Pods, such as Gateway resources, apply only to Pods created
-afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
-file, recompute its checksum, then rerun the Secret patch, values update and
-`helm upgrade` commands. The
-edited files are the baseline for the next upgrade.
+afterward. Deploy an Agent to apply them to it. The edited files are the
+baseline for the next upgrade.

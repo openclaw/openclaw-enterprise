@@ -20,10 +20,11 @@ preparation, [stage a successor](immutable-installation-upgrade.md).
 If prepared, [stop on immutable Secret refusal](production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable) and preserve the original evidence.
 
 For other resumable failures, reconcile processes, release, migration, rollout
-and dispatch. Add `--resume` with unchanged arguments, protected paths,
-kubeconfig contents, OCC URL, scripts, flow and chart. Keep candidates
-semantically unchanged. Resume rechecks images, nodes and live state against
-baseline or candidate.
+and dispatch. Add `--resume`. If Doctor exhausts its heap,
+[increase `--doctor-heap-mib`](#correct-a-doctor-failure).
+Keep all other arguments, protected paths, kubeconfig contents, OCC URL,
+scripts, flow and chart unchanged. Keep candidates semantically unchanged.
+Resume rechecks images, nodes and live state against baseline or candidate.
 
 An [immutable reference switch](immutable-installation-upgrade.md) requires both
 Secrets' recorded UIDs and data.
@@ -207,26 +208,29 @@ refuses a cap too large for its 64-bit memory arithmetic before it changes anyth
 
 ## Correct an invalid Installation name
 
-The stored Installation name must follow the API Name rule: 1 to 200
-characters, with no leading or trailing whitespace, control characters, or line
-or paragraph separators. The upgrade command's startup preflight reads the name
-through OCC and checks it with the selected controller image's rule before any
-writer stops. A failure prints the rule and `INSTALLATION_NAME_INVALID`, attempts
-best-effort deletion of preflight resources, and stops; the old release keeps
-serving. Follow [safe cleanup](#clean-up-preflight-resources) before retrying. To check
-before the maintenance window, run this from the candidate checkout:
+API Names contain 1–200 characters without leading or trailing whitespace, control
+characters, or line or paragraph separators. Initial preflight checks OCC's name
+against the selected controller image's rule before shutdown. Refusal prints the
+rule and `INSTALLATION_NAME_INVALID`, attempts cleanup, and leaves the old release serving.
+
+From the candidate checkout, check with the selected `--occ` CLI.
 
 ```bash
-occ --output json installation get | node --input-type=module -e '
+/secure/occ/bin/occ --output json installation get | node --input-type=module -e '
 import { isName, NAME_RULE } from "./packages/contracts/src/api/plain-text.ts";
 let s = ""; for await (const c of process.stdin) s += c;
 if (!isName(JSON.parse(s).name)) { console.error(NAME_RULE); process.exit(1); }'
 ```
 
-No API renames an Installation, so correct `occ.installation.name` with the
-dedicated migrator credential (`OCC_MIGRATION_DATABASE_URL` as in
-[the upgrade baseline](upgrade-baseline.md)). Shell-quote the name; psql's
-`:'name'` quotes it for SQL:
+If `INSTALLATION_NAME_INVALID` appears after an OCC writer stops, keep the freeze
+and original evidence. Use [prepared upgrade recovery](#resume-an-unfinished-prepared-upgrade)
+to check live Helm, initialization Job and Pod outcomes, and database state before
+applying only the SQL below. Startup logs cannot establish Helm status. Do not
+restart the API manually.
+
+No API renames an Installation. Correct `occ.installation.name` with the dedicated
+migrator credential (`OCC_MIGRATION_DATABASE_URL` in [the upgrade baseline](upgrade-baseline.md)).
+Shell-quote the name. psql's `:'name'` quotes it for SQL.
 
 ```bash
 psql "$OCC_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v name='<intended name>' <<'SQL'
@@ -234,8 +238,10 @@ UPDATE occ.installation SET name = :'name';
 SQL
 ```
 
-psql prints `UPDATE 1`. The running API keeps the name it read at startup, so
-restart it before you check again:
+Stop unless psql prints `UPDATE 1`. If a writer stopped, return to
+[prepared upgrade recovery](#resume-an-unfinished-prepared-upgrade). Restart the
+API only if the standalone check or initial preflight found the invalid name,
+the old release serves, and upgrade shutdown has not begun.
 
 ```bash
 kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
@@ -244,13 +250,9 @@ kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
   --namespace openclaw-system rollout status deployment/openclaw-enterprise-api
 ```
 
-The database accepts some names the rule refuses, so run the upgrade command
-again with a new evidence directory; its preflight checks the name again. If
-the candidate API and worker log
-`INSTALLATION_NAME_INVALID` after the helper stopped OCC (the name changed after
-the preflight), Helm's `--wait` has marked the candidate release `failed`:
-rename as above, follow the Helm failure steps above, then repeat the command
-with `--resume --migration-history-checked`.
+After restart, rerun this CLI check. On initial preflight failure, follow
+[cleanup](#clean-up-preflight-resources) and repeat preflight with a new
+evidence directory. Preflight rejects some names the database accepts.
 
 ## Correct values the candidate refuses
 

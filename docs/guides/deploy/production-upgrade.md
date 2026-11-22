@@ -54,8 +54,9 @@ Prepare:
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
 - Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
-  jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
-  Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
+  jq, yq, cmp, mktemp and GNU `dd` for candidate files.
+  The Helm upgrade identity lists Deployments, StatefulSets, Pods and PVCs cluster-wide.
+  In the release namespace it creates, reads and deletes
   preflight Jobs, Secrets and NetworkPolicies, lists Jobs, reads Pods, logs and
   Installation Secrets, and gets, patches and watches Deployments. Rendered
   cert-manager Certificates require server-side dry-run apply.
@@ -126,8 +127,8 @@ git rev-parse HEAD
 git status --short --untracked-files=all
 ```
 
-Continue only if HEAD matches the reviewed commit and status succeeds without
-output. The evidence directory must not exist; it is created with mode `0700`. Set the target once in the same shell:
+Require the reviewed HEAD and successful, empty status output. Choose an unused
+evidence path (created with mode `0700`). Set the target once in this shell.
 
 ```bash
 target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
@@ -138,17 +139,20 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the live baseline. Review owner-only copies:
+Keep `--values` and `--installation` as the live baseline. Review owner-only
+copies. Stop on copy failure.
 
 ```bash
-cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
-cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
-chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
+(
+  umask 077
+  dd if=/secure/occ/values.yaml of=/secure/occ/candidate-values.yaml conv=excl &&
+  dd if=/secure/occ/installation.yaml of=/secure/occ/candidate-installation.yaml conv=excl
+)
 ```
 
 Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
-These copies can change the [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
-and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+Optionally select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+For legacy Slack proxies, see [Envoy channel egress](one-off-upgrades.md#envoy-channel-egress).
 A candidate can wrap one existing `drivers.plugin` registration in an array
 with the same `id` and `configuration`. Remove `agentNativeAdmin.sharedCookieDomain`
 and preserve `auth.baseUrl` and `agentNativeAdmin.domain` for cookie scope.
@@ -177,8 +181,8 @@ Add either or both flags:
 The helper saves private evidence, applies selected images and the preserved
 broker endpoint, then writes to `--values` and, if changed, `--installation`.
 Installation changes update the mutable Secret or select its staged immutable
-successor and restart OCC with the new checksum. Keep supplied candidate files
-unchanged for recovery.
+successor and restart OCC with the new checksum. Keep supplied candidates unchanged
+during recovery. Never repeat setup.
 
 ### Apply other Installation changes
 
@@ -188,13 +192,13 @@ recommended resource values, [separately](production-installation-changes.md).
 
 ## Bind the Installation once
 
-Set `OCC_URL` and `OCC_SERVICE_KEY_FILE`. Use the API ID, not bootstrap JSON;
-skip correct annotations:
+Use the API ID. Never use bootstrap JSON. Skip correct annotations. Substitute
+the path passed to `--occ`.
 
 ```bash
 (
   set -o pipefail
-  OCC_INSTALLATION_ID=$(occ installation get --output json | jq -ser '
+  OCC_INSTALLATION_ID=$(/secure/occ/bin/occ installation get --output json | jq -ser '
     select(length == 1) | .[0].id | select(type == "string") |
     select(test("\\Ains_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
   ') &&
@@ -211,12 +215,13 @@ skip correct annotations:
 )
 ```
 
-Never overwrite a different ID; reconcile cluster and bootstrap records.
+Never overwrite a different ID. Reconcile cluster and bootstrap records.
 
 ## Rehearse before the maintenance window
 
-Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
-upgrade command. Preflight checks inputs, image pairs, Helm server dry run,
+In either example, replace `--evidence-dir "$UPGRADE_EVIDENCE"` with
+`--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"`.
+Preflight checks inputs, image pairs, Helm server dry run,
 Certificate admission, startup and migration compatibility while writers run.
 The migration Job uses the candidate image and the initializer's credential
 and CA. Hook mode uses `--check`. [Separate mode](separate-database-upgrade.md)
@@ -242,7 +247,8 @@ its Pod is gone. The helper stops only the selected release's API and worker.
 Freeze Agent deployments and settle queued or running work. Freeze draft edits
 for runtime upgrades. Keep these restrictions through recovery.
 
-Omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
+To upgrade, remove `--preflight-only` and pass an unused `"$UPGRADE_EVIDENCE"`
+to `--evidence-dir`. Checks repeat.
 
 Time both interruptions on an isolated, populated installation using separate
 endpoints, the same command, a [protected baseline](upgrade-baseline.md), and
@@ -316,17 +322,18 @@ scripts/upgrade-production-images "${target[@]}" \
 With repository credentials, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
-Check preflight warnings. The controller image checks saved Agent Configurations
-if it supports draft validation and the drafts fit in the temporary Secret.
-Otherwise, OCC checks them at deployment. Correct refused drafts or stop their
-Agents before retrying. Deployment checks Drivers, credentials, plugins and repositories.
+Check preflight warnings. The selected controller image checks saved Agent
+Configurations if it supports draft validation and the drafts fit the temporary
+Secret. Otherwise, OCC checks them at deployment. If initial preflight refuses
+a draft before OCC stops, correct it or stop the Agent. Retry with a new
+evidence directory.
+Deployment checks Drivers, credentials, plugins and repositories.
 
-Before mutation, the command requires a complete authorized inventory with no
-deployment in progress. Every running Agent must have a readable selected version
-in a ready Namespace. A running Agent without one, usually a failed initial
-deployment, stops the command before any change; the refusal lists up to ten
-by ID, name and Namespace. Stop, delete or successfully deploy each, then start
-again with a new evidence directory.
+Mutation requires a complete authorized inventory and no deployment in
+progress. Running Agents need a readable selected Agent revision in a ready
+Namespace. Missing selections stop the command. It lists up to ten affected
+Agents by ID, name and Namespace. Stop, delete or successfully deploy each.
+Retry with a new evidence directory.
 
 The command writes the runtime digest to both Kubernetes Compute image fields,
 updates the mutable Installation Secret or selects its staged immutable successor,
@@ -336,10 +343,10 @@ The Installation checksum restarts API and worker to load the new configuration
 without changing their software version.
 
 After OCC recovers, the command deploys every recorded running Agent, waits for
-durable success, confirms each new selected version, and requires its Pods to be
-`Running` and `Ready` on the requested runtime digest. If OCC refuses an
-Agent's deployment, the command names the Agent and the refusal; correct it and
-[resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment).
+durable success, confirms each new selected Agent revision, and requires
+`Running` and `Ready` Pods on the requested runtime digest. Correct each reported
+deployment refusal and [resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment)
+with the original evidence directory.
 Stopped and deleting Agents remain untouched. An empty fleet updates the saved
 runtime selection without proving image startup.
 
