@@ -21,7 +21,7 @@ import {
   type NativeAdminFixture,
   type Session,
 } from "./native-admin-access-fixture.ts";
-import { continueNativeAdminProxyCase } from "./native-admin-browser-access-cases.ts";
+import type { continueNativeAdminProxyCase } from "./native-admin-browser-access-cases.ts";
 import type { NativeAdminHttpObservations } from "./native-admin-http-integrity-cases.ts";
 
 type ExactResource = NonNullable<Parameters<typeof grantRole>[2]["resource"]>;
@@ -348,6 +348,7 @@ export function registerNativeAdminProxyCase(
   }: AuthorityDependencies,
   nativeGatewayApiKey: string,
   createLiveNativeAgent: CreateLiveNativeAgent,
+  continueProxyCase: typeof continueNativeAdminProxyCase,
 ): void {
   test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
     const context = await createNativeAdminFixture(t);
@@ -405,6 +406,6 @@ export function registerNativeAdminProxyCase(
       assert.equal(observedHeaders[header], undefined, `${header} must not reach native upstream`);
     }
 
-    await continueNativeAdminProxyCase(context, status, nativeCookie, createLiveNativeAgent);
+    await continueProxyCase(context, status, nativeCookie, createLiveNativeAgent);
   });
 }

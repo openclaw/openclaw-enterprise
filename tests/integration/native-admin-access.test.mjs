@@ -35,6 +35,7 @@ import {
   registerNativeAdminSharedCookieCases,
 } from "./native-admin-shared-session-cases.ts";
 import {
+  continueNativeAdminProxyCase,
   registerNativeAdminAvailabilityCases,
   registerNativeAdminCopiedLinkCase,
   registerNativeAdminDeniedBackCase,
@@ -337,8 +338,7 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
       }),
   );
   const address = server.address();
-  assert.equal(typeof address, "object");
-  assert.notEqual(address, null);
+  assert.ok(address !== null && typeof address === "object");
   return {
     port: address.port,
     requests,
@@ -565,6 +565,7 @@ registerNativeAdminProxyCase(
   nativeAdminCaseDependencies,
   nativeGatewayApiKey,
   createLiveNativeAgent,
+  continueNativeAdminProxyCase,
 );
 registerNativeAdminHostResolutionCase(test, nativeAdminCaseDependencies);
 
@@ -598,8 +599,7 @@ async function liveNativeAdminFixture(t, options = {}) {
   const session = await createExactAgentAdministerSession(context, "native-http-integrity");
   trustLocalUpstreamCertificate(t, context.upstream.cert);
   const address = context.fixture.app.server.address();
-  assert.equal(typeof address, "object");
-  assert.notEqual(address, null);
+  assert.ok(address !== null && typeof address === "object");
   return {
     upstream: context.upstream,
     namespaceId: context.namespace.id,
