@@ -12,7 +12,7 @@ import {
   SecretDetailResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import {
