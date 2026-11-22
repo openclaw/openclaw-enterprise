@@ -3069,6 +3069,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: 10.5rem;
 }
 .row-action-note {
+  /* Keep the absolutely positioned description inside the scrolling table. */
+  position: relative;
   display: block;
   height: 16px;
   margin-top: var(--space-2);

@@ -4447,18 +4447,23 @@ test("Agents list row actions explain missing access and still report a refused 
     "the row's note line fits",
   );
   assert.equal(await note.getAttribute("title"), bothDenied);
-  assert.equal(
-    await stop.evaluate((node) => {
-      const id = node.getAttribute("aria-describedby")?.split(" ")[0];
-      if (id === undefined) {
-        throw new Error("Missing description ID");
-      }
-      return globalThis.document.getElementById(id)?.textContent;
-    }),
-    bothDenied,
+
+  // On a narrow desktop the table scrolls to the icons. Their full descriptions
+  // must stay inside the table even when the actions column is off screen.
+  await page.setViewportSize({ width: 800, height: 844 });
+  await row.getByRole("link", { name: "Guarded Agent", exact: true }).focus();
+  assert.ok(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    "unavailable actions do not widen the page",
   );
-  assert.equal(await stop.isDisabled(), true);
-  assert.equal(await remove.isDisabled(), true);
+  for (const action of [stop, remove]) {
+    await expectReachableReason(page, action, bothDenied);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+  }
+  assert.ok(await page.locator(".table-scroll").evaluate((node) => node.scrollLeft > 0));
+  assert.equal(await page.evaluate(() => globalThis.scrollX), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
   // An operate grant shows after Refresh: Stop becomes available while Delete stays explained.
