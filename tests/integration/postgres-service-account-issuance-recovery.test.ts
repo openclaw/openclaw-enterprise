@@ -127,8 +127,9 @@ function apiController(
   installation: Installation,
   state: PostgresPlatformState,
   { client, storage }: Pick<ReturnType<typeof dependencies>, "client" | "storage">,
-  compute: KubernetesComputeDriver | ReturnType<typeof createDevelopmentComputeDriver> =
-    createDevelopmentComputeDriver(),
+  compute:
+    | KubernetesComputeDriver
+    | ReturnType<typeof createDevelopmentComputeDriver> = createDevelopmentComputeDriver(),
 ) {
   const controller = new OpenClawController(installation, {
     state,
@@ -184,7 +185,8 @@ async function issuanceFixture(context: TestContext, options?: CredentialSecretF
     }),
   );
   await seedBackendBinding(pool, account, { credentialIssued: false });
-  const kubernetes = options === undefined ? undefined : credentialSecretCompute(namespace.id, options);
+  const kubernetes =
+    options === undefined ? undefined : credentialSecretCompute(namespace.id, options);
   const controller = apiController(
     fixture.installation,
     state,
@@ -544,7 +546,10 @@ test("Kubernetes Compute validates successful ServiceAccount credential Secret r
   assert.deepEqual(valid.calls, { creates: 1, reads: 1 });
   assert.deepEqual(valid.deletions, []);
 
-  const transforms: Record<string, NonNullable<CredentialSecretFixtureOptions["transformReceipt"]>> = {
+  const transforms: Record<
+    string,
+    NonNullable<CredentialSecretFixtureOptions["transformReceipt"]>
+  > = {
     body: () => undefined,
     kind: (secret) => ({ ...secret, kind: "ConfigMap" }),
     namespace: (secret) => ({ ...secret, metadata: { ...secret.metadata, namespace: "wrong" } }),
@@ -560,7 +565,10 @@ test("Kubernetes Compute validates successful ServiceAccount credential Secret r
       data: { token: [...Buffer.from(String(secret.data.token))] },
     }),
     uid: (secret) => ({ ...secret, metadata: { ...secret.metadata, uid: "" } }),
-    resourceVersion: (secret) => ({ ...secret, metadata: { ...secret.metadata, resourceVersion: "" } }),
+    resourceVersion: (secret) => ({
+      ...secret,
+      metadata: { ...secret.metadata, resourceVersion: "" },
+    }),
   };
   for (const [field, transformReceipt] of Object.entries(transforms)) {
     const invalid = credentialSecretCompute(namespaceId, { transformReceipt });
@@ -609,7 +617,8 @@ test(
   requiresPostgres,
   async (context) => {
     const issuing = await issuanceFixture(context, {});
-    const { kubernetes, provider, recordedCredentialId, controller, actor, namespace, account } = issuing;
+    const { kubernetes, provider, recordedCredentialId, controller, actor, namespace, account } =
+      issuing;
     assert.ok(kubernetes);
     assert.equal(controller.selectedDriver("compute"), kubernetes.driver);
     const issue = await managedIssuancePost(context, issuing);
@@ -628,10 +637,13 @@ test(
     assert.ok(stored);
     assert.equal(stored.metadata.annotations[credentialIdAnnotation], "cred-1");
     assert.equal(stored.data.token, Buffer.from("synthetic-token-1").toString("base64"));
-    assert.deepEqual((await controller.getServiceAccount(actor.id, namespace.id, account.id)).credential, {
-      kind: "access_token",
-      secretRef: { name: stored.metadata.name, key: "token" },
-    });
+    assert.deepEqual(
+      (await controller.getServiceAccount(actor.id, namespace.id, account.id)).credential,
+      {
+        kind: "access_token",
+        secretRef: { name: stored.metadata.name, key: "token" },
+      },
+    );
   },
 );
 
@@ -665,7 +677,8 @@ test(
         }),
         transformStored,
       });
-      const { kubernetes, provider, recordedCredentialId, controller, actor, namespace, account } = issuing;
+      const { kubernetes, provider, recordedCredentialId, controller, actor, namespace, account } =
+        issuing;
       assert.ok(kubernetes);
       assert.equal(controller.selectedDriver("compute"), kubernetes.driver);
       const issue = await managedIssuancePost(context, issuing);
@@ -722,7 +735,10 @@ test(
   "unknown managed issuance COMMIT retains an exact Kubernetes credential Secret",
   requiresPostgres,
   async (context) => {
-    const { kubernetes, provider, recordedCredentialId, abandonIssuance } = await issuanceFixture(context, {});
+    const { kubernetes, provider, recordedCredentialId, abandonIssuance } = await issuanceFixture(
+      context,
+      {},
+    );
     assert.ok(kubernetes);
     await abandonIssuance();
     assert.equal(await recordedCredentialId(), null);
