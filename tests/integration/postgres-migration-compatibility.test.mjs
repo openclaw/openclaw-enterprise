@@ -16,6 +16,7 @@ import {
   assertLegacyAgentMigrationRefusal,
   assertLegacyControllerWorkBackfill,
   assertNativeRestartUpgrade,
+  assertPendingRegistrationGuard,
   assertPresetPolicyUpgrade,
   assertRetainedRevisionResponses,
   prepareRetainedHarnessRevisions,
@@ -692,7 +693,7 @@ const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").
 );
 
 // flag is a migration command option or undefined; refusal,
-// when set, must match the command's MIGRATION_HISTORY_UNSUPPORTED message.
+// when set, must match the command's operator message.
 /**
  * @param {{ migrationUrl: string }} db
  * @param {import("./postgres-migration-transaction-command-cases.ts").MigrationCommandMode} [mode]
@@ -764,6 +765,13 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
     }
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
+    }
+    if (code === 1 && output.includes('"code":"MIGRATION_REGISTRATION_PENDING"')) {
+      assert.ok(stdout === "", "A blocked registration must not report migration success.");
+      if (refusal !== undefined) {
+        assert.ok(refusal.test(output), "Expected a safe TokenService registration diagnostic.");
+      }
+      return { ok: false, code: "MIGRATION_REGISTRATION_PENDING" };
     }
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
       assert.ok(
@@ -1432,6 +1440,12 @@ test(
       historySnapshot,
       canonicalData,
       assertCompletedHistory,
+    });
+
+    const managed = await historyDatabase(context, fixture, "guarded_registration", { prefix: 85 });
+    await assertPendingRegistrationGuard(managed, expected, {
+      runHistoryCommand,
+      historySnapshot,
     });
   },
 );

@@ -317,6 +317,23 @@ export async function migrateWithHistory(
       }
       return history;
     }
+    // Migration 0086 cannot preserve an unfinished managed registration. Detect it
+    // while the old controller can still reconcile it. Apply repeats the check,
+    // and the migration constraint still guards changes after this read.
+    if (history === "preTokenServiceSourceOwnership") {
+      const { rows } = await client.query(
+        "SELECT 1 FROM occ.credential_sources WHERE token_service_instance_id IS NOT NULL AND state = 'registering' LIMIT 1",
+      );
+      if (rows.length > 0) {
+        throw Object.assign(
+          new Error(
+            "Migration 0086 is blocked by an unfinished TokenService registration. " +
+              "Reconcile the registration with its original owner before retrying the upgrade.",
+          ),
+          { code: "MIGRATION_REGISTRATION_PENDING" },
+        );
+      }
+    }
     if (!checkOnly) {
       if (history === "completed") {
         // Keep Drizzle's refusal on read-only sessions, including standbys,
