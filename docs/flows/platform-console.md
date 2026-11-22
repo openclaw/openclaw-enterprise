@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-22
-last_updated_session: authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c
+last_updated_session: authoring-run/4f0bae81-577e-4c6c-b34e-daa95bc82a3c
 ---
 
 # Platform console request flow
@@ -214,12 +214,11 @@ status read after an uncertain delete; a denial never confirms removal.
 Replacement hands delivery to explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`apps/controller/src/console/namespaces.mts:renderNamespaces` tracks Name-rule-valid
-`POST /namespaces`; `OpenClawController.createNamespace` authorizes and queues
-provisioning; `perform` audits. Open Agents requires relisting. Closing refocuses
-the opener; 403 disables it per account across navigation until Refresh (`fromRefresh`).
-Pending writes prevent dismissal; 400s mark names; conflicts retain input.
-Inspect unconfirmed responses.
+`apps/controller/src/console/namespaces.mts:renderNamespaces` submits validated names.
+`OpenClawController.createNamespace` authorizes and queues provisioning before HTTP 201.
+`confirmCreation` keeps the success visible. Only a list read that finds the exact
+Namespace enables **Open Agents**. An inconclusive read offers another GET or dismissal.
+Closing refocuses the opener. A create 403 disables it for that account until Refresh.
 
 `namespace-deletion.mts` blocks navigation/dismissal during writes. OCC rechecks
 IAM/contents (20 blocker IDs/kind). `202`: three-second polling; `404`: remove row,
@@ -377,6 +376,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-22 11:16: Trace the read after Namespace creation. (authoring-run/4f0bae81-577e-4c6c-b34e-daa95bc82a3c - ad54d29adb562767e830020c504302479159c578)
 - 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
 
 - 2026-11-22 02:59: Refresh the active Sandbox observation on Agent refocus. (authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b - 72a9006ec8c4b7a6e40947d75938f1518c7da364)

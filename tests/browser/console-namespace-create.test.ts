@@ -30,7 +30,9 @@ import {
 } from "./console-agents-browser-helpers.ts";
 
 const CONSOLE_NAMESPACE_CREATE_DENIED =
-  "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
+  "Creating a Namespace requires Namespace create in this Installation. Ask an Installation administrator to check your access.";
+const ADMIN_NAMESPACE_CREATE_DENIED =
+  "Creating a Namespace requires Namespace create in this Installation. Check whether an IAM Restriction applies.";
 
 const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
 const {
@@ -362,6 +364,7 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
     .filter({ hasText: "Your access does not include viewing this Namespace." })
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: "Check access again" }).count(), 0);
   const done = dialog.getByRole("button", {
     name: "Done",
     description: /Your access does not include viewing this Namespace/,
@@ -372,6 +375,163 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
   await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await focusReturnsToOpener(page);
 });
+
+for (const closeOnRetry of [false, true]) {
+  test(
+    closeOnRetry
+      ? "closing a Namespace confirmation during the read does not replace a newer dialog"
+      : "confirmed Namespace creation can check access again without creating twice",
+    async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const team: unknown = await fixture.createNamespace("Existing team", { ready: true });
+      assert.ok(Check(NamespaceSchema, team));
+      let creatorId = "";
+      const creator = await fixture.createAccountWithPolicy("namespace-creator", (principal) => {
+        creatorId = principal.id;
+        grantRole(fixture.policy, creatorId, {
+          id: "role-create-namespace",
+          permissions: { namespace: ["create"] },
+        });
+        grantRole(fixture.policy, creatorId, {
+          id: "role-read-existing-team",
+          namespaceId: team.id,
+          permissions: { namespace: ["read"] },
+        });
+      });
+      const { page } = await newPage(t, fixture, { browser });
+      const requests = apiRequests(page, fixture.origin);
+      await login(page, fixture, "/console/namespaces", creator.credentials);
+      await page.getByRole("link", { name: "Existing team", exact: true }).waitFor();
+
+      const collectionUrl = `${fixture.origin}/namespaces`;
+      const isCollectionResponse = (method: string) =>
+        page.waitForResponse(
+          (response) => response.url() === collectionUrl && response.request().method() === method,
+        );
+      const unavailable = await holdRequests(t, page, collectionUrl, {
+        method: "GET",
+        once: true,
+        fulfill: closeOnRetry
+          ? null
+          : apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+      });
+      const namespaceName = `${"service_".repeat(24)}prod2026`;
+      assert.equal(namespaceName.length, 200);
+      const posted = isCollectionResponse("POST");
+      await submitCreate(page, namespaceName);
+      assert.equal((await posted).status(), 201);
+      await unavailable.requested;
+      const dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
+      await dialog
+        .getByRole("status")
+        .filter({ hasText: "Checking whether you can view this Namespace" })
+        .waitFor();
+      if (closeOnRetry) {
+        const timedOut = await page.waitForEvent("requestfailed", {
+          predicate: (request) => request.url() === collectionUrl && request.method() === "GET",
+          timeout: 20_000,
+        });
+        assert.match(timedOut.failure()?.errorText ?? "", /ERR_ABORTED/);
+        unavailable.release();
+      } else {
+        const unavailableAnswer = isCollectionResponse("GET");
+        unavailable.release();
+        assert.equal((await unavailableAnswer).status(), 503);
+      }
+      const retry = dialog.getByRole("button", { name: "Check access again" });
+      await retry.waitFor({ timeout: 5_000 });
+      assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
+      await dialog
+        .getByRole("status")
+        .filter({ hasText: "Access could not be confirmed." })
+        .waitFor();
+      assert.equal(await retry.evaluate((node) => node === node.ownerDocument.activeElement), true);
+      const created = (await readNamespaces(fixture)).find((item) => item.name === namespaceName);
+      assert.ok(created);
+      if (!closeOnRetry) {
+        for (const width of [1440, 390]) {
+          await page.setViewportSize({ width, height: 844 });
+          const confirmation = dialog.getByText(`${namespaceName} has been created.`, {
+            exact: true,
+          });
+          const layout = await confirmation.evaluate((node) => {
+            const bounds = node.getBoundingClientRect();
+            const dialogBounds = node.closest("dialog")!.getBoundingClientRect();
+            const text = node.firstChild!;
+            const suffix = node.ownerDocument.createRange();
+            suffix.setStart(text, node.textContent!.indexOf("prod2026"));
+            suffix.setEnd(text, suffix.startOffset + "prod2026".length);
+            const suffixBounds = suffix.getBoundingClientRect();
+            return {
+              fits:
+                node.scrollWidth <= node.clientWidth &&
+                bounds.left >= dialogBounds.left &&
+                bounds.right <= dialogBounds.right &&
+                suffixBounds.width > 0 &&
+                suffixBounds.right <= bounds.right,
+              width: dialogBounds.width,
+            };
+          });
+          assert.ok(layout.fits, `created name and suffix fit at ${width}px`);
+          assert.ok(layout.width <= width);
+        }
+      }
+
+      assert.ok(creatorId);
+      grantRole(fixture.policy, creatorId, {
+        id: "role-read-created-team",
+        namespaceId: created.id,
+        permissions: { namespace: ["read"], agent: ["read"] },
+      });
+      const read = await holdRequests(t, page, collectionUrl, {
+        method: "GET",
+        once: true,
+        afterServer: true,
+      });
+      const beforeRetry = requests.length;
+      const retryRequest = page.waitForRequest(
+        (request) => request.url() === collectionUrl && request.method() === "GET",
+      );
+      await retry.click();
+      const response = await read.requested;
+      assert.equal(response?.status(), 200);
+      const retryRequests = requests.slice(beforeRetry);
+      assert.deepEqual(retryRequests, [{ method: "GET", path: "/namespaces", body: null }]);
+      if (closeOnRetry) {
+        const originalRequest = await retryRequest;
+        const aborted = page.waitForEvent("requestfailed", {
+          predicate: (request) => request === originalRequest,
+        });
+        await page.keyboard.press("Escape");
+        await dialog.waitFor({ state: "detached" });
+        assert.match((await aborted).failure()?.errorText ?? "", /ERR_ABORTED/);
+        await focusReturnsToOpener(page);
+        const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+        await opener.click();
+        const form = page.getByRole("dialog", { name: "Create Namespace", exact: true });
+        const name = form.getByLabel("Namespace name");
+        await name.fill("A different team");
+        read.release();
+        assert.equal(await name.inputValue(), "A different team");
+        assert.equal(
+          await name.evaluate((node) => node === node.ownerDocument.activeElement),
+          true,
+        );
+        assert.equal(await dialog.count(), 0);
+      } else {
+        await retryRequest;
+        const listed = isCollectionResponse("GET");
+        read.release();
+        assert.equal((await listed).status(), 200);
+        const openAgents = dialog.getByRole("button", { name: "Open Agents" });
+        await openAgents.click();
+        await page.waitForURL(new RegExp(`/console/agents\\?namespace=${created.id}`));
+      }
+      assert.equal(creates(requests).length, 1);
+    },
+  );
+}
 
 test("a member is not invited to create, and a real IAM denial disables Create Namespace", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -398,7 +558,6 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  // Only an Installation administrator creates Namespaces, so no grant is promised (finding 2496).
   await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_CREATE_DENIED }).waitFor();
   assert.equal(
     await dialog.getByRole("button", { name: "Create Namespace", exact: true }).isDisabled(),
@@ -430,7 +589,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), REFUSED);
   assert.equal(
     await emptyText.textContent(),
-    "Ask an Installation administrator to create a Namespace or to give you access to an existing one.",
+    "No Namespaces are shared with you. Ask an Installation administrator to give you access to one.",
   );
   // The refused Create Namespace stays in the Tab order, described by the refusal, and opens
   // nothing (class of finding 2899).
@@ -553,25 +712,22 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   await fixture.bootstrap();
   const member = await fixture.createAccountWithPolicy("namespace-member", () => {});
   const { page } = await newPage(t, fixture, { browser });
-  await page.route(`${fixture.origin}/namespaces`, (route) =>
-    route.request().method() === "POST"
-      ? route.fulfill({
-          status: 403,
-          json: { error: { code: "FORBIDDEN", message: "Forbidden." } },
-        })
-      : route.fallback(),
-  );
+  restrict(fixture.policy, "create", "namespace");
   await login(page, fixture, "/console/namespaces");
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   assert.equal(await isPrimary(opener), true);
   const dialog = await submitCreate(page, "Refused team");
-  await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_CREATE_DENIED }).waitFor();
+  const alert = dialog.getByRole("alert").filter({ hasText: ADMIN_NAMESPACE_CREATE_DENIED });
+  await alert.waitFor();
+  assert.doesNotMatch((await alert.textContent()) ?? "", /ask an Installation administrator/i);
+  assert.ok(authorizationDenials(fixture.auditSink, "openclaw.namespaces.create").length > 0);
+  const adminRefused = `${ADMIN_NAMESPACE_CREATE_DENIED} Then select Refresh.`;
   await dialog.getByRole("button", { name: "Cancel" }).click();
-  await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
+  await page.getByRole("status").filter({ hasText: adminRefused }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.locator(settledView).getByRole("button", { name: "Create Agent" }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.locator(settledView).getByText(REFUSED).waitFor();
+  await page.locator(settledView).getByText(adminRefused).waitFor();
   assert.equal(await opener.isDisabled(), true);
   assert.equal(await isPrimary(opener), false);
 
@@ -594,7 +750,7 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.locator(settledView).getByText(REFUSED).waitFor();
+  await page.locator(settledView).getByText(adminRefused).waitFor();
   assert.equal(await opener.isDisabled(), true);
   assert.equal(await isPrimary(opener), false);
 });
