@@ -753,6 +753,7 @@ const authoredScenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
+      "Narrow the desktop view until Actions is off screen. Scroll the table sideways to reach it. The sidebar and page heading stay in place.",
       "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
@@ -790,8 +791,13 @@ const authoredScenarios = {
   agentsSearch: {
     group: "Pages/Agents",
     name: "No search matches",
-    actions: [{ selector: 'input[type="search"]', value: "no-such-agent" }],
-    description: "Search returns no matches without changing the Namespace.",
+    actions: [{ selector: 'input[type="search"]', value: "no-such-agent", focus: true }],
+    description: "Clear a search, browse Agent names and open a match with the keyboard.",
+    steps: [
+      "Press Enter. Stay on No matching Agents. Press Escape to restore the list.",
+      "Press Down twice to focus the second name, then Up to focus the first. Escape returns to search.",
+      "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the Agent name has focus.",
+    ],
   } satisfies LocalScenario,
   noNamespaces: {
     group: "Pages/Agents",
@@ -1220,7 +1226,8 @@ const authoredScenarios = {
       "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
     steps: [
       'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
-      "Hover the one-line failure to read its whole text.",
+      "Compare the current version with the failed deployment. The failure reason uses the error color. Hover it to read the full message.",
+      "Tab between the Agent and version links. Check the highlight follows the row and the focused link has its own outline.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   } satisfies LocalScenario,

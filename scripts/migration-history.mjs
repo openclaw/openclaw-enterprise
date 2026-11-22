@@ -138,6 +138,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 86 && completedCount > 86) {
     return "preRepositoryNetworkPolicy";
   }
+  if (count === 87 && completedCount > 87) {
+    return "preStandaloneCredentialDeployment";
+  }
   if (count === completedCount) {
     return "completed";
   }

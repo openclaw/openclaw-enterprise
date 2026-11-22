@@ -786,6 +786,12 @@ function createSandboxValidationCategory(
     return "RESOURCE_METADATA_FORBIDDEN";
   }
   if (grpcStatus === 9) {
+    if (
+      details ===
+      "caller driver config is disabled; a gateway administrator must enable allow_driver_config"
+    ) {
+      return "CALLER_DRIVER_CONFIG_DISABLED";
+    }
     // b2069a2 resource_admission.rs reports the kind and name before a fixed label
     // refusal. Classify the exact shape without retaining names or supplier text.
     if (

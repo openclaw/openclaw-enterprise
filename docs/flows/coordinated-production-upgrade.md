@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: 2026-11-21
-last_updated_session: authoring-run/5e8acf3b-45b0-4fbd-801d-493e4787e9dc
+last_updated_session: authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0
 ---
 
 # Production image upgrade flow
@@ -149,13 +149,15 @@ Admission failure retains protected diagnostics and prevents shutdown.
 images, credentials, mounts, deadline and zero retries. `preflight_startup`
 refuses changed UIDs or multiple children. Job failure overrides child success.
 
-`migrationJob` selects the chart initializer and preserves policy labels.
-Hook mode uses `--check`. In separate mode,
-`check_separate_migration_preconditions` verifies Secret access, records the
-migrator and CA Secret UIDs and resource versions, and requires
-`migration.checked-for-installation`. Both checks allow recognized pending
-history. After cleanup, separate mode rechecks identities and
-`scripts/upgrade-evidence.py` binds them to the prepared run.
+`scripts/upgrade-startup-preflight.ts:migrationMode` validates the release's rendered
+initialization Job invocation. `--require-current` selects `separate`. Invalid or
+new-install invocations fail. `migrationJob` preserves policy labels and uses
+`--check` for hook mode or `--check-for-installation` with the Installation ID
+for separate mode. Both allow recognized pending history.
+`check_separate_migration_preconditions` verifies Secret access, records migrator
+and CA Secret UIDs and resource versions, and requires
+`migration.checked-for-installation`. After cleanup, separate mode rechecks
+identities. `scripts/upgrade-evidence.py` binds them.
 
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` checks API
 theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
@@ -209,13 +211,14 @@ unknown creates. `new_attempt` fsyncs ancestors before publishing pointers.
 Failed identity or history checks leave writers stopped. A verified deployed
 candidate or recovery successor skips Helm submission.
 
-With Helm intent at the original revision, a separate-mode retry calls
-`require_migration_writers_stopped` before preparing or preflighting. Each
-Deployment requires its handoff UID and generation, expected release and component
-labels, zero replicas and no deletion timestamp. Writer Pods must be absent.
-The helper rechecks Deployments before scaling, skips stopped writers, then
-rechecks Helm status, terminal initialization Jobs and Pods, and Deployments
-before protected writes. A failed expected revision uses checked retry.
+Retry refuses mode drift from the submitted render before creating preflight
+resources. At the original Helm revision, separate mode calls
+`require_migration_writers_stopped` before another attempt or preflight. Each Deployment needs its handoff UID
+and generation, expected release/component labels, zero replicas and no deletion
+timestamp. Writer Pods must be absent. Before scaling, recheck both Deployments
+and skip stopped writers. Before protected writes, recheck Pod absence, Helm
+status, terminal initializer Jobs/Pods and both Deployments. Failed expected
+revisions use checked retry.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
@@ -245,14 +248,14 @@ Skip stopped writers. Stopped workers lack prospective checks.
 Sequential patches test UID, resource version and replicas. Conflicts can leave
 the API stopped. Verify Pod absence and original Deployments at zero. Operators
 stop other writers/autoscalers and keep nodes reachable.
-Separate mode rechecks Secret identities before stopping writers and again
-before recording their stopped UIDs and generations. It exits 3.
-`apply_database_migration` requires approval for irreversible SQL.
-Its sibling journal records Job create and delete intent. Unknown effects retain
-the lock and kubeconfig snapshot. Cleanup observes prior deletes. Only a cleaned
-failed verification Job permits a verification retry. Resume requires completed
-verification for journaled migrations and rechecks both Secret identities.
-Kubernetes Jobs reference these Secrets by name, so keep edits fenced throughout.
+Separate mode rechecks Secret identities before stopping writers and again before
+recording their stopped UIDs and generations, then exits 3. `apply_database_migration`
+requires irreversible SQL approval, a verified separate render and no Helm
+submission. Its journal records Job create/delete intent. Unknown effects retain
+the lock and kubeconfig snapshot. Cleanup observes prior deletes.
+Verification retries require a cleaned failed Job. Resume requires completed
+journaled verification and rechecks both Secret identities. Fence Secret edits
+because Jobs reference them by name.
 
 After quiescence, `verify_pair_nodes` runs again. Fresh `helm status` must match
 reconciliation except for Helm v4 live `.info.resources`. A mismatch leaves
@@ -371,6 +374,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-21 09:16: Trace rendered mode and retry. (authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0 - f9fb2a1f6fed7afd4ba8e69737f611e55604f587)
 - 2026-11-21 03:11: Reconcile publication selection with current upgrade admission and recovery. (authoring-run/5e8acf3b-45b0-4fbd-801d-493e4787e9dc - e67cd3cd0357e002ccc62f410454649ea4bfefd9)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

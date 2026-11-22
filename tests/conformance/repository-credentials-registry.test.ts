@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { AgentRevision, RepositoryRevisionState } from "@openclaw-enterprise/contracts";
 import { controlledProtectedDriver } from "../fixtures/prepared-repository-git.mjs";
 import {
+  allowsGitHubRepositoryNetworkGrant,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
   createGitHubRepositoryDeliveryResolver,
@@ -76,6 +77,42 @@ function registryInput(): RegistryInput {
     ],
   };
 }
+
+test("Git network grants require the canonical repository and exact Namespace contents rights", () => {
+  const input = registryInput();
+  input.repositories[0].namespaces[0] = {
+    namespaceId: "namespace-a",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", contents: "write" },
+  };
+  input.repositories[0].namespaces.push({
+    namespaceId: "namespace-c",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", issues: "write" },
+  });
+  const registry = validateGitHubRepositoryRegistry({
+    ...input,
+    installationAccess: {
+      repositoryRef: "all-repositories",
+      namespaces: [{ namespaceId: "namespace-d", accessMode: "installation" }],
+    },
+  });
+  const permits = (
+    namespaceId: string,
+    access: "read" | "write",
+    repository = "example/application",
+  ) => allowsGitHubRepositoryNetworkGrant(registry, { namespaceId, grant: { repository, access } });
+
+  assert.equal(permits("namespace-a", "read"), true);
+  assert.equal(permits("namespace-a", "write"), true);
+  assert.equal(permits("namespace-b", "read"), true);
+  assert.equal(permits("namespace-b", "write"), false);
+  assert.equal(permits("namespace-c", "read"), false, "issues access does not authorize Git");
+  assert.equal(permits("namespace-d", "read"), false, "installation access is a separate grant");
+  assert.equal(permits("namespace-a", "read", "other/application"), false);
+  assert.equal(permits("namespace-a", "read", "application"), false, "a ref is not an owner/name");
+  assert.equal(permits("namespace-a", "read", "Example/Application"), false);
+});
 
 test("canonical registry fingerprints bind exact authority and the selected Namespace policy", async (t) => {
   const input = registryInput();
@@ -187,8 +224,20 @@ test("Git-only registry policy binds its transport and exact ref before opening 
   policy.transport = "git-only";
   const scopedGrant = grant();
   assert.notEqual(scopedGrant, legacyGrant, "legacy client-only ref policy is not the same grant");
+  const permits = (access: "read" | "write") =>
+    allowsGitHubRepositoryNetworkGrant(registry(), {
+      namespaceId: "namespace-a",
+      grant: { repository: "example/application", access },
+    });
+  assert.equal(permits("read"), true);
+  assert.equal(
+    permits("write"),
+    false,
+    "the network policy cannot narrow push to the approved ref",
+  );
   policy.pushRefAllowlist = [];
   assert.notEqual(grant(), scopedGrant, "ref authorization is bound to the grant");
+  assert.equal(permits("write"), false, "an empty ref allowlist denies all pushes");
   delete policy.pushRefAllowlist;
   assert.throws(
     registry,

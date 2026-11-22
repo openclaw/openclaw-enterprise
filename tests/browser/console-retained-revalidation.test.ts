@@ -1162,7 +1162,7 @@ for (const how of ["Enter", "a click"]) {
     // The pressed link, the held page's heading, then the Agent's link in the list.
     assert.deepEqual(
       trail.map((entry) => entry.replace(/#\d+/, "")),
-      ["A: ◇Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
+      ["A: Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
       trail.join(" | "),
     );
   });
