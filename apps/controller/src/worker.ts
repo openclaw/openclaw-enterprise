@@ -4052,14 +4052,6 @@ export class ControllerWorker {
   }
 
   /**
-   * A candidate that failed for good keeps its Sandbox for diagnosis, and with it the exposure
-   * Compute's status read used, which nothing reads any more and which the Gateway's node
-   * binding never closed (finding 1672): the sweep withdraws it from the next pass on, and a
-   * restart lists it again from its failed deployment (as a non-active revision). An active
-   * revision is left alone: its exposure went with its readiness. The failure is already
-   * committed, so a read that fails here only defers the withdrawal to the next start.
-   */
-  /**
    * Compute without maintenance needs another attempt series after a retryable failure
    * spends its budget. Call with the Namespace and Agent locked. The outstanding-work
    * check lets a replay that queued an attempt first own recovery.
