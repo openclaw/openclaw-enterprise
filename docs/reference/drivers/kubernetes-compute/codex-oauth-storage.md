@@ -61,6 +61,25 @@ real access-token claims remain unqualified with an opaque placeholder.
 Connection recovery and refresh are the external token service's responsibility.
 To revoke an unused source, remove it through credential-source management. Active references block deletion.
 
+## Controller rollback
+
+Once the controller admits a new unprotected OpenShell OAuth revision, keep
+a controller and Worker that understand its launcher marker available for
+as long as that revision is in the Agent's history. Earlier revisions keep
+their original launcher.
+
+In controlled Compute Driver tests, the previous version refused to prepare
+or activate a marked revision. Without scratch storage, its stop and retire
+operations removed the Sandbox. With scratch storage, both refused before
+deletion. Retirement still failed after a compatible controller had stopped
+the Sandbox. The Worker retires every saved revision during Agent deletion.
+
+If rollback is required, qualify a separate return build before deploying
+this change, which issues the new marker on admission. Stage a version that
+reads the new marker and reproduces its launcher while issuing the original
+marker for new revisions. Verify stop and Agent deletion through the normal
+Worker flow on that build, including stopped revisions with scratch storage.
+
 ## Device-login verification
 
 See [external ChatGPT verification](../../../testing/openshell.md#external-chatgpt-authentication-boundary)

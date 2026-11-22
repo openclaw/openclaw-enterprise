@@ -729,6 +729,33 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   });
   oauthScenarios.push(
     {
+      name: "OAuth refuses a whitespace-only final answer after HTTPS fallback",
+      loginMode: "chatgptAuthTokens",
+      openShellOAuth: true,
+      events: [
+        threadStarted,
+        started,
+        assistant,
+        reconnectUpgrade(),
+        httpsFallback,
+        { ...assistant, item: { ...assistant.item, text: "  " } },
+        completed,
+      ],
+      expect: forbiddenUpgradeFailure,
+    },
+    {
+      name: "OAuth refuses a reconnecting 401 after HTTPS fallback",
+      loginMode: "chatgptAuthTokens",
+      openShellOAuth: true,
+      events: completedFallbackTurn(
+        reconnectUpgrade(),
+        httpsFallback,
+        errorEvent("Reconnecting... 2/5 (unexpected status 401 Unauthorized: credential rejected)"),
+      ),
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "error-event" }, { status: 401 }),
+      failureClass: "http_401_403",
+    },
+    {
       name: "OAuth rate limiting after HTTPS fallback is not recovered",
       loginMode: "chatgptAuthTokens",
       openShellOAuth: true,
