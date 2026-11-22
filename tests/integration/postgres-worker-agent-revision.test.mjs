@@ -47,6 +47,7 @@ import {
   WORKSPACE_SETUP_RETRYING,
 } from "../helpers/refusal-text.mjs";
 import { registerRevisionDispatchCases } from "./postgres-worker-agent-revision-dispatch-cases.ts";
+import { createPluginRevisionCases } from "./postgres-worker-agent-revision-plugin-cases.ts";
 import {
   assertCredentialVariableConflict,
   assertFailedReplacementStaysActive,
@@ -65,6 +66,9 @@ import {
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
+/** @param {string} pluginId
+ * @returns {import("./postgres-worker-agent-revision-plugin-cases.ts").MutablePluginRevisionState}
+ */
 function codexPluginRevisionState(pluginId) {
   return {
     driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
@@ -1831,226 +1835,40 @@ for (const { label, run } of maintenanceRefusalCases) {
   );
 }
 
+/** @param {NonNullable<import("../../apps/controller/src/worker.ts").ControllerWorkerOptions["drivers"]>} drivers */
 function withBothPluginDrivers(drivers) {
   return { ...drivers, pluginDrivers: [new OCCPluginDriver(), new CodexPluginDriver()] };
 }
 
+const {
+  missingPinnedPluginDriver,
+  pluginStartupWarnings,
+  pluginWarningsAfterPointer,
+  foreignPluginWarnings,
+} = createPluginRevisionCases({
+  codexPluginRevisionState,
+  withBothPluginDrivers,
+  createOccPluginDriver: () => new OCCPluginDriver(),
+});
+
 revisionTest(
   "a worker with a missing pinned Plugin Driver keeps the previous revision active",
-  async (fixture) => {
-    const { owner, candidate: previous } = await fixture.admitInitialRevision("plugin-cutover", {
-      agent: { executionMode: "dedicated" },
-    });
-    await fixture.start(
-      {
-        ...fixture.compute,
-        requiresStoppedPredecessors: () => true,
-        maintenanceIntervalMs: 3_600_000,
-        async stopRevision(revision) {
-          assert.notEqual(
-            revision.id,
-            previous.id,
-            "a rejected plugin pin cannot stop the active revision",
-          );
-          return fixture.compute.stopRevision(revision);
-        },
-      },
-      { transformDrivers: (drivers) => ({ ...drivers, pluginDrivers: [new OCCPluginDriver()] }) },
-    );
-    await fixture.work(previous, "succeeded");
-    // The admitted revision pins Codex, but this worker no longer has that Driver.
-    const next = await fixture.revision(owner, 2, {
-      plugins: codexPluginRevisionState("codex-plugin:linear@openai-curated-remote"),
-    });
-    await fixture.work(next, "failed_permanent");
-    assert.equal((await fixture.workResult(next)).rows[0].reason_code, "PLUGIN_DRIVER_MISMATCH");
-    const {
-      rows: [nextMaintenance],
-    } = await fixture.advanceMaintenance(previous);
-    const maintenance = { ...previous, idempotencyKey: nextMaintenance.idempotency_key };
-    await fixture.work(maintenance, "succeeded");
-    assert.equal(
-      (await fixture.workResult(maintenance)).rows[0].reason_code,
-      "REVISION_ALREADY_ACTIVE",
-    );
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, previous.id);
-  },
+  missingPinnedPluginDriver,
 );
 
 revisionTest(
   "plugin startup warnings complete deployment and remain visible in status",
-  async (fixture) => {
-    const pluginId = "codex-plugin:linear@openai-curated-remote";
-    const otherPluginId = "codex-plugin:calendar@openai-curated-remote";
-    const warnings = [
-      { code: "PLUGIN_AUTH_REQUIRED", pluginId },
-      { code: "PLUGIN_INSTALL_FAILED", pluginId: otherPluginId },
-    ];
-    const pluginState = codexPluginRevisionState(pluginId);
-    pluginState.plugins[otherPluginId] = {
-      enabled: true,
-      toolDefaults: { approval: "provider_default" },
-    };
-    const { owner, candidate } = await fixture.admitInitialRevision("plugin-warning", {
-      agent: { executionMode: "dedicated" },
-      revision: { plugins: pluginState },
-    });
-    const prepared = [];
-
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision) {
-          prepared.push(revision.id);
-          if (revision.id !== candidate.id) {
-            return fixture.compute.prepareRevision(revision);
-          }
-          return {
-            namespaceId: revision.namespaceId,
-            agentId: revision.agentId,
-            revisionId: revision.id,
-            ready: true,
-            warnings,
-          };
-        },
-      },
-      { transformDrivers: withBothPluginDrivers },
-    );
-
-    await fixture.work(candidate, "succeeded");
-    const terminal = await fixture.observerPool.query(
-      `SELECT state, reason_code, result_data
-       FROM occ.controller_work WHERE idempotency_key = $1`,
-      [candidate.idempotencyKey],
-    );
-    assert.deepEqual(terminal.rows, [
-      {
-        state: "succeeded",
-        reason_code: "REVISION_ACTIVATED",
-        result_data: { warnings },
-      },
-    ]);
-    const active = await fixture.currentAgent(owner);
-    assert.equal(active.activeRevisionId, candidate.id);
-    assert.deepEqual(prepared, [candidate.id]);
-    // The public status projection reads the persisted result through OCC;
-    // individual plugin failures must not turn a successful deployment into an error.
-    assert.deepEqual(await fixture.deploymentStatus(owner, candidate), {
-      deploymentId: candidate.id,
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      status: "succeeded",
-      error: null,
-      warnings,
-      progress: null,
-      cleanup: null,
-    });
-  },
+  pluginStartupWarnings,
 );
 
 revisionTest(
   "plugin warnings after active-pointer publication still activate the ready revision",
-  async (fixture) => {
-    const pluginId = "codex-plugin:github@openai-curated-remote";
-    const { owner, candidate } = await fixture.admitInitialRevision("plugin-post-pointer-warning", {
-      agent: { executionMode: "dedicated" },
-      revision: { plugins: codexPluginRevisionState(pluginId) },
-    });
-    const published = await fixture.state.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(
-        fixture.namespace.id,
-        owner.id,
-        undefined,
-        candidate.id,
-      ),
-    );
-    assert.equal(published.activeRevisionId, candidate.id);
-
-    let prepareCount = 0;
-    const activations = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision) {
-          prepareCount += 1;
-          return {
-            namespaceId: revision.namespaceId,
-            agentId: revision.agentId,
-            revisionId: revision.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
-        },
-        async activateRevision(revision) {
-          activations.push(revision.id);
-        },
-      },
-      { transformDrivers: withBothPluginDrivers },
-    );
-
-    await fixture.work(candidate, "succeeded");
-    assert.equal(prepareCount, 1);
-    assert.deepEqual(activations, [candidate.id]);
-    const terminal = await fixture.observerPool.query(
-      `SELECT state, reason_code, result_data
-       FROM occ.controller_work WHERE idempotency_key = $1`,
-      [candidate.idempotencyKey],
-    );
-    assert.deepEqual(terminal.rows, [
-      {
-        state: "succeeded",
-        reason_code: "REVISION_ALREADY_ACTIVE",
-        result_data: { warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }] },
-      },
-    ]);
-  },
+  pluginWarningsAfterPointer,
 );
 
 revisionTest(
   "foreign plugin warnings remain generic invalid Compute observations",
-  async (fixture) => {
-    const pluginId = "codex-plugin:slack@openai-curated-remote";
-    const { owner, candidate } = await fixture.admitInitialRevision("foreign-plugin-diagnostic", {
-      agent: { executionMode: "dedicated" },
-      revision: { plugins: codexPluginRevisionState(pluginId) },
-    });
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision) {
-          return {
-            namespaceId: revision.namespaceId,
-            agentId: revision.agentId,
-            revisionId: revision.id,
-            ready: true,
-            warnings: [
-              {
-                code: "PLUGIN_INSTALL_FAILED",
-                pluginId: "codex-plugin:foreign@openai-curated-remote",
-              },
-            ],
-          };
-        },
-      },
-      { transformDrivers: withBothPluginDrivers },
-    );
-
-    await fixture.work(candidate, "failed_permanent");
-    const generic = await fixture.observerPool.query(
-      `SELECT state, reason_code, result_data
-       FROM occ.controller_work WHERE idempotency_key = $1`,
-      [candidate.idempotencyKey],
-    );
-    assert.deepEqual(generic.rows, [
-      {
-        state: "failed_permanent",
-        reason_code: "INVALID_DRIVER_OBSERVATION",
-        result_data: null,
-      },
-    ]);
-    const inactive = await fixture.currentAgent(owner);
-    assert.equal(inactive.activeRevisionId, undefined);
-  },
+  foreignPluginWarnings,
 );
 
 test(
