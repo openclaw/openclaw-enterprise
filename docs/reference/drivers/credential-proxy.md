@@ -6,7 +6,7 @@ kind: reference/driver
 
 ## Overview
 
-The Sandbox registers `CredentialProxyDriver` to configure credentials before Harness startup.
+`CredentialProxyDriver` configures and enforces credential injection. `SandboxDriver` enforces network policy and routing. OCC coordinates compatible implementations; neither contract owns the other.
 
 `LegacyEgressProxyDriver` serves protected-egress deployments. See its [walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
 
@@ -30,7 +30,7 @@ exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
 
-The Sandbox registration exposes `credential_proxy_delivery`. Worker and Compute use `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` for an Agent revision. Optional `notifyCredentialUpdated` receives a Source notification and credential resolver, without a revision.
+OCC currently requires delivery and Sandbox in one registration; independent composition is planned. Worker and Compute use `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` for an Agent revision. Optional `notifyCredentialUpdated` receives a Source notification and credential resolver, without a revision.
 
 OpenShell uses OCC TokenService. The Proxy resolves an authorized Source when transfer is needed, updates its Provider copy, and attaches it to the Sandbox. Readiness requires matching policy, Provider version, and supervisor state. On Stop, Compute removes the Sandbox and the Provider attachment for that deployment. The Source, Provider copy, and Source IAM grants remain. See [implementation status](../credential-sources.md#implementation-status).
 

@@ -1,21 +1,16 @@
 # Other credential delivery modes
 
-This reference covers the existing Gateway, Secret-backed, and repository credential paths. For the TokenService and Credential Proxy design and its current implementation status, start with [credential sources](../credential-sources.md).
+This reference covers the existing credential delivery paths. See [credential implementation status](../credential-sources.md#implementation-status) for the intended TokenService and Credential Proxy design.
 
-| Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway copy             | The selected OpenShell Credential Gateway stores a copy of a static Secret. The workload receives a placeholder. Its supervisor injects the real value on eligible traffic. Editing the Secret alone leaves the copy unchanged.     |
-| Gateway-managed OAuth    | The Credential Refresh Driver holds issuer material and manages access tokens for the Gateway. The workload keeps its placeholder across token renewal.                                                                             |
-| Protected live Secret    | After OCC authorizes an individual request, the trusted resolver reads the current Secret version. The authenticated sender receives the credential header for that request. An existing Gateway source requires explicit adoption. |
-| Worker-prepared token    | For `github-app-metadata`, the Token Service renews installation tokens in the background. An authorized Credential Proxy request can also start or join issuance for its exact registered grant.                                   |
-| Credential-free metadata | The source admits a specific repository identity read. Its resolver reads no Secret and its sender adds no credential header. Request and response controls still apply.                                                            |
+For a dedicated Agent, the **OpenClaw Gateway Pod** reads its admitted channel credentials and any configured Gateway password from Kubernetes Secrets. It does not receive the Harness model credential. Embedded execution combines Gateway and Harness in one workload. See [runtime credential placement](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 
-Gateway delivery supports `openai` API keys for dedicated Codex and native
-OpenClaw models, `codex-pat` for dedicated Codex and `bearer-token` for a
-single API endpoint. Selecting a [Credential Refresh Driver](../drivers/credential-refresh.md) also enables experimental
-`codex-oauth` device login, `oauth2-client-credentials` and `oauth2-refresh-token`.
-Device starts commit audit with source and session writes; see the
-[device authorization flow](../../flows/credential-source-refresh.md#device-authorization-and-configuration).
+The **OpenShell Credential Gateway** is a separate credential service. When selected, the **Harness** runs in an OpenShell Sandbox. The Credential Gateway manages Providers: static Sources copy Secrets, while refresh Sources keep issuer or grant material in OpenShell custody. The trusted supervisor substitutes credentials for placeholders on matching outbound requests.
+
+- **Static Credential Gateway Source:** `openai` supports dedicated OpenClaw and Codex model keys, `codex-pat` supports dedicated Codex, and `bearer-token` supports one API endpoint. OCC copies the referenced Secret into an OpenShell Provider. Editing the Secret alone does not update that copy.
+- **Credential Gateway OAuth Source:** for example, a Sandbox tool can use `oauth2-client-credentials` to call an OAuth API. The [Credential Refresh Driver](../drivers/credential-refresh.md) configures OpenShell with issuer material; OpenShell obtains and renews the access token while the tool keeps its placeholder. `oauth2-refresh-token` and experimental `codex-oauth` device login still use this Driver. Device starts commit audit with source and session writes; see the [device authorization flow](../../flows/credential-source-refresh.md#device-authorization-and-configuration).
+- **Protected static Secret delivery:** for protected inference, OCC authorizes a matching request, and the trusted resolver reads the current Secret value. The trusted sender adds the approved credential header to that request; the Harness does not receive the Secret.
+- **Prepared GitHub token:** for `github-app-metadata`, TokenService renews installation tokens in the background. An authorized Credential Proxy request can also start or join issuance for its exact registered grant.
+- **Credential-free repository metadata:** `credential-free-repository-metadata` permits an admitted repository identity read without reading a Secret or adding a credential header. Request and response controls still apply.
 
 OpenShell is a development integration. See the
 [OpenShell qualification requirements](../drivers/openshell-sandbox.md#qualification-contract),
@@ -66,7 +61,7 @@ The `201` response includes the `cs_` ID and binding `ref`. Gateway registration
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the
   [revision provider](../drivers/kubernetes-compute/model-provider.md) at deployment and delivery.
-  `base_url` cannot select a route. Replace old sources before reuse.
+  `base_url` cannot select a route. Register a replacement Source to change destination authorization.
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
@@ -172,11 +167,6 @@ commits, so retrying converges. If its copy is `absent`, delete and register the
 
 Prepared and credential-free sources reject PATCH and rotation with `409`. Register a replacement source. For a live static source, changing the referenced Secret value affects subsequent eligible reads. Changing its reference or adopting a legacy source requires an unbound source. See [protected static inference](../credential-sources/protected-inference.md#static-source-and-response-policy).
 
-Migration `0048_administrator_credential_source_grants` adds the current
-`credential_source` grants, including `update`, to an unchanged built-in
-Installation administrator Role from an earlier bootstrap. Other Roles keep
-their exact grants; grant `update` through a Namespace Role where needed.
-
 Updated Gateway copies reach new Harness processes only. To rotate a copied key, follow these steps.
 
 1. Update the Secret's value (`occ secret update`), or create a replacement
@@ -270,8 +260,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 - To keep an Agent running, register a replacement source through the selected
   driver, list it in place of the old one, and deploy again.
 - To delete an old source, an administrator reselects its original driver ID,
-  deletes it, then selects the new driver. This also finishes sources left
-  `deleting` by earlier releases, unblocking Namespace and Secret deletion.
+  deletes it, then selects the new driver.
 
 ## Errors
 

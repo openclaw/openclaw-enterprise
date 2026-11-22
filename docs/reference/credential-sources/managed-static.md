@@ -22,7 +22,7 @@ If the private-store write cannot be confirmed, registration can fail while leav
 ## Deploy an Agent with the source
 
 1. Create a same-Namespace [Agent Configuration](../configuration.md) with `kind: "agent"`. Configure its model and explicit inference endpoint. For this example, use provider `openai`, protocol `openai-responses`, and base URL `https://api.openai.com/v1`.
-2. [Create the Agent](../agents.md#supported-operations) with `POST /namespaces/:namespaceId/agents`, using that Configuration and dedicated execution:
+2. [Create the Agent](../agents.md#supported-operations) with `POST /namespaces/:namespaceId/agents`, using that Configuration and dedicated execution. The current API requires the Source in both fields; [the intended flow](../credential-sources.md#intended-credential-flow) selects it once:
 
    ```json
    {
