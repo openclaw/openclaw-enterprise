@@ -83,6 +83,9 @@
     }
   },
   "gatewayConfig": {
+    "openshell.gateway": {
+      "mutation_admission_limit_per_caller": 5000
+    },
     "openshell.drivers.kubernetes": {
       "allowed_pod_labels": [
         "openclaw.dev/*",

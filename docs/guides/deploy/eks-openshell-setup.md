@@ -171,7 +171,7 @@ Version 0.1.9 applies migration 10. The 0.1.8 Gateway refuses to open the migrat
 
 <a id="openshell-gateway-admission-limit"></a>
 
-OpenShell 0.1.9 limits each caller to `mutation_admission_limit_per_caller` durable request admissions (default 1000) and keeps completed admissions for `mutation_replay_window_seconds` (default 24 hours). The OCC controller is one caller for every Namespace, and an Agent redeploy uses about three admissions. Size the limit for the installation's deploy rate and set it under `gatewayConfig."openshell.gateway"` in the OpenShell Helm values. At the limit, deployments report [`SANDBOX_ADMISSION_LIMIT_REACHED`](../../reference/drivers/openshell-sandbox.md#troubleshooting).
+The OpenShell values that the installation renders set `mutation_admission_limit_per_caller` to 5000 under `gatewayConfig."openshell.gateway"`. OpenShell 0.1.9 sets 1000 by default. This setting is the number of durable request admissions that one caller can hold. The OCC controller is one caller for every Namespace, an Agent redeploy uses about three admissions, and the Gateway keeps completed admissions for `mutation_replay_window_seconds` (default 24 hours). If deployments report [`SANDBOX_ADMISSION_LIMIT_REACHED`](../../reference/drivers/openshell-sandbox.md#troubleshooting) at your deploy rate, increase the value in the OpenShell Helm values and upgrade the release.
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 

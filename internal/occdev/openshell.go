@@ -37,6 +37,11 @@ const (
 	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
 	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
 	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// OCC is one Gateway caller for every Namespace and a redeploy holds about three durable
+	// admissions for 24 hours, so OpenShell's default of 1000 is reached in ordinary use. Keep in
+	// step with docs/snippets/openshell-quickstart/kubernetes/openshell-values.jq. OpenShell 0.1.8
+	// rejects this key.
+	openShellMutationAdmissionLimitValue = `--set=gatewayConfig.openshell\.gateway.mutation_admission_limit_per_caller=5000`
 )
 
 type openShellDevelopmentAssets struct {
@@ -424,6 +429,7 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		// The gateway rejects every Sandbox template label it does not allow.
 		// Harness Pods carry OCE selector labels for NetworkPolicies and Services.
 		openShellAllowedPodLabelsValue,
+		openShellMutationAdmissionLimitValue,
 		"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=" + openShellOperatorNamespaceLabel + "=" + openShellOperatorNamespaceValue,

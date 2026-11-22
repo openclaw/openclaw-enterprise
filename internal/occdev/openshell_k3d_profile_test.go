@@ -409,6 +409,8 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 				"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 				"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+				// One OCC caller serves every Namespace; OpenShell's default of 1000 admissions is too low.
+				`--set=gatewayConfig.openshell\.gateway.mutation_admission_limit_per_caller=5000`,
 				// Only in-cluster OCE components reach the gateway in this profile.
 				"--set=service.type=ClusterIP",
 			} {
