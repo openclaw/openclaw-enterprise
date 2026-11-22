@@ -8,7 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-20261121-agent-automations
 - **Created:** 2026-11-21
-- **Last updated:** 2026-11-21
+- **Last updated:** 2026-11-22
 - **RFC PR:** [#6850](https://github.com/openclaw/openclaw-enterprise/pull/6850)
 - **Implementation plan:** [Broker implementation](../plans/20261121-agent-automations.md)
 - **Related:** [Native administration](../../docs/reference/agent-native-admin.md), [Gateway managed mode](../../docs/reference/agents/gateway-managed-mode.md), [runtime pin](../../deploy/runtime/openclaw-source.json)
@@ -51,21 +51,12 @@ can complete.
 
 ## Select eligible tools
 
-The component that provisions the runtime must attest the effective bindings
-for its Driver, Harness and packaged version. Before discovery, verify explicit
-Agent-shared standing approval, workload identity, unambiguous alias rules and
-nonempty literal include lists for enabled static MCP servers. Refuse invalid
-or unknown prerequisites before contacting a server. A configuration filter
-alone is not approval. Resolve each approved operation against the deployed
-Gateway policy and the effective MCP inventory below. Record the native name,
-underlying server and original MCP tool name, stable endpoint and workload
-credential reference/identity, permitted
-actions and standing approval identity. Refuse wildcard or pattern grants,
-ambiguous names, missing identity evidence and tools outside either policy.
-Bind all entries to the exact Namespace, Agent and provisioning revision.
-Keep credential values out of this record. Reusing a Secret identifier does not
-prove an unchanged workload identity; this pilot does not qualify general
-credential rotation.
+The provisioning Driver checks the Agent's standing approval, explicit nonempty
+literal include filter and deployed Gateway policy before discovery. Match the
+catalog's native alias, raw tool, server, endpoint, permitted actions and
+anonymous identity. Reject patterns, collisions, missing evidence and personal
+or interactive grants. Bind the approved operations and approval identity to
+the exact Namespace, Agent and revision. Store no credential values.
 
 Use read-only `sessions.list` for the selected native `agentId`, with explicit
 row, page, response-size and time limits enforced by the adapter. Exclude cron,
@@ -74,19 +65,14 @@ existing ordinary session whose returned ownership and provenance identify the
 same Agent. Refuse missing or ambiguous scope and exhausted limits. Never guess
 a session key or create a synthetic turn to obtain an inventory.
 
-Call `tools.effective` with that returned `sessionKey` and selected `agentId`.
-Check the response Agent and require each selected entry's `source: "mcp"`,
-`id`, `mcpServer` and `mcpToolName` to match the approved raw operation and
-canonical alias without collision; reject `deniedBySession` entries. Native
-[`tools.effective`](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/tools-effective.ts#L474)
-requires a persisted session and derives its routing context from that record.
-Its inventory verifies availability and mapping; it cannot grant authority from
-that session's personal credentials, approvals or wider policy. The provisioning
-record remains authoritative. Session policy cannot add authority, and every
-captured operation must remain eligible before a successor can start.
-Missing mapping or identity evidence, including an unavailable or stale MCP
-catalog, refuses qualification. `tools.catalog` contains core/plugin catalog
-entries, not this effective MCP inventory.
+Use the persisted session key and native Agent ID with
+[`tools.effective`](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/tools-effective.ts#L474).
+Verify the returned Agent and each entry's `source: "mcp"`, `id`, `mcpServer`
+and `mcpToolName`. Refuse session-denied entries and stale catalogs. Use bounded
+`tools.catalog` and `plugins.inspect` on supported versions to detect native
+name conflicts and verify loaded plugin origins. Require evidence for every
+check. Apply time, page, row and byte limits to qualification RPCs. A session
+inventory cannot grant personal authority.
 
 For a nonempty cap the effective Code Mode and tool search must both be off.
 Exclude native shell, files, code execution, delegation, messaging, dynamic
@@ -96,24 +82,27 @@ OpenClaw Harness and ordinary dedicated Codex Harness independently. Current
 managed MCP Sandbox and Codex app topologies cannot supply this contract.
 Ordinary chat and native administration keep their existing policies.
 
-On both Harnesses, HTTPS MCP endpoints must have no credentials and appear in
-the Compute setting `automations.trustedAnonymousMcpEndpoints`. This list contains
-exact normalized HTTPS endpoints; wildcards and credentials are forbidden. Each
-entry attests the same anonymous principal and permitted actions regardless of
-whether the Gateway or Agent contacts the service. Tool annotations or successful
-discovery cannot establish this attestation. Dedicated Codex supports only this
-HTTPS path; embedded OpenClaw additionally supports same-process stdio. General
-credentialed MCP and dedicated stdio are outside the pilot. Removing an endpoint
-blocks new qualification and successor startup; it does not revoke a running job.
+Both Harnesses accept only operator-attested anonymous HTTPS. Each Compute
+`automations.trustedAnonymousMcpEndpoints` entry has `url`, `egressCidrs`
+and optional public PEM `caBundle`. Require an exact normalized HTTPS URL
+and exact host addresses (/32 or /128). Refuse stdio, wildcard destinations,
+credentials, private keys and redirects to unapproved origins. The operator
+attests identical anonymous actions from the Gateway and dedicated Agent.
+Tool annotations and successful discovery cannot establish approval.
 
-Upstream [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
+The Driver derives the TCP port from the URL (default 443). Add only the listed
+IP/port pairs to the Gateway and, for dedicated Codex, Agent NetworkPolicies.
+Retain default-deny egress and unrelated required workload routes. Validate TLS
+hostname and chain. Project the public CA only into the relevant workload:
+merge it with required Gateway Node trust via `NODE_EXTRA_CA_CERTS` and with
+dedicated Codex PEM trust via `CODEX_CA_CERTIFICATE`. These roots affect other
+TLS connections in that workload. Keep model credentials out of the dedicated
+Gateway. Refuse a topology that cannot enforce these boundaries.
+
+Native administrators and chat remain trusted writers outside OCC. OCC does
+not adopt native jobs. The pinned [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
 and [Codex native tool construction](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523)
-make an unchecked list of tool names insufficient. The proposal retains
-model-only scheduling for Agents with no eligible MCP operations. A generic
-tool picker would grant authority without proving the endpoint, identity or
-action. Native jobs outside the OCC inventory remain under native administration.
-Trusted native writers can change jobs outside OCC. This RFC covers OCC-managed
-writes and policy changes on supported deployments.
+require origin checks in addition to tool names.
 
 ## Goals and non-goals
 
@@ -157,11 +146,9 @@ name, prompt, schedule and enabled state. Stale native revisions return 409.
 Resolve the selected running Agent revision through its existing Compute Driver
 and private endpoint. Verify runtime provenance, native access, administrative
 transport, required methods and an unambiguous server-selected native Agent.
-Typed native calls are limited to `cron.add`, `cron.list`, `cron.get`,
-`cron.update`, `cron.remove` and `cron.runs`, plus read-only `sessions.list`
-and `tools.effective` for the qualification procedure above. This ceiling belongs
-to OCC, not to the underlying native credential; no session or tool invocation
-method is added.
+OCC invokes only `cron.add`, `cron.list`, `cron.get`, `cron.update`,
+`cron.remove` and `cron.runs`, plus the bounded qualification reads above.
+The underlying administrative credential stays private.
 
 Creation maps to `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
 payload with the requested prompt and explicit `toolsAllow`, and
@@ -227,30 +214,31 @@ with reservation. Existing rows without trusted binding evidence are eligible
 only for their proven model-only ceiling. Never infer a tool-bearing grant by
 scanning an existing job or current catalog.
 
-Extend the runtime-facing Driver contract to report qualified bindings and to
-apply or verify enforcement **before OCC-managed scheduler startup**, including
-catch-up. OCC compares opaque binding identities and calls the selected Driver.
-The Driver and Harness own MCP catalog lookup, credential and action checks,
-native tool mapping and runtime-specific controls. OCC core must contain no
-vendor-specific rules. Submit this RFC before implementing the covered Driver
-contract changes.
+Extend the Compute Driver contract with optional
+`verifyAgentAutomationRuntime(revision, qualification)`. Before POST, the Driver
+must verify that the running Gateway uses the guarded launcher and qualified
+version. Bind evidence to the selected revision, Pod UID, container ID and
+actual image identity. Missing or stale evidence refuses admission. An older
+running Gateway requires redeployment. OCC compares the Driver's opaque
+binding identities. Runtime-specific origin, catalog and network checks belong
+to the Driver and Harness. Submit this RFC before covered implementation.
 
-Bind admission and enablement to the selected running Agent revision. Serialize
-these writes with the deployment decision or refuse them while a pending
-successor can change the bindings. The worker must verify that every saved grant
-remains a subset of the successor's eligible bindings, with unchanged identities,
-before starting or
-resuming its scheduler. Include paused jobs and uncertain/unbound reservations.
-Keep the scheduler stopped on refusal or failure. Apply this gate to OCC-managed
-revision admission, startup, rollback and recovery before overdue jobs run.
-A kubelet container restart on the same immutable revision retains its standing
-grant without a controller callback. Worker observation can record and requeue
-work; it does not stop an already running scheduler. A check of the old Gateway
-cannot authorize its replacement. Native CAS protects the job
-definition. It cannot detect remapping the same tool name to a new endpoint,
-credential or action. Check the saved binding identity and current deployed
-policy before use. This admission/startup gate does not cancel calls in a running
-Gateway; use job retirement or service-side denial for withdrawal.
+Before **every** native Gateway process spawn, including supervisor respawn
+and kubelet container restart, the launcher verifies the effective plugin
+allowlist, plugin origins and package digests against the approved image. Reject
+native tracked installs, mutable global extension roots, unapproved plugins,
+digest mismatches and Node startup switches or module-loading overrides outside
+the qualified allowlist. Check the effective node/tool switches for the selected
+Harness. Fail before plugin loading, scheduler startup or catch-up.
+
+Serialize job admission and enablement with deployment or refuse while a pending
+successor could change bindings. Before start, rollback or recovery, the worker
+checks that every grant (including paused and uncertain reservations) remains a
+subset of the successor's eligible operations with identical bindings. Additional
+eligible operations never widen a saved cap. Keep the scheduler stopped if any
+check fails. A same-revision restart retains its standing grant and repeats the
+local origin check. Worker observation alone cannot stop a running scheduler.
+Retire the job or deny at the service to withdraw a running grant.
 
 ## Qualification and acceptance
 
@@ -289,6 +277,13 @@ Gateway; use job retirement or service-side denial for withdrawal.
   sibling retention, and history access after deletion. Use the actual packaged
   Harnesses and real endpoint, credential, model and database evidence for
   their relevant criteria. A native CRUD fixture alone cannot qualify execution.
+
+- **AC6. Runtime and egress.** On both Harnesses, prove TLS with the projected CA
+  and rejection of an untrusted certificate, wrong hostname, sibling IP and
+  port. On dedicated Codex verify credential isolation. Reject an old launcher,
+  stale Pod/container evidence, mutable plugin origin, changed digest and
+  unsupported Node switch. Repeat after native respawn and container restart
+  with an overdue job. Verify no unqualified process executes it.
 
 ## Delivery status
 
