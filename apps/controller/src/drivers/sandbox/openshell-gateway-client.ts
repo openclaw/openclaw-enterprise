@@ -2456,6 +2456,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           type: request.type,
           profile_workspace: request.workspace,
           credentials: { ...request.credentials },
+          ...(request.config === undefined ? {} : { config: { ...request.config } }),
         },
         workspace_scope: { workspace: request.workspace },
         credential_expiration_times: Object.fromEntries(
