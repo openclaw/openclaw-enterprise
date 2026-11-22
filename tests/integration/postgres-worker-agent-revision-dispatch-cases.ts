@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
+import { AuditEventFactory } from "../../packages/audit/src/index.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   admitRepositoryNetworkPolicy,
@@ -34,6 +35,7 @@ interface DispatchFixture {
   revision: RevisionFixture["revision"];
   actor: RevisionFixture["actor"];
   compute: RevisionFixture["compute"];
+  controller: RevisionFixture["controller"];
   createWorkerPool: RevisionFixture["createWorkerPool"];
   currentAgent: RevisionFixture["currentAgent"];
   expireClaim: RevisionFixture["expireClaim"];
@@ -299,6 +301,114 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         } else {
           assert.deepEqual(prepared, [previous.id, previous.id]);
           assert.equal(refused.reasonCode, "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE");
+        }
+        assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
+      },
+    );
+  }
+  for (const deferred of [false, true]) {
+    test(
+      deferred
+        ? "a prior scoped automation refusal fences predecessor maintenance"
+        : "an untouched scoped automation refusal permits predecessor maintenance",
+      requiresPostgres,
+      async (context) => {
+        const fixture = await setup(context, {});
+        const owner = await fixture.agent("automation-maintenance-repair");
+        const { options } = await saveRepositoryPolicy(fixture, owner, []);
+        const previous = await fixture.revision(owner, 1, options);
+        const prepared: string[] = [];
+        const stopped: string[] = [];
+        let binds = 0;
+        const compute: ComputeDriver = {
+          ...computeSupportingRepositoryPolicy(fixture.compute),
+          maintenanceIntervalMs: 3_600_000,
+          async evaluateAgentAutomationPolicy(revision) {
+            return revision.id === previous.id ? { grant: { tools: [] }, bindings: [] } : undefined;
+          },
+          async bindAgent() {
+            binds += 1;
+          },
+          async prepareRevision(revision, ctx) {
+            prepared.push(revision.id);
+            return fixture.compute.prepareRevision(revision, ctx);
+          },
+          async stopRevision(revision) {
+            stopped.push(revision.id);
+            return fixture.compute.stopRevision(revision);
+          },
+        };
+        await fixture.start(compute);
+        await fixture.work(previous, "succeeded");
+        await fixture.stop();
+
+        // Reserve through the real controller so the worker sees a durable standing grant.
+        Object.assign(fixture.controller.selectedDriver("compute"), {
+          async evaluateAgentAutomationPolicy() {
+            return { grant: { tools: [] }, bindings: [] };
+          },
+        });
+        const audit = new AuditEventFactory();
+        await fixture.controller.reserveAgentAutomation(
+          fixture.actor.id,
+          {
+            namespaceId: fixture.namespace.id,
+            agentId: owner.id,
+            revisionId: previous.id,
+            nativeAgentId: "main",
+            toolGrant: { tools: [] },
+          },
+          (record) =>
+            audit.create({
+              installationId: fixture.controller.installation.id,
+              namespaceId: fixture.namespace.id,
+              actorId: fixture.actor.id,
+              kind: "mutation",
+              action: "openclaw.agents.automations.create.admitted",
+              resource: { kind: "agent", id: owner.id, namespaceId: fixture.namespace.id },
+              details: { jobId: record.id, revisionId: previous.id },
+            }),
+        );
+        const candidate = await fixture.revision(owner, 2, options);
+        const queue = new PostgresWorkQueue(fixture.observerPool);
+        if (deferred) {
+          // Prior claim evidence must remain conservative even if deferral refunds the attempt.
+          const earlier = await queue.claim();
+          assert.ok(earlier);
+          assert.equal(earlier.idempotencyKey, candidate.idempotencyKey);
+          await queue.defer(earlier, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+        }
+        const initialBinds = binds;
+        await fixture.start(compute);
+        const refused = await settledRevision(fixture, candidate);
+        assert.equal(refused.reasonCode, "AUTOMATION_TOOL_GRANT_MISMATCH");
+        assert.equal(
+          (await queue.findWorkAttempt(candidate.idempotencyKey))?.candidateNotStarted,
+          deferred ? undefined : true,
+        );
+        assert.equal(binds, initialBinds);
+        assert.deepEqual(prepared, [previous.id]);
+        if (!deferred) {
+          assert.deepEqual(stopped, []);
+        }
+        const failure = await fixture.observerPool.query<{ reason_code: string | null }>(
+          "SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events WHERE resource_id = $1 AND action = 'reconcile' AND outcome = 'failure'",
+          [candidate.id],
+        );
+        assert.equal(failure.rows[0]?.reason_code, "AUTOMATION_TOOL_GRANT_MISMATCH");
+
+        // The predecessor remains repairable only when no claim could have started the candidate.
+        const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
+        assert.ok(key);
+        const attempt = await waitFor(
+          "automation predecessor maintenance records its decision",
+          () => queue.findWorkAttempt(key),
+        );
+        if (deferred) {
+          assert.equal(attempt?.code, "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE");
+          assert.deepEqual(prepared, [previous.id]);
+        } else {
+          assert.deepEqual(prepared, [previous.id, previous.id]);
         }
         assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
       },

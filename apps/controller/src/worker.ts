@@ -5121,7 +5121,7 @@ export class ControllerWorker {
         if (agent.activeRevisionId === revision.id) {
           await this.finalizeActiveRevision(claim, revision, code);
         } else {
-          await this.finalizeRevision(claim, { outcome: "permanent", code });
+          await refuseAdmission({ outcome: "permanent", code });
         }
         return;
       }
