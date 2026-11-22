@@ -1,3 +1,5 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import { secretOperation } from "./secret-operations.ts";
 import { createHash } from "node:crypto";
 import {
   credentialFreeMetadataType,
@@ -81,6 +83,7 @@ interface CredentialSourceDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "canRead">;
   readonly sourceDrivers: Pick<
     CredentialSourceDrivers,
+    | "assertCredentialSourceOwnerSelected"
     | "credentialGatewayDriver"
     | "credentialRefreshDriver"
     | "credentialNamespace"
@@ -100,15 +103,9 @@ interface CredentialSourceDependencies {
     | "staticSourceLifecycleMatches"
   >;
   readonly hasProxy: () => boolean;
-  readonly assertCredentialSourceOwnerSelected: () => void;
   readonly secretDriver: (driverId: string) => SecretDriver;
-  readonly secretOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly nextSourceId: () => string;
   readonly timestamp: () => string;
   readonly tokenService: () => Pick<TokenService, "register">;
@@ -315,7 +312,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     // while this write waited stops it before it leaves a durable Owner binding or grant.
     await dependencies.authority.authorize(principalId, "create", target);
     // An Installation property, so it is reported before any Namespace state.
-    dependencies.assertCredentialSourceOwnerSelected();
+    dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
     const protectedType = dependencies.egressAdmission
       .protectedSourceTypes()
       .find((p) => p.type.type === input.type);
@@ -590,9 +587,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         );
       }
       const withValue = secretDriver.withValue.bind(secretDriver);
-      values[field] = await dependencies.secretOperation(() =>
-        withValue(secret, async (value) => value),
-      );
+      values[field] = await secretOperation(() => withValue(secret, async (value) => value));
     }
     return values;
   }
@@ -682,7 +677,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       );
       const source = isManagedTokenServiceSource(recorded) ? undefined : recorded;
       if (source?.ownerCapability !== "token_service") {
-        dependencies.assertCredentialSourceOwnerSelected();
+        dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
       }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -844,7 +839,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         await state.savedConnections.recordTokenSchedule(namespace.id, source.id, "due");
         return { managedSource: source };
       }
-      dependencies.assertCredentialSourceOwnerSelected();
+      dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
       }

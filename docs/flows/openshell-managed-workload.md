@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-19"
-last_updated_session: authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268
+updated: "2026-11-20"
+last_updated_session: "01a1f50f-138b-756e-be12-ada2880622e2"
 ---
 
 # Managed OpenShell workload flow
@@ -75,8 +75,12 @@ carries the logical directories and an empty `workspaceMounts` list.
 `ManagedOpenShellSandbox.harnessSpec` maps those directories to bootstrap paths
 and changes environment values with explicit directory bindings.
 `OpenShellSandboxDriver.harnessSpecForLayout` adds process, network and
-Provider settings. The image bootstrap prepares retained directories for
-dedicated OpenClaw in place of `prepareNativeWorkspace`.
+Provider settings. `sandboxLaunchSpec` encodes sizing in the `template.resources`
+protobuf Struct and omits `driver_config`. `canonicalSandboxSpec` normalizes resource
+Values; `immutableWorkload` and `comparableWorkload` retain sizing in replacement
+and readback checks. Missing or changed resources fail those checks.
+The image bootstrap prepares retained directories for dedicated OpenClaw
+in place of `prepareNativeWorkspace`.
 
 ### 2. Reconcile a stopped workload
 
@@ -86,7 +90,12 @@ ownership on readback. A retry can adopt a committed config after a lost
 response. A retry for the same revision may renew its setup envelope.
 
 `reconcileHarness` verifies Namespace and Agent ownership and requires a
-confirmed stop for replacement. It rejects resource changes.
+confirmed stop for replacement. A difference in `immutableWorkload`, including
+sizing, raises `SANDBOX_WORKLOAD_IMMUTABLE` before update or start.
+Before replacing runtime Provider material or reconciling the owned Sandbox,
+`requireManagedTemplate` refuses the old caller-config layout. The worker treats
+`SandboxRevisionUnsupportedError` as permanent. See
+[recovery before upgrade](../reference/drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 `reconcilePolicy` reads the latest policy separately from the creation
 specification and checks static policy and non-Git middleware.
 For changed attachments, it clears base rules while stopped.
@@ -216,6 +225,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 08:09: Serialize template resources; preserve replacement checks on current main. (01a1f50f-138b-756e-be12-ada2880622e2 - 6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a)
 
 - 2026-11-19 22:19: Condense the managed workload trace. (authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268 - 0173500d9e950c1722fb6738af08f9857e44be3d)
 

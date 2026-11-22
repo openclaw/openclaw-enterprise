@@ -138,6 +138,13 @@ follows `:focus-visible`. No part of any ring may be cut off.
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).
 
+## Search Agents with the keyboard
+
+In **Pages / Agents / No search matches**, press Escape and type `assistant`.
+Enter keeps the list open because two Agents match. Down Arrow visits each
+name. Escape returns to search without clearing it. Replace the query with
+`Research` and press Enter. Go back and check that the Agent name has focus.
+
 ## Agent collection access checks
 
 Open **Pages / Agents / Populated Namespace leaves the list** at desktop and

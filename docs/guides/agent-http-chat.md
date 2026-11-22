@@ -42,12 +42,12 @@ for that principal and Agent; rotating its service key preserves that selection.
 Omit the label for independent turns.
 
 A turn can execute tools. Disconnects, revoked access and timeouts do not undo
-those effects. Check the Agent's state before retrying; the label is not an
-idempotency key.
+those effects. The label is not an idempotency key.
 
-A request ends at its 10-minute deadline, and the turn behind it stops. For
-longer work, tell the Agent to record its progress in the workspace, then send
-a new request with the same label and a message such as `Continue the task.`
+At the 10-minute deadline, OCC closes the upstream connection. A running
+command can still finish. For longer work, tell the Agent to record its progress
+in the workspace. Before you retry or continue, follow the
+[HTTP chat recovery steps](../reference/agents/interrupted-turns.md#http-chat-callers).
 See the [HTTP chat contract](../reference/agent-http-chat.md) for limits, status
 codes, conversation boundaries and audit behavior.
 

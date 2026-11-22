@@ -715,26 +715,26 @@ test("production embedded replacements preserve their active Service across fail
   activeAgent.activeRevisionId = predecessor.id;
 
   // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
-  const newerGateway = computeDriver.deployment(
+  const newerGateway = computeDriver.deployment({
     name,
     ownership,
-    { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
-    {
+    namespace: { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
+    images: {
       runtime: "openclaw-enterprise/gateway-fixture:local",
       workspaceSetup: computeDriver.options.images.gateway,
     },
-    `agent-${shortHash(agentId, 12)}`,
-    "gateway",
-    {},
-    "info",
-    computeDriver.gatewayConfiguration(candidate),
-    true,
-    servicePrincipalId,
-    computeDriver.harnessAuthForRevision(candidate, authContext, {
+    serviceAccountName: `agent-${shortHash(agentId, 12)}`,
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: computeDriver.gatewayConfiguration(candidate),
+    embedded: true,
+    workloadServicePrincipalId: servicePrincipalId,
+    harnessAuth: computeDriver.harnessAuthForRevision(candidate, authContext, {
       name: kubernetesNamespaceName(namespaceId),
       plane: "control",
     }),
-  );
+  });
   const originalGet = computeDriver.get;
   computeDriver.get = async (kind, requestedName) => {
     assert.equal(kind, "Deployment");

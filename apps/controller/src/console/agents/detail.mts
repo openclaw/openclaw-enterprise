@@ -453,7 +453,7 @@ function summary(
   details: [string, string | Node | null | undefined][],
 ) {
   const primary = configuredModel(values);
-  const list = element("dl", { className: "configuration-summary" });
+  const list = element("dl", { className: "configuration-summary agent-settings-summary" });
   for (const [name, value] of [
     ["Model", typeof primary === "string" ? primary : "Not specified"],
     ...details,
@@ -463,13 +463,22 @@ function summary(
   return list;
 }
 
-function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
+function nativeDocument(values: Readonly<Record<string, unknown>>, label: string) {
   return element(
     "details",
     { className: "native-document" },
     element("summary", {}, label),
     element("pre", { tabindex: "0" }, JSON.stringify(values, null, 2)),
   );
+}
+
+function harnessDocument(values: Readonly<Record<string, unknown>>, label: string) {
+  const keys = Object.keys(values);
+  if (!keys.length) {
+    return "None";
+  }
+  const fields = keys.length === 1 ? keys[0] : `${keys.length} top-level keys`;
+  return nativeDocument(values, `${label} (${fields})`);
 }
 
 // Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
@@ -1764,11 +1773,16 @@ export async function renderAgentDetail(
     },
   );
   headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
+  // Recovery can remember a new denial, as can visiting the draft and coming Back.
+  let updateSnapshotAccess: (() => void) | undefined;
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
     isDeleting: () => deleting,
-    refresh: renderLatestDeployment,
+    refresh: () => {
+      renderLatestDeployment();
+      updateSnapshotAccess?.();
+    },
     versionLink,
   });
   const overviewStatus = element(
@@ -1928,6 +1942,7 @@ export async function renderAgentDetail(
   }
   // A page restored for Back mounts at its old scroll position.
   context.onResume?.(() => {
+    updateSnapshotAccess?.();
     const linked = takeLinkedVersionView(linkedKey());
     if (linked && !deleting) {
       openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
@@ -2655,12 +2670,18 @@ export async function renderAgentDetail(
     if (deploymentAttention.dataset.message !== attentionKey) {
       deploymentAttention.dataset.message = attentionKey;
     }
-    if (needsAttention && deploymentAttention.dataset.rendered !== attentionKey) {
-      deploymentAttention.dataset.rendered = attentionKey;
-      deploymentAttention.replaceChildren(
-        element("p", {}, attentionText),
-        versionLink("View deployment", latest.id, "deployment"),
-      );
+    if (needsAttention) {
+      const message = deploymentAttention.firstElementChild;
+      if (message && deploymentAttention.dataset.rendered === latest.id) {
+        // Update the status without removing the link from the keyboard's focus.
+        setText(message, attentionText);
+      } else {
+        deploymentAttention.dataset.rendered = latest.id;
+        deploymentAttention.replaceChildren(
+          element("p", {}, attentionText),
+          versionLink("View deployment", latest.id, "deployment"),
+        );
+      }
     }
     if (!latest) {
       showRecovery(null);
@@ -3185,10 +3206,9 @@ export async function renderAgentDetail(
     applyDraftAccess();
   });
 
+  const draftPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`;
   const snapshotPath =
-    selected === "draft"
-      ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
-      : `${path}/revisions/${encodeURIComponent(selected)}`;
+    selected === "draft" ? draftPath : `${path}/revisions/${encodeURIComponent(selected)}`;
 
   // A version this tab's Deploy created that the newest page of versions leaves out is one the
   // caller may not read: the list returns only readable versions, newest first, and it is newer
@@ -5956,13 +5976,41 @@ export async function renderAgentDetail(
       if (!draft) {
         details.push(
           ["Harness", `${snapshot.harness.id} · ${snapshot.harness.version}`],
-          ["Requested Harness overrides", JSON.stringify(snapshot.harness.overrides)],
-          ["Resolved Harness settings", JSON.stringify(snapshot.harness.configuration)],
+          [
+            "Requested Harness overrides",
+            harnessDocument(snapshot.harness.overrides, "View overrides"),
+          ],
+          [
+            "Resolved Harness settings",
+            harnessDocument(snapshot.harness.configuration, "View settings"),
+          ],
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }
       let currentConfigurationEntry: HTMLButtonElement | null = null;
+      let snapshotHeading: HTMLElement | null = null;
       if (!draft) {
+        const draftLinks = element(
+          "div",
+          { className: "agent-toolbar-actions" },
+          versionLink("Draft credentials", "draft", "credentials"),
+          versionLink("Draft repositories", "draft", "repositories"),
+        );
+        // A URL without a revision can show a different active version on Back.
+        for (const link of draftLinks.querySelectorAll("a")) {
+          link.dataset.returnFocusHref = `${link.href}#${selected}`;
+        }
+        const canReadDraft = () =>
+          callerPermissions?.configurationRead === true &&
+          !agent.configurationReadError &&
+          !context.deniedReads?.has(draftPath);
+        draftLinks.hidden = !canReadDraft();
+        snapshotHeading = element(
+          "div",
+          { className: "agent-version-heading" },
+          element("h2", {}, "Configuration snapshot"),
+          draftLinks,
+        );
         // A caller who may not edit the Configuration opens the draft to read it; the entry does
         // not offer an editor it has none of (finding 2436).
         const entryLabel = () =>
@@ -5978,18 +6026,24 @@ export async function renderAgentDetail(
           };
           context.navigate(target("draft", "configuration"));
         });
-        followConfigurationAccess(() => {
+        updateSnapshotAccess = () => {
           if (context.isCurrent() && entry.isConnected) {
             entry.textContent = entryLabel();
+            const hideLinks = !canReadDraft();
+            if (hideLinks && draftLinks.contains(document.activeElement)) {
+              tabControls.get("configuration")?.focus();
+            }
+            draftLinks.hidden = hideLinks;
           }
-        });
+        };
+        followConfigurationAccess(updateSnapshotAccess);
         currentConfigurationEntry = entry;
       }
       content.append(
         element(
           "section",
           { className: "agent-card" },
-          element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
+          snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
           repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)

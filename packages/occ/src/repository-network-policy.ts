@@ -1,0 +1,175 @@
+import type { AgentRevision, AgentRevisionRead } from "@openclaw-enterprise/contracts";
+import type { IAMDriver } from "@openclaw-enterprise/contracts";
+import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
+
+function unchanged(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    return false;
+  }
+}
+
+export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
+  const driver = current();
+  try {
+    const authorize = driver.authorize;
+    if (typeof authorize === "function") {
+      return {
+        inputs: [driver, authorize] as const,
+        assertCurrent() {
+          if (!unchanged(() => current() === driver && driver.authorize === authorize)) {
+            throw new ResourceStateConflictError(
+              "The selected authorization Driver changed during repository network policy admission. Reload before editing.",
+            );
+          }
+        },
+      };
+    }
+  } catch {
+    // A Driver method getter can contain private diagnostics.
+  }
+  throw new DependencyUnavailableError(
+    "The selected authorization Driver could not verify the operation.",
+  );
+}
+
+import { types } from "node:util";
+import type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicyCeiling,
+} from "@openclaw-enterprise/contracts";
+
+export type RepositoryGrantPolicy = {
+  repositoryNetworkPolicyAllows?(input: {
+    readonly namespaceId: string;
+    readonly grant: RepositoryNetworkGrant;
+  }): boolean;
+};
+
+type RepositoryGrantMethod = NonNullable<RepositoryGrantPolicy["repositoryNetworkPolicyAllows"]>;
+
+function repositoryGrantMethod(policy: RepositoryGrantPolicy): RepositoryGrantMethod | undefined {
+  // Inspect the first definition without invoking an accessor or a Proxy trap.
+  for (let owner: object | null = policy; owner; owner = Reflect.getPrototypeOf(owner)) {
+    if (types.isProxy(owner)) {
+      return undefined;
+    }
+    const descriptor: TypedPropertyDescriptor<RepositoryGrantMethod> | undefined =
+      Object.getOwnPropertyDescriptor(owner, "repositoryNetworkPolicyAllows");
+    if (descriptor) {
+      if (!Object.hasOwn(descriptor, "value")) {
+        return undefined;
+      }
+      const method = descriptor.value;
+      return typeof method === "function" && !types.isProxy(method) ? method : undefined;
+    }
+  }
+  return undefined;
+}
+
+type RepositoryGrantAuthority = {
+  readonly allows: (grant: RepositoryNetworkGrant) => boolean;
+  readonly approvesAll: (grants: readonly RepositoryNetworkGrant[]) => boolean;
+  readonly unchanged: () => boolean;
+};
+
+function synchronouslyApproved(value: unknown): boolean {
+  if (types.isPromise(value)) {
+    // Observe a native rejection without invoking the Driver's own then method.
+    void Promise.prototype.then.call(value, undefined, () => undefined);
+  }
+  return value === true;
+}
+
+function verified(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    return false;
+  }
+}
+
+export function repositoryGrantAuthority(
+  namespaceId: string,
+  policy: RepositoryGrantPolicy | undefined,
+  ownerUnchanged: (() => boolean) | undefined,
+): RepositoryGrantAuthority | undefined {
+  try {
+    if (!policy || !ownerUnchanged?.()) {
+      return undefined;
+    }
+    const allows = repositoryGrantMethod(policy);
+    if (!allows) {
+      return undefined;
+    }
+    const approve = (grant: RepositoryNetworkGrant) =>
+      synchronouslyApproved(Reflect.apply(allows, policy, [{ namespaceId, grant }]));
+    return {
+      // Ceiling filtering must distinguish a denial (try read) from a throw (discard all).
+      allows: approve,
+      approvesAll: (grants) => verified(() => grants.every(approve)),
+      unchanged: () => verified(() => ownerUnchanged() && repositoryGrantMethod(policy) === allows),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function delegatedRepositoryCeiling(
+  ceiling: RepositoryNetworkPolicyCeiling,
+  owner: RepositoryGrantAuthority | undefined,
+): RepositoryNetworkPolicyCeiling {
+  if (!owner) {
+    return [];
+  }
+  try {
+    const grants = ceiling.flatMap((grant) => {
+      if (owner.allows(grant)) {
+        return [grant];
+      }
+      const read = Object.freeze({ repository: grant.repository, access: "read" } as const);
+      return grant.access === "write" && owner.allows(read) ? [read] : [];
+    });
+    return owner.unchanged() ? grants : [];
+  } catch {
+    // Keep saved grants readable for withdrawal if delegated approvals cannot be checked.
+    return [];
+  }
+}
+
+// Stop retires the active pointer. A provider can still complete an earlier
+// unscoped write after its Worker loses the claim. Retained revisions identify
+// every deployment that could have targeted this Agent's shared resources.
+export function hasOnlyScopedRepositoryRevisions(
+  history: readonly Readonly<AgentRevisionRead>[],
+): boolean {
+  return history.every(
+    (revision, index) =>
+      !("configurationReadError" in revision) &&
+      revision.revision === index + 1 &&
+      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+  );
+}
+
+/** The Channel preview can relay these fixed deployment recovery instructions. */
+export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
+  constructor(reason: "unscoped_history" | "incompatible_compute") {
+    if (reason === "unscoped_history") {
+      super(
+        "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+      );
+    } else {
+      super(
+        "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
+        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+      );
+    }
+  }
+}
+
+export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
+  if (!hasOnlyScopedRepositoryRevisions(history)) {
+    throw new RepositoryPolicyDeploymentConflict("unscoped_history");
+  }
+}

@@ -1,6 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  admitRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
@@ -8,7 +9,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
+import type { RepositoryNetworkPolicy, SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   AgentRepository,
   AgentRevisionRepository,
@@ -127,7 +128,10 @@ import type { NamespaceRepository, PersistedNamespace } from "../ports/namespace
 import type { PlatformAuditSink } from "./platform-state.ts";
 import type { PlatformOperation } from "../ports/platform-operations.ts";
 import type { PlatformReadView } from "../ports/platform-read-view.ts";
-import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type {
+  PlatformStateStore,
+  PlatformTransactionOptions,
+} from "../ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
 import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
@@ -292,6 +296,22 @@ interface TransactionContext {
   nativeIAM: { readonly state: PersistedNativeIAMState; readonly statement: number } | undefined;
 }
 
+type TransactionWork<T> =
+  | { readonly mode: "read"; readonly work: (state: PlatformReadView) => Promise<T> }
+  | { readonly mode: "read-context"; readonly work: (context: TransactionContext) => Promise<T> }
+  | {
+      readonly mode: "write" | "read-committed";
+      readonly work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>;
+    };
+
+const SNAPSHOT_BEGIN = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
+const TRANSACTION_BEGIN = {
+  read: SNAPSHOT_BEGIN,
+  "read-context": SNAPSHOT_BEGIN,
+  write: "BEGIN",
+  "read-committed": "BEGIN ISOLATION LEVEL READ COMMITTED",
+} as const;
+
 const PERMISSION_ACTIONS = new Set<string>(PLATFORM_PERMISSION_ACTIONS);
 const RESOURCE_KINDS = new Set<string>(PLATFORM_RESOURCE_KINDS);
 const AUDIT_METADATA_KEY = "__occAuditMetadata";
@@ -300,13 +320,17 @@ const SECRET_IDENTIFIER =
 const NAMESPACE_IDENTIFIER =
   /^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-function rows(value: unknown[]): PostgresRow[] {
+function decodeRows(value: unknown[]): PostgresRow[] {
   return value.map((row) => {
     if (row === null || typeof row !== "object" || Array.isArray(row)) {
       throw new DependencyUnavailableError("The persistence repository returned invalid data.");
     }
     return row as PostgresRow;
   });
+}
+
+function decodeQueryRows(result: { readonly rows: unknown[] }): PostgresRow[] {
+  return decodeRows(result.rows);
 }
 
 function text(row: PostgresRow, key: string): string {
@@ -753,6 +777,44 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
   });
 }
 
+type StoredExecutionAdmission = AgentRevision["executionAdmission"] & {
+  readonly repositoryNetworkPolicyVersion?: unknown;
+};
+
+function executionAdmissionFromRow(
+  stored: StoredExecutionAdmission,
+  policy: RepositoryNetworkPolicy | undefined,
+  egressPlan: AgentRevision["egressPlan"],
+): AgentRevision["executionAdmission"] {
+  try {
+    const { repositoryNetworkPolicyVersion, ...admission } = stored;
+    const hasReaderVersion = Object.hasOwn(stored, "repositoryNetworkPolicyVersion");
+    // Bind the storage-only marker to the policy and supported execution mode
+    // before exposing a scoped revision to Worker.
+    if (
+      hasReaderVersion !== (policy !== undefined) ||
+      (hasReaderVersion &&
+        (admission.mode !== "unprotected" ||
+          policy?.version !== 1 ||
+          repositoryNetworkPolicyVersion !== policy.version ||
+          !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
+    ) {
+      throw new Error("Invalid persisted repository network policy reader version.");
+    }
+    const executionAdmission = hasReaderVersion ? admission : stored;
+    assertExecutionAdmission({
+      executionAdmission,
+      ...(egressPlan === undefined ? {} : { egressPlan }),
+    });
+    return executionAdmission;
+  } catch {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
+    );
+  }
+}
+
 function revisionFromRow(
   row: PostgresRow,
   metadata = revisionMetadataFromRow(row),
@@ -769,32 +831,25 @@ function revisionFromRow(
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
     egress_plan?: AgentRevision["egressPlan"];
-    execution_admission: AgentRevision["executionAdmission"];
+    execution_admission: StoredExecutionAdmission;
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
     plugins?: AgentRevision["plugins"];
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
-  try {
-    assertExecutionAdmission({
-      executionAdmission: admitted.execution_admission,
-      ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
-    });
-  } catch {
-    throw new SavedConfigurationReadError(
-      "configuration",
-      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
-    );
-  }
+  const executionAdmission = executionAdmissionFromRow(
+    admitted.execution_admission,
+    admitted.sandbox_policy?.repositoryNetworkPolicy,
+    admitted.egress_plan,
+  );
   // Older readers require an exact Harness-auth shape, rejecting the protected
   // reader version before handing a revision to Compute. It grants no authority.
   const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
-  const protectedAdmission = admitted.execution_admission.mode === "protected";
+  const protectedAdmission = executionAdmission.mode === "protected";
   if (
     Object.hasOwn(admitted, "service_account") ||
-    protectedExecutionVersion !==
-      (protectedAdmission ? admitted.execution_admission.version : undefined) ||
+    protectedExecutionVersion !== (protectedAdmission ? executionAdmission.version : undefined) ||
     !validHarnessAuthSnapshot(harnessAuth, text(row, "namespace_id"))
   ) {
     throw new SavedConfigurationReadError(
@@ -860,7 +915,7 @@ function revisionFromRow(
       ? {}
       : { repositoryCredentials: admitted.repository_credentials }),
     harnessAuth,
-    executionAdmission: admitted.execution_admission,
+    executionAdmission,
     ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
     ...(admitted.credential_sources === undefined
       ? {}
@@ -1362,18 +1417,21 @@ export class PostgresPlatformState implements PlatformStateStore {
     const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
       append: async (event) =>
-        this.execute(false, async (state, context) => {
-          if (auditWriteTimeoutMs !== undefined) {
-            // A local setting leaves other transactions on the pooled connection unaffected.
-            await context.client.query(
-              `SELECT pg_catalog.set_config(name,
+        this.execute({
+          mode: "write",
+          work: async (state, context) => {
+            if (auditWriteTimeoutMs !== undefined) {
+              // A local setting leaves other transactions on the pooled connection unaffected.
+              await context.client.query(
+                `SELECT pg_catalog.set_config(name,
                  CASE WHEN setting::integer = 0 THEN $1::text
                       ELSE LEAST(setting::integer, $1::integer)::text END, true)
                FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
-              [String(auditWriteTimeoutMs)],
-            );
-          }
-          await state.audit.append(event);
+                [String(auditWriteTimeoutMs)],
+              );
+            }
+            await state.audit.append(event);
+          },
         }),
     };
   }
@@ -1394,12 +1452,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       // cannot silently acquire a new client after the original operation ends.
       return current.lifetime.run(() => this.readNativeIAMState(current, installationId));
     }
-    return this.execute(true, async (_state, context) => {
-      const installation = await this.currentInstallation(context);
-      if (installation === undefined && this.bootstrapNativeIAM !== undefined) {
-        return this.bootstrapNativeIAM;
-      }
-      return this.readNativeIAMState(context, installationId);
+    return this.execute({
+      mode: "read-context",
+      work: async (context) => {
+        const installation = await this.currentInstallation(context);
+        if (installation === undefined && this.bootstrapNativeIAM !== undefined) {
+          return this.bootstrapNativeIAM;
+        }
+        return this.readNativeIAMState(context, installationId);
+      },
     });
   }
 
@@ -1466,13 +1527,13 @@ export class PostgresPlatformState implements PlatformStateStore {
             FROM occ.iam_restrictions) v), '[]'::jsonb) AS restrictions`);
     // The query counted itself when it was issued; a later statement makes this policy stale.
     const statement = context.statements;
-    const [snapshot] = rows((await pending).rows);
+    const [snapshot] = decodeQueryRows(await pending);
     const collection = (key: keyof PersistedNativeIAMState): PostgresRow[] => {
       const value = snapshot?.[key];
       if (!Array.isArray(value)) {
         throw new PersistedStateInvalidError("Persisted IAM collections are invalid.");
       }
-      return rows(value);
+      return decodeRows(value);
     };
     const identityRows = collection("identities");
     const roleRows = collection("roles");
@@ -1690,18 +1751,21 @@ export class PostgresPlatformState implements PlatformStateStore {
   }
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
-    return this.execute(true, async (state, context) =>
-      work(createPlatformReadView(state, context.lifetime)),
-    );
+    return this.execute({ mode: "read", work });
   }
 
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T> {
+    return options?.readCommitted
+      ? this.transactReadCommitted(work)
+      : this.execute({ mode: "write", work: async (state) => work(state) });
   }
 
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
   async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state), true);
+    return this.execute({ mode: "read-committed", work: async (state) => work(state) });
   }
 
   /**
@@ -1730,7 +1794,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (transportError !== undefined) {
         throw transportError;
       }
-      return rows(result.rows);
+      return decodeQueryRows(result);
     } catch (error) {
       discard = true;
       if (transportError !== undefined) {
@@ -1768,9 +1832,9 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) {
       throw new ScopeViolationError("The Installation authority request is invalid.");
     }
-    return this.execute(
-      false,
-      async (state, context) => {
+    return this.execute({
+      mode: "read-committed",
+      work: async (state, context) => {
         const statement =
           intent === "read"
             ? "SELECT pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended($1, 0))"
@@ -1779,7 +1843,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const timeout = await context.client.query(
           "SELECT setting FROM pg_catalog.pg_settings WHERE name = 'lock_timeout'",
         );
-        const previousLockTimeout = text(rows(timeout.rows)[0] ?? {}, "setting");
+        const previousLockTimeout = text(decodeQueryRows(timeout)[0] ?? {}, "setting");
         await context.client.query(
           `SELECT pg_catalog.set_config('lock_timeout',
              CASE WHEN $1::integer = 0 THEN '5000'
@@ -1793,8 +1857,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         await this.requireInstallation(context, installationId);
         return work(state);
       },
-      true,
-    );
+    });
   }
 
   queryInTransaction(
@@ -1865,7 +1928,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       selection.after?.id ?? null,
       selection.limit + 1,
     ]);
-    return rows(result.rows).map(projectAgentAuditRow);
+    return decodeQueryRows(result).map(projectAgentAuditRow);
   }
 
   /**
@@ -1897,17 +1960,20 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  /** Select Read Committed when protected reads must see commits made while waiting for locks. */
   async transactWithQueue<T>(
     work: (
       state: PlatformUnitOfWork,
       queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     ) => Promise<T>,
-    options: PostgresWorkQueueOptions = {},
+    options: PostgresWorkQueueOptions & { readonly readCommitted?: boolean } = {},
   ): Promise<T> {
-    const queueOptions = { ...this.queueOptions, ...options };
-    return this.execute(false, async (state, context) =>
-      work(state, this.bindQueue(context, queueOptions)),
-    );
+    const { readCommitted, ...queueOverrides } = options;
+    const queueOptions = { ...this.queueOptions, ...queueOverrides };
+    return this.execute({
+      mode: readCommitted ? "read-committed" : "write",
+      work: async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+    });
   }
 
   /**
@@ -1960,11 +2026,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ]);
   }
 
-  private async execute<T>(
-    readOnly: boolean,
-    work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>,
-    readCommitted = false,
-  ): Promise<T> {
+  private async execute<T>(transaction: TransactionWork<T>): Promise<T> {
     let client: PostgresClient;
     try {
       client = await this.pool.connect();
@@ -2002,13 +2064,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         throw transportError;
       }
       try {
-        await client.query(
-          readOnly
-            ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
-            : readCommitted
-              ? "BEGIN ISOLATION LEVEL READ COMMITTED"
-              : "BEGIN",
-        );
+        await client.query(TRANSACTION_BEGIN[transaction.mode]);
       } catch (error) {
         // A BEGIN abandoned by a client query timeout may still be in flight on this
         // connection; every later statement would queue behind it. Never reuse it.
@@ -2049,14 +2105,24 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         installation: undefined,
         installationLoaded: false,
-        readOnly,
+        readOnly: transaction.mode === "read" || transaction.mode === "read-context",
         statements: 0,
         nativeIAM: undefined,
       };
-      const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
-      unit = activeUnit;
-      this.contexts.set(activeUnit, context);
-      const result = await this.currentTransaction.run(context, () => work(activeUnit, context));
+      let run: () => Promise<T>;
+      if (transaction.mode === "read") {
+        const { work } = transaction;
+        const repositories = this.repositories(context);
+        run = async () => work(createPlatformReadView(repositories, lifetime));
+      } else if (transaction.mode === "read-context") {
+        run = () => transaction.work(context);
+      } else {
+        const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
+        unit = activeUnit;
+        this.contexts.set(activeUnit, context);
+        run = () => transaction.work(activeUnit, context);
+      }
+      const result = await this.currentTransaction.run(context, run);
       await lifetime.finish();
       if (transportError) {
         throw transportError;
@@ -2142,12 +2208,10 @@ export class PostgresPlatformState implements PlatformStateStore {
     context: TransactionContext,
   ): Promise<Readonly<Installation> | undefined> {
     if (!context.installationLoaded) {
-      const candidates = rows(
-        (
-          await context.client.query(
-            "SELECT id, name, created_at FROM occ.installation ORDER BY id LIMIT 2",
-          )
-        ).rows,
+      const candidates = decodeQueryRows(
+        await context.client.query(
+          "SELECT id, name, created_at FROM occ.installation ORDER BY id LIMIT 2",
+        ),
       );
       if (candidates.length > 1) {
         throw new DependencyUnavailableError("The platform Installation is ambiguous.");
@@ -2198,13 +2262,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
           "token_service_instance:" + installation.id,
         ]);
-        const [row] = rows(
-          (
-            await client.query(
-              "SELECT id, driver_id, store_identity FROM occ.token_service_instances WHERE installation_id=$1",
-              [installation.id],
-            )
-          ).rows,
+        const [row] = decodeQueryRows(
+          await client.query(
+            "SELECT id, driver_id, store_identity FROM occ.token_service_instances WHERE installation_id=$1",
+            [installation.id],
+          ),
         );
         if (
           row &&
@@ -2268,14 +2330,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         // FOR SHARE conflicts with the account UPDATE that disables it.
-        const [account] = rows(
-          (
-            await client.query(
-              `SELECT disabled FROM occ.human_authentication_accounts
+        const [account] = decodeQueryRows(
+          await client.query(
+            `SELECT disabled FROM occ.human_authentication_accounts
                WHERE principal_id = $1 AND installation_id = $2 FOR SHARE`,
-              [principalId, installation.id],
-            )
-          ).rows,
+            [principalId, installation.id],
+          ),
         );
         return account === undefined || account.disabled === false;
       },
@@ -2314,43 +2374,37 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaceId: string,
     ): Promise<boolean> {
       const result = await client.query(statement, [namespaceId]);
-      return rows(result.rows)[0]?.present === true;
+      return decodeQueryRows(result)[0]?.present === true;
     }
 
     const namespaces: NamespaceRepository = {
       findNamespace: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id, name, existing_namespace, status, created_at, deleted_at
                FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL`,
-              [namespaceId],
-            )
-          ).rows,
+            [namespaceId],
+          ),
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
       listNamespaces: async () => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id, name, existing_namespace, status, created_at, deleted_at
                FROM occ.namespaces WHERE deleted_at IS NULL ORDER BY created_at, id`,
-            )
-          ).rows,
+          ),
         );
         return Object.freeze(found.map((row) => namespaceFromRow(row)));
       },
       createNamespace: async (namespace) => {
         await this.requireInitialized(context);
         // A tombstone keeps its name UNIQUE; say so instead of reporting a live Namespace.
-        const tombstoned = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.namespaces WHERE name = $1 AND deleted_at IS NOT NULL) AS present",
-              [namespace.name],
-            )
-          ).rows,
+        const tombstoned = decodeQueryRows(
+          await client.query(
+            "SELECT EXISTS (SELECT 1 FROM occ.namespaces WHERE name = $1 AND deleted_at IS NOT NULL) AS present",
+            [namespace.name],
+          ),
         )[0];
         if (tombstoned?.present === true) {
           throw new ResourceStateConflictError(DELETED_NAMESPACE_NAME_CONFLICT);
@@ -2369,16 +2423,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         return immutableCopy(namespace);
       },
       lockNamespace: async (namespaceId, options = {}) => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id, name, existing_namespace, status, created_at, deleted_at
                FROM occ.namespaces
                WHERE id = $1${options.includeDeleted === true ? "" : " AND deleted_at IS NULL"}
                FOR UPDATE`,
-              [namespaceId],
-            )
-          ).rows,
+            [namespaceId],
+          ),
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
@@ -2394,13 +2446,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         ),
       listConfigurationIds: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                "SELECT id FROM occ.configurations WHERE namespace_id = $1 ORDER BY created_at, id",
-                [namespaceId],
-              )
-            ).rows,
+          decodeQueryRows(
+            await client.query(
+              "SELECT id FROM occ.configurations WHERE namespace_id = $1 ORDER BY created_at, id",
+              [namespaceId],
+            ),
           ).map((row) => String(row.id)),
         ),
       hasPresets: (namespaceId) =>
@@ -2426,29 +2476,25 @@ export class PostgresPlatformState implements PlatformStateStore {
       transitionNamespaceStatus: async (namespaceId, expected, next) => {
         await this.requireInitialized(context);
         const expectedStatuses = Array.isArray(expected) ? expected : [expected];
-        const found = rows(
-          (
-            await client.query(
-              `UPDATE occ.namespaces SET status = $3
+        const found = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.namespaces SET status = $3
                WHERE id = $1 AND status = ANY($2::text[]) AND deleted_at IS NULL
                RETURNING id, name, existing_namespace, status, created_at, deleted_at`,
-              [namespaceId, expectedStatuses, next],
-            )
-          ).rows,
+            [namespaceId, expectedStatuses, next],
+          ),
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
       markNamespaceDeleted: async (namespaceId, deletedAt) => {
         await this.requireInitialized(context);
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.namespaces SET deleted_at = $2
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.namespaces SET deleted_at = $2
                WHERE id = $1 AND status = 'deleting' AND deleted_at IS NULL
                RETURNING id, name, existing_namespace, status, created_at, deleted_at`,
-              [namespaceId, deletedAt],
-            )
-          ).rows,
+            [namespaceId, deletedAt],
+          ),
         )[0];
         if (updated !== undefined) {
           await client.query(
@@ -2457,14 +2503,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return namespaceFromRow(updated);
         }
-        const existing = rows(
-          (
-            await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+        const existing = decodeQueryRows(
+          await client.query(
+            `SELECT id, name, existing_namespace, status, created_at, deleted_at
                FROM occ.namespaces WHERE id = $1 AND status = 'deleting' FOR UPDATE`,
-              [namespaceId],
-            )
-          ).rows,
+            [namespaceId],
+          ),
         )[0];
         return existing === undefined ? undefined : namespaceFromRow(existing);
       },
@@ -2488,16 +2532,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       presetId: string,
       lock = false,
     ): Promise<Readonly<Preset> | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT p.id, p.namespace_id, p.name, p.template, p.created_at
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT p.id, p.namespace_id, p.name, p.template, p.created_at
          FROM occ.presets AS p
          JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
          WHERE p.namespace_id = $1 AND p.id = $2${lock ? " FOR UPDATE OF p" : ""}`,
-            [namespaceId, presetId],
-          )
-        ).rows,
+          [namespaceId, presetId],
+        ),
       )[0];
       return found === undefined ? undefined : presetFromRow(found);
     };
@@ -2505,16 +2547,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       findPreset,
       listPresetSummaries: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT p.id, p.namespace_id, p.name, p.created_at
+          decodeQueryRows(
+            await client.query(
+              `SELECT p.id, p.namespace_id, p.name, p.created_at
          FROM occ.presets AS p
          JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
          WHERE p.namespace_id = $1 ORDER BY p.id`,
-                [namespaceId],
-              )
-            ).rows,
+              [namespaceId],
+            ),
           ).map((row) =>
             immutableCopy({
               id: text(row, "id"),
@@ -2526,16 +2566,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         ),
       listPresets: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT p.id, p.namespace_id, p.name, p.template, p.created_at
+          decodeQueryRows(
+            await client.query(
+              `SELECT p.id, p.namespace_id, p.name, p.template, p.created_at
          FROM occ.presets AS p
          JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
          WHERE p.namespace_id = $1 ORDER BY p.id`,
-                [namespaceId],
-              )
-            ).rows,
+              [namespaceId],
+            ),
           ).map(presetFromRow),
         ),
       createPreset: async (preset) => {
@@ -2563,20 +2601,18 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (current === undefined) {
           return undefined;
         }
-        const found = rows(
-          (
-            await client.query(
-              `UPDATE occ.presets SET name = $3, template = $4::jsonb
+        const found = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.presets SET name = $3, template = $4::jsonb
            WHERE namespace_id = $1 AND id = $2
            RETURNING id, namespace_id, name, template, created_at`,
-              [
-                namespaceId,
-                presetId,
-                changes.name ?? current.name,
-                JSON.stringify(changes.template ?? current.template),
-              ],
-            )
-          ).rows,
+            [
+              namespaceId,
+              presetId,
+              changes.name ?? current.name,
+              JSON.stringify(changes.template ?? current.template),
+            ],
+          ),
         )[0];
         return found === undefined ? undefined : presetFromRow(found);
       },
@@ -2599,37 +2635,33 @@ export class PostgresPlatformState implements PlatformStateStore {
       secretId: string,
       lock = false,
     ): Promise<Readonly<Secret> | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT s.id, s.namespace_id, s.name, s.driver_id,
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT s.id, s.namespace_id, s.name, s.driver_id,
                     s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
                     s.created_at
              FROM occ.secrets AS s
              JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
              WHERE s.namespace_id = $1 AND s.id = $2${lock ? " FOR UPDATE OF s" : ""}`,
-            [namespaceId, secretId],
-          )
-        ).rows,
+          [namespaceId, secretId],
+        ),
       )[0];
       return found === undefined ? undefined : secretFromRow(found);
     };
 
     const listSecrets = async (namespaceId: string): Promise<readonly Readonly<Secret>[]> =>
       Object.freeze(
-        rows(
-          (
-            await client.query(
-              `SELECT s.id, s.namespace_id, s.name, s.driver_id,
+        decodeQueryRows(
+          await client.query(
+            `SELECT s.id, s.namespace_id, s.name, s.driver_id,
                       s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
                       s.created_at
                FROM occ.secrets AS s
                JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
                WHERE s.namespace_id = $1
                ORDER BY s.created_at, s.id`,
-              [namespaceId],
-            )
-          ).rows,
+            [namespaceId],
+          ),
         ).map(secretFromRow),
       );
 
@@ -2641,15 +2673,13 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (secretIds.length === 0) {
         return;
       }
-      const found = rows(
-        (
-          await client.query(
-            `SELECT id FROM occ.secrets
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT id FROM occ.secrets
              WHERE namespace_id = $1 AND id = ANY($2::text[])
              ORDER BY id`,
-            [namespaceId, secretIds],
-          )
-        ).rows,
+          [namespaceId, secretIds],
+        ),
       );
       if (found.length !== secretIds.length) {
         throw new ScopeViolationError("Secret bindings reference unavailable Secret metadata.");
@@ -2661,17 +2691,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       configurationId: string,
       lock = false,
     ): Promise<Readonly<ConfigurationOwnership> | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT c.id, c.namespace_id, c.kind, c.generation, c.created_at
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT c.id, c.namespace_id, c.kind, c.generation, c.created_at
                   , c.secret_bindings
              FROM occ.configurations AS c
              JOIN occ.namespaces AS n ON n.id = c.namespace_id AND n.deleted_at IS NULL
              WHERE c.namespace_id = $1 AND c.id = $2${lock ? " FOR UPDATE OF c" : ""}`,
-            [namespaceId, configurationId],
-          )
-        ).rows,
+          [namespaceId, configurationId],
+        ),
       )[0];
       return found === undefined ? undefined : configurationFromRow(found);
     };
@@ -2746,19 +2774,17 @@ export class PostgresPlatformState implements PlatformStateStore {
           nextSecretBindings === undefined ? current.secretBindings : nextSecretBindings;
         await validateSecretBindingsAvailable(namespaceId, secretBindings);
         const serializedSecretBindings = serializeSecretBindings(namespaceId, secretBindings);
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.configurations AS c
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.configurations AS c
                SET generation = c.generation + 1, secret_bindings = $4::jsonb
                FROM occ.namespaces AS n
                WHERE c.namespace_id = $1 AND c.id = $2 AND c.generation = $3
                  AND n.id = c.namespace_id AND n.deleted_at IS NULL
                RETURNING c.id, c.namespace_id, c.kind, c.generation, c.secret_bindings,
                          c.created_at`,
-              [namespaceId, configurationId, expectedGeneration, serializedSecretBindings],
-            )
-          ).rows,
+            [namespaceId, configurationId, expectedGeneration, serializedSecretBindings],
+          ),
         )[0];
         return updated === undefined ? undefined : configurationFromRow(updated);
       },
@@ -2812,10 +2838,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       listReferences: async (namespaceId, secretId, limit) => {
         // One statement for every kind, and none for a Secret that is gone or whose Namespace
         // is deleted (as findSecret); LIMIT limit + 1 tells a full page from a truncated one.
-        const found = rows(
-          (
-            await client.query(
-              `SELECT reference.kind, reference.id FROM (
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT reference.kind, reference.id FROM (
                  SELECT 'credential_source'::text AS kind, credential_source_id AS id
                  FROM occ.credential_source_secrets
                  WHERE namespace_id = $1 AND secret_id = $2
@@ -2899,9 +2924,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                )
                ORDER BY reference.kind COLLATE "C", reference.id COLLATE "C"
                LIMIT $3`,
-              [namespaceId, secretId, limit + 1],
-            )
-          ).rows,
+            [namespaceId, secretId, limit + 1],
+          ),
         );
         const references = found.slice(0, limit).map((row) =>
           Object.freeze({
@@ -2942,16 +2966,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       serviceAccountId: string,
       lock = false,
     ): Promise<Readonly<ServiceAccount> | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT s.id, s.namespace_id, s.name, s.credential
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT s.id, s.namespace_id, s.name, s.credential
              FROM occ.service_accounts AS s
              JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
              WHERE s.namespace_id = $1 AND s.id = $2${lock ? " FOR UPDATE OF s" : ""}`,
-            [namespaceId, serviceAccountId],
-          )
-        ).rows,
+          [namespaceId, serviceAccountId],
+        ),
       )[0];
       return found === undefined ? undefined : serviceAccountFromRow(found);
     };
@@ -2961,16 +2983,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       credentialSourceId: string,
       lock = false,
     ): Promise<Readonly<CredentialSource> | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT ${CREDENTIAL_SOURCE_COLUMNS}
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT ${CREDENTIAL_SOURCE_COLUMNS}
              FROM occ.credential_sources AS cs
              JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
              WHERE cs.namespace_id = $1 AND cs.id = $2${lock ? " FOR UPDATE OF cs" : ""}`,
-            [namespaceId, credentialSourceId],
-          )
-        ).rows,
+          [namespaceId, credentialSourceId],
+        ),
       )[0];
       return found === undefined ? undefined : credentialSourceFromRow(found);
     };
@@ -2980,14 +3000,12 @@ export class PostgresPlatformState implements PlatformStateStore {
       revisionId: string,
       credentialSourceId: string,
     ): Promise<Readonly<StoredCredentialWithdrawal> | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT ${CREDENTIAL_WITHDRAWAL_COLUMNS} FROM occ.credential_withdrawals
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT ${CREDENTIAL_WITHDRAWAL_COLUMNS} FROM occ.credential_withdrawals
              WHERE namespace_id = $1 AND revision_id = $2 AND credential_source_id = $3`,
-            [namespaceId, revisionId, credentialSourceId],
-          )
-        ).rows,
+          [namespaceId, revisionId, credentialSourceId],
+        ),
       )[0];
       return found === undefined ? undefined : credentialWithdrawalFromRow(found);
     };
@@ -3021,7 +3039,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2 AND NOT retired`,
           [senderId, sandboxId],
         );
-        const row = rows(result.rows)[0];
+        const row = decodeQueryRows(result)[0];
         return row === undefined
           ? undefined
           : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
@@ -3031,7 +3049,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           `${currentEgressInstallation} WHERE namespace_id = $1 AND revision_id = $2`,
           [namespaceId, revisionId],
         );
-        const row = rows(result.rows)[0];
+        const row = decodeQueryRows(result)[0];
         return row === undefined
           ? undefined
           : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
@@ -3093,15 +3111,13 @@ export class PostgresPlatformState implements PlatformStateStore {
       findCredentialWithdrawal,
       listCredentialWithdrawals: async (namespaceId, revisionId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT ${CREDENTIAL_WITHDRAWAL_COLUMNS} FROM occ.credential_withdrawals
+          decodeQueryRows(
+            await client.query(
+              `SELECT ${CREDENTIAL_WITHDRAWAL_COLUMNS} FROM occ.credential_withdrawals
                  WHERE namespace_id = $1 AND revision_id = $2
                  ORDER BY credential_source_id`,
-                [namespaceId, revisionId],
-              )
-            ).rows,
+              [namespaceId, revisionId],
+            ),
           ).map(credentialWithdrawalFromRow),
         ),
       requestCredentialWithdrawal: async (withdrawal) => {
@@ -3187,17 +3203,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       listCredentialSources: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT ${CREDENTIAL_SOURCE_COLUMNS}
+          decodeQueryRows(
+            await client.query(
+              `SELECT ${CREDENTIAL_SOURCE_COLUMNS}
                  FROM occ.credential_sources AS cs
                  JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                  WHERE cs.namespace_id = $1
                  ORDER BY cs.created_at, cs.id`,
-                [namespaceId],
-              )
-            ).rows,
+              [namespaceId],
+            ),
           ).map(credentialSourceFromRow),
         ),
       lockCredentialSource: async (namespaceId, credentialSourceId) =>
@@ -3343,10 +3357,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         // Withdrawal work is reported only when nothing else references the source, so the
         // refusal can name the way out that applies.
-        const found = rows(
-          (
-            await client.query(
-              `WITH held_work AS (
+        const found = decodeQueryRows(
+          await client.query(
+            `WITH held_work AS (
                  -- Outstanding work for a revision admitted with the source.
                  SELECT w.agent_target IS NOT DISTINCT FROM $3 AS withdrawal
                  FROM occ.controller_work AS w
@@ -3381,9 +3394,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND p.plan #>> '{harnessAuth,sourceId}' = $2
                ) OR EXISTS (SELECT 1 FROM held_work WHERE NOT withdrawal) AS referenced,
                EXISTS (SELECT 1 FROM held_work WHERE withdrawal) AS withdrawal_work`,
-              [namespaceId, credentialSourceId, CREDENTIAL_WITHDRAWAL_TARGET],
-            )
-          ).rows,
+            [namespaceId, credentialSourceId, CREDENTIAL_WITHDRAWAL_TARGET],
+          ),
         )[0];
         if (found?.referenced === true) {
           return "reference";
@@ -3417,31 +3429,27 @@ export class PostgresPlatformState implements PlatformStateStore {
       findServiceAccount,
       listServiceAccounts: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT s.id, s.namespace_id, s.name, s.credential
+          decodeQueryRows(
+            await client.query(
+              `SELECT s.id, s.namespace_id, s.name, s.credential
                  FROM occ.service_accounts AS s
                  JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
                  WHERE s.namespace_id = $1
                  ORDER BY s.name, s.id`,
-                [namespaceId],
-              )
-            ).rows,
+              [namespaceId],
+            ),
           ).map(serviceAccountFromRow),
         ),
       findServiceAccountBackendBinding: async (namespaceId, serviceAccountId) => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT b.backend_id, b.driver_id, b.workspace_id,
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT b.backend_id, b.driver_id, b.workspace_id,
                       b.external_credential_id IS NOT NULL AS credential_issued
                FROM occ.service_account_driver_bindings AS b
                JOIN occ.namespaces AS n ON n.id = b.namespace_id AND n.deleted_at IS NULL
                WHERE b.namespace_id = $1 AND b.service_account_id = $2`,
-              [namespaceId, serviceAccountId],
-            )
-          ).rows,
+            [namespaceId, serviceAccountId],
+          ),
         )[0];
         return found === undefined
           ? undefined
@@ -3477,18 +3485,16 @@ export class PostgresPlatformState implements PlatformStateStore {
         return immutableCopy(account);
       },
       updateCredential: async (namespaceId, serviceAccountId, credential) => {
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.service_accounts AS s
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.service_accounts AS s
                SET credential = $3::jsonb
                FROM occ.namespaces AS n
                WHERE s.namespace_id = $1 AND s.id = $2
                  AND n.id = s.namespace_id AND n.deleted_at IS NULL
                RETURNING s.id, s.namespace_id, s.name, s.credential`,
-              [namespaceId, serviceAccountId, JSON.stringify(credential)],
-            )
-          ).rows,
+            [namespaceId, serviceAccountId, JSON.stringify(credential)],
+          ),
         )[0];
         return updated === undefined ? undefined : serviceAccountFromRow(updated);
       },
@@ -3497,10 +3503,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           return false;
         }
         // One statement observes both sides of the worker's pending-to-active handoff.
-        const found = rows(
-          (
-            await client.query(
-              `SELECT EXISTS (
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT EXISTS (
                  SELECT 1 FROM occ.agents
                  WHERE namespace_id = $1 AND harness_auth_service_account_id = $2
                ) OR EXISTS (
@@ -3531,9 +3536,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND p.plan #>> '{harnessAuth,source,kind}' = 'service_account'
                    AND p.plan #>> '{harnessAuth,source,id}' = $2
                ) AS present`,
-              [namespaceId, serviceAccountId],
-            )
-          ).rows,
+            [namespaceId, serviceAccountId],
+          ),
         )[0];
         return found?.present === true;
       },
@@ -3556,17 +3560,15 @@ export class PostgresPlatformState implements PlatformStateStore {
         return true;
       },
       findIssuedCredentialBinding: async (namespaceId, serviceAccountId) => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT b.backend_id, b.workspace_id, b.external_account_id, b.external_credential_id
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT b.backend_id, b.workspace_id, b.external_account_id, b.external_credential_id
                FROM occ.service_account_driver_bindings AS b
                JOIN occ.namespaces AS n ON n.id = b.namespace_id AND n.deleted_at IS NULL
                WHERE b.namespace_id = $1 AND b.service_account_id = $2
                  AND b.external_credential_id IS NOT NULL`,
-              [namespaceId, serviceAccountId],
-            )
-          ).rows,
+            [namespaceId, serviceAccountId],
+          ),
         )[0];
         return found === undefined
           ? undefined
@@ -3584,18 +3586,16 @@ export class PostgresPlatformState implements PlatformStateStore {
       agentId: string,
       lock = false,
     ): Promise<PostgresRow | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                     a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                     a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
              WHERE a.namespace_id = $1 AND a.id = $2${lock ? " FOR UPDATE OF a" : ""}`,
-            [namespaceId, agentId],
-          )
-        ).rows,
+          [namespaceId, agentId],
+        ),
       )[0];
       return found;
     };
@@ -3611,84 +3611,73 @@ export class PostgresPlatformState implements PlatformStateStore {
       });
     const workspaceSetups: WorkspaceSetupRepository = {
       find: async (namespaceId, agentId) => {
-        const row = rows(
-          (
-            await client.query(
-              "SELECT id, namespace_id, agent_id, defaults_id, files, completed FROM occ.workspace_setups WHERE namespace_id = $1 AND agent_id = $2",
-              [namespaceId, agentId],
-            )
-          ).rows,
+        const row = decodeQueryRows(
+          await client.query(
+            "SELECT id, namespace_id, agent_id, defaults_id, files, completed FROM occ.workspace_setups WHERE namespace_id = $1 AND agent_id = $2",
+            [namespaceId, agentId],
+          ),
         )[0];
         return row === undefined ? undefined : setupFromRow(row);
       },
       create: async (setup) => {
-        const row = rows(
-          (
-            await client.query(
-              `INSERT INTO occ.workspace_setups (id, namespace_id, agent_id, defaults_id, files, completed)
+        const row = decodeQueryRows(
+          await client.query(
+            `INSERT INTO occ.workspace_setups (id, namespace_id, agent_id, defaults_id, files, completed)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6) RETURNING *`,
-              [
-                setup.id,
-                setup.namespaceId,
-                setup.agentId,
-                setup.defaultsId ?? null,
-                setup.files === undefined ? null : JSON.stringify(setup.files),
-                setup.completed,
-              ],
-            )
-          ).rows,
+            [
+              setup.id,
+              setup.namespaceId,
+              setup.agentId,
+              setup.defaultsId ?? null,
+              setup.files === undefined ? null : JSON.stringify(setup.files),
+              setup.completed,
+            ],
+          ),
         )[0];
         return setupFromRow(row!);
       },
       complete: async (namespaceId, agentId, id) => {
-        const row = rows(
-          (
-            await client.query(
-              `UPDATE occ.workspace_setups SET files = NULL, completed = true
+        const row = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.workspace_setups SET files = NULL, completed = true
            WHERE namespace_id = $1 AND agent_id = $2 AND id = $3 RETURNING *`,
-              [namespaceId, agentId, id],
-            )
-          ).rows,
+            [namespaceId, agentId, id],
+          ),
         )[0];
         return row === undefined ? undefined : setupFromRow(row);
       },
       delete: async (namespaceId, agentId) =>
-        rows(
-          (
-            await client.query(
-              "DELETE FROM occ.workspace_setups WHERE namespace_id = $1 AND agent_id = $2 RETURNING id",
-              [namespaceId, agentId],
-            )
-          ).rows,
+        decodeQueryRows(
+          await client.query(
+            "DELETE FROM occ.workspace_setups WHERE namespace_id = $1 AND agent_id = $2 RETURNING id",
+            [namespaceId, agentId],
+          ),
         ).length > 0,
     };
 
     const listAgentRows = async (namespaceId: string): Promise<PostgresRow[]> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                       a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                       a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
                WHERE a.namespace_id = $1 ORDER BY a.created_at, a.id`,
-            [namespaceId],
-          )
-        ).rows,
+          [namespaceId],
+        ),
       );
       return found;
     };
 
     const sandboxPolicies: SandboxPolicyRepository = {
+      supportsRepositoryNetworkPolicy: true,
       find: async (namespaceId, agentId) => {
-        const row = rows(
-          (
-            await client.query(
-              "SELECT document FROM occ.sandbox_policies WHERE namespace_id = $1 AND agent_id = $2",
-              [namespaceId, agentId],
-            )
-          ).rows,
+        const row = decodeQueryRows(
+          await client.query(
+            "SELECT document FROM occ.sandbox_policies WHERE namespace_id = $1 AND agent_id = $2",
+            [namespaceId, agentId],
+          ),
         )[0];
         return row === undefined
           ? undefined
@@ -3706,7 +3695,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             expectedVersion,
           ],
         );
-        const row = rows(result.rows)[0];
+        const row = decodeQueryRows(result)[0];
         return row === undefined
           ? undefined
           : immutableCopy(row.document as unknown as SandboxPolicy);
@@ -3714,23 +3703,20 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
     const agents: AgentRepository = {
       findPredecessorReplacement: async (namespaceId, agentId) => {
-        const row = rows(
-          (
-            await client.query(
-              `SELECT a.predecessor_replacement FROM occ.agents a
+        const row = decodeQueryRows(
+          await client.query(
+            `SELECT a.predecessor_replacement FROM occ.agents a
            JOIN occ.namespaces n ON n.id = a.namespace_id AND n.deleted_at IS NULL
            WHERE a.namespace_id = $1 AND a.id = $2`,
-              [namespaceId, agentId],
-            )
-          ).rows,
+            [namespaceId, agentId],
+          ),
         )[0];
         return predecessorReplacementFromJson(row?.predecessor_replacement);
       },
       recordPredecessorReplacement: async (namespaceId, agentId, input) => {
-        const row = rows(
-          (
-            await client.query(
-              `UPDATE occ.agents a SET predecessor_replacement =
+        const row = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents a SET predecessor_replacement =
              CASE WHEN a.predecessor_replacement->>'predecessorRevisionId' = $3
                THEN a.predecessor_replacement || jsonb_build_object('candidateRevisionId', $4::text) ||
                  CASE WHEN $5 = 'stopping' AND a.predecessor_replacement->>'phase' = 'pre-stop'
@@ -3746,15 +3732,14 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND c.namespace_id = a.namespace_id AND c.agent_id = a.id AND c.id = $4
              AND c.revision_number > p.revision_number
            RETURNING a.predecessor_replacement`,
-              [
-                namespaceId,
-                agentId,
-                input.predecessorRevisionId,
-                input.candidateRevisionId,
-                input.phase,
-              ],
-            )
-          ).rows,
+            [
+              namespaceId,
+              agentId,
+              input.predecessorRevisionId,
+              input.candidateRevisionId,
+              input.phase,
+            ],
+          ),
         )[0];
         return predecessorReplacementFromJson(row?.predecessor_replacement);
       },
@@ -3791,14 +3776,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze((await listAgentRows(namespaceId)).map(agentForBrowsingFromRow)),
       listAgentReferences: async () =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT a.id, a.namespace_id
+          decodeQueryRows(
+            await client.query(
+              `SELECT a.id, a.namespace_id
                  FROM occ.agents AS a
                  JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL`,
-              )
-            ).rows,
+            ),
           ).map((row) =>
             Object.freeze({ id: text(row, "id"), namespaceId: text(row, "namespace_id") }),
           ),
@@ -3927,10 +3910,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           pluginApprovers == null ? undefined : normalizedPluginApprovers(pluginApprovers);
         const nextRepositoryBindings =
           repositoryBindings?.length === 0 ? undefined : repositoryBindings;
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.agents AS a
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents AS a
                SET configuration_id = $3, execution_mode = COALESCE($4::text, a.execution_mode),
                    harness_auth = CASE WHEN $5::boolean THEN $6::jsonb ELSE a.harness_auth END,
                    backend_id = CASE WHEN $7::boolean THEN $8::text ELSE a.backend_id END,
@@ -3947,39 +3929,36 @@ export class PostgresPlatformState implements PlatformStateStore {
                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                           a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
-              [
-                namespaceId,
-                agentId,
-                configurationId,
-                executionMode ?? null,
-                harnessAuth !== undefined,
-                harnessAuth == null ? null : JSON.stringify(harnessAuth),
-                backendId !== undefined,
-                backendId ?? null,
-                plugins !== undefined,
-                nextPlugins === undefined ? null : JSON.stringify(nextPlugins),
-                pluginApprovers !== undefined,
-                nextPluginApprovers === undefined ? null : JSON.stringify(nextPluginApprovers),
-                repositoryBindings !== undefined,
-                nextRepositoryBindings === undefined
-                  ? null
-                  : JSON.stringify(nextRepositoryBindings),
-                repositoryAccess !== undefined || repositoryBindings !== undefined,
-                repositoryAccess == null
-                  ? null
-                  : JSON.stringify(
-                      normalizedRepositoryAccess(repositoryAccess, nextRepositoryBindings),
-                    ),
-                nextCredentialSources !== undefined,
-                nextCredentialSources === undefined || nextCredentialSources.length === 0
-                  ? null
-                  : JSON.stringify(nextCredentialSources),
-                gatewayManagedMode ?? null,
-                pluginDriver !== undefined,
-                pluginDriver == null ? null : JSON.stringify(pluginDriver),
-              ],
-            )
-          ).rows,
+            [
+              namespaceId,
+              agentId,
+              configurationId,
+              executionMode ?? null,
+              harnessAuth !== undefined,
+              harnessAuth == null ? null : JSON.stringify(harnessAuth),
+              backendId !== undefined,
+              backendId ?? null,
+              plugins !== undefined,
+              nextPlugins === undefined ? null : JSON.stringify(nextPlugins),
+              pluginApprovers !== undefined,
+              nextPluginApprovers === undefined ? null : JSON.stringify(nextPluginApprovers),
+              repositoryBindings !== undefined,
+              nextRepositoryBindings === undefined ? null : JSON.stringify(nextRepositoryBindings),
+              repositoryAccess !== undefined || repositoryBindings !== undefined,
+              repositoryAccess == null
+                ? null
+                : JSON.stringify(
+                    normalizedRepositoryAccess(repositoryAccess, nextRepositoryBindings),
+                  ),
+              nextCredentialSources !== undefined,
+              nextCredentialSources === undefined || nextCredentialSources.length === 0
+                ? null
+                : JSON.stringify(nextCredentialSources),
+              gatewayManagedMode ?? null,
+              pluginDriver !== undefined,
+              pluginDriver == null ? null : JSON.stringify(pluginDriver),
+            ],
+          ),
         )[0];
         return updated === undefined ? undefined : agentFromRow(updated);
       },
@@ -3989,10 +3968,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         expectedRevisionId,
         candidateRevisionId,
       ) => {
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.agents AS a SET active_revision_id = $4
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents AS a SET active_revision_id = $4
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                 AND a.active_revision_id IS NOT DISTINCT FROM $3::text
@@ -4000,35 +3978,31 @@ export class PostgresPlatformState implements PlatformStateStore {
                   RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                           a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
-              [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
-            )
-          ).rows,
+            [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
+          ),
         )[0];
         return updated === undefined ? undefined : agentFromRow(updated);
       },
       compareAndClearActiveRevision: async (namespaceId, agentId, expectedRevisionId) => {
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.agents AS a SET active_revision_id = NULL
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents AS a SET active_revision_id = NULL
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
-              [namespaceId, agentId, expectedRevisionId],
-            )
-          ).rows,
+            [namespaceId, agentId, expectedRevisionId],
+          ),
         )[0];
         return updated === undefined ? undefined : agentFromRow(updated);
       },
       transitionAgentDesiredRuntimeState: async (namespaceId, agentId, expected, next) => {
         const expectedStates = Array.isArray(expected) ? expected : [expected];
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.agents AS a SET desired_runtime_state = $4
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents AS a SET desired_runtime_state = $4
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND a.desired_runtime_state = ANY($3::text[])
@@ -4036,9 +4010,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
-              [namespaceId, agentId, expectedStates, next],
-            )
-          ).rows,
+            [namespaceId, agentId, expectedStates, next],
+          ),
         )[0];
         return updated === undefined ? undefined : agentFromRow(updated);
       },
@@ -4047,10 +4020,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         // Only a row currently holding one of the expected statuses matches, as
         // in transitionNamespaceStatus. Callers that treat an already-deleting
         // Agent as success check its status before transitioning.
-        const updated = rows(
-          (
-            await client.query(
-              `UPDATE occ.agents AS a SET status = $4
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents AS a SET status = $4
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND a.status = ANY($3::text[])
@@ -4058,9 +4030,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
-              [namespaceId, agentId, expectedStatuses, next],
-            )
-          ).rows,
+            [namespaceId, agentId, expectedStatuses, next],
+          ),
         )[0];
         return updated === undefined ? undefined : agentFromRow(updated);
       },
@@ -4071,19 +4042,17 @@ export class PostgresPlatformState implements PlatformStateStore {
       agentId: string,
       revisionId: string,
     ): Promise<PostgresRow | undefined> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                       r.admitted_spec, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
                JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
                WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.id = $3`,
-            [namespaceId, agentId, revisionId],
-          )
-        ).rows,
+          [namespaceId, agentId, revisionId],
+        ),
       )[0];
       return found;
     };
@@ -4092,38 +4061,34 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaceId: string,
       agentId: string,
     ): Promise<PostgresRow[]> => {
-      const found = rows(
-        (
-          await client.query(
-            `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+      const found = decodeQueryRows(
+        await client.query(
+          `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                       r.admitted_spec, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
                JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
                WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
-            [namespaceId, agentId],
-          )
-        ).rows,
+          [namespaceId, agentId],
+        ),
       );
       return found;
     };
 
     const revisions: AgentRevisionRepository = {
       findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
-        const row = rows(
-          (
-            await client.query(
-              `SELECT r.id, r.namespace_id, r.agent_id, r.admitted_at,
+        const row = decodeQueryRows(
+          await client.query(
+            `SELECT r.id, r.namespace_id, r.agent_id, r.admitted_at,
                   r.admitted_spec->>'configuration_id' AS configuration_id,
                   r.admitted_spec->>'configuration_generation' AS configuration_generation
            FROM occ.agent_revisions r
            JOIN occ.namespaces n ON n.id = r.namespace_id AND n.deleted_at IS NULL
            WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.revision_number = 1
              AND r.first_deployment_digest = $3`,
-              [namespaceId, agentId, digest],
-            )
-          ).rows,
+            [namespaceId, agentId, digest],
+          ),
         )[0];
         return row === undefined
           ? undefined
@@ -4154,28 +4119,25 @@ export class PostgresPlatformState implements PlatformStateStore {
         ),
       listRevisionMetadata: async (namespaceId, agentId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+          decodeQueryRows(
+            await client.query(
+              `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                         r.admitted_at
                  FROM occ.agent_revisions AS r
                  JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
                  JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
                  WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
-                [namespaceId, agentId],
-              )
-            ).rows,
+              [namespaceId, agentId],
+            ),
           ).map(revisionMetadataFromRow),
         ),
       pageRevisionSummaries: async (namespaceId, agentId, { before, limit }) => {
         // The inner query picks the page, plus one row that tells whether older revisions
         // remain; only those rows open their snapshot, once each, for the few top-level fields
         // a summary carries. The admitted_spec CHECK constraint guarantees their shape.
-        const found = rows(
-          (
-            await client.query(
-              `SELECT p.id, p.namespace_id, p.agent_id, p.revision_number, p.backend_id,
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT p.id, p.namespace_id, p.agent_id, p.revision_number, p.backend_id,
                       p.admitted_at, s.configuration_id, s.configuration_generation, s.harness
                FROM (
                  SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
@@ -4191,9 +4153,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                CROSS JOIN LATERAL jsonb_to_record(p.admitted_spec)
                  AS s(configuration_id text, configuration_generation bigint, harness jsonb)
                ORDER BY p.revision_number DESC`,
-              [namespaceId, agentId, before ?? null, limit + 1],
-            )
-          ).rows,
+            [namespaceId, agentId, before ?? null, limit + 1],
+          ),
         ).map(revisionSummaryFromRow);
         const page = found.slice(0, limit);
         return Object.freeze({
@@ -4209,6 +4170,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         } catch {
           throw new ScopeViolationError(
             "The AgentRevision execution admission is missing or inconsistent.",
+          );
+        }
+        const repositoryPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+        if (repositoryPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
+          throw new ScopeViolationError(
+            "Repository network policy requires unprotected execution.",
           );
         }
         if (
@@ -4239,17 +4206,15 @@ export class PostgresPlatformState implements PlatformStateStore {
           { secrets, serviceAccounts, credentialSources },
           revision,
           async (ids) =>
-            rows(
-              (
-                await client.query(
-                  `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability, cs.driver_id
+            decodeQueryRows(
+              await client.query(
+                `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability, cs.driver_id
                    FROM occ.credential_sources AS cs
                    JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                    WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
                    ORDER BY cs.id COLLATE "C" FOR SHARE OF cs`,
-                  [revision.namespaceId, ids],
-                )
-              ).rows,
+                [revision.namespaceId, ids],
+              ),
             ).map((row) => ({
               id: text(row, "id"),
               namespaceId: text(row, "namespace_id"),
@@ -4326,7 +4291,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                       protectedExecutionVersion: revision.executionAdmission.version,
                     }
                   : revision.harnessAuth,
-              execution_admission: revision.executionAdmission,
+              execution_admission:
+                repositoryPolicy === undefined
+                  ? revision.executionAdmission
+                  : {
+                      ...revision.executionAdmission,
+                      repositoryNetworkPolicyVersion: 1,
+                    },
               ...(revision.egressPlan === undefined ? {} : { egress_plan: revision.egressPlan }),
               ...(revision.credentialSources === undefined
                 ? {}
@@ -4336,7 +4307,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             firstDeploymentDigest ?? null,
           ],
         );
-        const [stamped] = rows(admitted.rows);
+        const [stamped] = decodeQueryRows(admitted);
         if (stamped === undefined) {
           throw new DependencyUnavailableError("The AgentRevision admission was not recorded.");
         }
@@ -4423,23 +4394,19 @@ export class PostgresPlatformState implements PlatformStateStore {
     const iamPolicy: IAMPolicyRepository = {
       listRoles: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 ORDER BY id",
-                [namespaceId],
-              )
-            ).rows,
+          decodeQueryRows(
+            await client.query(
+              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 ORDER BY id",
+              [namespaceId],
+            ),
           ).map(roleFromRow),
         ),
       getRole: async (namespaceId, roleId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
-              [namespaceId, roleId],
-            )
-          ).rows,
+        const found = decodeQueryRows(
+          await client.query(
+            "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
+            [namespaceId, roleId],
+          ),
         )[0];
         return found === undefined ? undefined : roleFromRow(found);
       },
@@ -4483,16 +4450,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       listAccessBindings: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
+          decodeQueryRows(
+            await client.query(
+              `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
                         resource_kind, resource_id
                  FROM occ.iam_access_bindings
                  WHERE namespace_id = $1 ORDER BY id`,
-                [namespaceId],
-              )
-            ).rows,
+              [namespaceId],
+            ),
           ).map(accessBindingFromRow),
         ),
       // Not Namespace-scoped: the Agent deletion finalizer's DELETE is not either, and an
@@ -4501,28 +4466,24 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze(
           resourceIds.length === 0
             ? []
-            : rows(
-                (
-                  await client.query(
-                    `SELECT id, namespace_id, action, resource_kind, resource_id, effect
+            : decodeQueryRows(
+                await client.query(
+                  `SELECT id, namespace_id, action, resource_kind, resource_id, effect
                      FROM occ.iam_restrictions
                      WHERE resource_kind = $1 AND resource_id = ANY($2::text[]) ORDER BY id`,
-                    [resourceKind, [...resourceIds]],
-                  )
-                ).rows,
+                  [resourceKind, [...resourceIds]],
+                ),
               ).map(restrictionFromRow),
         ),
       getAccessBinding: async (namespaceId, bindingId) => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
                       resource_kind, resource_id
                FROM occ.iam_access_bindings
                WHERE namespace_id = $1 AND id = $2`,
-              [namespaceId, bindingId],
-            )
-          ).rows,
+            [namespaceId, bindingId],
+          ),
         )[0];
         return found === undefined ? undefined : accessBindingFromRow(found);
       },
@@ -4617,31 +4578,25 @@ export class PostgresPlatformState implements PlatformStateStore {
         return deleted.rowCount === 1;
       },
       listConfiguredPolicy: async () => {
-        const roles = rows(
-          (
-            await client.query(
-              `SELECT id, namespace_id, name, permissions FROM occ.iam_roles
+        const roles = decodeQueryRows(
+          await client.query(
+            `SELECT id, namespace_id, name, permissions FROM occ.iam_roles
                WHERE id LIKE $1 ORDER BY id`,
-              [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.role)],
-            )
-          ).rows,
+            [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.role)],
+          ),
         ).map(roleFromRow);
-        const groups = rows(
-          (
-            await client.query(`SELECT id, name FROM occ.iam_groups WHERE id LIKE $1 ORDER BY id`, [
-              prefixPattern(CONFIGURED_IAM_ID_PREFIXES.group),
-            ])
-          ).rows,
+        const groups = decodeQueryRows(
+          await client.query(`SELECT id, name FROM occ.iam_groups WHERE id LIKE $1 ORDER BY id`, [
+            prefixPattern(CONFIGURED_IAM_ID_PREFIXES.group),
+          ]),
         ).map((row) => Object.freeze({ id: text(row, "id"), name: text(row, "name") }));
-        const bindings = rows(
-          (
-            await client.query(
-              `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
+        const bindings = decodeQueryRows(
+          await client.query(
+            `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
                       resource_kind, resource_id
                FROM occ.iam_access_bindings WHERE id LIKE $1 ORDER BY id`,
-              [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.binding)],
-            )
-          ).rows,
+            [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.binding)],
+          ),
         ).map(accessBindingFromRow);
         return Object.freeze({
           roles: Object.freeze(roles),
@@ -4654,13 +4609,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (!isConfiguredRoleId(role.id) || role.namespaceId !== undefined) {
           throw new ScopeViolationError("A configured IAM Role is an Installation Role.");
         }
-        const existing = rows(
-          (
-            await client.query(
-              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE id = $1 FOR UPDATE",
-              [role.id],
-            )
-          ).rows,
+        const existing = decodeQueryRows(
+          await client.query(
+            "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE id = $1 FOR UPDATE",
+            [role.id],
+          ),
         ).map(roleFromRow)[0];
         const permissionsJson = JSON.stringify(role.permissions);
         if (existing === undefined) {
@@ -4693,8 +4646,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         if (references.rowCount !== 0) {
           throw new ResourceConflictError(
-            `The configuration no longer lists IAM Role ${roleId}, but AccessBindings use it: ${rows(
-              references.rows,
+            `The configuration no longer lists IAM Role ${roleId}, but AccessBindings use it: ${decodeQueryRows(
+              references,
             )
               .map((row) => text(row, "id"))
               .join(", ")}. Delete those AccessBindings or list the Role again.`,
@@ -4728,8 +4681,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         if (references.rowCount !== 0) {
           throw new ResourceConflictError(
-            `The configuration no longer lists IAM Group ${groupId}, but AccessBindings use it: ${rows(
-              references.rows,
+            `The configuration no longer lists IAM Group ${groupId}, but AccessBindings use it: ${decodeQueryRows(
+              references,
             )
               .map((row) => text(row, "id"))
               .join(", ")}. Delete those AccessBindings or list the Group again.`,
@@ -4784,27 +4737,23 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       listServicePrincipals: async (namespaceId) =>
         Object.freeze(
-          rows(
-            (
-              await client.query(
-                `SELECT id, namespace_id FROM occ.iam_identities
+          decodeQueryRows(
+            await client.query(
+              `SELECT id, namespace_id FROM occ.iam_identities
                  WHERE kind = 'service_principal' AND namespace_id = $1 AND agent_id IS NULL
                  ORDER BY id`,
-                [namespaceId],
-              )
-            ).rows,
+              [namespaceId],
+            ),
           ).map(servicePrincipalFromRow),
         ),
       getServicePrincipal: async (namespaceId, servicePrincipalId) => {
-        const found = rows(
-          (
-            await client.query(
-              `SELECT id, namespace_id FROM occ.iam_identities
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id, namespace_id FROM occ.iam_identities
                WHERE kind = 'service_principal' AND namespace_id = $1 AND agent_id IS NULL
                  AND id = $2`,
-              [namespaceId, servicePrincipalId],
-            )
-          ).rows,
+            [namespaceId, servicePrincipalId],
+          ),
         )[0];
         return found === undefined ? undefined : servicePrincipalFromRow(found);
       },
@@ -4855,12 +4804,10 @@ export class PostgresPlatformState implements PlatformStateStore {
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {
-          const found = rows(
-            (
-              await client.query("SELECT * FROM occ.agent_provisioning_work WHERE work_id = $1", [
-                workId,
-              ])
-            ).rows,
+          const found = decodeQueryRows(
+            await client.query("SELECT * FROM occ.agent_provisioning_work WHERE work_id = $1", [
+              workId,
+            ]),
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
@@ -4869,10 +4816,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           // job with a queue row from a later commit (a failed queue row, a running job).
           // PostgreSQL judges lease liveness on its own clock, as findWork does; a missing
           // queue row stays null because NULL || jsonb is NULL.
-          const found = rows(
-            (
-              await client.query(
-                `SELECT provisioning.*,
+          const found = decodeQueryRows(
+            await client.query(
+              `SELECT provisioning.*,
                         to_jsonb(work) || jsonb_build_object(
                           'lease_active',
                           work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()
@@ -4881,9 +4827,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                  LEFT JOIN occ.controller_work AS work
                    ON work.idempotency_key = provisioning.work_id
                  WHERE provisioning.work_id = $1`,
-                [workId],
-              )
-            ).rows,
+              [workId],
+            ),
           );
           if (found[0] === undefined) {
             return undefined;
@@ -4930,38 +4875,32 @@ export class PostgresPlatformState implements PlatformStateStore {
           return (found.rowCount ?? 0) > 0;
         },
         findByAgent: async (namespaceId, agentId) => {
-          const found = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+          const found = decodeQueryRows(
+            await client.query(
+              `SELECT * FROM occ.agent_provisioning_work
                  WHERE namespace_id = $1 AND agent_id = $2`,
-                [namespaceId, agentId],
-              )
-            ).rows,
+              [namespaceId, agentId],
+            ),
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
         findByConfiguration: async (namespaceId, configurationId) => {
-          const found = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+          const found = decodeQueryRows(
+            await client.query(
+              `SELECT * FROM occ.agent_provisioning_work
                  WHERE namespace_id = $1 AND configuration_id = $2`,
-                [namespaceId, configurationId],
-              )
-            ).rows,
+              [namespaceId, configurationId],
+            ),
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
         findByRequest: async (namespaceId, actorId, requestId) => {
-          const found = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+          const found = decodeQueryRows(
+            await client.query(
+              `SELECT * FROM occ.agent_provisioning_work
                  WHERE namespace_id = $1 AND actor_id = $2 AND request_id = $3`,
-                [namespaceId, actorId, requestId],
-              )
-            ).rows,
+              [namespaceId, actorId, requestId],
+            ),
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
@@ -4977,10 +4916,9 @@ export class PostgresPlatformState implements PlatformStateStore {
             },
             requestId,
           );
-          const inserted = rows(
-            (
-              await client.query(
-                `INSERT INTO occ.agent_provisioning_work (
+          const inserted = decodeQueryRows(
+            await client.query(
+              `INSERT INTO occ.agent_provisioning_work (
                    work_id, namespace_id, actor_id, request_id, request_fingerprint,
                    status, completed_phase, plan, progress, created_at, updated_at
                  )
@@ -4998,16 +4936,15 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND work.agent_target IS NULL
                  ON CONFLICT (namespace_id, actor_id, request_id) DO NOTHING
                  RETURNING *`,
-                [
-                  record.workId,
-                  record.namespaceId,
-                  record.requestId,
-                  record.requestFingerprint,
-                  JSON.stringify(record.plan),
-                  record.actorId,
-                ],
-              )
-            ).rows,
+              [
+                record.workId,
+                record.namespaceId,
+                record.requestId,
+                record.requestFingerprint,
+                JSON.stringify(record.plan),
+                record.actorId,
+              ],
+            ),
           );
           if (inserted[0] !== undefined) {
             return Object.freeze({
@@ -5036,10 +4973,9 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ResourceConflictError("The Agent provisioning record is unavailable.");
           }
           const progress = beginProvisioningEffectProgress(current, effect);
-          const updated = rows(
-            (
-              await client.query(
-                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
+          const updated = decodeQueryRows(
+            await client.query(
+              `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET status = 'running',
                        -- The database clock stamps the effect, so a later attempt on any
@@ -5059,9 +4995,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    RETURNING provisioning.*
                  )
                  SELECT * FROM updated_provisioning`,
-                [claim.idempotencyKey, claim.claimToken, JSON.stringify(progress)],
-              )
-            ).rows,
+              [claim.idempotencyKey, claim.claimToken, JSON.stringify(progress)],
+            ),
           );
           if (updated[0] === undefined) {
             throw new WorkClaimLostError();
@@ -5099,10 +5034,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               "Terminal Agent provisioning work cannot be checkpointed.",
             );
           }
-          const updated = rows(
-            (
-              await client.query(
-                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
+          const updated = decodeQueryRows(
+            await client.query(
+              `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET completed_phase = $3::text,
                        status = COALESCE($4::text, provisioning.status),
@@ -5147,19 +5081,18 @@ export class PostgresPlatformState implements PlatformStateStore {
                    WHERE work.audit_attempt_id IS NOT NULL
                  )
                  SELECT * FROM updated_provisioning`,
-                [
-                  claim.idempotencyKey,
-                  claim.claimToken,
-                  next.completedPhase,
-                  next.status ?? null,
-                  next.agentId ?? null,
-                  next.configurationId ?? null,
-                  next.revisionId ?? null,
-                  next.progress === undefined ? null : JSON.stringify(next.progress),
-                  JSON.stringify(current.progress),
-                ],
-              )
-            ).rows,
+              [
+                claim.idempotencyKey,
+                claim.claimToken,
+                next.completedPhase,
+                next.status ?? null,
+                next.agentId ?? null,
+                next.configurationId ?? null,
+                next.revisionId ?? null,
+                next.progress === undefined ? null : JSON.stringify(next.progress),
+                JSON.stringify(current.progress),
+              ],
+            ),
           );
           if (updated[0] === undefined) {
             throw new WorkClaimLostError();
@@ -5196,10 +5129,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           // cleanup. Take it before the work row: stopping or deleting the provisioned Agent
           // locks the Namespace, then the Agent, then this work row (cancelByAgent).
           await namespaces.lockNamespace(current.namespaceId, { includeDeleted: true });
-          const checkpointed = rows(
-            (
-              await client.query(
-                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
+          const checkpointed = decodeQueryRows(
+            await client.query(
+              `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 	                   SET completed_phase = $3::text,
 	                       status = CASE
@@ -5222,21 +5154,20 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                   RETURNING provisioning.*
 	                 )
 	                 SELECT * FROM updated_provisioning`,
-                [
-                  claim.idempotencyKey,
-                  claim.claimToken,
-                  next.completedPhase,
-                  next.agentId ?? null,
-                  next.configurationId ?? null,
-                  next.revisionId ?? null,
-                  next.progress === undefined ? null : JSON.stringify(next.progress),
-                  failed.code,
-                  failed.message,
-                  failed.disposition,
-                  JSON.stringify(current.progress),
-                ],
-              )
-            ).rows,
+              [
+                claim.idempotencyKey,
+                claim.claimToken,
+                next.completedPhase,
+                next.agentId ?? null,
+                next.configurationId ?? null,
+                next.revisionId ?? null,
+                next.progress === undefined ? null : JSON.stringify(next.progress),
+                failed.code,
+                failed.message,
+                failed.disposition,
+                JSON.stringify(current.progress),
+              ],
+            ),
           );
           if (checkpointed[0] === undefined) {
             throw new WorkClaimLostError();
@@ -5259,14 +5190,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           if (work?.state !== "failed_permanent") {
             return provisioningRecordFromRow(checkpointed[0]);
           }
-          const terminal = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+          const terminal = decodeQueryRows(
+            await client.query(
+              `SELECT * FROM occ.agent_provisioning_work
                  WHERE work_id = $1 AND status = 'failed'`,
-                [claim.idempotencyKey],
-              )
-            ).rows,
+              [claim.idempotencyKey],
+            ),
           );
           if (terminal[0] === undefined) {
             throw new ResourceConflictError(
@@ -5278,10 +5207,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         settleEffect: async (workId: string, input: AgentProvisioningEffectSettlement) => {
           const settlement = validateProvisioningEffectSettlement(input);
           const receiptJson = JSON.stringify(settlement);
-          const settled = rows(
-            (
-              await client.query(
-                `WITH matched AS MATERIALIZED (
+          const settled = decodeQueryRows(
+            await client.query(
+              `WITH matched AS MATERIALIZED (
                    SELECT provisioning.*
                    FROM occ.agent_provisioning_work AS provisioning
                    WHERE provisioning.work_id = $1
@@ -5303,9 +5231,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    RETURNING provisioning.*
                  )
                  SELECT * FROM updated_provisioning`,
-                [workId, settlement.kind, settlement.owner, settlement.targetId, receiptJson],
-              )
-            ).rows,
+              [workId, settlement.kind, settlement.owner, settlement.targetId, receiptJson],
+            ),
           );
           if (settled[0] === undefined) {
             throw new ResourceConflictError(
@@ -5322,10 +5249,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               "Agent provisioning cancellation requires a safe reason.",
             );
           }
-          const cancelled = rows(
-            (
-              await client.query(
-                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
+          const cancelled = decodeQueryRows(
+            await client.query(
+              `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 		                   SET status = 'cancelled',
 		                       progress = provisioning.progress || jsonb_build_object(
@@ -5350,9 +5276,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    RETURNING work.idempotency_key
                  )
                  SELECT * FROM updated_provisioning`,
-                [claim.idempotencyKey, claim.claimToken, code, message],
-              )
-            ).rows,
+              [claim.idempotencyKey, claim.claimToken, code, message],
+            ),
           );
           if (cancelled[0] === undefined) {
             throw new WorkClaimLostError();
@@ -5367,10 +5292,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               "Agent provisioning cancellation requires a safe reason.",
             );
           }
-          const cancelled = rows(
-            (
-              await client.query(
-                `WITH owner AS MATERIALIZED (
+          const cancelled = decodeQueryRows(
+            await client.query(
+              `WITH owner AS MATERIALIZED (
                    SELECT work.*
                    FROM occ.controller_work AS work
                    JOIN occ.agent_provisioning_work AS provisioning
@@ -5421,9 +5345,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                      THEN 'aud_' || owner.audit_attempt_id::text END AS attempt_id
                  )
                  SELECT idempotency_key, attempt_id FROM completed_work`,
-                [namespaceId, agentId, code, message],
-              )
-            ).rows,
+              [namespaceId, agentId, code, message],
+            ),
           );
           if (cancelled[0] === undefined) {
             return undefined;
@@ -5440,10 +5363,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           // pending effect is recorded as settled, as Agent deletion does (a request already sent
           // may still land; the write creates only absent Secrets). A receipt that already
           // exists, or malformed evidence, matches nothing and stays fail-closed.
-          const settled = rows(
-            (
-              await client.query(
-                `WITH matched AS MATERIALIZED (
+          const settled = decodeQueryRows(
+            await client.query(
+              `WITH matched AS MATERIALIZED (
                    SELECT provisioning.work_id,
                           provisioning.progress -> 'pendingEffect' ->> 'owner' AS owner
                    FROM occ.agent_provisioning_work AS provisioning
@@ -5472,17 +5394,15 @@ export class PostgresPlatformState implements PlatformStateStore {
                  FROM matched
                  WHERE provisioning.work_id = matched.work_id
                  RETURNING provisioning.*`,
-                [namespaceId, agentId],
-              )
-            ).rows,
+              [namespaceId, agentId],
+            ),
           );
           return settled[0] === undefined ? undefined : provisioningRecordFromRow(settled[0]);
         },
         retryByWorkId: async (namespaceId, workId, actorId) => {
-          const retried = rows(
-            (
-              await client.query(
-                `WITH owner AS MATERIALIZED (
+          const retried = decodeQueryRows(
+            await client.query(
+              `WITH owner AS MATERIALIZED (
                    SELECT work.*
                    FROM occ.controller_work AS work
                    JOIN occ.agent_provisioning_work AS provisioning
@@ -5525,9 +5445,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    RETURNING work.idempotency_key
                  )
                  SELECT * FROM updated_provisioning`,
-                [namespaceId, workId, actorId],
-              )
-            ).rows,
+              [namespaceId, workId, actorId],
+            ),
           );
           if (retried[0] === undefined) {
             throw new ResourceConflictError("The Agent provisioning work is not retryable.");
@@ -5613,14 +5532,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           if (installation === undefined) {
             return Object.freeze([]);
           }
-          const found = rows(
-            (
-              await client.query(
-                `SELECT id, occurred_at, kind, actor_id, action, namespace_id, resource_kind,
+          const found = decodeQueryRows(
+            await client.query(
+              `SELECT id, occurred_at, kind, actor_id, action, namespace_id, resource_kind,
                         resource_id, outcome, details
                  FROM occ.audit_events ORDER BY occurred_at, id`,
-              )
-            ).rows,
+            ),
           );
           return Object.freeze(found.map((row) => auditFromRow(row, installation.id)));
         },
@@ -5649,13 +5566,11 @@ export class PostgresPlatformState implements PlatformStateStore {
             namespaceTarget = operation.target;
           } else if (operation.kind === "agent_revision") {
             revisionId = operation.resourceId;
-            const owner = rows(
-              (
-                await client.query(
-                  "SELECT agent_id FROM occ.agent_revisions WHERE namespace_id = $1 AND id = $2",
-                  [namespaceId, revisionId],
-                )
-              ).rows,
+            const owner = decodeQueryRows(
+              await client.query(
+                "SELECT agent_id FROM occ.agent_revisions WHERE namespace_id = $1 AND id = $2",
+                [namespaceId, revisionId],
+              ),
             )[0];
             if (owner === undefined) {
               throw new ScopeViolationError("AgentRevision work does not match its exact owner.");
@@ -5667,13 +5582,11 @@ export class PostgresPlatformState implements PlatformStateStore {
             if (namespaceId === operation.resourceId) {
               throw new ScopeViolationError("Agent work must name its exact Agent.");
             }
-            const owner = rows(
-              (
-                await client.query(
-                  "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
-                  [namespaceId, operation.resourceId],
-                )
-              ).rows,
+            const owner = decodeQueryRows(
+              await client.query("SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2", [
+                namespaceId,
+                operation.resourceId,
+              ]),
             )[0];
             if (owner === undefined) {
               throw new ScopeViolationError("Agent work does not match its exact owner.");
@@ -5710,10 +5623,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         list: async () => {
           await this.requireInitialized(context);
           // CASE skips revision-specific regex compilation for ordinary lifecycle work.
-          const found = rows(
-            (
-              await client.query(
-                `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+          const found = decodeQueryRows(
+            await client.query(
+              `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id,
                         namespace_target, agent_target
                  FROM occ.controller_work
                  WHERE work_kind = 'lifecycle'
@@ -5722,8 +5634,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                      ELSE NOT ${repositoryCleanupSql("controller_work")}
                    END
                  ORDER BY created_at, idempotency_key`,
-              )
-            ).rows,
+            ),
           );
           return Object.freeze(
             found.map((row): Readonly<PlatformOperation> => {

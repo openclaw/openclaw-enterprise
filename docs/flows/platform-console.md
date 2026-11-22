@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-22
-last_updated_session: authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b
+last_updated_session: authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e
 ---
 
 # Platform console request flow
@@ -138,6 +138,8 @@ Disabling Debug mode stops new reads. See the
 
 `agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
 Interactive targets, modified clicks, and selected text retain behavior.
+Arrow keys from search visit visible name links. Enter in search follows the
+same link when a nonempty query leaves one row.
 
 `loadPage` reads `GET /api/auth/session`. Opening an Agent shows **Loading agent
 details…** and **Back to Agents**. Back cancels once. Refocus waits. Other Agent
@@ -202,6 +204,11 @@ names come from the readable Agent list. Known references disable Delete; the
 server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
 until the page shows it. Create and replacement wait for Namespace readiness.
 Mutations use the tracked request client and Secret API, never a Driver.
+
+`console.mts:loadPage` restores a retained Secrets query after a changed recheck or
+history return for the same session and Namespace. `secrets.mts:renderSecrets` filters
+freshly authorized rows. On refocus, `focusInShownView` restores the search selection
+or focused result by Secret ID, falling back to search. **Refresh** clears the query.
 
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
 and clears it after the request, dismissal, or view retention
@@ -374,6 +381,10 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 11:17: Trace Secrets search restoration. (authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e - b4bf1f79813c391977b4f58eb92e5241a8eaa8b8)
+
+- 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
 
 - 2026-11-22 02:59: Refresh the active Sandbox observation on Agent refocus. (authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b - 72a9006ec8c4b7a6e40947d75938f1518c7da364)
 - 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
