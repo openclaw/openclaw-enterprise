@@ -2598,6 +2598,12 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 // A setup token (sk-ant-oat...) is a bearer, as OpenClaw's own client sends it; anything
 // else is an API key. The binary must be the image's pinned version: a missing or
 // different one also holds the Gateway with UNAVAILABLE, before any turn could reach it.
+// The image installs it outside PATH (CLAUDE_CODE_BINARY_DIRECTORY), and only this check
+// adds that directory to the Gateway's PATH. OpenClaw spawns the backend by command name
+// whenever a turn resolves to it, also on routes the Configuration does not name (a chat
+// user's /model --runtime claude-cli, a session's runtime override, an auth profile of the
+// claude-cli provider), and none of those get these settings. In any other Gateway the
+// spawn finds no binary and the turn fails.
 // The managed env outranks the spawned environment. It always turns off updates and
 // feedback prompts, bounds Claude Code's own API retries, and points every model slot Claude Code fills by itself (aliases, the
 // small/fast and subagent models, classifiers) at the primary model, so it calls only the
@@ -2607,6 +2613,8 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 // disables managed hooks. The names are those the pinned binary reads; check them again
 // when the pin changes.
 export const CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY = "/etc/claude-code";
+// deploy/runtime/Dockerfile installs the pinned binary here, a directory not on the image PATH.
+export const CLAUDE_CODE_BINARY_DIRECTORY = "/opt/oce/claude-code/bin";
 // The init container's mount of the settings volume; the Gateway mounts its subPaths.
 export const CLAUDE_CODE_SETTINGS_INIT_ROOT = "/run/oce/claude-code-settings";
 export const CLAUDE_CODE_SETTINGS_SUBPATH = "managed";
@@ -2624,6 +2632,7 @@ export const CLAUDE_CODE_CONFIG_SUBPATH = "config";
 export const CLAUDE_CODE_TRANSCRIPT_DIRECTORY = "projects";
 export const CLAUDE_CODE_RUNTIME_HELPERS = String.raw`
 const CLAUDE_CODE_AGENT_RUNTIME = "claude-cli";
+const CLAUDE_CODE_BINARY_DIRECTORY = ${JSON.stringify(CLAUDE_CODE_BINARY_DIRECTORY)};
 const CLAUDE_CODE_DEFAULT_BASE_URL = "https://api.anthropic.com";
 const CLAUDE_CODE_MANAGED_SETTINGS_FILE = "managed-settings.json";
 const CLAUDE_CODE_SETTINGS_HARDENING = Object.freeze({
@@ -2835,7 +2844,8 @@ const CLAUDE_CODE_STORE_OVERRIDES = Object.freeze([
 // Returns undefined once the managed settings and the configuration directory are sealed
 // and the settings are exactly the admitted ones, else a code from the runtime failure
 // vocabulary. Never the credential, a path, or native output. It writes nothing on disk.
-// On success it points Claude Code's stores at the sealed directories for every turn:
+// On success it adds CLAUDE_CODE_BINARY_DIRECTORY to PATH and points Claude Code's stores
+// at the sealed directories for every turn:
 // CLAUDE_CONFIG_DIR at the configuration directory, and ANTHROPIC_CONFIG_DIR (the
 // Anthropic profile store, whose configs/ and credentials/ can sign a session in and
 // otherwise default under the writable HOME) at the managed directory, which holds
@@ -2850,15 +2860,17 @@ function verifyClaudeCodeRuntime(fs, spawnSync, managedDirectory, configDirector
   if (!claudeCodeConfigSealed(fs, configDirectory)) return "UNAVAILABLE";
   for (const name of CLAUDE_CODE_STORE_OVERRIDES) delete process.env[name];
   const stores = { CLAUDE_CONFIG_DIR: configDirectory, ANTHROPIC_CONFIG_DIR: managedDirectory };
+  // Only this Gateway can find the binary: the image keeps it off PATH.
+  const path = process.env.PATH ? CLAUDE_CODE_BINARY_DIRECTORY + ":" + process.env.PATH : CLAUDE_CODE_BINARY_DIRECTORY;
   const version = spawnSync("claude", ["--version"], {
     env: {
-      PATH: process.env.PATH, HOME: home, ...stores,
+      PATH: path, HOME: home, ...stores,
       ...CLAUDE_CODE_SETTINGS_HARDENING, ...CLAUDE_CODE_TELEMETRY_DENIAL,
     },
     encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL", maxBuffer: 4096,
   });
   if (version.error || version.status !== 0 || version.stdout.trim() !== expectedVersion + " (Claude Code)") return "UNAVAILABLE";
-  Object.assign(process.env, stores);
+  Object.assign(process.env, stores, { PATH: path });
   return undefined;
 }
 `;

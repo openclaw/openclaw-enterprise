@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import {
+  CLAUDE_CODE_BINARY_DIRECTORY,
   CLAUDE_CODE_CONFIG_DIRECTORY,
   CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
   CLAUDE_CODE_RUNTIME_HELPERS,
@@ -12,6 +13,9 @@ import { gatewayStateVolume } from "../helpers/runtime-image-startup.ts";
 
 // Claude Code, the embedded Gateway's agent runtime for the claude-cli model policy, is the
 // image's pinned native binary; the Gateway entrypoint refuses any other version at startup.
+// The binary is off the image PATH: OpenClaw spawns its claude-cli backend by command name on
+// routes no Configuration names (a chat user's runtime override, an auth profile), so only the
+// selecting Gateway, whose startup check adds its directory to PATH, may find it.
 // Claude Code's admin-managed settings directory is an empty root-owned mount point; Compute
 // mounts the Gateway's settings there read-only.
 const binaryProbe = String.raw`
@@ -19,7 +23,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
 assert.equal(process.env.OCE_CLAUDE_CODE_VERSION, "2.1.304");
-assert.equal(fs.realpathSync(execFileSync("sh", ["-c", "command -v claude"], {encoding: "utf8"}).trim()), "/usr/local/bin/claude");
+assert.throws(() => execFileSync("sh", ["-c", "command -v claude"], {encoding: "utf8"}));
+const binary = ${JSON.stringify(`${CLAUDE_CODE_BINARY_DIRECTORY}/claude`)};
+const installed = fs.lstatSync(binary);
+assert.equal(installed.isFile(), true);
+assert.equal(installed.uid, 0);
+assert.equal(installed.mode & 0o777, 0o755);
 const managed = fs.lstatSync("/etc/claude-code");
 assert.equal(managed.isDirectory(), true);
 assert.equal(managed.uid, 0);
@@ -27,7 +36,7 @@ assert.equal(managed.mode & 0o777, 0o755);
 assert.deepEqual(fs.readdirSync("/etc/claude-code"), []);
 const claudeConfig = fs.mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "oce-claude-"));
 assert.equal(
-  execFileSync("claude", ["--version"], {encoding: "utf8", env: {...process.env, CLAUDE_CONFIG_DIR: claudeConfig, DISABLE_AUTOUPDATER: "1"}}).trim(),
+  execFileSync(binary, ["--version"], {encoding: "utf8", env: {...process.env, CLAUDE_CONFIG_DIR: claudeConfig, DISABLE_AUTOUPDATER: "1"}}).trim(),
   "2.1.304 (Claude Code)",
 );
 fs.rmSync(claudeConfig, {recursive: true, force: true});
@@ -169,6 +178,7 @@ baseUrl: settings.env?.ANTHROPIC_BASE_URL,
 telemetry: settings.env?.DISABLE_TELEMETRY,
 configDir: process.env.CLAUDE_CONFIG_DIR ?? null,
 profileDir: process.env.ANTHROPIC_CONFIG_DIR ?? null,
+binary: spawnSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).stdout.trim() || null,
 configRefused,
 configEntries: fs.readdirSync(config).sort(),
 configMode: (fs.statSync(config).mode & 0o777).toString(8),
@@ -200,6 +210,8 @@ transcripts: fs.readdirSync(config + "/projects/-workspace"),
     telemetry: "1",
     configDir: "/home/node/.claude",
     profileDir: "/etc/claude-code",
+    // Only the passed check puts the image's binary on this Gateway's PATH.
+    binary: `${CLAUDE_CODE_BINARY_DIRECTORY}/claude`,
     // No cache or credential file can be planted in the configuration directory, the
     // transcript mount cannot be swapped out, and the directory cannot be moved aside.
     configRefused: {
@@ -224,6 +236,7 @@ transcripts: fs.readdirSync(config + "/projects/-workspace"),
   assert.equal(writable.refused.shell, "written");
   assert.equal(writable.failure, "UNAVAILABLE");
   assert.equal(writable.configDir, null);
+  assert.equal(writable.binary, null);
   // A writable configuration directory: the planted cache and sign-in land, and the
   // Gateway holds Claude Code unready even though the managed settings are sealed.
   const writableConfig = JSON.parse((await gateway(true, false)).stdout);

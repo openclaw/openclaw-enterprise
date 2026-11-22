@@ -104,7 +104,10 @@ process in the gateway container can change either directory:
   variables that would move a credential or settings store elsewhere, such as
   `CLAUDE_SECURESTORAGE_CONFIG_DIR` and `ANTHROPIC_PROFILE`.
 
-A binary missing from the image or not at the pinned
+The image installs the binary at `/opt/oce/claude-code/bin/claude`, outside
+`PATH`, and only this check adds that directory to the gateway's `PATH`. Other
+Agents' gateways therefore cannot start Claude Code, also not through a chat
+command such as `/model --runtime claude-cli`. A binary missing from the image or not at the pinned
 `OCE_CLAUDE_CODE_VERSION` also holds the gateway with `UNAVAILABLE`. Both checks
 are logged as startup phase `claude-code-runtime`. Model egress rules are unchanged:
 the endpoint must be reachable on public TCP/443.

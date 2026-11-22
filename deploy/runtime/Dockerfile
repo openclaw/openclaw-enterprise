@@ -459,7 +459,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
 # selects the claude-cli model policy (OpenClaw's bundled Anthropic plugin spawns
 # it). The npm package only wraps a per-platform native binary behind a
 # postinstall, so the platform package is fetched directly, checked against its
-# pinned SHA-256, and only its binary is installed. The version check uses a
+# pinned SHA-256, and only its binary is installed, outside PATH: only the
+# Gateway of an Agent that selects it adds /opt/oce/claude-code/bin to PATH, so
+# no other Agent's OpenClaw can spawn it. The version check uses a
 # throwaway configuration directory, as the gh check does. Claude Code reads its
 # admin-managed settings from /etc/claude-code even when OpenClaw selects no setting
 # sources. The image leaves it an empty root-owned directory; Compute mounts the
@@ -478,11 +480,13 @@ RUN --mount=type=secret,id=build-ca,required=false \
     cd /tmp; \
     bash /tmp/download-pinned.sh "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-${platform}/-/claude-code-linux-${platform}-${OCE_CLAUDE_CODE_VERSION}.tgz" /tmp/claude-code.tgz "${checksum}"; \
     tar -xzf claude-code.tgz package/claude; \
-    install -m 0755 package/claude /usr/local/bin/claude; \
+    install -d -m 0755 /opt/oce/claude-code/bin; \
+    install -m 0755 package/claude /opt/oce/claude-code/bin/claude; \
     install -d -m 0755 /etc/claude-code; \
     rm -rf claude-code.tgz package; \
     claude_config="$(mktemp -d)"; \
-    test "$(CLAUDE_CONFIG_DIR="$claude_config" DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version)" = "${OCE_CLAUDE_CODE_VERSION} (Claude Code)"; \
+    test "$(CLAUDE_CONFIG_DIR="$claude_config" DISABLE_AUTOUPDATER=1 /opt/oce/claude-code/bin/claude --version)" = "${OCE_CLAUDE_CODE_VERSION} (Claude Code)"; \
+    if command -v claude; then exit 1; fi; \
     rm -rf "$claude_config"
 
 COPY apps/controller/plugins/oce-google-workspace/skills/ /usr/local/lib/oce/plugins/google/skills/

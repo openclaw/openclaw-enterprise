@@ -21,6 +21,7 @@ import {
   agentRuntimeTelemetryEnabled,
 } from "../../packages/occ/src/gateway-security-defaults.ts";
 import {
+  CLAUDE_CODE_BINARY_DIRECTORY,
   CLAUDE_CODE_CONFIG_DIRECTORY,
   CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
   CLAUDE_CODE_RUNTIME_HELPERS,
@@ -304,6 +305,10 @@ test("an API key and the default endpoint produce hardened managed settings on a
   // The recorder's arrays come from the script's realm, so compare their contents.
   assert.deepEqual([...calls[0].args], ["--version"]);
   assert.equal(calls[0].command, "claude");
+  // The image keeps the binary off PATH: only a Gateway that passed this check finds it,
+  // so no route into OpenClaw's claude-cli backend spawns it anywhere else.
+  assert.equal(calls[0].env.PATH, `${CLAUDE_CODE_BINARY_DIRECTORY}:/usr/local/bin:/usr/bin`);
+  assert.equal(env.PATH, `${CLAUDE_CODE_BINARY_DIRECTORY}:/usr/local/bin:/usr/bin`);
   assert.equal(calls[0].env.CLAUDE_CONFIG_DIR, written.config);
   assert.equal(calls[0].env.ANTHROPIC_CONFIG_DIR, written.directory);
   for (const [name, value] of Object.entries({ ...ALWAYS, ...TELEMETRY_DENIAL })) {
@@ -409,6 +414,8 @@ test("a binary that is missing or not the pinned version holds the Gateway", (t)
     const { failure, env } = prepare(t, { env: selectedEnvironment, ...options });
     assert.equal(failure, "UNAVAILABLE", name);
     assert.equal(env.CLAUDE_CONFIG_DIR, undefined, name);
+    // A held Gateway never puts the binary on PATH.
+    assert.equal(env.PATH, "/usr/local/bin:/usr/bin", name);
   }
 });
 
