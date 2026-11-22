@@ -1485,12 +1485,21 @@ function denyNodeClaudeCodeRuns(
     throw new GatewaySettingFailure("gateway.nodes.commands", "must be an object");
   }
   const deny = commands?.deny;
-  if (deny !== undefined && !(Array.isArray(deny) && deny.every((name) => typeof name === "string"))) {
-    throw new GatewaySettingFailure("gateway.nodes.commands.deny", "must be a list of command names");
+  if (
+    deny !== undefined &&
+    !(Array.isArray(deny) && deny.every((name) => typeof name === "string"))
+  ) {
+    throw new GatewaySettingFailure(
+      "gateway.nodes.commands.deny",
+      "must be a list of command names",
+    );
   }
   return {
     ...nodes,
-    commands: { ...commands, deny: [...new Set([...((deny as string[] | undefined) ?? []), NODE_CLAUDE_CODE_RUN_COMMAND])] },
+    commands: {
+      ...commands,
+      deny: [...new Set([...((deny as string[] | undefined) ?? []), NODE_CLAUDE_CODE_RUN_COMMAND])],
+    },
   } as OpenClawConfigurationValue;
 }
 
