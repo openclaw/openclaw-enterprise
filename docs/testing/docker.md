@@ -230,8 +230,10 @@ its immutable grant: incompatible narrowing or binding changes must remain block
 until the automation is deleted and its grant is retired. See
 [grant retirement](../reference/agent-automations.md#policy-changes-and-retained-grants).
 
-Genuine HTTPS MCP qualification remains pending. Historical model-only results
-and the earlier ordinary stdio smoke do not qualify this scenario. Record the
+Genuine HTTPS MCP qualification remains incomplete. Report embedded execution
+and dedicated model-only/refusal outcomes separately. Dedicated Codex refuses
+nonempty MCP grants; refusal does not satisfy MCP parity acceptance. Historical
+model-only results and the earlier ordinary stdio smoke do not qualify this scenario. Record the
 final tested source, image digests, both Harness outcomes, collector evidence and
 cleanup. Pod metadata or a guard label alone does not prove that the broker's
 connection reached that runtime instance; destination verification also remains

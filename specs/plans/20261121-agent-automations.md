@@ -21,6 +21,11 @@ CSRF, native normalization, deletion and history, revision checks and
 `UNKNOWN_OUTCOME`. Clients cannot select tools. No eligible operations yields
 an explicit empty cap. Managed MCP Sandbox, stdio and Codex apps are outside scope.
 
+The implementation may qualify embedded OpenClaw MCP grants. Dedicated Codex
+refuses nonempty grants with `AUTOMATIONS_UNQUALIFIED`, without silently falling
+back to `[]`; qualified model-only scheduling remains available. This limit does
+not complete the accepted both-Harness MCP scope.
+
 **Qualification is incomplete.** The historical checkpoints below establish broker
 behavior and empty-cap results on their named revisions. They do not qualify the
 approved MCP path. Keep the implementation publication and merge hold until
@@ -261,6 +266,8 @@ Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4 for the new qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22: Record dedicated MCP refusal without changing both-Harness acceptance (01a1fc52-9d88-7223-b8a1-3c98595d3fbe; uncommitted above 269ecf6b).
 
 - 2026-11-22: Track the submitted anonymous HTTPS MCP and guarded-launcher requirements. Both packaged Harnesses still require qualification.
 

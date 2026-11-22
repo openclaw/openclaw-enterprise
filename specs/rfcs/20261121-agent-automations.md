@@ -295,8 +295,10 @@ Retire the job or deny at the service to withdraw a running grant.
 
 ## Delivery status
 
-The broker is partially implemented. Tool-bearing scheduling stays gated until
-the relevant Driver and packaged Harness satisfy the criteria above. The
-[implementation plan](../plans/20261121-agent-automations.md) records delivery
-evidence. RFC submission permits implementation of the proposed Driver contract.
-Production qualification remains outstanding.
+The broker is partially implemented. Embedded OpenClaw may qualify finite,
+attested anonymous HTTPS MCP grants. Dedicated Codex refuses nonempty grants with
+`AUTOMATIONS_UNQUALIFIED`, without an empty-cap fallback; qualified model-only
+scheduling remains available. This does not complete both-Harness acceptance. The
+[implementation plan](../plans/20261121-agent-automations.md) records evidence and
+remaining qualification. The accepted decision and production qualification
+requirements remain unchanged.

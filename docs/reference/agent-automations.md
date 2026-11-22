@@ -21,9 +21,11 @@ A raw native filter is not an authorization grant. Eligible operations must have
 - The same endpoint, workload credential identity, permitted provider actions and
   standing approval as ordinary unattended Agent execution.
 
-The Kubernetes pilot supports explicitly trusted anonymous HTTPS MCP endpoints
-for embedded OpenClaw and dedicated Codex. Stdio and general credential-bearing
-MCP are not qualified. An
+The Kubernetes pilot may qualify explicitly trusted anonymous HTTPS MCP endpoints
+for embedded OpenClaw. Dedicated Codex refuses nonempty MCP grants with
+`503 AUTOMATIONS_UNQUALIFIED`; it does not silently downgrade them to `[]`.
+Qualified model-only scheduling remains available. Stdio and general
+credential-bearing MCP are not qualified. An
 Installation administrator supplies the exact endpoint attestation through
 [`automations.trustedAnonymousMcpEndpoints`](drivers/kubernetes-compute.md#automation-mcp-endpoints).
 This is an operator trust decision, not permission inferred from an Agent's raw filter.
@@ -34,11 +36,9 @@ credentials or approval decisions. A tool that needs interactive approval or
 requester-specific authority is ineligible. Approval of a tool does not approve
 every action its arguments can request.
 
-Approval settings belong to their runtime owner. The dedicated Codex pilot
-requires the MCP server's `codex.defaultToolsApprovalMode: "approve"` for native
-unattended approval. An OpenClaw MCP approval filter is a different control;
-interactive approval cannot qualify. Neither setting grants additional operations
-or provider actions. The [Plugin Driver's app approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
+Approval settings belong to their runtime owner. Interactive approval cannot
+qualify. A server's `codex.defaultToolsApprovalMode: "approve"` does not qualify
+dedicated scheduling or grant additional operations or provider actions. The [Plugin Driver's app approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
 is a separate contract, outside this pilot.
 
 For a nonempty MCP grant, Code Mode and tool search must already be off. OCC
@@ -58,6 +58,17 @@ An empty MCP `toolFilter.include` can mean **all tools**. It is not an empty gra
 or a revocation operation. When no operations remain, the supported policy
 lifecycle must disable or omit the server; never replace its include list with
 `[]` to restrict it.
+
+For nonempty grants, `tools` supports only `profile`, `allow`, `alsoAllow`, `deny`,
+`codeMode`, `toolSearch` and `gatewayPolicy`. Profiles are `minimal`, `coding`,
+`messaging` or `full`. `gatewayPolicy` permits `allow`, per-tool `actions` and
+`automations` (`scope: "caller"`, boolean `allowCommandJobs`). Enabled HTTPS servers
+permit `enabled`, `url`, `transport`, `connectionTimeoutMs`, `requestTimeoutMs`,
+`supportsParallelToolCalls`, `sslVerify`, `toolFilter` and `codex`. Timeouts must be
+finite nonnegative numbers; `supportsParallelToolCalls` must be boolean and TLS
+verification cannot be disabled. The `codex` object accepts only
+`defaultToolsApprovalMode: "approve"`. Plugin entries support only boolean `enabled`.
+Unsupported extra settings in these controls refuse qualification.
 
 The nonempty-grant pilot also requires immutable runtime image references and a
 restricted native plugin namespace. Channel entries, selected managed/native

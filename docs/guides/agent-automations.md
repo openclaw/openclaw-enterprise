@@ -16,9 +16,10 @@ endpoint, Agent-shared credential identity, provider actions and standing approv
 The operation must already work unattended under that Agent's authority. A raw
 include filter or a successful call with your personal account is insufficient.
 
-The current pilot covers Installation-attested anonymous HTTPS endpoints for
-embedded OpenClaw and dedicated Codex. Stdio, general credentialed MCP, managed
-MCP and native apps are not qualified. Ask the
+Use embedded OpenClaw for Installation-attested anonymous HTTPS MCP. Dedicated
+Codex refuses nonempty grants with `AUTOMATIONS_UNQUALIFIED`, without a model-only
+fallback; qualified model-only scheduling remains available. Stdio, general
+credentialed MCP, managed MCP and native apps are not qualified. Ask the
 Installation administrator to verify the [exact endpoint attestation](../reference/drivers/kubernetes-compute.md#automation-mcp-endpoints).
 
 A nonempty grant requires Code Mode and tool search to be off before admission.

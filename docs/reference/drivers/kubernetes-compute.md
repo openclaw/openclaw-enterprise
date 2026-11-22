@@ -217,10 +217,10 @@ See [authentication](kubernetes-compute/configuration.md#authentication) and
 
 ### Automation MCP endpoints
 
-Set `drivers.compute.configuration.automations.trustedAnonymousMcpEndpoints` to
-attest anonymous Agent-shared HTTPS authority for the
-[static MCP automation pilot](../agent-automations.md). Both exclude
-stdio and credentialed MCP. Omission admits none.
+`drivers.compute.configuration.automations.trustedAnonymousMcpEndpoints` attests
+anonymous Agent-shared HTTPS authority for [embedded MCP automations](../agent-automations.md).
+Dedicated Codex refuses nonempty grants. Stdio, credentialed MCP and unattested
+endpoints are unqualified.
 
 ```yaml
 automations:
@@ -233,7 +233,7 @@ Supply up to 64 records. Each `url` must be unique, normalized HTTPS without
 credentials, query, fragment or wildcard. Each `egressCidrs` needs 1–64
 unique translated destination addresses: IPv4 `/32` or IPv6 `/128`, not subnets.
 Compute permits TCP to those addresses on the URL's port (default 443) for the
-qualified revision's Gateway and dedicated Agent. Replace the example IP.
+qualified embedded revision's Gateway. Replace the example IP.
 
 Optional `caBundle` supplies public PEM CA trust; all bundles together must fit
 65,536 bytes. Never include private keys. Compute projects trust and verifies deployed endpoint

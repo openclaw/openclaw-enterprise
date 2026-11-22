@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: "2026-11-22"
-last_updated_session: "authoring-run/223f5559-e996-40af-96b1-5591de73ca57"
+last_updated_session: "01a1fc52-9d88-7223-b8a1-3c98595d3fbe"
 ---
 
 # Agent automation broker flow
@@ -89,6 +89,8 @@ UID, container/image identity and pinned source; `assertCurrent` repeats them.
 Nonempty grants also require the deployed wrapper, endpoint rules and CA assets,
 a read-only root filesystem and no mounts replacing `/app`.
 `reconcileGatewayRoute` creates these resources; revision cleanup removes them.
+The route renders the default backend `weight: 1` explicitly so API defaulting
+does not change the spec used for strict readback.
 
 The native adapter checks bounded, nonempty handshake boot ID and same-socket
 `system.info` process-instance ID plus positive PID. Only the hostname is compared
@@ -102,8 +104,11 @@ qualifies the static provisioning and policy. The Kubernetes implementation owns
 the exact anonymous HTTPS endpoint attestation, translated host CIDRs and optional
 public CA bundle. Stdio is ineligible. Literal raw operations map to canonical
 aliases; unsupported credentials, approval controls, transports or ambiguous names
-refuse qualification. Code Mode and tool search must already be disabled for a
-nonempty grant. This does not modify ordinary chat.
+refuse qualification. A selected nonempty operation on dedicated Codex returns
+unqualified before grant creation; it is not replaced by an empty grant. Qualified
+model-only paths remain available. Embedded nonempty grants require the supported
+public tool/server controls and reject unsupported extra settings. Code Mode and
+tool search must already be disabled. This does not modify ordinary chat.
 
 `apps/controller/src/gateway/agent-automations-client.ts:createNativeAgentAutomationsAccess`
 checks native administrative scope, the six cron methods and sole native Agent.
@@ -223,6 +228,8 @@ for each selected Harness/runtime. Testing procedures belong in the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 01:19: Clarify uncommitted dedicated MCP refusal and explicit route weight (01a1fc52-9d88-7223-b8a1-3c98595d3fbe - 269ecf6b)
 
 - 2026-11-22 07:40: Trace uncommitted approved-MCP qualification, immutable grants and retirement; retain qualification limits (authoring-run/223f5559-e996-40af-96b1-5591de73ca57 - 63815f0db3b744abc6d7158cc4a8fb28c109486b)
 
