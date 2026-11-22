@@ -10,7 +10,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);
 const kind = "openshell-startup-process";
-const runner = fileURLToPath(new URL("../../scripts/ci/run-tests.mjs", import.meta.url));
+const runner = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
 
 test("OpenShell startup diagnostics distinguish child process failures", async (t) => {
   const root = await temporaryDirectory(t, "openshell-startup-process-");

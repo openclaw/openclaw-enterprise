@@ -38,7 +38,7 @@ submitted for human review in PR #5136.
 
 Submit the RFC before contract implementation. Start from the pinned runtime's
 session scope and HTTP/WS enforcement. Extend the real-runtime coverage in
-[runtime-image-native-listener](../../tests/integration/runtime-image-native-listener.test.mjs)
+[runtime-image-native-listener](../../tests/integration/runtime-image-native-listener.test.ts)
 to prove that a route cap of `operator.sessions.write` restricts the current
 administrative service identity and every device grant it can present.
 Exercise the native UI's actual startup and chat traffic. Inventory its session

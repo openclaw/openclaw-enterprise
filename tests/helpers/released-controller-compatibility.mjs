@@ -4,13 +4,28 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { settled } from "./child-processes.mjs";
-import { withTestOwnerLabel } from "./docker-test-owner.mjs";
+import { withTestOwnerLabel } from "./docker-test-owner.ts";
 
 const exec = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-const origin = "http://127.0.0.1";
+const legacyOrigin = "http://127.0.0.1";
+const sharedCookieOrigin = "https://console.oce.localhost";
+const agentDomain = "agents.oce.localhost";
+const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
+const processProgram = "released-controller-process.mts";
+const imageProbe = `
+  import { existsSync, readFileSync } from "node:fs";
+  const configuration = "/app/apps/controller/src/auth/configuration.ts";
+  console.log(JSON.stringify({
+    bootstrap: existsSync(${JSON.stringify(bootstrapProgram)}),
+    migration: JSON.parse(readFileSync("/app/package.json", "utf8")).scripts?.["db:migrate:production"],
+    precreatedCredentials: existsSync("/app/scripts/lib/bootstrap-credentials.ts"),
+    sharedCookies: existsSync(configuration) &&
+      typeof (await import(configuration)).deriveSharedCookieDomain === "function",
+  }));
+`;
 const authSecret = "local-compatibility-session-secret-32-bytes";
 
 async function withReleasedControllerFixture(t, images, createDatabase, scenario) {
@@ -38,6 +53,47 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     assert.equal(inspected.length, 1);
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
   }
+  // Select the image's production migration entry and auth inputs before creating the database. Never retry
+  // bootstrap after it might have written an Installation.
+  const inputsByImage = new Map();
+  for (const image of new Set(Object.values(images).map(({ reference }) => reference))) {
+    const probe = await command([
+      "run",
+      "--rm",
+      "--pull",
+      "never",
+      "--label",
+      label,
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      image,
+      "--input-type=module",
+      "--eval",
+      imageProbe,
+    ]);
+    const { bootstrap, precreatedCredentials, sharedCookies, migration } = JSON.parse(probe.stdout);
+    const entry = /^(?:NODE_ENV=production )?node (scripts\/migrate-production\.(?:mjs|ts))$/.exec(
+      migration ?? "",
+    )?.[1];
+    assert.ok(entry, "The image must declare a supported production migration command.");
+    assert.equal(typeof sharedCookies, "boolean");
+    assert.equal(typeof precreatedCredentials, "boolean");
+    inputsByImage.set(image, {
+      bootstrap,
+      migration: entry,
+      precreatedCredentials,
+      OCC_AUTH_BASE_URL: sharedCookies ? sharedCookieOrigin : legacyOrigin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
+    });
+  }
+  const { bootstrap, precreatedCredentials, OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } =
+    inputsByImage.get(images.released.reference);
+  assert.equal(bootstrap, true, "The released image must ship the Installation bootstrap command.");
   const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
   migrationUrl.hostname = "127.0.0.1";
@@ -71,13 +127,14 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     image.reference,
     program,
   ];
-  const migrate = (image) =>
-    command(
-      args(image, "scripts/migrate-production.mjs", {
+  const migrate = (image, ...options) =>
+    command([
+      ...args(image, inputsByImage.get(image.reference).migration, {
         NODE_ENV: "development",
         OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
       }),
-    );
+      ...options,
+    ]);
   const history = async () =>
     (
       await db.migrator.query(
@@ -87,7 +144,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
   async function start(image, role, { configuredIAM = false } = {}) {
     const name = `${owner}-${role}-${randomUUID().slice(0, 8)}`;
     const mounts = [
-      "released-controller-process.mjs",
+      processProgram,
       "development.ts",
       "default-users-iam.mjs",
       "secret-driver.ts",
@@ -95,15 +152,18 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       "--mount",
       `type=bind,src=${fileURLToPath(new URL(file, import.meta.url))},dst=/proof/${file},readonly`,
     ]);
+    const { OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = inputsByImage.get(image.reference);
     const child = spawn(
       docker,
       withTestOwnerLabel(
         docker,
         args(
           image,
-          "/proof/released-controller-process.mjs",
+          `/proof/${processProgram}`,
           {
             OCC_DATABASE_URL: applicationUrl.toString(),
+            OCC_AUTH_BASE_URL,
+            OCC_AGENT_NATIVE_ADMIN_DOMAIN,
             OCC_TEST_CONTROLLER_ROLE: role,
             ...(configuredIAM ? { OCC_TEST_CONTROLLER_IAM: "1" } : {}),
           },
@@ -236,27 +296,51 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     await migrate(images.released);
     const before = await history();
     assert.ok(before.length > 0);
-    await command(
-      args(images.released, "scripts/bootstrap-installation.mjs", {
-        NODE_ENV: "development",
-        OCC_DATABASE_URL: applicationUrl.toString(),
-        OCC_AUTH_SECRET: authSecret,
-        OCC_AUTH_BASE_URL: origin,
-        OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
-        OPENCLAW_DEV_PASSWORD: "postgres-development-password",
-        OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
-      }),
-    );
+    const bootstrapEnvironment = {
+      NODE_ENV: "development",
+      OCC_DATABASE_URL: applicationUrl.toString(),
+      OCC_AUTH_SECRET: authSecret,
+      OCC_AUTH_BASE_URL,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+      OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
+    };
+    // Select the historical image's contract before its single bootstrap attempt;
+    // the candidate's new input settings cannot initialize an older released image.
+    if (precreatedCredentials) {
+      await command([
+        ...args(images.released, "--input-type=module", {
+          ...bootstrapEnvironment,
+          OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/bootstrap/admin-password",
+          OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/bootstrap/admin-service-key",
+        }),
+        "--eval",
+        `
+          import { writeFile } from "node:fs/promises";
+          import { randomBytes } from "node:crypto";
+          await writeFile(process.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE,
+            "postgres-development-password", { mode: 0o600, flag: "wx" });
+          await writeFile(process.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+            "occ_" + randomBytes(32).toString("base64url"), { mode: 0o600, flag: "wx" });
+          const { bootstrapInstallation } = await import(${JSON.stringify(bootstrapProgram)});
+          process.exitCode = await bootstrapInstallation({ environment: process.env, args: [] });
+        `,
+      ]);
+    } else {
+      await command(
+        args(images.released, bootstrapProgram, {
+          ...bootstrapEnvironment,
+          OPENCLAW_DEV_PASSWORD: "postgres-development-password",
+          OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
+        }),
+      );
+    }
     await scenario({
       start,
       migrate,
       history,
       before,
-      args,
-      command,
       observations,
       db,
-      migrationUrl,
     });
   } finally {
     // Reuse the repository owner label for interruption cleanup, and remove only
@@ -295,7 +379,7 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     t,
     images,
     createDatabase,
-    async ({ start, migrate, history, before, args, command, observations, migrationUrl }) => {
+    async ({ start, migrate, history, before, observations }) => {
       let released = await start(images.released, "released");
       const namespace = await released.request("before-migration", "work", {
         name: "Before migration",
@@ -311,6 +395,10 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
       ]);
       const after = await history();
       assert.deepEqual(after.slice(0, before.length), before);
+      // Check the original session and database pool before a restart can hide a failed read.
+      reads.push(
+        await released.request("after-migration", "read", { namespaceId: namespace.namespaceId }),
+      );
       await released.request("after-migration", "work", { name: "After migration" });
       await released.stop();
       released = await start(images.released, "released");
@@ -340,13 +428,7 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
         name: "Restart after candidate writes",
       });
       await released.stop();
-      const checked = await command([
-        ...args(images.candidate, "scripts/migrate-production.mjs", {
-          NODE_ENV: "development",
-          OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
-        }),
-        "--check",
-      ]);
+      const checked = await migrate(images.candidate, "--check");
       const checkEvents = checked.stdout
         .trim()
         .split("\n")

@@ -75,6 +75,12 @@ releasing the workload, then for the Harness to report `serving` before reportin
 If the revision never becomes ready, deployment status reports the convergence timeout.
 Only the preparation worker can warm the family; startup, readiness and requests cannot.
 
+Enrollment receipts belong to individual revisions. A confirmed runtime stop retires
+that revision's enrollment without deleting its receipt. Only one enrollment per
+sender and Sandbox can be current; a successor reusing the Sandbox must enroll
+after retirement. Separate Sandboxes can have independent current enrollments.
+Retired receipts cannot authorize requests or become current again.
+
 ## Loaded enforcement
 
 The OpenShell Gateway and trusted supervisor must report credential access,
@@ -184,6 +190,12 @@ tags remain text.
 Check the Plan itself, too. Codex extracts a completed Plan before removing
 citations, but can build a streamed Plan from deltas across several assistant
 items. If pending parser tails could change their order, withhold the response.
+Reasoning summary parts open only by appending the next index. A summary delta for
+an index that was never opened, or that skips ahead, withholds the response.
+Reasoning text has no part event: only its first delta opens the next content index.
+A completion requires an open index, and a gap still withholds the response. That index's accumulated text is scanned
+on its own, so selected material split across one part is withheld when another
+part's delta arrives between the halves.
 These checks cover the named views of one finite response, not arbitrary future
 client transformations; they do not reinterpret function-call argument data.
 

@@ -1,3 +1,4 @@
+import { hasResourceId, record } from "./egress-observation-values.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -14,13 +15,21 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
   assertConnectedResponse,
+  assertSecretReference,
   serializeConnectedRequest,
   sendConnectedRequest,
   validateConnectedDatabaseUrl,
 } from "./egress-connected-inputs.mjs";
-import { codexRepositoryEvidenceScript } from "./normal-agent-tools.mjs";
+import { parseNativeObservation } from "./normal-agent-observation-receipts.ts";
+import { codexRepositoryEvidenceScript } from "./normal-agent-codex-evidence.ts";
 
 const exec = promisify(execFile);
+/** @param {unknown} value */
+function identified(value) {
+  assert.ok(hasResourceId(value), "expected an identified controller resource");
+  return value;
+}
+
 export async function waitFor(description, observe, timeout = 120_000) {
   const end = Date.now() + timeout;
   do {
@@ -31,6 +40,19 @@ export async function waitFor(description, observe, timeout = 120_000) {
     await delay(500);
   } while (Date.now() < end);
   assert.fail("timed out: " + description);
+}
+
+/**
+ * @param {import("./egress-upgrade-contracts.ts").ConnectedApi} api
+ * @param {string} agentPath
+ */
+export async function configureSkipperTransport(api, agentPath) {
+  const path = agentPath + "/runtime-credentials";
+  const { transportConfigured } = record(await api("GET", path));
+  assert.equal(typeof transportConfigured, "boolean", "expected boolean transportConfigured");
+  if (transportConfigured === false) {
+    await api("POST", path, {});
+  }
 }
 
 /** Operate only the supplied fresh, local Compute installation and its synthetic model. */
@@ -95,6 +117,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     statement_timeout: 10000,
   });
   const inst = await api("GET", "/installation");
+  assert.ok(hasResourceId(inst), "expected the Installation ID");
   assert.equal(inst.id, (await pool.query("SELECT id FROM occ.installation")).rows[0].id);
   const { items: nss } = await resource(
     "namespaces",
@@ -135,6 +158,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     name: "skipper-compute-model-" + id,
     value: "sk-synthetic-qualification-" + id,
   });
+  assertSecretReference(secret);
+  assert.ok(hasResourceId(secret), "expected the model Secret ID");
   const values = createHarnessConfiguration("codex", defaultAgentModel);
   values.agents.defaults.workspace = "/home/node/workspace";
   Object.assign(values.plugins.entries.codex.config.appServer, {
@@ -143,13 +168,16 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     remoteWorkspaceRoot: "/home/node/workspace",
   });
   const config = await create("configurations", { kind: "agent", values });
-  const agent = await create("agents", {
-    name: "skipper-compute-" + id,
-    configurationId: config.id,
-    executionMode: "dedicated",
-    harnessAuth: { method: "api_key", source: secret.ref },
-    repositoryBindings: [{ repositoryRef, profile: "git-write" }],
-  });
+  assert.ok(hasResourceId(config), "expected the configuration ID");
+  const agent = identified(
+    await create("agents", {
+      name: "skipper-compute-" + id,
+      configurationId: config.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: secret.ref },
+      repositoryBindings: [{ repositoryRef, profile: "git-write" }],
+    }),
+  );
   const agentPath = root + "/agents/" + agent.id;
   const query = (text, params) => pool.query(text, params);
   const pods = () => resource("pods", "-A", "-l", "openclaw.dev/agent=" + agent.id);
@@ -181,6 +209,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     name: "skipper-compute-model-" + id,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
+  assert.ok(hasResourceId(role), "expected the role resource identity");
   await create("iam/access-bindings", {
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
@@ -188,28 +217,26 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     resourceKind: "secret",
     resourceId: secret.id,
   });
-  const runtime = await api("GET", agentPath + "/runtime-credentials");
-  if (!runtime.transportConfigured) {
-    await api("POST", agentPath + "/runtime-credentials", {});
-  }
+  await configureSkipperTransport(api, agentPath);
   await checkpoint("deploy-request-started", { agentId: agent.id });
-  const revision = await api("POST", agentPath + "/deploy", undefined, 202);
-  assert.equal(revision.harness.mode, "dedicated");
-  assert.equal(revision.harness.id, "codex");
+  const revision = identified(await api("POST", agentPath + "/deploy", undefined, 202));
+  const harnessSelection = record(revision.harness);
+  assert.equal(harnessSelection.mode, "dedicated");
+  assert.equal(harnessSelection.id, "codex");
   assert.equal(revision.sandboxDriverId, undefined);
-  assert.deepEqual(revision.repositoryCredentials.bindings, [
+  assert.deepEqual(record(revision.repositoryCredentials).bindings, [
     { repositoryRef, profile: "git-write" },
   ]);
   const deploymentPath = agentPath + "/deployments/" + revision.id;
   await waitFor(
     "the admitted Compute-owned deployment to succeed with its revision active",
     async () => {
-      const deployment = await api("GET", deploymentPath);
+      const deployment = record(await api("GET", deploymentPath));
       assert.notEqual(deployment.status, "failed", "Compute deployment failed");
       if (deployment.status !== "succeeded") {
         return false;
       }
-      const current = await api("GET", agentPath);
+      const current = record(await api("GET", agentPath));
       return current.activeRevisionId === revision.id && current.desiredRuntimeState === "running";
     },
     720_000,
@@ -309,7 +336,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       live.harness.status.containerStatuses.map((c) => c.containerID),
       harness.status.containerStatuses.map((c) => c.containerID),
     );
-    assert.equal((await api("GET", agentPath)).activeRevisionId, revision.id);
+    assert.equal(record(await api("GET", agentPath)).activeRevisionId, revision.id);
   };
   const gatewayTarget = [
     gateway.metadata.name,
@@ -395,7 +422,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     // kubectl can close the pipe early; its exit status reports the failure.
     observation.child.stdin.on("error", () => {});
     observation.child.stdin.end(codexRepositoryEvidenceScript);
-    const t = JSON.parse((await observation).stdout);
+    const t = parseNativeObservation((await observation).stdout);
     assert.equal(t.status, "completed");
     assert.equal(
       t.commands.length,
@@ -403,6 +430,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       "exactly one native command on this Agent turn; never replay",
     );
     const [command] = t.commands;
+    assert.ok(command);
     assert.equal(command.status, "completed");
     assert.equal(command.exitCode, 0, "native command failed on the Agent");
     assert.ok(t.threadId && t.turnId);
@@ -506,14 +534,22 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
 // A complete prefix from the same model process bounds this single chat. A generic
 // turn alone cannot distinguish its request from another turn in the same window.
 function modelRequestObservation(before, after, gatewayChatPhase, marker) {
+  const valid = (events) =>
+    Array.isArray(events) &&
+    events.every(
+      (event) =>
+        typeof event?.event === "string" &&
+        (event.event !== "request" || typeof event.turn === "boolean"),
+    );
   const matches = (event) =>
     gatewayChatPhase === "native-git"
       ? event.event === "skipper-native-request" && event.id === marker
       : event.event === "turn-answered" && event.status === 200 && event.text === marker;
   if (
     !marker ||
-    !before?.some((event) => event.event === "listening") ||
-    !after ||
+    !valid(before) ||
+    !valid(after) ||
+    !before.some((event) => event.event === "listening") ||
     !isDeepStrictEqual(after.slice(0, before.length), before) ||
     before.some(matches)
   ) {
@@ -536,6 +572,26 @@ function modelRequestObservation(before, after, gatewayChatPhase, marker) {
     : "unavailable";
 }
 
+// Called only after the request observation verified both snapshots and their common prefix.
+function modelFixtureSelectedTerminalSuccess(before, after, marker) {
+  if (before.some((event) => event.id === marker)) {
+    return false;
+  }
+  const decisions = after
+    .slice(before.length)
+    .filter(
+      (event) =>
+        event.id === marker &&
+        ["skipper-native-request", "skipper-native-result"].includes(event.event),
+    );
+  return (
+    decisions.length === 2 &&
+    decisions[0].event === "skipper-native-request" &&
+    decisions[1].event === "skipper-native-result" &&
+    decisions[1].modelFixtureSelectedTerminalSuccess === true
+  );
+}
+
 export async function sendSkipperChat({
   gatewayChatPhase,
   marker,
@@ -552,16 +608,48 @@ export async function sendSkipperChat({
       : "Please reply with exactly ") + marker;
   const before = await snapshot();
   const since = new Date().toISOString();
+  const invocationId = randomUUID();
+  const entryFrame = "\nskipper-gateway-entry:" + invocationId + "\n";
   const text = await runSkipperOperation("gateway-exec", () =>
     enter(
       "node",
       "-e",
-      `(${inGateway.toString()})(process.argv[1], process.argv[2])`,
+      `(${inGateway.toString()})(process.argv[1], process.argv[2], process.argv[3], ${gatewayChatPhase === "native-git"})`,
       prompt,
       sessionKey,
+      invocationId,
     ),
-  );
-  const { status, category, content } = JSON.parse(text);
+  ).catch(async (error) => {
+    try {
+      const diagnostic = error.openclawCiDiagnostic;
+      if (diagnostic?.operation === "gateway-exec") {
+        // The same failed exec already carries stderr. Keep only the exact entry observation.
+        if (typeof error.stderr === "string" && error.stderr.includes(entryFrame)) {
+          error.openclawCiDiagnostic = { ...diagnostic, helperEntered: true };
+        }
+        if (
+          gatewayChatPhase === "native-git" &&
+          modelRequestObservation(before, await snapshot(), gatewayChatPhase, marker) === "observed"
+        ) {
+          error.openclawCiDiagnostic = {
+            ...error.openclawCiDiagnostic,
+            modelRequestObservation: "observed",
+          };
+        }
+      }
+    } catch {
+      // Optional evidence must preserve even a frozen or unusual rejection.
+    }
+    throw error;
+  });
+  const {
+    status,
+    category,
+    content,
+    gatewayTransportCause,
+    gatewayListener,
+    gatewayFetchElapsedMs,
+  } = JSON.parse(text);
   if (status === 200 && category === undefined) {
     return content;
   }
@@ -598,9 +686,18 @@ export async function sendSkipperChat({
       operation: "gateway-chat",
       gatewayChatPhase,
       gatewayCategory: category,
+      gatewayTransportCause,
+      gatewayListener,
+      gatewayFetchElapsedMs,
       httpStatus: status,
       runtimeSignal,
       modelRequestObservation: observation,
+      modelFixtureSelectedTerminalSuccess:
+        gatewayChatPhase === "native-git" &&
+        category === "transport" &&
+        status === 0 &&
+        observation === "observed" &&
+        modelFixtureSelectedTerminalSuccess(before, after, marker),
     }),
   });
   await checkpoint("gateway-chat-refused", {
@@ -613,11 +710,16 @@ export async function sendSkipperChat({
 }
 
 // Use the installed Agent Gateway, as a user of that Agent would. Never exec Git on the host.
-export async function inGateway(prompt, sessionKey) {
+export async function inGateway(prompt, sessionKey, invocationId, measureNativeGit = false) {
+  if (invocationId) {
+    // Build the frame here so an error echoing the exec arguments cannot supply it.
+    process.stderr.write("\nskipper-gateway-entry:" + invocationId + "\n");
+  }
   if (!process.env.OPENCLAW_GATEWAY_PASSWORD) {
     process.stdout.write(JSON.stringify({ status: 0, category: "gateway-credential-unavailable" }));
     return;
   }
+  const fetchStartedMs = measureNativeGit ? performance.now() : undefined;
   const signal = AbortSignal.timeout(170_000);
   let res;
   try {
@@ -640,8 +742,60 @@ export async function inGateway(prompt, sessionKey) {
       },
     );
   } catch (error) {
+    const elapsedMs =
+      fetchStartedMs === undefined ? undefined : Math.floor(performance.now() - fetchStartedMs);
     const category = signal.aborted && error === signal.reason ? "client-deadline" : "transport";
-    process.stdout.write(JSON.stringify({ status: 0, category }));
+    let gatewayTransportCause;
+    if (category === "transport") {
+      const code = error?.cause?.code ?? error?.code;
+      switch (code) {
+        case "UND_ERR_SOCKET":
+          gatewayTransportCause = "socket-closed";
+          break;
+        case "ECONNRESET":
+          gatewayTransportCause = "connection-reset";
+          break;
+        case "UND_ERR_HEADERS_TIMEOUT":
+          gatewayTransportCause = "headers-timeout";
+          break;
+      }
+    }
+    let gatewayListener;
+    if (measureNativeGit && gatewayTransportCause === "socket-closed" && !signal.aborted) {
+      gatewayListener = "unavailable";
+      const port = process.env.OPENCLAW_GATEWAY_PORT || "8080";
+      if (/^[0-9]+$/.test(port)) {
+        const probe = new AbortController();
+        try {
+          // Any response headers establish that the listener answered.
+          await fetch("http://127.0.0.1:" + port + "/readyz", {
+            redirect: "manual",
+            signal: AbortSignal.any([signal, probe.signal, AbortSignal.timeout(500)]),
+          });
+          gatewayListener = "responding";
+        } catch (probeError) {
+          if (probeError?.cause?.code === "ECONNREFUSED") {
+            gatewayListener = "unreachable";
+          }
+        } finally {
+          probe.abort();
+        }
+      }
+    }
+    // Fetch can reject a refused redirect as an unclassified transport error.
+    const timingEligible = category === "client-deadline" || gatewayTransportCause !== undefined;
+    process.stdout.write(
+      JSON.stringify({
+        status: 0,
+        category,
+        gatewayListener,
+        gatewayTransportCause:
+          category === "transport" ? (gatewayTransportCause ?? "other") : undefined,
+        ...(timingEligible && elapsedMs !== undefined && elapsedMs >= 0 && elapsedMs <= 240_000
+          ? { gatewayFetchElapsedMs: elapsedMs }
+          : {}),
+      }),
+    );
     return;
   }
   let raw;

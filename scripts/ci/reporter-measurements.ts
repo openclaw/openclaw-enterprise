@@ -3,14 +3,12 @@ import {
   projectOpenShellGitRetention,
 } from "./openshell-git-retention.mjs";
 import { openShellProgress } from "./openshell-progress.mjs";
-import { isRecord } from "./reporter-diagnostics.ts";
+import { isRecord } from "./records.ts";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
 // allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
 const openShellStageMeasurementKind = "openshell-stage";
-const openShellPluginStageKind = "openshell-plugin-stage";
-const openShellStageMaxElapsedMs = 7_200_000;
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
@@ -128,6 +126,41 @@ function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
 
+// These forms describe the Gateway HTTP response. Multiple failure paths share the same JSON.
+export function openShellGatewayErrorForm(response: Response, body: string) {
+  if (response.status !== 500) {
+    return undefined;
+  }
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    mediaType === "text/plain" &&
+    response.headers.get("cache-control") === "no-store" &&
+    body === "Internal Server Error"
+  ) {
+    return "plain-internal-error";
+  }
+  if (mediaType !== "application/json") {
+    return undefined;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(value) || !isRecord(value.error) || value.error.type !== "api_error") {
+    return undefined;
+  }
+  const { code, message } = value.error;
+  if (code === "incomplete_turn" && typeof message === "string") {
+    return "incomplete-turn";
+  }
+  if (code === undefined && message === "internal error") {
+    return "json-internal-error";
+  }
+  return undefined;
+}
+
 function isChoice<T extends string | number>(value: unknown, choices: readonly T[]): value is T {
   return choices.some((choice) => choice === value);
 }
@@ -142,39 +175,6 @@ function isHash(value: unknown): value is string {
 
 function isCount(value: unknown): value is number {
   return isSafeInteger(value) && value >= 0;
-}
-
-export function isOpenShellPluginStage(stage: unknown): stage is "installation" | "exposure-auth" {
-  return stage === "installation" || stage === "exposure-auth";
-}
-
-function safeOpenShellPluginFailureTiming(value: Record<string, unknown>) {
-  const { kind, stage, outcome, elapsedMs } = value;
-  return Object.keys(value).length === 4 &&
-    kind === openShellStageMeasurementKind &&
-    (stage === "installation" || stage === "agent-deploy" || stage === "plugin-check") &&
-    outcome === "failed" &&
-    isInteger(elapsedMs) &&
-    elapsedMs >= 0 &&
-    elapsedMs <= openShellStageMaxElapsedMs
-    ? { kind, stage, outcome, elapsedMs }
-    : undefined;
-}
-
-export function parseOpenShellPluginFailureTiming(message: string) {
-  if (message.length > 256 || !message.startsWith(measurementPrefix)) {
-    return undefined;
-  }
-  try {
-    const value: unknown = JSON.parse(message.slice(measurementPrefix.length));
-    const timing = isRecord(value) && safeOpenShellPluginFailureTiming(value);
-    if (timing && message === measurementPrefix + JSON.stringify(timing)) {
-      return timing;
-    }
-  } catch {
-    // Only closed, canonical timing records cross the nested reporter boundary.
-  }
-  return undefined;
 }
 
 // Undefined identifies ordinary diagnostics. Null keeps rejected measurements
@@ -245,26 +245,21 @@ function safeMeasurement(value: unknown): object | undefined {
     ) {
       return undefined;
     }
+    if (
+      status === 500 &&
+      isChoice(value.replyForm, ["plain-internal-error", "incomplete-turn", "json-internal-error"])
+    ) {
+      return { kind, checkpoint, turn, status, replyForm: value.replyForm };
+    }
     return { kind, checkpoint, turn, status };
   }
   if (value.kind === openShellStageMeasurementKind) {
     const { kind, stage, outcome } = value;
-    if (stage === "agent-deploy" || stage === "plugin-check") {
-      return safeOpenShellPluginFailureTiming(value);
-    }
     const allowedStage =
       typeof stage === "string" &&
       stage !== "exposure-auth" &&
       Boolean(openShellProgress({ kind, stage, outcome }));
-    return safeStageMeasurement(value, allowedStage, openShellStageMaxElapsedMs);
-  }
-  if (value.kind === openShellPluginStageKind) {
-    const { kind, stage, outcome } = value;
-    return Object.keys(value).length === 3 &&
-      isOpenShellPluginStage(stage) &&
-      openShellProgress({ kind: openShellStageMeasurementKind, stage, outcome })
-      ? { kind, stage, outcome }
-      : undefined;
+    return safeStageMeasurement(value, allowedStage, 7_200_000);
   }
   if (value.kind === openShellSandboxMeasurementKind) {
     return safeStageMeasurement(value, isAllowed(value.stage, openShellSandboxStages), 2_400_000);
@@ -354,6 +349,7 @@ function safeMeasurement(value: unknown): object | undefined {
         "canceled",
         "deadline",
         "controller-image-import",
+        "codex-sandbox-preparation",
         "routing",
         "network-verification",
         "network-cleanup",
@@ -468,7 +464,6 @@ function safeMeasurement(value: unknown): object | undefined {
         "openshell-charts",
         "openshell-agent-sandbox-manifest",
         "openshell-agent-sandbox-image",
-        "openshell-runtime-class",
         "openshell-agent-sandbox-apply",
         "openshell-agent-sandbox-rollout",
         "openshell-workspace-render",

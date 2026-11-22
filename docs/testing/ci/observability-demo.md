@@ -18,8 +18,8 @@ The lane installs a real Kubernetes monitoring stack; its telemetry is test data
 ## Trigger
 
 The workflow runs on pull requests and `main` pushes that match its path filters,
-plus merge groups and manual dispatch. Filters cover the demo chart, its tests
-and helpers, CI scripts/actions, and the lockfile; the workflow is the exact list.
+plus merge groups and manual dispatch. Filters cover the demo chart and guide, utility
+source, tests and helpers, CI scripts/actions, and the lockfile.
 It is separate from `CI Required` and is not a merge or publication gate.
 Full Integration also selects this lane when `all` is requested.
 

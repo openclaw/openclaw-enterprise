@@ -7,11 +7,17 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { Locator } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { PluginApprovers, SecretMetadata } from "../../packages/contracts/src/index.ts";
+import type {
+  CredentialGatewayDriver,
+  PluginApprovers,
+  PluginCatalogEntry,
+  SandboxDriver,
+  SecretMetadata,
+} from "../../packages/contracts/src/index.ts";
 
 import {
   CodexPluginDriver,
@@ -19,7 +25,8 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
   detailUrl,
@@ -37,13 +44,10 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import {
-  callerDenied,
-  refusedNamed,
-  SECRET_CREATE_DENIED,
-  SLACK_LOOKUP_DENIED,
-} from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { callerDenied, SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
+import { refusedNamed, SLACK_LOOKUP_DENIED } from "../helpers/refusal-access.ts";
+import { restrict } from "../helpers/iam-grants.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -117,6 +121,8 @@ declare global {
   var showPluginPage2: (selections?: string) => void;
   var liveWrites: (string | null)[];
   var liveRegions: (string | null)[];
+  var setManagedMcpCatalog: (result: "error" | "missing" | "available") => void;
+  var setManagedMcpBindingAvailability: (state: "ready" | "missing" | "stale") => void;
 }
 
 // Every test opens its own context in one Chromium per file.
@@ -242,6 +248,705 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .waitFor({ state: "visible" });
 });
 
+async function savedCodexPluginFixture(t: TestContext) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hosted plugin discovery");
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const secret = await fixture.createSecret(namespace.id, "Discovery token", "fixture-value");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Discovery Agent",
+    nativeValues("plugin-discovery", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: { method: "codex_pat", source: secret.ref } },
+  );
+  await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const catalogUrl = new URL(`${path}/plugins`, fixture.origin).href;
+  const { page } = await newPage(t, fixture, { browser });
+  return { fixture, namespace, driver, agent, path, page, catalogUrl };
+}
+
+async function discoveryResponse(
+  page: Page,
+  url: string,
+  action: () => Promise<void>,
+  status = 200,
+) {
+  const [response] = await Promise.all([responseTo(page, "POST", url), action()]);
+  assert.equal(response.status(), status);
+  return response;
+}
+
+test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
+  const { fixture, namespace, agent, path, page, catalogUrl } = await savedCodexPluginFixture(t);
+  const detailsUrl = `${catalogUrl}/details`;
+  const requests = apiRequests(page, fixture.origin);
+
+  // Both catalog entries share a remote locator but have different canonical IDs.
+  const remoteId = "shared-catalog-locator";
+  const alpha = {
+    id: "codex-plugin:alpha@openai-curated-remote",
+    name: "Alpha",
+    remoteId,
+    tools: null,
+  };
+  const beta = { ...alpha, id: "codex-plugin:beta@openai-curated-remote", name: "Beta" };
+  const alphaTool = { id: "app_alpha/search", name: "Find Alpha records", ownerId: "app_alpha" };
+  const betaTool = { id: "app_beta/list", name: "List Beta documents", ownerId: "app_beta" };
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const catalog = { data: { plugins: [alpha, beta], nextCursor: null }, meta };
+  let detail: PluginCatalogEntry = { ...beta, tools: [betaTool] };
+  await page.route(catalogUrl, (route) => route.fulfill({ status: 200, json: catalog }));
+  await page.route(detailsUrl, (route) =>
+    route.fulfill({ status: 200, json: { data: detail, meta } }),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const alphaRow = dialog.getByRole("button", { name: alpha.name, exact: true });
+  const betaRow = dialog.getByRole("button", { name: beta.name, exact: true });
+  const addAlpha = dialog.getByRole("button", { name: "Add Alpha", exact: true });
+  const refusal = dialog.getByText(
+    "The plugin service returned an unsupported response. Retry or contact your operator.",
+    { exact: true },
+  );
+  const input = page.locator("#agent-plugins");
+
+  async function loadDetails(control: Locator) {
+    const reply = responseTo(page, "POST", detailsUrl);
+    await control.click();
+    const response = await reply;
+    assert.equal(response.status(), 200);
+    assert.deepEqual(response.request().postDataJSON(), { pluginId: remoteId });
+    await dialog.getByText("Loading tools…", { exact: true }).waitFor({ state: "detached" });
+  }
+
+  await loadDetails(alphaRow);
+  assert.deepEqual(
+    [await alphaRow.count(), await betaRow.count()],
+    [1, 1],
+    "mismatched details must preserve both plugin rows",
+  );
+  assert.equal(await alphaRow.getAttribute("aria-current"), "true");
+  assert.equal(await refusal.isVisible(), true);
+  assert.equal(await addAlpha.isDisabled(), true);
+  assert.equal(await dialog.getByText(betaTool.name, { exact: true }).count(), 0);
+  assert.deepEqual(JSON.parse(await input.inputValue()), {});
+  assert.equal(pathRequests(requests, "PATCH", path).length, 0);
+
+  detail = { ...alpha, tools: [alphaTool] };
+  await loadDetails(dialog.getByRole("button", { name: "Retry tools for Alpha", exact: true }));
+  const alphaSummary = dialog.locator("summary").getByText(alphaTool.name, { exact: true });
+  assert.equal(await alphaSummary.isVisible(), true);
+  assert.equal(await refusal.count(), 0);
+  assert.equal(await addAlpha.isEnabled(), true);
+  await addAlpha.click();
+  assert.deepEqual(JSON.parse(await input.inputValue()), { [alpha.id]: { enabled: true } });
+});
+
+const conflictDraft = '{\n  "codex-plugin:draft@openai-curated-remote": { "enabled": false }\n}';
+
+async function savedPluginConflictFixture(t: TestContext) {
+  const { fixture, namespace, agent, driver, path, page, catalogUrl } =
+    await savedCodexPluginFixture(t);
+  const requests = apiRequests(page, fixture.origin);
+  const input = page.locator("#agent-plugins");
+  const approvers = page.getByLabel("Default plugin approvers mode", { exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const replacement = await fixture.createSecret(namespace.id, "Replacement token", "fixture-next");
+  await fixture.grantAgentSecretOperate(agent, replacement.ref, { listed: false });
+  const entries = ["Alpha", "Beta"].map((name) => {
+    const slug = name.toLowerCase();
+    return {
+      id: `codex-plugin:${slug}@openai-curated-remote`,
+      name,
+      remoteId: `remote-${slug}`,
+      tools: null,
+    };
+  });
+  let race: "catalog" | "details" | undefined;
+  let holdNextDetails: (() => Promise<void>) | undefined;
+  let rotated = false;
+
+  // Change the persisted binding during a provider read. The real API decides whether the
+  // response is still current before the Console can use it.
+  async function rotateDuring(read: "catalog" | "details") {
+    if (race === read) {
+      race = undefined;
+      const { status } = await fixture.request("PATCH", path, {
+        body: {
+          configurationId: agent.configurationId,
+          harnessAuth: { method: "codex_pat", source: replacement.ref },
+        },
+      });
+      assert.equal(status, 200, "the competing update must replace the saved binding");
+      rotated = true;
+    }
+  }
+
+  driver.discoverCatalog = async () => {
+    const plugins = rotated ? entries.filter(({ name }) => name === "Beta") : entries;
+    await rotateDuring("catalog");
+    return { plugins, nextCursor: null };
+  };
+  driver.getCatalogPlugin = async ({ pluginId }) => {
+    const entry = entries.find(({ remoteId }) => remoteId === pluginId);
+    assert.ok(entry, "details must use a known remote locator");
+    const hold = holdNextDetails;
+    holdNextDetails = undefined;
+    const origin = rotated ? "Current" : "Original";
+    const name = `${hold ? "Canceled" : origin} ${entry.name} tool`;
+    await hold?.();
+    await rotateDuring("details");
+    return { ...entry, tools: [{ id: "app_hosted/search", name, ownerId: "app_hosted" }] };
+  };
+
+  async function readSavedSelections() {
+    const response = await fixture.request("GET", path);
+    assert.equal(response.status, 200);
+    const { plugins, pluginApprovers } = responseData(response);
+    return { plugins, pluginApprovers };
+  }
+
+  const savedSelections = await readSavedSelections();
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await approvers.selectOption("none");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await input.fill(conflictDraft);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const button = (name: string) => dialog.getByRole("button", { name, exact: true });
+  await button("Alpha").waitFor();
+
+  const isDiscoveryRead = ({ method, path: target }: (typeof requests)[number]) =>
+    method === "POST" && (target === `${path}/plugins` || target === `${path}/plugins/details`);
+
+  return {
+    page,
+    catalogUrl,
+    dialog,
+    button,
+    tool: (name: string) => dialog.locator("summary").getByText(name, { exact: true }),
+    loadCatalog: (status = 200) =>
+      discoveryResponse(page, catalogUrl, () => button("Load plugins").click(), status),
+    loadDetails: (label: string, status = 200) =>
+      discoveryResponse(page, `${catalogUrl}/details`, () => button(label).click(), status),
+    reads: () => requests.filter(isDiscoveryRead).map(({ body }) => body),
+    holdNextDetails() {
+      const started = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      t.after(() => released.resolve());
+      holdNextDetails = () => {
+        started.resolve();
+        return released.promise;
+      };
+      return { started: started.promise, release: released.resolve };
+    },
+    rotateOn(read: "catalog" | "details") {
+      race = read;
+    },
+    async checkDraft() {
+      assert.equal(await input.inputValue(), conflictDraft);
+      assert.equal(await approvers.inputValue(), "none");
+      assert.deepEqual(await readSavedSelections(), savedSelections);
+      const writes = requests.filter(
+        (request) =>
+          /^(POST|PUT|PATCH|DELETE)$/.test(request.method) &&
+          (request.path === path || request.path.startsWith(`${path}/`)) &&
+          !isDiscoveryRead(request),
+      );
+      assert.deepEqual(writes, [], "discovery and recovery must not write the Agent");
+    },
+  };
+}
+
+async function conflictFeedback(response: Response, dialog: Locator) {
+  const body = record(await response.json());
+  const error = record(body.error);
+  assert.equal(error.code, "RESOURCE_CONFLICT");
+  const message = text(error.message);
+  assert.equal(message, "The Agent's plugin credential or catalog changed. Refresh and retry.");
+  const id = text(record(body.meta).requestId);
+  assert.ok(id);
+  assert.equal(response.headers()["x-request-id"], id);
+  const feedback = dialog.getByText(`Request ID: ${id}`);
+  await feedback.waitFor();
+  const advice = await feedback.innerText();
+  assert.ok(!advice.includes(message), "do not render server error detail as Console advice");
+  return { advice, feedback };
+}
+
+test("Saved plugin details conflict offers manual retry and keeps the draft", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  await ui.loadDetails("Beta");
+  await ui.tool("Original Beta tool").waitFor();
+  await ui.button("Add Beta").click({ trial: true });
+
+  ui.rotateOn("details");
+  const { advice, feedback } = await conflictFeedback(
+    await ui.loadDetails("Alpha", 409),
+    ui.dialog,
+  );
+  assert.equal(await ui.button("Alpha").getAttribute("aria-current"), "true");
+  assert.equal(await ui.button("Retry tools for Alpha").isEnabled(), true);
+  assert.equal(await ui.button("Add Alpha").isDisabled(), true);
+  assert.equal(await ui.tool("Original Alpha tool").count(), 0);
+
+  // Reopening a warmed sibling must neither resurrect its old tools nor send a new read.
+  await ui.button("Beta").click();
+  const addBeta = ui.button("Add Beta");
+  const staleBetaAdd = (await addBeta.isVisible()) && (await addBeta.isEnabled());
+  const staleBetaTool = await ui.tool("Original Beta tool").isVisible();
+  await ui.button("Alpha").click();
+  await ui.checkDraft();
+  const reads = [{}, { pluginId: "remote-beta" }, { pluginId: "remote-alpha" }];
+  assert.deepEqual(ui.reads(), reads, "switching rows must not retry");
+
+  assert.deepEqual([staleBetaAdd, staleBetaTool], [false, false], "a sibling must lose stale Add");
+  assert.match(advice, /retry tools/i, "details conflict must give actionable retry advice");
+  assert.doesNotMatch(advice, /check the credential/i);
+
+  // Hold the real provider result until after the browser cancels the retry.
+  const detailsUrl = `${ui.catalogUrl}/details`;
+  const delivery = await holdRequests(t, ui.page, detailsUrl, {
+    method: "POST",
+    once: true,
+    afterServer: true,
+  });
+  const retry = ui.button("Retry tools for Alpha");
+  const provider = ui.holdNextDetails();
+  const alphaRead = { pluginId: "remote-alpha" };
+  const readsAfterCancel = [...reads, alphaRead];
+  try {
+    await retry.click();
+    await within(provider.started, "the explicit Alpha retry");
+    await ui.dialog.getByText("Loading tools…", { exact: true }).waitFor();
+    assert.equal(await feedback.count(), 0, "hide the prior refusal while the retry is pending");
+    const [request] = await Promise.all([
+      ui.page.waitForEvent("requestfailed", {
+        predicate: (failed) => failed.url() === detailsUrl && failed.method() === "POST",
+      }),
+      ui.button("Configured plugins").click(),
+    ]);
+    assert.deepEqual(request.postDataJSON(), alphaRead);
+    await ui.button("Available plugins").click();
+    await ui.button("Alpha").click();
+    assert.equal(
+      await feedback.isVisible(),
+      true,
+      "cancellation preserves the original request ID",
+    );
+    assert.equal(await retry.isEnabled(), true);
+    assert.deepEqual(ui.reads(), readsAfterCancel, "reopening after cancellation must not retry");
+
+    provider.release();
+    const late = await delivery.requested;
+    assert.ok(late);
+    assert.equal(late.status(), 200);
+    const lateTools = responseData(await late.json()).tools;
+    assert.deepEqual(lateTools, [
+      { id: "app_hosted/search", name: "Canceled Alpha tool", ownerId: "app_hosted" },
+    ]);
+    delivery.release();
+    await nextFrames(ui.page);
+    assert.equal(await ui.tool("Canceled Alpha tool").count(), 0);
+    assert.equal(await feedback.isVisible(), true);
+  } finally {
+    provider.release();
+    delivery.release();
+  }
+
+  await ui.loadDetails("Retry tools for Alpha");
+  await ui.tool("Current Alpha tool").waitFor();
+  assert.equal(await ui.tool("Canceled Alpha tool").count(), 0);
+  await ui.button("Add Alpha").click({ trial: true });
+  assert.equal(await feedback.count(), 0);
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), [...readsAfterCancel, alphaRead]);
+});
+
+test("Saved plugin catalog conflict revokes previously loaded Add authority", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  const search = ui.dialog.getByRole("searchbox", { name: "Search plugins" });
+  const query = { q: "a" };
+  await discoveryResponse(ui.page, ui.catalogUrl, () => search.fill(query.q));
+  await ui.loadDetails("Alpha");
+  await ui.tool("Original Alpha tool").waitFor();
+  const addAlpha = ui.button("Add Alpha");
+  await addAlpha.click({ trial: true });
+
+  ui.rotateOn("catalog");
+  const { advice, feedback } = await conflictFeedback(await ui.loadCatalog(409), ui.dialog);
+  assert.equal(await ui.button("Load plugins").isEnabled(), true);
+  assert.equal(await search.inputValue(), query.q);
+
+  // Refresh closes the card. Try the user's path back to the warmed row before reloading.
+  const alpha = ui.button("Alpha");
+  if ((await alpha.isVisible()) && (await alpha.isEnabled())) {
+    await alpha.click();
+  }
+  const staleAddEnabled = (await addAlpha.isVisible()) && (await addAlpha.isEnabled());
+  if (staleAddEnabled) {
+    await addAlpha.click({ trial: true });
+  }
+  assert.equal(
+    staleAddEnabled,
+    false,
+    "the warmed row must lose stale Add before leaving Available",
+  );
+  const reads = [{}, query, { pluginId: "remote-alpha" }, query];
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), reads, "no automatic discovery after refusal");
+  assert.match(advice, /load plugins/i, "catalog conflict must give actionable reload advice");
+  assert.doesNotMatch(advice, /check the credential/i);
+
+  const configured = ui.button("Configured plugins");
+  await configured.click();
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  await feedback.waitFor();
+  assert.equal(await feedback.innerText(), advice);
+  assert.equal(await ui.button("Load plugins").isEnabled(), true);
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), reads, "switching to Configured must not retry");
+
+  await ui.loadCatalog();
+  await feedback.waitFor({ state: "hidden" });
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  const available = ui.button("Available plugins");
+  await available.click();
+  assert.equal(await available.getAttribute("aria-pressed"), "true");
+  assert.equal(await search.inputValue(), query.q);
+  assert.equal(await feedback.count(), 0);
+  await ui.button("Beta").waitFor();
+  assert.equal(await alpha.count(), 0, "the fresh catalog dropped Alpha");
+  await ui.loadDetails("Beta");
+  await ui.tool("Current Beta tool").waitFor();
+  await ui.button("Add Beta").click({ trial: true });
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), [...reads, query, { pluginId: "remote-beta" }]);
+});
+
+test("Managed MCP tool approval is saved per selected tool and removed when the tool is disabled", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "MCP tool approval");
+  const namespace = entity(namespaceValue);
+  const sourceConfig = {
+    protocol: "mcp",
+    host: "mcp.slack.com",
+    port: "443",
+    path: "/mcp",
+    env_var: "SLACK_MCP_TOKEN",
+  };
+  const unexpectedCredentialEffect = async (): Promise<never> =>
+    assert.fail("This Console save test does not deploy or use credentials");
+  const gateway: CredentialGatewayDriver = {
+    id: "console-mcp-credential-gateway",
+    capability: "credential_gateway",
+    implementation: "openshell",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "bearer-token",
+          config: Object.keys(sourceConfig).map((name) => ({ name, required: true })),
+          secrets: [{ name: "token", required: true }],
+          rotation: "none",
+        },
+      ];
+    },
+    async registerSource() {
+      return { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    updateSource: unexpectedCredentialEffect,
+    removeSource: unexpectedCredentialEffect,
+    attachForRevision: unexpectedCredentialEffect,
+    attachmentStatus: unexpectedCredentialEffect,
+    withdraw: unexpectedCredentialEffect,
+  };
+  const sandbox: SandboxDriver = {
+    id: "console-mcp-sandbox",
+    capability: "sandbox",
+    implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    provisionHarness: unexpectedCredentialEffect,
+    async cleanup() {},
+  };
+  const compute = createTestKubernetesComputeDriver("compute-mcp", {
+    sandboxDriver: sandbox,
+    credentialGatewayDriver: gateway,
+  });
+  compute.resolveSandboxNamespace = async (namespace) => namespace;
+  for (const driver of [gateway, sandbox, new OCCPluginDriver(), compute]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const secret = secretEntity(
+    await fixture.createSecret(namespace.id, "MCP token", "controlled-token"),
+  );
+  const createdSource = record(
+    await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+      body: {
+        name: "Controlled account",
+        type: "bearer-token",
+        config: sourceConfig,
+        secrets: { token: secret.ref },
+      },
+    }),
+  );
+  assert.equal(createdSource.status, 201, JSON.stringify(createdSource.body));
+  const sourceId = text(responseData(createdSource).id);
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "MCP Agent", nativeValues("mcp"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+      credentialSources: [{ sourceId }],
+    }),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const capabilities = responseData(await fixture.request("GET", `${path}/plugins/capabilities`));
+  assert.ok(Array.isArray(capabilities.credentialSlots));
+  const slot = capabilities.credentialSlots
+    .map(record)
+    .find((item) => item.pluginId === "occ-plugin:slack@1.0.0");
+  assert.ok(slot);
+  const digest = text(slot.releaseSha256);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).waitFor();
+
+  // The discovered catalog and account are controlled; the editor is the production Console module.
+  await page.evaluate(
+    async ({ sourceId, digest }) => {
+      const modulePath = "/console/agents/plugin-fields.mjs";
+      const module: unknown = await import(modulePath);
+      if (
+        typeof module !== "object" ||
+        module === null ||
+        !("createPluginFields" in module) ||
+        typeof module.createPluginFields !== "function"
+      ) {
+        throw new Error("Expected createPluginFields from " + modulePath);
+      }
+      const createPluginFields =
+        module.createPluginFields as typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs").createPluginFields;
+      const pluginId = "occ-plugin:slack@1.0.0";
+      const tool = { id: "slack_search_public", name: "slack_search_public", ownerId: pluginId };
+      const input = document.querySelector("#agent-plugins");
+      if (!(input instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected the Agent's plugin selections input");
+      }
+      const original = input.closest("section.plugin-fields");
+      if (!original) {
+        throw new Error("Expected the original plugin editor");
+      }
+      input.value = JSON.stringify({
+        [pluginId]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: digest,
+            credentials: { account: sourceId },
+            toolNames: [],
+          },
+        },
+      });
+      const entry = {
+        id: pluginId,
+        name: "Slack",
+        tools: [],
+        managedTools: {
+          connection: { slot: "account", sourceId },
+          status: "loaded" as const,
+          tools: [tool],
+        },
+      };
+      const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [entry] };
+      const capabilities = {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        policyScopeByPlugin: { [pluginId]: "tool_human_approval" },
+        toolDefaults: { enabled: false, approval: [], reviewer: [] },
+        tools: { enabled: false, approval: [], reviewer: [] },
+        driverPolicySchema: {},
+        credentialSlots: [
+          {
+            pluginId,
+            releaseSha256: digest,
+            id: "account",
+            label: "Slack account",
+            toolDiscovery: true,
+            sources: [
+              { id: sourceId, name: "Controlled account" },
+              { id: "cs_00000000-0000-4000-8000-000000000002", name: "Another account" },
+            ],
+          },
+        ],
+      } satisfies NonNullable<Parameters<typeof createPluginFields>[0]["capabilities"]>;
+      const fields = createPluginFields({ input, catalog, capabilities });
+      globalThis.setManagedMcpCatalog = (result) => {
+        fields.setCatalog({
+          ...catalog,
+          entries: [
+            {
+              ...entry,
+              managedTools:
+                result === "available"
+                  ? entry.managedTools
+                  : {
+                      connection: entry.managedTools.connection,
+                      status: result === "error" ? "error" : "loaded",
+                      ...(result === "error"
+                        ? { message: "Discovery is unavailable" }
+                        : { tools: [] }),
+                    },
+            },
+          ],
+        });
+      };
+      globalThis.setManagedMcpBindingAvailability = (state) => {
+        fields.setCapabilities({
+          ...capabilities,
+          credentialSlots: capabilities.credentialSlots.map((slot) => ({
+            ...slot,
+            ...(state === "missing" ? { sources: [] } : {}),
+            ...(state === "stale" ? { releaseSha256: "b".repeat(64) } : {}),
+          })),
+        });
+      };
+      original.replaceWith(fields.section);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    { sourceId, digest },
+  );
+
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  const toolRow = dialog.locator('details.plugin-tool-row[data-tool="slack_search_public"]');
+  const checkbox = toolRow.getByLabel("slack_search_public enabled override", { exact: true });
+  const approval = toolRow.getByLabel("slack_search_public require approval for", { exact: true });
+  async function openToolPolicy() {
+    if (!(await toolRow.evaluate((node: HTMLDetailsElement) => node.open))) {
+      await toolRow.locator("summary").click();
+    }
+  }
+  await openToolPolicy();
+  assert.equal(await approval.isDisabled(), true);
+  assert.equal(await dialog.getByLabel("Slack tools enabled by default").isDisabled(), true);
+  assert.equal(await dialog.getByLabel("Slack default reviewer").isDisabled(), true);
+  await checkbox.check();
+  assert.equal(await approval.isEnabled(), true);
+  assert.deepEqual(
+    await approval
+      .locator("option")
+      .evaluateAll((options: HTMLOptionElement[]) =>
+        options.map(({ value, disabled }) => [value, disabled]),
+      ),
+    [
+      ["", true],
+      ["provider_default", true],
+      ["all_actions", false],
+      ["write_actions", true],
+      ["none", false],
+    ],
+  );
+  assert.equal(await toolRow.getByLabel("slack_search_public reviewer").isDisabled(), true);
+  await approval.selectOption("all_actions");
+  const input = page.locator("#agent-plugins");
+  const selected = record(JSON.parse(await input.inputValue()));
+  assert.deepEqual(record(selected["occ-plugin:slack@1.0.0"]).tools, {
+    slack_search_public: { approval: "all_actions" },
+  });
+  await page.evaluate(() => globalThis.setManagedMcpCatalog("error"));
+  await dialog.getByText("Discovery is unavailable").waitFor();
+  assert.equal(await checkbox.isChecked(), true);
+  assert.equal(await approval.inputValue(), "all_actions");
+  await dialog.getByText("Unavailable", { exact: true }).waitFor();
+  await page.evaluate(() => globalThis.setManagedMcpCatalog("missing"));
+  assert.equal(await checkbox.isChecked(), true);
+  assert.equal(await approval.inputValue(), "all_actions");
+  await approval.selectOption("none");
+  assert.equal(
+    record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]).tools,
+    undefined,
+  );
+  await approval.selectOption("all_actions");
+  await checkbox.click();
+  const disabled = record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]);
+  assert.deepEqual(record(disabled.driverPolicy).toolNames, []);
+  assert.equal(disabled.tools, undefined);
+  assert.equal(await toolRow.count(), 0);
+  await page.evaluate(() => globalThis.setManagedMcpCatalog("available"));
+  await checkbox.check();
+  await openToolPolicy();
+  await approval.selectOption("all_actions");
+  await dialog
+    .getByRole("combobox", { name: "Slack account" })
+    .selectOption({ label: "Another account" });
+  const rebound = record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]);
+  assert.equal(rebound.tools, undefined);
+  assert.equal(
+    record(record(rebound.driverPolicy).credentials).account,
+    "cs_00000000-0000-4000-8000-000000000002",
+  );
+  await dialog
+    .getByRole("combobox", { name: "Slack account" })
+    .selectOption({ label: "Controlled account" });
+  await checkbox.check();
+  await openToolPolicy();
+  await approval.selectOption("all_actions");
+  await page.evaluate(() => globalThis.setManagedMcpBindingAvailability("missing"));
+  assert.equal(
+    await dialog.getByRole("button", { name: "Load tools for Slack" }).isDisabled(),
+    true,
+  );
+  assert.equal(await checkbox.isChecked(), true);
+  assert.equal(await approval.inputValue(), "all_actions");
+  await page.evaluate(() => globalThis.setManagedMcpBindingAvailability("stale"));
+  assert.equal(
+    await dialog.getByRole("button", { name: "Load tools for Slack" }).isDisabled(),
+    true,
+  );
+  assert.equal(await checkbox.isChecked(), true);
+  await checkbox.click();
+  const revoked = record(JSON.parse(await input.inputValue()));
+  const revokedPlugin = record(revoked["occ-plugin:slack@1.0.0"]);
+  assert.equal(revokedPlugin.enabled, true);
+  assert.equal(record(record(revokedPlugin.driverPolicy).credentials).account, sourceId);
+  assert.deepEqual(record(revokedPlugin.driverPolicy).toolNames, []);
+  assert.equal(revokedPlugin.tools, undefined);
+
+  async function save(expected: Record<string, unknown>) {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    const saved = page.waitForResponse(
+      (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    const response = await saved;
+    assert.equal(response.status(), 200, await response.text());
+    assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, expected);
+    await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  }
+  await save(revoked);
+
+  // Save rebuilds the tab. Stage Ask again in its real JSON editor, then disable the plugin.
+  const restored = structuredClone(revoked);
+  const restoredPlugin = record(restored["occ-plugin:slack@1.0.0"]);
+  record(restoredPlugin.driverPolicy).toolNames = ["slack_search_public"];
+  restoredPlugin.tools = { slack_search_public: { approval: "all_actions" } };
+  await page.locator(".plugin-json > summary").click();
+  await page.locator("#agent-plugins").fill(JSON.stringify(restored));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  await dialog.getByRole("checkbox", { name: "Enable Slack", exact: true }).uncheck();
+  const pluginDisabled = record(JSON.parse(await page.locator("#agent-plugins").inputValue()));
+  assert.deepEqual(pluginDisabled["occ-plugin:slack@1.0.0"], { enabled: false });
+  await save(pluginDisabled);
+});
+
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -305,7 +1010,7 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
     const beta = dialog.getByRole("button", { name: "Beta", exact: true });
     const search = dialog.getByLabel("Search plugins");
     await alpha.click();
-    await requested.promise;
+    await within(requested.promise, "the held plugin details read");
     await alpha.focus();
     await page.keyboard.press("Tab");
     const isFocused = (node: Element) => node === node.ownerDocument.activeElement;
@@ -528,7 +1233,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await people.press("ArrowDown");
   await people.press("Enter");
   // Hold name resolution at the first selected frame. The search result already identified this person.
-  await lookupStarted.promise;
+  await within(lookupStarted.promise, "the held name lookup for the selected person");
   const chip = page.locator(".slack-directory-chip");
   assert.equal(await chip.locator("span").innerText(), "Freeman Example (@freeman)");
   await chip

@@ -4,6 +4,8 @@ import { describe, test, type TestContext, type TestOptions } from "node:test";
 
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import type {
+  AgentAuditPage,
+  AgentDeploymentStatusResponse,
   AgentListResponse,
   AgentReadResponse,
   AgentRevisionListResponse,
@@ -13,11 +15,12 @@ import type {
   AgentResponse,
   AuditEvent,
   ConfigurationResponse,
+  IAMRoleResponse,
   InstallationResponse,
   NamespaceResponse,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWork } from "../../packages/occ/src/index.ts";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import {
   adminEmail,
   admitted,
@@ -40,7 +43,7 @@ import {
 } from "../helpers/postgres-platform-state.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 type NamespaceCompletion = WorkerEvent & {
@@ -146,11 +149,11 @@ stateCase(
     assert.equal(Object.hasOwn(namespace.data, "installationId"), false);
     cleanupKubernetesNamespaces(context, [namespace.data.id]);
 
-    const worker = await startKubernetesWorker(context);
+    const initialWorker = await startKubernetesWorker(context);
     // The worker has created the Kubernetes namespace but cannot reconcile tenant resources
     // until its tenant-local RoleBinding exists. Inspect only this Namespace's own pass.
-    const completion = (matches: (event: WorkerEvent) => boolean) => {
-      const events: WorkerEvent[] = jsonLines(worker.output(), { lenient: true });
+    const completion = (output: string, matches: (event: WorkerEvent) => boolean) => {
+      const events: WorkerEvent[] = jsonLines(output, { lenient: true });
       return events.find(
         (line): line is NamespaceCompletion =>
           line.event === "worker.completed" &&
@@ -161,20 +164,31 @@ stateCase(
     };
     const denied = await pollUntil(
       "the worker to report the denied tenant request",
-      () => completion((line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED"),
-      { worker, timeoutMs: 60_000 },
+      () =>
+        completion(
+          initialWorker.output(),
+          (line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED",
+        ),
+      { worker: initialWorker, timeoutMs: 60_000 },
     );
     assert.equal(denied.code, "NAMESPACE_INCOMPLETE");
     assert.equal(denied.result, "pending");
+    assert.ok(typeof denied.workId === "string" && denied.workId.length > 0);
+
+    // Stop after the deferral commits so the replacement must pick up the original work.
+    await stopProcess(initialWorker.child, { graceMs: 15_000 });
+    assert.equal(initialWorker.child.exitCode, 0, "initial Worker must exit cleanly");
     await grantTenantAccess(context, namespace.data.id);
+    const worker = await startKubernetesWorker(context);
     const readyNamespace = await waitForNamespaceReady(first, namespace.data.id, worker);
     const ready = await pollUntil(
       "the worker to finish the authorized pass",
-      () => completion((line) => line.result === "success"),
+      () => completion(worker.output(), (line) => line.result === "success"),
       { worker },
     );
     assert.equal(ready.code, "NAMESPACE_RECONCILED");
     assert.equal(ready.hintCode, undefined);
+    assert.equal(ready.workId, denied.workId);
 
     const { agent } = await createKubernetesConfiguredAgent(
       pool,
@@ -190,6 +204,7 @@ stateCase(
     const persisted = await pool.query<{
       audit_events: number;
       queued_operations: number;
+      successful_settlements: number;
       configurations: number;
       agent_service_principals: number;
     }>(
@@ -198,44 +213,59 @@ stateCase(
          WHERE resource_id = $1 OR resource_id = $2 OR resource_id = $3) AS audit_events,
        (SELECT count(*)::integer FROM occ.controller_work
          WHERE namespace_id = $1) AS queued_operations,
+       (SELECT count(*)::integer FROM occ.audit_events
+         WHERE namespace_id = $1 AND resource_id = $1 AND action = 'reconcile'
+           AND outcome = 'success' AND details->>'reasonCode' = 'RECONCILE_SUCCEEDED'
+           AND details->>'workId' = $4) AS successful_settlements,
        (SELECT count(*)::integer FROM occ.configurations
          WHERE namespace_id = $1 AND id = $3) AS configurations,
        (SELECT count(*)::integer FROM occ.iam_identities
          WHERE namespace_id = $1 AND agent_id = $2
            AND kind = 'service_principal') AS agent_service_principals`,
-      [namespace.data.id, agent.id, agent.configurationId],
+      [namespace.data.id, agent.id, agent.configurationId, denied.workId],
     );
     const [persistedCounts] = persisted.rows;
     assert.ok(persistedCounts);
     assert.ok(persistedCounts.audit_events >= 3);
     assert.equal(persistedCounts.queued_operations, 1);
+    assert.equal(persistedCounts.successful_settlements, 1);
     assert.equal(persistedCounts.configurations, 1);
     assert.equal(persistedCounts.agent_service_principals, 1);
 
-    // The live worker can still produce unrelated lifecycle audit rows, such as
-    // bootstrap Namespace convergence, so stop it before measuring this request.
-    await stopProcess(worker.child);
-
-    const auditBeforeUnauthenticatedRequest = await pool.query<CountRow>(
-      "SELECT count(*)::integer AS count FROM occ.audit_events",
-    );
-    const [auditBefore] = auditBeforeUnauthenticatedRequest.rows;
-    assert.ok(auditBefore);
     const unauthenticated = await request(first, "GET", "/namespaces", undefined, {
       authenticated: false,
     });
     assert.equal(unauthenticated.status, 401);
-    const auditAfterUnauthenticatedRequest = await pool.query<CountRow>(
-      "SELECT count(*)::integer AS count FROM occ.audit_events",
+    const { error, requestId } = unauthenticated;
+    assert.equal(error?.code, "UNAUTHENTICATED");
+    assert.ok(requestId);
+    assert.match(requestId, /^req_/);
+    // A request rejected before admission records only its result. It has no verified actor.
+    const audit = await pool.query(
+      `SELECT kind, action, outcome, actor_id, resource_kind, resource_id,
+              details->'__occAuditMetadata'->'actor' AS actor,
+              details->>'operationId' AS operation_id, details->>'method' AS method,
+              (details->>'statusCode')::integer AS status_code
+       FROM occ.audit_events
+       WHERE details->'__occAuditMetadata'->>'requestId' = $1`,
+      [requestId],
     );
-    const [auditAfter] = auditAfterUnauthenticatedRequest.rows;
-    assert.ok(auditAfter);
-    assert.equal(
-      auditAfter.count,
-      auditBefore.count,
-      "unauthenticated requests have no attributable actor and cannot write audit rows",
-    );
+    assert.deepEqual(audit.rows, [
+      {
+        kind: "api_request",
+        action: "openclaw.api.request.result",
+        outcome: "denied",
+        actor_id: "unresolved",
+        resource_kind: "installation",
+        resource_id: installation.id,
+        actor: { unresolved: true },
+        operation_id: "listNamespaces",
+        method: "GET",
+        status_code: 401,
+      },
+    ]);
 
+    await stopProcess(worker.child);
     await stopProcess(first.child);
     const restarted = await startKubernetesController(context);
 
@@ -925,18 +955,90 @@ stateCase(
     });
     assert.equal(Object.hasOwn(firstRevision, "servicePrincipalId"), false);
 
+    const agentPath = `/namespaces/${namespaceA}/agents/${primary.id}`;
     await pollUntil(
-      `first revision ${firstRevision.id} to become active`,
+      `first deployment ${firstRevision.id} to succeed`,
       async () => {
-        const current = await request<AgentReadResponse["data"]>(
+        const current = await request<AgentDeploymentStatusResponse["data"]>(
           api,
           "GET",
-          `/namespaces/${namespaceA}/agents/${primary.id}`,
+          `${agentPath}/deployments/${firstRevision.id}`,
         );
         assert.equal(current.status, 200);
-        return current.data.activeRevisionId === firstRevision.id ? current.data : undefined;
+        assert.notEqual(current.data.status, "failed");
+        return current.data.status === "succeeded" ? current.data : undefined;
       },
       { worker, timeoutMs: 60_000 },
+    );
+    const active = await request<AgentReadResponse["data"]>(api, "GET", agentPath);
+    assert.equal(active.status, 200);
+    assert.equal(active.data.activeRevisionId, firstRevision.id);
+
+    // The same signed-in administrator can read this audit page only after an exact Agent grant.
+    const auditPath = `${agentPath}/audit-events?limit=100`;
+    const deniedAudit = await request(api, "GET", auditPath);
+    assert.equal(deniedAudit.status, 403);
+    assert.equal(deniedAudit.data, undefined);
+    const session = await request<{ user: { id: string } }>(api, "GET", "/api/auth/session");
+    assert.equal(session.status, 200);
+    const actor = await pool.query<{ id: string }>(
+      "SELECT id FROM occ.iam_identities WHERE subject = $1",
+      [session.data.user.id],
+    );
+    assert.equal(actor.rowCount, 1);
+    const [principal] = actor.rows;
+    assert.ok(principal);
+    const role = await request<IAMRoleResponse["data"]>(
+      api,
+      "POST",
+      `/namespaces/${namespaceA}/iam/roles`,
+      {
+        name: "Agent audit reader",
+        permissions: [{ action: "read_audit", resourceKind: "agent" }],
+      },
+    );
+    assert.equal(role.status, 201);
+    const grant = await request(api, "POST", `/namespaces/${namespaceA}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: primary.id,
+    });
+    assert.equal(grant.status, 201);
+    const audit = await request<AgentAuditPage>(api, "GET", auditPath);
+    assert.equal(audit.status, 200);
+
+    // Follow the original HTTP request to the work item and the worker attempt that succeeded.
+    const { requestId } = firstDeployment;
+    assert.ok(requestId);
+    assert.match(requestId, /^req_[0-9a-f-]{36}$/);
+    const queued = audit.data.events.find(
+      (entry) => entry.event === "work_queued" && entry.requestId === requestId,
+    );
+    assert.ok(queued, "the audit page must include the queue record for the deploy request");
+    assert.ok(queued.workId);
+    assert.match(queued.workId, /^work_[0-9a-f]{64}$/);
+    const result = audit.data.events.find(
+      (entry) =>
+        entry.event === "work_result" &&
+        entry.workId === queued.workId &&
+        entry.workState === "succeeded",
+    );
+    assert.ok(result);
+    assert.equal(result.outcome, "success");
+    assert.ok(result.attemptId);
+    assert.match(result.attemptId, /^aud_[0-9a-f-]{36}$/);
+    const claim = audit.data.events.find(
+      (entry) =>
+        entry.event === "work_claimed" &&
+        entry.workId === queued.workId &&
+        entry.attemptId === result.attemptId,
+    );
+    assert.ok(claim);
+    assert.equal(claim.id, result.attemptId);
+    context.diagnostic(
+      `Agent audit HTTP ${deniedAudit.status} before grant, ${audit.status} after grant. ${requestId} -> ${queued.workId} -> ${claim.id} -> ${result.id} succeeded`,
     );
 
     const replacementConfigValues = {

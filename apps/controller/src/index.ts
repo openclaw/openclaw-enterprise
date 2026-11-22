@@ -1,15 +1,25 @@
+import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
+import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import {
+  API_REQUEST_AUDIT_ACTIONS,
   AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
+  ModelProviderSchema,
+  ModelProviderModelSchema,
   CredentialSourceResponse,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -26,6 +36,7 @@ import {
   SecretResponse,
   type Agent,
   type AgentRuntimeLogsQuery,
+  type ApiRequestAuditObservation,
   type AuditEvent,
   type AuditEventKind,
   type AuthorizationEvidence,
@@ -44,8 +55,6 @@ import {
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
-  type UpdateWorkspaceFileBody,
-  type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
 import {
   AuthAccountRoleInvalidError,
@@ -54,6 +63,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   AgentPrincipalAuthorizationError,
+  AuditAppendUnavailableError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   ComputeProvisioningRefusedError,
@@ -61,7 +71,7 @@ import {
   DependencyUnavailableError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
-  NoActiveAgentRevisionError,
+  PostgresCommitOutcomeUnknownError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -103,20 +113,14 @@ import { createBootstrapResources } from "./composition/installation-bootstrap.t
 import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
-import {
-  ControllerWorkspaceFileUnknownOutcomeError,
-  isAllowedWorkspaceFileName,
-  type ControllerWorkspaceFileReadResult,
-  type ControllerWorkspaceFilesAccess,
-  type ControllerWorkspaceFileWriteResult,
-} from "./gateway/contracts.ts";
+import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
-import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
+import { jsonPointer } from "./http/error-details.ts";
 import {
   canonicalFailure,
   cappedPath,
@@ -129,7 +133,6 @@ import {
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
@@ -173,6 +176,7 @@ import {
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+import { createWorkspaceFileHandlers, WORKSPACE_FILE_BODY_LIMIT } from "./http/workspace-files.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
@@ -208,6 +212,9 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
+  /** Durable sink for required HTTP admission and result records. */
+  readonly durableRequestAuditSink?: AuditSink;
+  readonly agentAuditCursorSecret?: string;
   readonly backendSummaries?: readonly BackendSummary[];
   readonly observabilityUrl?: string;
   readonly development: DevelopmentAdmission;
@@ -218,6 +225,7 @@ export interface ControllerAppOptions {
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
+  /** Private Agent gateway transport credential, shared by native browser and HTTP chat relays. */
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
    * How often a native admin WebSocket rechecks its admission (default 25 s). The server
@@ -285,9 +293,6 @@ const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 // bindings, each a 253-character name and a reference: under 32 KiB), all written with
 // six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
 const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
-const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
-// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
-const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -300,6 +305,7 @@ const RESOURCE_ID_PREFIX = {
   configurationId: "cfg_",
   serviceAccountId: "sa_",
   secretId: "sec_",
+  sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
   revisionId: "rev_",
@@ -638,7 +644,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId.endsWith("DeviceAuthorization")) {
     const saved = operation.operationId.includes("SavedAgent");
-    return [
+    const permissions: RequiredPermission[] = [
       {
         action: saved ? "update" : "create",
         resourceKind: "agent",
@@ -647,12 +653,17 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ...(saved
         ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
         : []),
-      {
-        action: operation.operationId.startsWith("start") ? "create" : "operate",
-        resourceKind: "secret",
-        scope: operation.operationId.startsWith("start") ? "namespace" : "requested",
-      },
     ];
+    if (operation.operationId.startsWith("start")) {
+      permissions.push({ action: "create", resourceKind: "credential_source", scope: "namespace" });
+    } else if (operation.operationId.startsWith("poll")) {
+      permissions.push({
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+      });
+    }
+    return permissions;
   }
 
   if (operation.operationId === "createNamespace") {
@@ -1055,6 +1066,9 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (operation?.operationId === "listAgentAuditEvents") {
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
+  }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
   }
@@ -1132,7 +1146,7 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} named in the request body secrets.`;
         }
         if (operation?.operationId === "updateCredentialSource") {
-          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
+          return `For a legacy Gateway update, requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
         }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
@@ -1162,6 +1176,13 @@ function permissionDescription(
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
       }
+      if (
+        operation?.operationId.startsWith("poll") &&
+        operation.operationId.endsWith("DeviceAuthorization") &&
+        resourceKind === "credential_source"
+      ) {
+        return `Requires ${action} permission on the exact credential source associated with the login.`;
+      }
       switch (scope) {
         case "installation":
           return `Requires ${action} permission for ${name} resources in the Installation.`;
@@ -1175,6 +1196,12 @@ function permissionDescription(
     })
     .join(" ");
 
+  if (
+    operation?.operationId.endsWith("DeviceAuthorization") &&
+    !operation.operationId.startsWith("start")
+  ) {
+    return `${description} Only the initiating actor can poll or cancel the login.`;
+  }
   if (operation?.operationId === "deployAgent") {
     return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
   }
@@ -1234,10 +1261,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     throw new Error("The native admin WebSocket lease interval must be a positive integer.");
   }
   let publicOrigin: string | undefined;
+  let publicOriginHost: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
       const parsed = new URL(options.publicOrigin);
       publicOrigin = parsed.origin;
+      publicOriginHost = parsed.host;
       if (
         parsed.username ||
         parsed.password ||
@@ -1371,8 +1400,40 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
+  app.addSchema(ErrorResponse);
+  app.addSchema(AgentDeploymentDiagnosticsResponse);
+  app.addSchema(AgentRuntimeResponse);
+  app.addSchema(AgentRuntimeLogsResponse);
+  app.addSchema(AgentRuntimeCredentialResponse);
+  app.addSchema(SecretResponse);
+  app.addSchema(CredentialSourceResponse);
+  app.addSchema(OAuthConnectionTemplateVersionSchema);
+  app.addSchema(ConnectionTemplateSchema);
+  app.addSchema(StaticKeyConnectionTemplateVersionSchema);
+  app.addSchema(ModelProviderModelSchema);
+  app.addSchema(ModelProviderSchema);
+  app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(PushAgentCredentialsBody);
+  app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
     convertConstToEnum: false,
+    refResolver: {
+      buildLocalReference(schema, _baseUri, _fragment, index) {
+        // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
+        if (typeof schema.$id === "string") {
+          schema.title ??= schema.$id;
+          switch (schema.$id) {
+            case "RegisterTokenServiceSourceBody":
+            case "UpdateTokenServiceSourceBody":
+            case "PushAgentCredentialsBody":
+            case "PushAgentCredentialsResponse":
+              return schema.$id;
+          }
+        }
+        return `def-${index}`;
+      },
+    },
     openapi: {
       openapi: "3.1.0",
       info: {
@@ -1400,7 +1461,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const admissions = new WeakMap<FastifyRequest, AdmittedCaller>();
   const contexts = new WeakMap<FastifyRequest, RequestContext>();
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
+  const requestAuditState = new WeakMap<
+    FastifyRequest,
+    {
+      denialObserved: boolean;
+      resultSelected: boolean;
+      readTarget?: ResourceRef;
+      commitOutcomeUnknown?: true;
+    }
+  >();
+  const requestAuditSink = options.durableRequestAuditSink;
   const factory = options.auditEventFactory ?? new AuditEventFactory();
+  const readAgentAudit =
+    options.agentAuditCursorSecret === undefined
+      ? undefined
+      : createAgentAuditReader(options.agentAuditCursorSecret);
   const createAuthAccountOperation = {
     operationId: "createAuthAccount",
     method: "POST",
@@ -1609,107 +1684,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return disconnected.signal;
   }
 
-  function workspaceFileRequestSignal(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    timeoutMs: number,
-  ): { readonly signal: AbortSignal; readonly dispose: () => void } {
-    const controller = new AbortController();
-    const abort = (message: string) => {
-      if (!controller.signal.aborted) {
-        controller.abort(new Error(message));
-      }
-    };
-    const timeout = setTimeout(
-      () => abort(`The workspace file request exceeded its ${timeoutMs}ms deadline.`),
-      timeoutMs,
-    );
-    timeout.unref?.();
-    const onRequestAborted = () =>
-      abort("The HTTP client disconnected before the workspace file request completed.");
-    const onReplyClosed = () => {
-      if (!reply.raw.writableEnded) {
-        abort("The HTTP client disconnected before the workspace file request completed.");
-      }
-    };
-    if (request.raw.aborted || reply.raw.destroyed) {
-      abort("The HTTP client disconnected before the workspace file request.");
-    }
-    request.raw.once("aborted", onRequestAborted);
-    reply.raw.once("close", onReplyClosed);
-    return {
-      signal: controller.signal,
-      dispose() {
-        clearTimeout(timeout);
-        request.raw.off("aborted", onRequestAborted);
-        reply.raw.off("close", onReplyClosed);
-      },
-    };
-  }
-
-  async function withWorkspaceFileRequestSignal<T>(
-    signal: AbortSignal,
-    operation: Promise<T>,
-    abortError: () => Error = dependencyUnavailable,
-  ): Promise<T> {
-    if (signal.aborted) {
-      // The operation has already started; observe any rejection after the HTTP deadline.
-      void operation.catch(() => {});
-      throw abortError();
-    }
-    let abort: (() => void) | undefined;
-    const aborted = new Promise<never>((_, reject) => {
-      abort = () => reject(abortError());
-      signal.addEventListener("abort", abort, { once: true });
-    });
-    try {
-      return await Promise.race([operation, aborted]);
-    } finally {
-      if (abort !== undefined) {
-        signal.removeEventListener("abort", abort);
-      }
-    }
-  }
-
-  function workspaceFileAuditEvent(
-    operation: OccApiRoute,
-    request: FastifyRequest,
-    resource: ResourceRef,
-    context: RequestContext,
-    filename: WorkspaceFileName,
-    result?: { readonly outcome: "success" | "failure"; readonly reasonCode?: string },
-  ): AuditEvent {
-    const base = event(operation, request, resource, "mutation", context, undefined, result);
-    return {
-      ...base,
-      details: {
-        ...base.details,
-        workspaceFileName: filename,
-      },
-    };
-  }
-
-  function validateWorkspaceFileBody(body: UpdateWorkspaceFileBody): void {
-    const details: ErrorDetail[] = [];
-    if (Buffer.byteLength(body.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT) {
-      details.push({ path: "/content", code: "TOO_LONG" });
-    }
-    const isWellFormed = (
-      String.prototype as unknown as { isWellFormed: (this: string) => boolean }
-    ).isWellFormed;
-    if (body.content.includes("\u0000") || !isWellFormed.call(body.content)) {
-      details.push({ path: "/content", code: "INVALID_VALUE" });
-    }
-    if (details.length > 0) {
-      throw failure(
-        400,
-        "INVALID_REQUEST",
-        "The request does not match the operation contract.",
-        details,
-      );
-    }
-  }
-
   async function requireInstallationAdmin(
     request: FastifyRequest,
     operation: OccApiRoute,
@@ -1796,14 +1770,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       readonly decisionReason: string;
       readonly reasonCode?: string;
       readonly details: Readonly<Record<string, unknown>>;
+      readonly requireAuditWrite?: true;
     },
   ): Promise<void> {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.denialObserved = true;
+    }
     try {
+      // Chat has no Namespace path input, so it needs the stored Agent target.
+      // Other operations keep the requested audit target, separate from enforcement.
       await options.auditSink.append(
         event(
           operation,
           request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          operation.operationId === "chatWithAgent" && authorization !== undefined
+            ? authorization.resource
+            : operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,
@@ -1811,12 +1794,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           authorization,
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+    } catch (error) {
+      if (audit !== undefined && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        if (explanation?.requireAuditWrite !== true) {
+          return;
+        }
+      }
+      throw dependencyUnavailable();
     }
   }
 
@@ -1838,12 +1823,77 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           { outcome: "failure", reasonCode },
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
+    } catch (error) {
+      if (requestAuditState.has(request) && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        return;
+      }
+      throw dependencyUnavailable();
+    }
+  }
+
+  function logRequestAuditFailure(
+    request: FastifyRequest,
+    operation: OccApiRoute,
+    action: string,
+    error: unknown,
+  ): void {
+    let code = "AUDIT_WRITE_FAILED";
+    if (error instanceof PostgresCommitOutcomeUnknownError) {
+      code = "AUDIT_COMMIT_OUTCOME_UNKNOWN";
+    } else if (error instanceof AuditAppendUnavailableError && error.reasonCode !== undefined) {
+      code = error.reasonCode;
+    }
+    app.log.error({
+      event: "http.audit_append_failed",
+      requestId: request.id,
+      action,
+      operationId: operation.operationId,
+      code,
+    });
+  }
+
+  async function appendRequestAudit(
+    sink: AuditSink,
+    request: FastifyRequest,
+    operation: OccApiRoute,
+    observation: ApiRequestAuditObservation,
+  ): Promise<boolean> {
+    const context = contexts.get(request);
+    const resource: ResourceRef = ("readTarget" in observation
+      ? observation.readTarget
+      : undefined) ?? { kind: "installation", id: installationId };
+    try {
+      await sink.append(
+        factory.create({
+          installationId,
+          ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
+          kind: "api_request",
+          action: observation.action,
+          outcome: observation.outcome,
+          resource,
+          actor: context === undefined ? { unresolved: true } : { principalId: context.actorId },
+          requestId: request.id,
+          ...(context === undefined ? {} : { admissionDecisionId: context.admissionDecisionId }),
+          ...("reasonCode" in observation ? { reasonCode: observation.reasonCode } : {}),
+          details: {
+            operationId: operation.operationId,
+            method: request.method === "HEAD" ? "HEAD" : operation.method,
+            ...("statusCode" in observation ? { statusCode: observation.statusCode } : {}),
+          },
+        }),
       );
+      return true;
+    } catch (error) {
+      logRequestAuditFailure(request, operation, observation.action, error);
+      return false;
+    }
+  }
+
+  function setAuditReadTarget(request: FastifyRequest, resource: ResourceRef): void {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.readTarget = resource;
     }
   }
 
@@ -1879,13 +1929,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       rejectDeployment: (request, context) =>
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
     }),
+    ...createWorkspaceFileHandlers({
+      access: options.workspaceFilesAccess,
+      timeoutMs: workspaceFileRequestTimeoutMs,
+      auditSink: options.auditSink,
+      requireCsrf: requireWorkspaceFileCsrf,
+      isAuditManaged: (request) => requestAuditState.has(request),
+      logAuditFailure: (request, operation, error) =>
+        logRequestAuditFailure(request, operation, operation.action, error),
+    }),
   };
 
+  const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.routeOptions.url === "/agents/:agentId/chat") {
+      const timer = setTimeout(() => {
+        if (!reply.sent) {
+          reply.header("connection", "close");
+          reply.raw.once("finish", () => request.raw.destroy());
+          void reply.code(408).send({
+            error: { code: "REQUEST_TIMEOUT", message: "The request body deadline expired." },
+            meta: { requestId: request.id },
+          });
+        }
+      }, 60_000);
+      chatBodyDeadlines.set(request, timer);
+      request.raw.once("end", () => clearTimeout(timer));
+      request.raw.once("aborted", () => clearTimeout(timer));
+    }
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
     if (await nativeAdmin.interceptHttp(request, reply)) {
       return;
+    }
+    if ("auditManagementRequest" in request.routeOptions.config) {
+      requestAuditState.set(request, { denialObserved: false, resultSelected: false });
     }
     const contentLength = request.headers["content-length"];
     if (
@@ -1897,6 +1975,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.addHook("onResponse", async (request, reply) => {
+    clearTimeout(chatBodyDeadlines.get(request));
     const startedAt = requestStartedAt.get(request);
     const durationMs =
       startedAt === undefined ? undefined : Number(process.hrtime.bigint() - startedAt) / 1_000_000;
@@ -1942,7 +2021,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
-        operation.operationId === "bootstrapInstallation")
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents")
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -1953,7 +2033,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "listAgentAuditEvents" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
@@ -2037,6 +2119,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
+        ...(request.routeOptions.url === undefined ? {} : { route: request.routeOptions.url }),
         requestedScope: {
           installationId,
           ...(typeof params.namespaceId === "string" ? { namespaceId: params.namespaceId } : {}),
@@ -2069,11 +2152,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         admitted.admittedScope.namespaceId !== params.namespaceId)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     admissions.set(request, admitted);
@@ -2082,11 +2161,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     let selected: IAMDriver;
     let identity;
@@ -2106,11 +2181,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     if (
@@ -2139,6 +2210,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     contexts.set(request, context);
     if (
       admitted.method === "api_key" &&
+      operation.operationId !== "chatWithAgent" &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
@@ -2196,7 +2268,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operation: OccApiRoute,
   ): Promise<void> {
     const admitted = admissions.get(request);
-    if (controller === undefined || admitted?.method !== "session") {
+    if (
+      operation.operationId === "chatWithAgent" ||
+      controller === undefined ||
+      admitted?.method !== "session"
+    ) {
       return perform(request, reply, operation);
     }
     const { session } = admitted;
@@ -2213,16 +2289,72 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): Promise<void> {
     const context = contexts.get(request);
     if (!context) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
+    }
+    if (operation.operationId === "chatWithAgent") {
+      const admission = admissions.get(request);
+      if (controller === undefined || admission === undefined) {
+        throw dependencyUnavailable();
+      }
+      return relayAgentChat({
+        installationId,
+        controller,
+        request,
+        reply,
+        context,
+        admission,
+        factory,
+        auditSink: options.auditSink,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditFailure: (error) =>
+          logRequestAuditFailure(request, operation, operation.action, error),
+        reauthenticate: async () => {
+          await admit(request, operation);
+          await resolveIdentity(request, operation);
+          if (contexts.get(request)?.actorId !== context.actorId) {
+            throw dependencyUnavailable();
+          }
+        },
+      });
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
     if (body !== undefined) {
       validateConfiguration(body);
+    }
+
+    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
+    // Older handlers would otherwise ignore a requested provider or credential destination.
+    if (
+      body?.mode === "static_bearer" &&
+      (operation.operationId === "createConnectionTemplate" ||
+        operation.operationId === "updateConnectionTemplate")
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Static Connection Templates are unavailable on this controller.",
+      );
+    }
+    if (
+      (body &&
+        "modelProviderId" in body &&
+        ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
+          operation.operationId,
+        )) ||
+      [
+        "listModelProviders",
+        "getModelProvider",
+        "createModelProvider",
+        "updateModelProvider",
+        "listUsableModelProviders",
+      ].includes(operation.operationId)
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Named model providers are unavailable on this controller.",
+      );
     }
 
     if (operation.operationId === "bootstrapInstallation") {
@@ -2237,11 +2369,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
         if (!options.createController) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         const installation: Installation = {
           id: installationId,
@@ -2430,8 +2558,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
     if (operation.operationId === "getNamespace") {
+      const namespace = await controller.getNamespace(context.actorId, namespaceId);
+      setAuditReadTarget(request, {
+        kind: "namespace",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
       reply.send({
-        data: await controller.getNamespace(context.actorId, namespaceId),
+        data: namespace,
         meta: { requestId: request.id },
       });
       return;
@@ -2550,14 +2684,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         result = await controller.pollAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       } else {
         await controller.cancelAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       }
@@ -2593,46 +2727,39 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-          ...(body?.q === undefined ? {} : { q: body.q as string }),
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
+    if (
+      operation.operationId === "discoverAgentPlugins" ||
+      operation.operationId === "discoverAgentPluginDetails"
+    ) {
+      const input = {
+        harnessId: body?.harnessId as "codex" | "openclaw",
+        ...(body?.credentialSource === undefined
+          ? {}
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
+        ...(body?.secretRef === undefined
+          ? { accessToken: body?.accessToken as string }
+          : { secretRef: body.secretRef as SecretReference }),
+      };
+      const result =
+        operation.operationId === "discoverAgentPlugins"
+          ? await controller.discoverAgentPlugins(
+              context.actorId,
+              namespaceId,
+              {
+                ...input,
+                ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+                ...(body?.q === undefined ? {} : { q: body.q as string }),
+              },
+              pluginDiscoveryRequestSignal(reply),
+            )
+          : await controller.discoverAgentPluginDetails(
+              context.actorId,
+              namespaceId,
+              { ...input, pluginId: body?.pluginId as string },
+              pluginDiscoveryRequestSignal(reply),
+            );
       reply.header("cache-control", "no-store");
-      reply.send({ data: catalog, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          pluginId: body?.pluginId as string,
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
-      reply.header("cache-control", "no-store");
-      reply.send({ data: plugin, meta: { requestId: request.id } });
+      reply.send({ data: result, meta: { requestId: request.id } });
       return;
     }
 
@@ -2707,6 +2834,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        setAuditReadTarget: (resource) => setAuditReadTarget(request, resource),
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
@@ -2751,6 +2879,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "listAgentAuditEvents") {
+      const admitted = admissions.get(request);
+      if (admitted?.method !== "session") {
+        throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+      }
+      if (readAgentAudit === undefined) {
+        throw failure(501, "NOT_IMPLEMENTED", "Agent audit is disabled.");
+      }
+      await readAgentAudit({
+        controller,
+        auth: options.auth,
+        session: admitted.session,
+        factory,
+        actorId: context.actorId,
+        admissionDecisionId: admitted.decisionId,
+        namespaceId,
+        agentId,
+        request,
+        reply,
+      });
+      return;
     }
 
     if (operation.operationId === "getAgentCallerPermissions") {
@@ -2948,206 +3099,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (
-      operation.operationId === "getAgentWorkspaceFile" ||
-      operation.operationId === "putAgentWorkspaceFile"
-    ) {
-      const deadlineMs = workspaceFileRequestTimeoutMs;
-      const workspaceFileSignal = workspaceFileRequestSignal(request, reply, deadlineMs);
-      const signal = workspaceFileSignal.signal;
-      const deadline = new Date(Date.now() + deadlineMs);
-      try {
-        requireWorkspaceFileCsrf(request, operation.operationId === "putAgentWorkspaceFile");
-        const filename = params.name;
-        if (filename === undefined || !isAllowedWorkspaceFileName(filename)) {
-          throw failure(
-            400,
-            "INVALID_REQUEST",
-            "The request does not match the operation contract.",
-          );
-        }
-        if (signal.aborted) {
-          throw dependencyUnavailable();
-        }
-        const { agent, revision } = await withWorkspaceFileRequestSignal(
-          signal,
-          operation.operationId === "getAgentWorkspaceFile"
-            ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
-            : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
-        ).catch((error: unknown) => {
-          // Raised after the Agent read or operate authorization, so a caller without the grant
-          // still gets its 403; this names the Agent's state instead of a 503 (finding D768).
-          throw error instanceof NoActiveAgentRevisionError
-            ? workspaceWithoutRunningVersion(agentId, error.stopped)
-            : error;
-        });
-        const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-        // After authorization, so a caller without the grant gets its 403, not this 503
-        // (finding 2584).
-        if (options.workspaceFilesAccess === undefined || signal.aborted) {
-          throw dependencyUnavailable();
-        }
-
-        if (operation.operationId === "getAgentWorkspaceFile") {
-          let result: ControllerWorkspaceFileReadResult;
-          try {
-            if (signal.aborted) {
-              throw dependencyUnavailable();
-            }
-            result = await withWorkspaceFileRequestSignal(
-              signal,
-              options.workspaceFilesAccess.read({
-                revision,
-                filename,
-                signal,
-                deadline,
-              }),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          if (result.status === "missing") {
-            throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
-          }
-          if (result.status === "unavailable") {
-            throw dependencyUnavailable();
-          }
-          const isWellFormed = (
-            String.prototype as unknown as { isWellFormed: (this: string) => boolean }
-          ).isWellFormed;
-          if (
-            Buffer.byteLength(result.file.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT ||
-            result.file.content.includes("\u0000") ||
-            !isWellFormed.call(result.file.content)
-          ) {
-            throw dependencyUnavailable();
-          }
-          reply.send({
-            data: { name: filename, content: result.file.content },
-            meta: { requestId: request.id },
-          });
-          return;
-        }
-
-        const writeBody = body as unknown as UpdateWorkspaceFileBody;
-        validateWorkspaceFileBody(writeBody);
-        let result: ControllerWorkspaceFileWriteResult;
-        try {
-          if (signal.aborted) {
-            throw dependencyUnavailable();
-          }
-          result = await withWorkspaceFileRequestSignal(
-            signal,
-            options.workspaceFilesAccess.write({
-              revision,
-              filename,
-              content: writeBody.content,
-              signal,
-              deadline,
-            }),
-            () =>
-              new ControllerWorkspaceFileUnknownOutcomeError(
-                "The workspace file write reached the OCC request deadline before the controller observed its outcome.",
-              ),
-          );
-        } catch (error) {
-          if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
-            try {
-              await withWorkspaceFileRequestSignal(
-                signal,
-                options.auditSink.append(
-                  workspaceFileAuditEvent(operation, request, target, context, filename, {
-                    outcome: "failure",
-                    reasonCode: "UNKNOWN_OUTCOME",
-                  }),
-                ),
-                () => new ControllerWorkspaceFileUnknownOutcomeError(error.message),
-              );
-            } catch {
-              throw failure(503, "UNKNOWN_OUTCOME", error.message);
-            }
-            throw failure(503, "UNKNOWN_OUTCOME", error.message);
-          }
-          try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw dependencyUnavailable();
-        }
-        if (result.status === "missing") {
-          try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "FILE_MISSING",
-                }),
-              ),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
-        }
-        if (result.status === "unavailable") {
-          try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw dependencyUnavailable();
-        }
-        try {
-          await withWorkspaceFileRequestSignal(
-            signal,
-            options.auditSink.append(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "success",
-              }),
-            ),
-            () =>
-              new ControllerWorkspaceFileUnknownOutcomeError(
-                "The workspace file was written, but its final audit outcome could not be persisted before the request ended.",
-              ),
-          );
-        } catch {
-          throw failure(
-            503,
-            "UNKNOWN_OUTCOME",
-            "The workspace file was written, but its final audit outcome could not be persisted.",
-          );
-        }
-        reply.send({
-          data: {
-            name: filename,
-            size: Buffer.byteLength(writeBody.content, "utf8"),
-          },
-          meta: { requestId: request.id },
-        });
-        return;
-      } finally {
-        workspaceFileSignal.dispose();
-      }
-    }
-
-    if (
       operation.operationId === "getAgentDeploymentRuntime" ||
       operation.operationId === "getAgentDeploymentRuntimeLogs"
     ) {
@@ -3288,6 +3239,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
+    const resourceErrors = () => ({
+      400: { description: "Bad Request", ...error },
+      403: { description: "Forbidden", ...error },
+      404: { description: "Not Found", ...error },
+      409: { description: "Conflict", ...error },
+    });
     // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
     const bodyErrors = {
       413: { description: "Payload Too Large", ...error },
@@ -3394,10 +3351,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   },
               creating ? 201 : 200,
             ),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
             ...(creating ? bodyErrors : {}),
           },
         } as DocumentedFastifySchema,
@@ -3739,11 +3693,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       targetUserId?: string,
     ) {
       const admitted = admissions.get(request);
+      const origin = request.headers.origin;
+      const fetchMode = request.headers["sec-fetch-mode"];
+      // A browser GET from the Console omits Origin. Its Fetch Metadata is scoped
+      // to the requested host, so match the configured Console authority as well.
+      const sameOriginBrowserRead =
+        request.method === "GET" &&
+        origin === undefined &&
+        request.headers.host?.toLowerCase() === publicOriginHost &&
+        request.headers["sec-fetch-site"] === "same-origin" &&
+        (fetchMode === "cors" || fetchMode === "same-origin") &&
+        request.headers["sec-fetch-dest"] === "empty";
       if (
         admitted?.method !== "session" ||
         admitted.session.userId !== context.subject ||
         publicOrigin === undefined ||
-        request.headers.origin !== publicOrigin
+        (origin !== publicOrigin && !sameOriginBrowserRead)
       ) {
         throw failure(
           403,
@@ -3883,7 +3848,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: accountReadOperation.operationId,
           summary: accountReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -3915,10 +3880,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               },
             }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
@@ -4039,10 +4001,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 required: ["userId"],
                 properties: { userId: { type: "string" } },
               }),
-              400: { description: "Bad Request", ...error },
-              403: { description: "Forbidden", ...error },
-              404: { description: "Not Found", ...error },
-              409: { description: "Conflict", ...error },
+              ...resourceErrors(),
               ...bodyErrors,
             },
           },
@@ -4118,7 +4077,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: recoveryReadOperation.operationId,
           summary: recoveryReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4191,10 +4150,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               required: [...recoveryResponse.required, "changed"],
               properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
             }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
             ...bodyErrors,
           },
         },
@@ -4307,10 +4263,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 created: { type: "boolean" },
               },
             }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
           },
         },
         onRequest: async (request) => admit(request, enrolOperation),
@@ -4480,18 +4433,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => {
         const context = contexts.get(request);
         if (!context) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         if (options.provisionAuthAccount === undefined) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
 
         const body = request.body as Record<string, unknown> | undefined;
@@ -4637,15 +4582,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   void app.register(async (routes) => {
-    routes.addSchema(ErrorResponse);
-    routes.addSchema(AgentDeploymentDiagnosticsResponse);
-    routes.addSchema(AgentRuntimeResponse);
-    routes.addSchema(AgentRuntimeLogsResponse);
-    routes.addSchema(AgentRuntimeCredentialResponse);
-    routes.addSchema(SecretResponse);
-    routes.addSchema(CredentialSourceResponse);
-    routes.addSchema(OAuthConnectionTemplateVersionSchema);
-    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
@@ -4742,6 +4678,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
     }
     for (const operation of occApiRoutes) {
+      // Bootstrap has its own transactional evidence. Runtime log reads have their own
+      // disclosure gate and can also return a download.
+      const routeAuditSink =
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "getAgentDeploymentRuntimeLogs"
+          ? undefined
+          : requestAuditSink;
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
         ...operation.schema,
@@ -4750,13 +4693,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         description: permissionDescription(permissions, operation),
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
-        ...(operation.operationId === "bootstrapInstallation"
+        ...(operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents"
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route({
+      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
         method: operation.method as HTTPMethods,
         url: operation.path,
+        ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
+        ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4794,7 +4740,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           const unstorable =
             unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
+            (operation.operationId === "chatWithAgent"
+              ? undefined
+              : unstorableTextFailure("body", request.body));
           if (unstorable !== undefined) {
             throw unstorable;
           }
@@ -4802,7 +4750,69 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => performFenced(request, reply, operation),
+        handler: async (request, reply) => {
+          if (routeAuditSink === undefined) {
+            return performFenced(request, reply, operation);
+          }
+          // Admission here means the request can enter the handler. The handler still
+          // checks the caller's permission for the exact operation and target.
+          if (
+            controller !== undefined &&
+            requestAuditState.has(request) &&
+            !(await appendRequestAudit(routeAuditSink, request, operation, {
+              action: API_REQUEST_AUDIT_ACTIONS.admitted,
+              outcome: "success",
+            }))
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (controller === undefined) {
+            await performFenced(request, reply, operation);
+          } else {
+            await controller.withRequestAuditId(request.id, () =>
+              performFenced(request, reply, operation),
+            );
+          }
+          // Wait for an asynchronous onSend hook when perform called reply.send().
+          return reply;
+        },
+        ...(routeAuditSink === undefined
+          ? {}
+          : {
+              onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
+                const audit = requestAuditState.get(request);
+                if (audit === undefined || audit.resultSelected || controller === undefined) {
+                  return payload;
+                }
+                // A later transport or reply error can re-enter onSend. Record the first selected
+                // response once, including when its append fails.
+                audit.resultSelected = true;
+                const statusCode = reply.statusCode;
+                let outcome: "success" | "denied" | "failure" = "success";
+                if (
+                  statusCode < 500 &&
+                  (audit.denialObserved || statusCode === 401 || statusCode === 403)
+                ) {
+                  outcome = "denied";
+                } else if (statusCode >= 400) {
+                  outcome = "failure";
+                }
+                const readTarget =
+                  outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
+                // Preserve the selected response if the append fails. The handler may have
+                // committed its change or already denied the request.
+                await appendRequestAudit(routeAuditSink, request, operation, {
+                  action: API_REQUEST_AUDIT_ACTIONS.result,
+                  outcome,
+                  statusCode,
+                  ...(readTarget === undefined ? {} : { readTarget }),
+                  ...(audit.commitOutcomeUnknown === true
+                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
+                    : {}),
+                });
+                return payload;
+              },
+            }),
       });
     }
   });
@@ -5004,6 +5014,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               decisionReason: "The device login does not belong to the requested scope.",
               reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
               details: {},
+              requireAuditWrite: true,
             },
           );
         } catch (auditError) {
@@ -5135,7 +5146,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         code: mapped.code,
       });
     }
+    const operation = contexts.get(request)?.operation;
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined && operation !== undefined) {
+      if (error instanceof AuditAppendUnavailableError) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+      } else if (error instanceof PostgresCommitOutcomeUnknownError) {
+        audit.commitOutcomeUnknown = true;
+        app.log.error({
+          event: "http.commit_outcome_unknown",
+          requestId: request.id,
+          operationId: operation.operationId,
+          code: "COMMIT_OUTCOME_UNKNOWN",
+        });
+      }
+    }
     canonicalFailure(reply, mapped);
+    return reply;
   });
 
   return app;

@@ -5,17 +5,18 @@ import { availableParallelism } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { openShellHarnessError } from "./openshell-model-inputs.mjs";
-import { loadTestSuites } from "./test-suites.mjs";
+import { openShellHarnessError } from "./openshell-model-inputs.ts";
+import { loadTestSuites } from "./test-suites.ts";
+import { isRecord } from "./records.ts";
 
 type IssueDetails = {
   file?: string;
   [key: string]: unknown;
 };
 
-type RunnerIssue = IssueDetails & { code: string; message: string };
+export type RunnerIssue = IssueDetails & { code: string; message: string };
 
-type RunnerFile = {
+export type RunnerFile = {
   path: string;
   expectedTests: string[];
   env: Record<string, string>;
@@ -23,7 +24,7 @@ type RunnerFile = {
   optionalEnv: string[];
 };
 
-type RunnerLane = {
+export type RunnerLane = {
   name: string;
   env: Record<string, string>;
   requiredEnv: string[];
@@ -34,7 +35,7 @@ type RunnerLane = {
   files: RunnerFile[];
 };
 
-type RunnerManifest = {
+export type RunnerManifest = {
   lanes: Map<string, RunnerLane>;
   groups: Map<string, string[]>;
   durations: Map<string, number>;
@@ -47,13 +48,13 @@ const testRoots = ["tests/conformance", "tests/integration", "tests/browser", "t
 export function usage() {
   return [
     "Usage:",
-    "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts audit [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
     "    Use --test-name=<literal> for names beginning with --.",
     "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -85,6 +86,25 @@ export function parseArgs(argv: readonly string[]) {
       continue;
     }
     const key = token.slice(2);
+    if (
+      ![
+        "manifest",
+        "root",
+        "file",
+        "test-name",
+        "state",
+        "results",
+        "lifecycle",
+        "attempt",
+        "results-dir",
+        "needs",
+        "lanes",
+        "release-selection",
+        "full-coverage-marker",
+      ].includes(key)
+    ) {
+      throw new Error(`Unsupported option: ${token}`);
+    }
     const value = tokens.next().value;
     if (!value || value.startsWith("--")) {
       throw new Error(`Missing value for --${key}`);
@@ -104,10 +124,6 @@ export function parseArgs(argv: readonly string[]) {
 
 export function issue(code: string, message: string, extra: IssueDetails = {}): RunnerIssue {
   return { code, message, ...extra };
-}
-
-export function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isUnknownArray(value: unknown): value is unknown[] {
@@ -132,7 +148,7 @@ function envObject(value: unknown, path: string, issues: RunnerIssue[]): Record<
   if (value === undefined) {
     return {};
   }
-  if (!isObject(value)) {
+  if (!isRecord(value)) {
     issues.push(issue("invalid-manifest", `${path} must be an object`));
     return {};
   }
@@ -159,7 +175,7 @@ function normalizeFile(
   issues: RunnerIssue[],
 ): RunnerFile | null {
   const path = `lanes.${laneName}.files.${index}`;
-  if (!isObject(file) || typeof file.path !== "string") {
+  if (!isRecord(file) || typeof file.path !== "string") {
     issues.push(issue("invalid-manifest", `${path} must be an object with a path string`));
     return null;
   }
@@ -193,10 +209,10 @@ function fileModes(
   const paths = new Set(files.map((file) => file.path));
   const parallel = stringArray(lane.parallelFiles, `${path}.parallelFiles`, issues);
   const serial = lane.serialFiles ?? {};
-  if (!isObject(serial)) {
+  if (!isRecord(serial)) {
     issues.push(issue("invalid-manifest", `${path}.serialFiles must be an object`));
   }
-  for (const [file, reason] of isObject(serial) ? Object.entries(serial) : []) {
+  for (const [file, reason] of isRecord(serial) ? Object.entries(serial) : []) {
     if (typeof reason !== "string" || reason.trim() === "") {
       issues.push(issue("invalid-manifest", `${path}.serialFiles.${file} must name a reason`));
     }
@@ -213,13 +229,13 @@ function fileModes(
       issues.push(issue("invalid-manifest", `${path}.parallelFiles lists ${file} twice`));
       continue;
     }
-    if (isObject(serial) && Object.hasOwn(serial, file)) {
+    if (isRecord(serial) && Object.hasOwn(serial, file)) {
       issues.push(issue("invalid-manifest", `${path}.parallelFiles ${file} is also serial`));
     }
     seen.add(file);
   }
   return parallel.filter(
-    (file) => paths.has(file) && !(isObject(serial) && Object.hasOwn(serial, file)),
+    (file) => paths.has(file) && !(isRecord(serial) && Object.hasOwn(serial, file)),
   );
 }
 
@@ -259,7 +275,7 @@ function fileDurations(raw: Record<string, unknown>, manifestPath: string, issue
     issues.push(issue("invalid-manifest", `fileDurations ${reference} is not readable JSON`));
     return durations;
   }
-  if (!isObject(table) || table.version !== 1 || !isObject(table.files)) {
+  if (!isRecord(table) || table.version !== 1 || !isRecord(table.files)) {
     issues.push(
       issue("invalid-manifest", `fileDurations ${reference} must be version 1 with a files object`),
     );
@@ -287,7 +303,7 @@ function normalizeManifest(raw: unknown, manifestPath: string): RunnerManifest {
   const lanes = new Map<string, RunnerLane>();
   const groups = new Map<string, string[]>();
 
-  if (!isObject(raw)) {
+  if (!isRecord(raw)) {
     return {
       lanes,
       groups,
@@ -299,17 +315,17 @@ function normalizeManifest(raw: unknown, manifestPath: string): RunnerManifest {
   if (raw.version !== 1) {
     issues.push(issue("invalid-manifest", "manifest version must be 1"));
   }
-  if (!isObject(raw.lanes)) {
+  if (!isRecord(raw.lanes)) {
     issues.push(issue("invalid-manifest", "lanes must be an object"));
   }
-  if (!isObject(raw.groups)) {
+  if (!isRecord(raw.groups)) {
     issues.push(issue("invalid-manifest", "groups must be an object"));
   }
 
   // Inspect entries even after reporting an invalid container so its entries still get diagnostics.
   const laneEntries: [string, unknown][] = Object.entries(raw.lanes ?? {});
   for (const [laneName, lane] of laneEntries) {
-    if (!isObject(lane)) {
+    if (!isRecord(lane)) {
       issues.push(issue("invalid-manifest", `lanes.${laneName} must be an object`));
       continue;
     }
@@ -552,7 +568,10 @@ function baseChildEnv(inheritedEnv: readonly string[]) {
   return env;
 }
 
-export function fileInputEnv(lane: RunnerLane, file: RunnerFile) {
+export function fileInputEnv(
+  lane: Pick<RunnerLane, "env" | "requiredEnv" | "optionalEnv">,
+  file: Pick<RunnerFile, "requiredEnv" | "optionalEnv">,
+) {
   return mergeEnv(
     baseChildEnv([
       ...lane.requiredEnv,
@@ -596,11 +615,11 @@ export function fileConcurrency(lane: RunnerLane, issues: RunnerIssue[]) {
 
 export function selectLane(
   manifest: RunnerManifest,
-  laneName: string,
-  selectedFile?: string,
-  testName?: string,
+  laneName: unknown,
+  selectedFile?: unknown,
+  testName?: unknown,
 ) {
-  let lane = manifest.lanes.get(laneName);
+  let lane = typeof laneName === "string" ? manifest.lanes.get(laneName) : undefined;
   const issues = [...manifest.issues];
 
   if (lane && selectedFile !== undefined) {
@@ -620,7 +639,7 @@ export function selectLane(
           issue(
             "invalid-test-selection",
             "--test-name must exactly match one required manifest case",
-            { file: selectedFile },
+            { file: selected.path },
           ),
         );
       }
@@ -639,7 +658,7 @@ export function selectLane(
         optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
-      const error = openShellHarnessError(laneName, selected.path, fileInputEnv(lane, selected));
+      const error = openShellHarnessError(lane.name, selected.path, fileInputEnv(lane, selected));
       if (error) {
         issues.push(
           issue("invalid-file-selection", error, { lane: laneName, file: selected.path }),
@@ -692,4 +711,26 @@ export function selectedLaneNames(
     return null;
   }
   return groupLanes.filter((lane) => lanes.includes(lane));
+}
+
+// One job-log line per entry: a newline in a message or name cannot start a new
+// line (or a workflow command) of its own.
+export function oneLine(text: unknown) {
+  const line = text ?? "";
+  if (typeof line !== "string") {
+    throw new TypeError('(text ?? "").trim is not a function');
+  }
+  return line.trim().replace(/\s*\n\s*/gu, " | ");
+}
+
+// A lane can fail on runner issues alone, with every test passing: an expected
+// test that did not run, a file that hit the runner timeout, an unexpected skip.
+// Name those in the job log too. Issue messages are built by the runner from
+// manifest entries, paths and test names, never from test output.
+export function logIssues(issues: readonly RunnerIssue[]) {
+  for (const { code, message, file } of issues) {
+    process.stderr.write(
+      `run-tests: issue ${code}${file ? ` ${file}` : ""}: ${oneLine(message)}\n`,
+    );
+  }
 }

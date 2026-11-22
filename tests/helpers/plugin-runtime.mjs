@@ -62,6 +62,8 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       ? []
       : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
+  const writeDescriptors = new Map();
+  let nextDescriptor = 3;
   let temporaryDirectory = 0;
   const gatewayUnavailable = new Error("Gateway unavailable");
   const sandbox = {
@@ -106,7 +108,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           async callGatewayFromCli(method, rpcOptions, params, extra) {
             assert.equal(extra.sharedStateMode, "read-only");
             calls.push({ method, params });
-            const value = await options.gatewayCall?.(method, extra.signal);
+            const value = await options.gatewayCall?.(method, extra.signal, { rpcOptions, extra });
             if (value === undefined) {
               throw gatewayUnavailable;
             }
@@ -179,7 +181,19 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
             }
             return files.get(path);
           },
-          writeFileSync(path, data) {
+          openSync(path, flags) {
+            assert.equal(flags, "w");
+            const descriptor = nextDescriptor++;
+            files.set(path, "");
+            writeDescriptors.set(descriptor, path);
+            return descriptor;
+          },
+          closeSync(descriptor) {
+            assert.ok(writeDescriptors.delete(descriptor), "unknown file descriptor");
+          },
+          writeFileSync(file, data) {
+            const path = typeof file === "number" ? writeDescriptors.get(file) : file;
+            assert.notEqual(path, undefined, "unknown file descriptor");
             files.set(path, String(data));
           },
           renameSync(from, to) {

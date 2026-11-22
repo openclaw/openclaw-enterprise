@@ -1,24 +1,25 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-12
-last_updated_session: authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves Slack/model Secrets and submits inline Configuration, credential references
-and retained Preset bindings. OCC queues setup without placeholders. The worker creates
-Configuration/Agent, grants exact credential access and admits the first deployment.
-Its handle follows activation or failure; later deployments use separate handles.
+Console saves Slack/model Secrets and submits inline Configuration, credential
+references and retained Preset bindings. OCC queues setup without placeholders.
+The worker creates Configuration and Agent, grants exact credential access,
+and admits initial deployment.
+The handle tracks activation or failure. Later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
 
-- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
-- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
-- Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
+- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mts`.
+- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/agent-provisioning-requests.ts:provisionAgent`.
+- Preconditions: ready Namespace, Dedicated runtime, selected Drivers, PostgreSQL work storage, Agent/Configuration/deploy permissions, exact Secret access and transactional IAM authority. No provisioning-input keyring required.
 
 ## Flow
 
@@ -60,7 +61,7 @@ graph TD
 Console keeps the configured Harness separate from execution mode: dedicated
 OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
-policy through `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
+policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
 The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
 
@@ -75,7 +76,7 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 
 ### 2. OCC admits one job
 
-`packages/occ/src/index.ts:OpenClawController.provisionAgent`
+`packages/occ/src/agent-provisioning-requests.ts:provisionAgent`
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
@@ -97,7 +98,7 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 ### 3. The worker creates resources and credentials
 
-`packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
+`packages/occ/src/agent-provisioning-worker.ts:processAgentProvisioning`
 
 Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
 effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
@@ -130,12 +131,17 @@ Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-provisioning-worker.ts:observeProvisioningDeployment`
 
-The job records its first Agent revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
-defers work without consuming retries until that version activates or fails. The same handle reports
-success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
-before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
+At handoff, provisioning saves the first Agent revision ID and stays `running`.
+Provisioning waits without using attempts. On success, PostgreSQL
+marks provisioning `succeeded`.
+If the claim has an audit attempt ID, PostgreSQL saves `openclaw.controller_work.completed`
+in the same transaction.
+
+The job reports the wait, success, or a safe deployment error. During rollout,
+Stop gives `REVISION_STOPPED`. Stop or Delete before handoff gives
+`PROVISIONING_CANCELLED` with its action. Agent and revision IDs survive restart.
 
 Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) polls the job.
 When a pending job names its Agent and first revision, Create gives the deployment read one
@@ -163,7 +169,7 @@ Console parses each reply in
 recovery. A malformed present `agentId` or `revisionId` makes even a terminal
 `failed` reply unknown. The form keeps the accepted job URL and original request,
 disables Create, and offers Retry without a recovery link. Retry posts to the same
-job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
+job's `/retry`. `packages/occ/src/agent-provisioning-requests.ts:retryAgentProvisioning` refuses a changed
 Agent lifecycle or an existing deployment handoff with `409`. After refusal during
 unknown-outcome recovery, the form enables a resend of the original request ID.
 
@@ -176,7 +182,7 @@ Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
 custom images still require an operator declaration in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
-`packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
+`packages/occ/src/agent-harness-topology.ts:requireDedicatedNativeSupport` enforces them.
 Admission does not prove workload delivery. Sandbox receives the setup identity and Secret
 reference through `HarnessWorkloadRequirements.workspaceSetup`; OpenShell runs
 [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution)
@@ -196,7 +202,16 @@ are [resent](configuration-driver.md#2-resolve-singleton-state-and-select-driver
 Only pre-record Configuration refusals roll back, deleting the written Configuration
 or marking it for later cleanup.
 
-While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. A cancelled provisioning never runs again. Agent deletion settles an effect it left pending one worker lease after cancellation: it removes runtime credentials and records the receipt with its finalizer, deferring without spending attempts. Deploy, Agent update and runtime-credential requests settle it once the cancelled claim's stored lease expires, returning `409` until then. Namespace deletion waits for queued or running work and for any effect without a matching receipt, not for settled effects on terminal work. Namespace Secrets and completed Configurations remain available.
+Provisioning blocks conflicting edits and manual deployment. Stale workers
+cannot hand off. Stop or Delete saves `openclaw.agents.provision.cancelled`
+with cancellation if request audit is enabled or the claim has an audit
+attempt ID. The event saves `workId` and available request and attempt IDs.
+
+Agent deletion defers runtime credential removal for one lease without spending
+attempts. It saves the receipt with deletion. Deploy, Agent update, and
+runtime-credential requests return `409` until lease expiry, then settle
+the effect. Namespace deletion waits for queued or running work and effects
+without receipts. Namespace Secrets and completed Configurations remain.
 
 Requests have no delete API; Agent deletion removes its requests. Agent-less requests
 remain; for migration `0049` blockers, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
@@ -206,7 +221,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
 - Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. For source-backed Harness authentication, it omits the Gateway catalog lookup but still requires a ready source, its original Gateway owner, a Sandbox, current operator grants and the Agent grant when the Agent exists. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
-- Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
+- Use `tests/integration/postgres-agent-provisioning.test.ts` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
 
 ## Related docs
@@ -224,7 +239,12 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
+
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
+
+- 2026-11-12 14:06: Record provisioning cancellation. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
 
 - 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
 

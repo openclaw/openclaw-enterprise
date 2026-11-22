@@ -9,6 +9,7 @@ import {
   authContext,
   options,
   digest,
+  routedGatewayConfiguration,
   routedOptions,
   routedRevision,
   labelSelectorLabels,
@@ -36,7 +37,7 @@ type DeleteRequest = Address & { body: { preconditions: { uid: string } } };
 type PodRequest = { namespace: string; labelSelector?: string };
 // This view exposes only the existing transport seam used by the fixture.
 export type FixtureDriver = Omit<KubernetesComputeDriver, never> & {
-  options: KubernetesComputeDriver["options"];
+  options: ConstructorParameters<typeof KubernetesComputeDriver>[0];
   manifest: KubernetesComputeDriver["manifest"];
   gatewayNamespaceManifest: KubernetesComputeDriver["gatewayNamespaceManifest"];
   networkPolicies: KubernetesComputeDriver["networkPolicies"];
@@ -103,7 +104,7 @@ export function workspaceSetupFixture(
   ) as unknown as FixtureDriver;
   const revision = routedRevision(driver, {
     configuration: {
-      gateway: routedRevision(driver).configuration.gateway,
+      gateway: routedGatewayConfiguration(),
       agents: { defaults: { model: embedded ? "openai/gpt-5" : "codex/gpt-5" } },
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },

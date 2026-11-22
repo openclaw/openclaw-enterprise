@@ -17,11 +17,11 @@ import {
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { signedLeaf } from "../helpers/certificates.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { signedLeaf } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
-import { waitFor } from "../helpers/qa-utils.mjs";
+import { waitFor } from "../helpers/qa-wait.ts";
 
 const binding = {
   sandboxId: "immutable-sandbox-id",
@@ -602,9 +602,14 @@ test("Git authority cannot be constructed without both trusted owner callbacks",
 
 test("protected Git replies to this online decision before its authority deadline", async (t) => {
   let answer = "current";
+  let approvals = 0;
+  const lookupBinding = async () => binding;
   const { client, keys } = await openShellOnlineGitWire(t, {
-    lookupBinding: async () => binding,
-    authorizeOnlineRequest: async (q, installed) => {
+    lookupBinding,
+    async authorizeOnlineRequest(q, installed) {
+      approvals++;
+      // A durable owner method can depend on its original options receiver.
+      assert.equal(this.lookupBinding, lookupBinding);
       const { deadlineAt, exchangeId, requestDigestSha256 } = q;
       if (typeof answer === "object") {
         return answer;
@@ -612,13 +617,21 @@ test("protected Git replies to this online decision before its authority deadlin
       if (answer === "permit") {
         return { kind: "permit", sendStartBy: deadlineAt };
       }
+      // Each answer below differs from the current allow in exactly one checked field.
       return {
-        kind: "allow",
+        kind: answer === "permit with the allow's fields" ? "permit" : "allow",
         exchangeId: answer === "another request" ? randomUUID() : exchangeId,
-        requestDigestSha256,
-        preparationAttemptId: installed.preparationAttemptId,
-        materialVersion: installed.materialVersion,
-        replyBy: answer === "expired" ? new Date(0).toISOString() : deadlineAt,
+        requestDigestSha256: answer === "another digest" ? "0".repeat(64) : requestDigestSha256,
+        preparationAttemptId:
+          answer === "another attempt" ? "prepared-two" : installed.preparationAttemptId,
+        materialVersion: answer === "another version" ? "version-two" : installed.materialVersion,
+        replyBy:
+          answer === "expired"
+            ? new Date(0).toISOString()
+            : answer === "after the deadline"
+              ? new Date(Date.parse(deadlineAt) + 1000).toISOString()
+              : deadlineAt,
+        ...(answer === "permit with the allow's fields" && { sendStartBy: deadlineAt }),
       };
     },
   });
@@ -628,10 +641,18 @@ test("protected Git replies to this online decision before its authority deadlin
     ["expired", 2],
     ["permit", 2],
     ["another request", 2],
+    ["permit with the allow's fields", 2],
+    ["another digest", 2],
+    ["another version", 2],
+    ["another attempt", 2],
+    ["after the deadline", 2],
+    ["current", 1],
   ]) {
     answer = decision;
+    const priorApprovals = approvals;
     const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
     assert.equal(result.decision, expected, decision);
+    assert.equal(approvals, priorApprovals + 1);
   }
   // The trusted owner can return malformed runtime values despite its TypeScript contract.
   // A structured denial must never be treated as an allow, even with a truthy reason.
@@ -646,6 +667,40 @@ test("protected Git replies to this online decision before its authority deadlin
       const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
       assert.deepEqual(result, { decision: 2, reason_code: reasonCode });
     });
+  }
+});
+
+test("an allow or denial that settles after the call ends is not acted on", async (t) => {
+  let answer;
+  const returned = [];
+  const denials = [];
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    budgetMs: 100,
+    lookupBinding: async () => binding,
+    authorizeOnlineRequest: async (q, installed, signal) => {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      returned.push(answer);
+      return answer === "allow" ? onlineGitAllow(q, installed) : { kind: "denied", reason: answer };
+    },
+    onDeny: (denial) => denials.push(denial),
+  });
+  const auth = token(keys, "supervisor", binding.sandboxId);
+  // Once the call ends, neither an allow nor a structured denial describes why we refused.
+  for (const late of ["allow", "draft_already_opened", "access_withdrawn", "unavailable"]) {
+    answer = late;
+    const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
+    assert.equal(result.decision, 2, late);
+    // The hook's own answer for the late result, not the transport's timeout denial.
+    const denial = await waitFor(
+      `the late ${late} is recorded`,
+      () => returned.includes(late) && denials.length === returned.length && denials.at(-1),
+      5000,
+      { interval: 10 },
+    );
+    assert.deepEqual(
+      [denial.reason, denial.reasonCode, denial.operation],
+      ["aborted", "route_not_ready", "receive-pack"],
+    );
   }
 });
 

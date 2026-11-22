@@ -88,6 +88,8 @@ sets the worker's reconciliation interval. It does not set a withdrawal deadline
 
 On worker restart, surviving sessions and Compute material may still be usable.
 A broker can recover the original broker's committed `DISPOSED` receipt.
+For claimed native Git cleanup, the Worker can finish a closing attempt from
+that matching receipt without the sender, recording any missing session ID.
 A missing session that was exposed fails the version and keeps its cleanup open.
 A closing session blocks replacement until disposal. A new version cannot settle
 older cleanup. Deletion, invalidation and elapsed deadlines do not establish

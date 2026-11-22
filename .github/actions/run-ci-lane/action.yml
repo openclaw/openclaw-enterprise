@@ -92,7 +92,7 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
-      run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
+      run: node scripts/ci/run-tests.ts check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
     - name: Select installer image preparation
       id: image-mode
       shell: bash
@@ -100,26 +100,7 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
-      run: |
-        node --input-type=module <<'NODE'
-        import { appendFileSync } from 'node:fs';
-        import { loadTestSuites } from './scripts/ci/test-suites.mjs';
-        import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
-        const view = process.env.OCC_CI_SUITE_VIEW;
-        const name = process.env.CI_SELECTED_LANE;
-        const lanes = loadTestSuites('scripts/ci/test-suites.json', view).lanes;
-        if (!Object.hasOwn(lanes, name) || (view === 'full-integration' && !isOpenShellLane(name))) {
-          throw new Error('The selected lane does not belong to the action suite view.');
-        }
-        const lane = lanes[name];
-        const file = process.env.CI_SELECTED_TEST_FILE;
-        const sourceBuild = lane.prepare?.sourceBuildFiles?.some((path) =>
-          file ? path === file : lane.files.some((entry) => entry.path === path));
-        const selected = isOpenShellLane(name) &&
-          lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
-        appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
-        appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
-        NODE
+      run: node scripts/ci/select-installer-image-mode.ts
     - name: Start memory sampling
       id: memory-sampler
       if: startsWith(inputs.lane, 'images-runtime-startup') || startsWith(inputs.lane, 'checks-browser')
@@ -153,11 +134,13 @@ runs:
         LOGGING_SETUP_STARTED_NS: ${{ steps.logging-docker-start.outputs.started-ns }}
         LOGGING_SETUP_OUTCOME: ${{ steps.test-docker.outcome }}
       run: node scripts/ci/logging-setup-timing.ts finish docker-setup
+    # Repository Credentials builds all three images with --builder default.
     - id: builder
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
+        !(inputs.lane == 'repository-credentials-container' && steps.image-mode.outputs.source-build == 'false' && steps.image-mode.outputs.first-agent == 'false') &&
         !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability') &&
         (inputs.runtime-artifact-id == '' || !contains(fromJSON('["images-runtime-startup","images-runtime-startup-2","images-runtime-startup-3"]'), inputs.lane))
       with:
@@ -221,7 +204,7 @@ runs:
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
       id: setup-go
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'k3d-fixture-configuration' || inputs.lane == 'k3d-observability' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'images-packaging' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'k3d-fixture-configuration' || inputs.lane == 'k3d-observability' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -287,7 +270,27 @@ runs:
       # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
-      run: pnpm typecheck
+      run: |
+        if [[ ! -e .build/tests/tsconfig.tsbuildinfo && ! -L .build/tests/tsconfig.tsbuildinfo ]]; then
+          printf 'fresh-tests-build=true\n' >> "$GITHUB_OUTPUT" || true
+        fi
+        pnpm typecheck
+    - name: Report TypeScript test graph advisory
+      if: >-
+        inputs.lane == 'checks-baseline-2' && inputs.artifact-prefix == 'ci-results' &&
+        (github.event_name == 'pull_request' || github.event_name == 'push') &&
+        steps.typecheck-workspace.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        FRESH_TESTS_BUILD: ${{ steps.typecheck-workspace.outputs.fresh-tests-build }}
+      run: |
+        if [[ "$FRESH_TESTS_BUILD" == true ]] &&
+          report=$(timeout -k 1s 5s node scripts/ci/test-graph-advisory.ts 2>/dev/null); then
+          printf '::notice title=CI TypeScript test graph advisory::%s\n' "$report"
+        else
+          printf '::notice title=CI TypeScript test graph advisory::{"version":1,"fallback":["graph_unavailable"],"omissions":0}\n'
+        fi
     - name: Build Go CLI for development installation proof
       id: build-go-cli
       if: inputs.lane == 'checks-baseline-2' || inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
@@ -301,14 +304,14 @@ runs:
       # to repay the 2-4 CPU-s it takes.
       if: inputs.lane == 'checks-baseline-1' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'postgres-auth' || inputs.lane == 'postgres-platform'
       shell: bash
-      run: node apps/controller/src/precompile-route-schemas.mjs
+      run: node apps/controller/src/precompile-route-schemas.ts
     - name: Prepare hosted platform disk capacity
       id: prepare-disk
       if: (startsWith(inputs.lane, 'k3d-observability') || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && runner.environment == 'github-hosted'
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs['suite-view'] == 'full-integration' && 'openshell' || inputs.lane }}
-      run: node scripts/ci/repository-platform-headroom.mjs
+      run: node scripts/ci/repository-platform-headroom.ts
     - name: Expose image cache credentials
       id: image-cache
       if: (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-otel' || inputs.lane == 'slack' || inputs.lane == 'production-tui' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
@@ -344,7 +347,7 @@ runs:
       id: prepare-lane
       shell: bash
       env:
-        # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
+        # Image builds keep a few minutes of it for the lane's tests (prepare.ts).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
         OCC_CI_IMAGE_CACHE: ${{ ((inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-otel' || inputs.lane == 'slack' || inputs.lane == 'production-tui' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         BUILDX_BUILDER: ${{ steps.image-mode.outputs.source-build == 'true' && steps.builder.outputs.name || '' }}
@@ -363,7 +366,7 @@ runs:
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
           selection=(--selected-file "$CI_SELECTED_TEST_FILE")
         fi
-        node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
+        node scripts/ci/prepare.ts --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
     - name: Mark OpenShell preparation end
       id: openshell-prepare-end
       if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') && steps.openshell-prepare-start.outputs.uptime != ''
@@ -439,7 +442,7 @@ runs:
           # runner receive it directly so it can stop its detached test processes.
           launch=(exec)
         fi
-        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json" "${selection[@]}"
+        "${launch[@]}" node scripts/ci/run-tests.ts run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json" "${selection[@]}"
     - name: Show last memory samples
       if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true
@@ -461,7 +464,7 @@ runs:
       id: cleanup-lane
       if: always()
       shell: bash
-      run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+      run: node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
     - name: Stop memory sampling
       if: always() && steps.memory-sampler.outputs.pid != ''
       continue-on-error: true

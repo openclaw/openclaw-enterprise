@@ -5,13 +5,16 @@ import { composeProduction } from "../../apps/controller/src/composition/product
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
+  postgresSignInState,
+  installationRoles,
+} from "../helpers/postgres-sign-in-installation.ts";
+import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
   createAccount,
   currentSession,
   defaultInstallSettings,
-  installationRoles,
   productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
@@ -22,12 +25,11 @@ import {
   first,
   injectLocalhost,
   passwordSignIn,
-  postgresState,
   record,
   text,
   type App,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import { testPasswordHasher } from "../helpers/password-hasher.mjs";
+import { testPasswordHasher } from "../helpers/password-hasher.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "password-default-admin@example.test";
@@ -43,7 +45,7 @@ test(
   requiresPostgres,
   async (t) => {
     const apps: { app?: App } = {};
-    const { pool } = postgresState(t, () => [apps.app]);
+    const { pool, state } = postgresSignInState(t, () => [apps.app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,
@@ -86,7 +88,7 @@ test(
     let member: { id: string; email: string };
     await t.test("the administrator creates a password account with the exact Origin", async () => {
       const headers = await adminHeaders();
-      const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
+      const { reader: role } = await installationRoles(state, pool);
       const payload = { email: memberEmail, password: memberPassword, roleId: role.id };
       for (const refused of [
         { cookie: headers.cookie },
@@ -386,7 +388,7 @@ test(
     await t.test(
       "production hashes with scrypt N=16384, r=16, p=1 and no configuration selects another hasher",
       async (t) => {
-        // api-startup.mjs composes from its configuration alone. A hasher placed in that
+        // api-startup.ts composes from its configuration alone. A hasher placed in that
         // configuration, as a parsed setting would be, is ignored: only the code-only
         // dependencies argument (which the server never passes) replaces scrypt.
         const configuration = {
@@ -459,7 +461,7 @@ test(
         );
         const refused = await passwordSignIn(production, origin, { email, password });
         assert.equal(refused.statusCode, 401, refused.body);
-        // The fixtures' app above hashed with their cheap hasher (password-hasher.mjs).
+        // The fixtures' app above hashed with their cheap hasher (password-hasher.ts).
         const fixtureHash = await pool.query<{ password: string }>(
           "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
           [member.id],

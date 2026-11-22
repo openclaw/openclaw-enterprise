@@ -1,25 +1,21 @@
-import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   InstalledDriver,
   OpenClawController,
-  PostgresWorkQueue,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
+import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
 
 async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
   const grant = {
@@ -37,9 +33,9 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
   // The real Driver validates and freezes policy; this case proves HTTP/IAM/PostgreSQL admission,
   // while the OpenShell runtime lane proves enforcement and loaded-version application.
   const sandboxConfiguration = {
-    gateway: { workspaceMode: "operator" },
+    integrationMode: "legacy",
+    gateway: {},
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: {
         subPath: "workspace",
@@ -66,7 +62,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
       drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
       client: new OpenShellGateway(
         { serviceName: "openshell-gateway" },
-        { gatewayClient: openShellWorkspaceProtocol() },
+        { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
       ),
     },
   });
@@ -203,7 +199,7 @@ test(
         }
         if (scenario.protected) {
           const proxyConfiguration = { middlewareName: "integrity", authorityScope: "execution" };
-          const proxy = new OpenShellCredentialProxyDriver(proxyConfiguration, {
+          const proxy = new OpenShellLegacyEgressProxyDriver(proxyConfiguration, {
             id: sandboxDriver.id,
             sandbox: sandboxDriver,
             backend: {
@@ -939,120 +935,7 @@ test(
   },
 );
 
-test(
-  "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
-  requiresPostgres,
-  async (t) => {
-    const { pool, state, inject, deployAgent, grant } = await createPolicyApp(t, true);
-    const { namespace, agent, revision } = await deployAgent("Interrupted policy recovery");
-    await state.transact(async (unit) => {
-      await unit.namespaces.lockNamespace(namespace.id);
-      await unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id);
-    });
-    const queue = new PostgresWorkQueue(pool, { maxAttempts: 1, leaseDurationMs: 50 });
-    // Prior lifecycle work has completed; the active revision is the exact application target.
-    for (let claim = await queue.claim(); claim !== undefined; claim = await queue.claim()) {
-      await queue.complete(claim);
-    }
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
-    assert.equal((await inject("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
-    assert.equal(
-      (await inject("PUT", path, { expectedVersion: 1, additions: [grant] })).statusCode,
-      200,
-    );
-    const admitted = await inject("POST", `${path}/apply`, {
-      expectedVersion: 2,
-      revisionId: revision.id,
-    });
-    assert.equal(admitted.statusCode, 202, admitted.body);
-    // The pending application applies its snapshot of version 2: neither a save nor a second
-    // application may replace that policy until it finishes.
-    for (const [method, url, body, message] of [
-      [
-        "PUT",
-        path,
-        { expectedVersion: 2, additions: [] },
-        "The policy changed or an application is still pending. Reload before editing.",
-      ],
-      [
-        "POST",
-        `${path}/apply`,
-        { expectedVersion: 2, revisionId: revision.id },
-        "A policy application is already pending.",
-      ],
-    ]) {
-      const refused = await inject(method, url, body);
-      assert.equal(refused.statusCode, 409, refused.body);
-      assert.equal(refused.json().error.message, message);
-    }
-    const claim = await queue.claim();
-    assert.equal(claim.agentTarget, "sandbox_policy");
-    await expireWorkLease(pool, claim.idempotencyKey);
-
-    const blocker = await pool.connect();
-    await blocker.query("BEGIN");
-    await blocker.query("SELECT id FROM occ.sandbox_policies WHERE agent_id=$1 FOR UPDATE", [
-      agent.id,
-    ]);
-    const workers = [];
-    const start = async () => {
-      const name = `policy-recovery-${randomUUID()}`;
-      const worker = createControllerWorker({
-        pool: new pg.Pool({ connectionString: databaseUrl, application_name: name }),
-        computeDriver: createDevelopmentComputeDriver(),
-        maxAttempts: 1,
-        pollIntervalMs: 30_000,
-        emit() {},
-      });
-      workers.push(worker);
-      await worker.start();
-      return { worker, name };
-    };
-    try {
-      const interrupted = await start();
-      // Hold finalization after the terminal queue UPDATE. Terminating that real PostgreSQL
-      // session simulates losing the worker between writes, without replacing queue behavior.
-      const pid = await waitFor("policy finalization blocked after queue recovery", async () => {
-        const result = await pool.query(
-          "SELECT pid FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE '%sandbox_policies%'",
-          [interrupted.name],
-        );
-        return result.rows[0]?.pid;
-      });
-      await pool.query("SELECT pg_terminate_backend($1)", [pid]);
-      await interrupted.worker.stop();
-      assert.equal(
-        (await queue.findWork(claim.idempotencyKey)).state,
-        "claimed",
-        "the interrupted transaction must preserve recoverable work",
-      );
-      assert.equal((await inject("GET", path)).json().data.policy.application.state, "pending");
-      await blocker.query("ROLLBACK");
-
-      const recovered = await start();
-      await waitFor("restarted worker finalizes abandoned application", async () => {
-        const policy = (await inject("GET", path)).json().data.policy;
-        return policy.application.state === "failed" ? policy : undefined;
-      });
-      await recovered.worker.stop();
-      assert.equal((await queue.findWork(claim.idempotencyKey)).state, "failed_permanent");
-      const audit = await pool.query(
-        "SELECT actor_id FROM occ.audit_events WHERE action='openclaw.agents.sandbox_policy.application' AND resource_id=$1",
-        [admitted.json().data.id],
-      );
-      assert.equal(audit.rowCount, 1, "terminal recovery emits one attributable policy failure");
-      assert.equal(audit.rows[0].actor_id, claim.actorId);
-      const next = await inject("PUT", path, { expectedVersion: 2, additions: [] });
-      assert.equal(next.statusCode, 200, next.body);
-    } finally {
-      await blocker.query("ROLLBACK");
-      blocker.release();
-      for (const worker of workers) {
-        await worker.stop();
-      }
-    }
-  },
-);
+registerSandboxPolicyWorkerRecovery(createPolicyApp);
 
 test(
   "a looser Driver contribution cannot widen the shared grant rules or the ceiling",

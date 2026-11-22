@@ -1,5 +1,5 @@
 // The kind of next step each failed deployment's code leads to. The deployment status message
-// (`state/controller-work.ts`) states the step in words; clients choose their actions from this
+// (`deployment-work-status.ts`) states the step in words; clients choose their actions from this
 // table instead of parsing that text (finding 2537). The Console also serves this module
 // (`console-assets.ts`): keep it free of imports and of TypeScript syntax that type stripping
 // cannot erase.
@@ -53,6 +53,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     RUNTIME_MODEL_PROBE_FAILED: "logs",
     RUNTIME_MODEL_PROBE_TIMEOUT: "logs",
     RUNTIME_STARTUP_FAILED: "logs",
+    RUNTIME_STATE_LOCK_UNVERIFIED: "logs",
     UNKNOWN_FAILURE: "logs",
 
     AUTHORIZATION_DENIED: "change",

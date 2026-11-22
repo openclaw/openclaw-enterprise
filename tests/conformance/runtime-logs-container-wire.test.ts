@@ -2,15 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 
-import { Check } from "typebox/value";
-
-import {
-  AgentRuntimeLogsResponse,
-  type AgentRuntimeLogChunk,
-  type AgentRuntimeLogPageWire,
-  type RuntimeLogStream,
-  type RuntimeLogRecord,
-} from "../../packages/contracts/src/index.ts";
+import type { RuntimeLogStream } from "../../packages/contracts/src/index.ts";
 import type { RuntimeLogPage } from "../../packages/occ/src/runtime-logs/read.ts";
 import {
   runtimeLogEvidence,
@@ -27,89 +19,79 @@ import {
   pollReader,
   syntheticPemTail,
 } from "../helpers/runtime-logs-content.ts";
+import { registerContainerCheckpointRecoveryCases } from "./runtime-logs-container-checkpoint-recovery-cases.ts";
+import {
+  boundedPage,
+  cutPage,
+  gapCount,
+  iso,
+  lineRecords,
+  range,
+  readPage,
+  rowIds,
+  type LogLine,
+  type LogRoute,
+  type WireResponse,
+} from "./runtime-logs-container-wire-fixture.ts";
 
-type LogRoute = Awaited<ReturnType<typeof logsRoute>>;
-type LogQuery = NonNullable<Parameters<LogRoute["read"]>[0]>;
-type LogLine = AgentRuntimeLogChunk["lines"][number];
-type PageRecords = Pick<RuntimeLogPage | AgentRuntimeLogPageWire, "records">;
-type PageRecord = PageRecords["records"][number];
-
-const lineRecords = (page: PageRecords) =>
-  page.records.filter((record: PageRecord) => record.type === "line");
-type GapReason = Extract<RuntimeLogRecord, { type: "gap" }>["reason"];
-
-const gapCount = (page: PageRecords, reason: GapReason) =>
-  page.records.filter((record) => record.type === "gap" && record.reason === reason).length;
-const range = (count: number) => Array.from({ length: count }, (_, index) => index);
-// The `row=<n>` index of each delivered line, from JSON messages or `[info]` text lines.
-const rowIds = (page: PageRecords) =>
-  lineRecords(page).map(({ message }) => {
-    const match = /^(?:\[info\] )?row=(\d+);/.exec(message);
-    assert.ok(match, `not a row line: ${message.slice(0, 80)}`);
-    return Number(match[1]);
-  });
 // Raw bytes plus 32 bytes of timestamp per line: what the kubelet's 1 MiB read covers.
 const rawBytes = (lines: readonly LogLine[]) =>
   lines.reduce((bytes, line) => bytes + Buffer.byteLength(line.raw) + 32, 0);
-const iso = (milliseconds: number) => new Date(milliseconds).toISOString();
+type WalkProgress = Readonly<{
+  lines: Readonly<ReturnType<typeof lineRecords>>;
+  cursor: string | null | undefined;
+  pages: number;
+}>;
+type WalkOptions = {
+  tailLines: number;
+  cursor?: string | null;
+  message?: string;
+  onPage?: (response: WireResponse, page: number, progress: WalkProgress) => void | Promise<void>;
+  complete: (response: WireResponse, progress: WalkProgress) => boolean;
+  completion: string;
+};
 
-async function readPage(route: LogRoute, query: LogQuery, message?: string) {
-  const response = await route.read(query);
-  assert.equal(response.status, 200, message ?? response.text.slice(0, 200));
-  const { body } = response;
-  assert.ok(Check(AgentRuntimeLogsResponse, body), "expected a runtime log response");
-  return { ...response, body, data: body.data };
-}
-
-type WireResponse = Awaited<ReturnType<typeof readPage>>;
-
-// One page of the route's response, within the 512 KiB response bound.
-async function boundedPage(route: LogRoute, query: LogQuery, message?: string) {
-  const response = await readPage(route, query, message);
-  assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
-  return response;
-}
-// A first page that the response bound cut.
-async function cutPage(route: LogRoute, query: LogQuery) {
-  const response = await boundedPage(route, query);
-  assert.equal(response.data.truncated, true);
-  return response;
-}
-// Follows a view until a page is not truncated (at most 10 pages).
-async function drain(
-  route: LogRoute,
-  {
-    tailLines,
-    cursor,
-    message,
-    onPage,
-  }: {
-    tailLines: number;
-    cursor?: string | null;
-    message?: string;
-    onPage?: (response: WireResponse, page: number) => void;
-  },
-) {
+// Stop only when the caller's completion condition is met; the cap is a safety bound.
+async function walkPages(route: LogRoute, options: WalkOptions) {
   const lines: ReturnType<typeof lineRecords> = [];
-  let pages = 0;
-  while (pages < 10) {
-    const response = await boundedPage(route, { tailLines, cursor }, message);
-    onPage?.(response, pages);
-    lines.push(...lineRecords(response.data));
-    cursor = response.data.cursor;
-    pages += 1;
-    if (!response.data.truncated) {
-      break;
+  const progress = { lines, cursor: options.cursor, pages: 0 };
+  while (progress.pages < 10) {
+    const response = await boundedPage(
+      route,
+      { tailLines: options.tailLines, cursor: progress.cursor },
+      options.message,
+    );
+    const page = progress.pages;
+    progress.lines.push(...lineRecords(response.data));
+    progress.cursor = response.data.cursor;
+    progress.pages += 1;
+    await options.onPage?.(response, page, progress);
+    if (options.complete(response, progress)) {
+      return {
+        ...progress,
+        response,
+        get rows() {
+          return rowIds({ records: progress.lines });
+        },
+      };
     }
   }
-  return {
-    lines,
-    cursor,
-    pages,
-    get rows() {
-      return rowIds({ records: lines });
-    },
-  };
+  const cursorState =
+    progress.cursor === undefined || progress.cursor === null
+      ? String(progress.cursor)
+      : `present (${progress.cursor.length} chars)`;
+  assert.fail(
+    `page walk did not reach ${options.completion} after ${progress.pages} pages; cursor ${cursorState}`,
+  );
+}
+
+// Ordinary drains must reach an untruncated page.
+async function drain(route: LogRoute, options: Omit<WalkOptions, "complete" | "completion">) {
+  return walkPages(route, {
+    ...options,
+    complete: (response) => !response.data.truncated,
+    completion: "an untruncated page",
+  });
 }
 // Every truncated page delivers at least one line.
 function advances(response: WireResponse) {
@@ -188,66 +170,66 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
     route.state.lines = Array.from({ length: 20 }, (_, index) => row(index));
     const prime = await readPage(route, { tailLines: tail });
     assert.equal(prime.status, 200);
-    const seen = rowIds(prime.data);
-    assert.equal(seen.length, 20, "the baseline exceeds the retained frontier hash history");
+    const baseline = rowIds(prime.data);
+    assert.equal(baseline.length, 20, "the baseline exceeds the retained frontier hash history");
     route.state.lines.push(
       ...Array.from({ length: tail - 21 }, (_, index) => row(index + 20, true)),
     );
     assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
-    let cursor = prime.data.cursor;
     let cuts = 0;
-    for (let page = 0; page < 10; page += 1) {
-      const response = await boundedPage(route, { tailLines: tail, cursor });
-      assert.ok(response.data.cursor && response.data.cursor.length <= 2048);
-      seen.push(...rowIds(response.data));
-      cuts += response.data.truncated ? 1 : 0;
-      cursor = response.data.cursor;
-      if (identical && page > 0) {
-        assert.ok(
-          gapCount(response.data, "window_exceeded") > 0,
-          "full identical-value windows retain the conservative gap even when their checkpoint drains",
-        );
-      }
-      if (page === 0) {
-        assert.equal(
-          response.data.truncated,
-          true,
-          "the short window must cut the serialized page",
-        );
-        if (tail === 100 && !identical) {
-          // The previous compact cursor had ten window entries and no inherited proof.
-          const payload = cursorPayload(cursor);
-          assert.ok(typeof payload === "object" && payload !== null && "cw" in payload);
-          assert.ok(Array.isArray(payload.cw));
-          const window: unknown[] = payload.cw;
-          if (window.length === 11) {
-            window.pop();
-          }
-          const legacyPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
-          const mac = createHmac("sha256", cursorSecret)
-            .update("occ-runtime-logs-cursor\0v2\0")
-            .update(legacyPayload)
-            .digest("base64url");
-          const legacy = await readPage(route, {
-            tailLines: 100,
-            cursor: `v2.${legacyPayload}.${mac}`,
-          });
-          assert.equal(
-            legacy.status,
-            200,
-            "legacy windows remain usable on their stable short source",
-          );
-          assert.deepEqual(
-            rowIds(legacy.data),
-            Array.from({ length: 99 - seen.length }, (_, index) => index + seen.length),
+    const walked = await drain(route, {
+      tailLines: tail,
+      cursor: prime.data.cursor,
+      async onPage(response, page, progress) {
+        assert.ok(response.data.cursor && response.data.cursor.length <= 2048);
+        cuts += response.data.truncated ? 1 : 0;
+        if (identical && page > 0) {
+          assert.ok(
+            gapCount(response.data, "window_exceeded") > 0,
+            "full identical-value windows retain the conservative gap even when their checkpoint drains",
           );
         }
-        route.state.lines.push(row(tail - 1, true));
-      }
-      if (!response.data.truncated) {
-        break;
-      }
-    }
+        if (page === 0) {
+          assert.equal(
+            response.data.truncated,
+            true,
+            "the short window must cut the serialized page",
+          );
+          if (tail === 100 && !identical) {
+            // The previous compact cursor had ten window entries and no inherited proof.
+            const payload = cursorPayload(response.data.cursor);
+            assert.ok(typeof payload === "object" && payload !== null && "cw" in payload);
+            assert.ok(Array.isArray(payload.cw));
+            const window: unknown[] = payload.cw;
+            if (window.length === 11) {
+              window.pop();
+            }
+            const legacyPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+            const mac = createHmac("sha256", cursorSecret)
+              .update("occ-runtime-logs-cursor\0v2\0")
+              .update(legacyPayload)
+              .digest("base64url");
+            const legacy = await readPage(route, {
+              tailLines: 100,
+              cursor: `v2.${legacyPayload}.${mac}`,
+            });
+            assert.equal(
+              legacy.status,
+              200,
+              "legacy windows remain usable on their stable short source",
+            );
+            const seenCount = baseline.length + progress.lines.length;
+            assert.deepEqual(
+              rowIds(legacy.data),
+              Array.from({ length: 99 - seenCount }, (_, index) => index + seenCount),
+            );
+          }
+          route.state.lines.push(row(tail - 1, true));
+        }
+      },
+    });
+    const seen = [...baseline, ...walked.rows];
+    const cursor = walked.cursor;
     assert.deepEqual(
       seen,
       range(tail).map((index) => (identical ? 7 : index)),
@@ -275,24 +257,25 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
     ];
     route.state.truncated = true;
     assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
-    const seen: number[] = [];
-    let cursor: string | null | undefined;
-    let pages = 0;
-    let drained: AgentRuntimeLogPageWire | undefined;
-    while (seen.length < count && pages < 10) {
-      const response = await boundedPage(route, { tailLines: 1000, cursor });
-      assert.equal(response.data.truncated, true, "the underlying Driver cut remains visible");
-      const rows = rowIds(response.data);
-      assert.ok(rows.length > 0, "each wire cut advances through the complete fetched prefix");
-      seen.push(...rows);
-      cursor = response.data.cursor;
-      drained = response.data;
-      pages += 1;
-    }
+    const walked = await walkPages(route, {
+      tailLines: 1000,
+      completion: "the complete fetched prefix",
+      complete: (_response, progress) => progress.lines.length >= count,
+      onPage(response) {
+        assert.equal(response.data.truncated, true, "the underlying Driver cut remains visible");
+        assert.ok(
+          rowIds(response.data).length > 0,
+          "each wire cut advances through the complete fetched prefix",
+        );
+      },
+    });
+    const seen = walked.rows;
+    const pages = walked.pages;
+    const drained = walked.response.data;
+    let cursor = walked.cursor;
     assert.ok(pages > 1);
     assert.deepEqual(seen, range(count));
     if (mixed) {
-      assert.ok(drained);
       assert.ok(
         gapCount(drained, "window_exceeded") > 0,
         "timed advancement explicitly resets the uncertain window",
@@ -813,215 +796,4 @@ test("container wire continuation retains fetched JSON withholding decisions", a
   assert.equal(cut, true);
 });
 
-// Rows of about 7 KiB, one second apart from `start`: a 100-line tail is cut.
-function ordinaryRow(start: number, index: number, name = "row") {
-  return {
-    time: iso(start + index * 1000),
-    raw: gatewayJson(`${name}=${index}; ${"ordinary diagnostic ".repeat(350)}`),
-  };
-}
-
-test("container follows a growing full wire-cut tail without replaying its delivered prefix", async () => {
-  const route = await logsRoute({ label: "full-growing-wire-tail" });
-  const start = Date.now() - 120_000;
-  route.state.lines = range(100).map((index) => ordinaryRow(start, index));
-  let cursor: string | null | undefined;
-  const seen: number[] = [];
-  const counts: number[] = [];
-  for (let poll = 0; poll < 6; poll += 1) {
-    if (poll > 0) {
-      const offset = route.state.lines.length;
-      route.state.lines.push(...range(3).map((index) => ordinaryRow(start, offset + index)));
-    }
-    const response = await boundedPage(route, { tailLines: 100, cursor });
-    const rows = rowIds(response.data);
-    seen.push(...rows);
-    counts.push(rows.length);
-    if (poll === 0) {
-      assert.equal(response.data.truncated, true);
-    }
-    cursor = response.data.cursor;
-  }
-  assert.deepEqual(seen, range(115));
-  assert.deepEqual(counts.slice(2), [3, 3, 3, 3]);
-  const replay = await readPage(route, { tailLines: 100, cursor });
-  assert.deepEqual(lineRecords(replay.data), []);
-});
-
-// A cut first page of 80 or 100 ordinary rows, then the rows a rotation leaves behind.
-// Returns both pages.
-async function rotatedWindow(
-  label: string,
-  rows: LogLine[],
-  rotate: (lines: LogLine[]) => LogLine[],
-) {
-  const route = await logsRoute({ label });
-  route.state.lines = rows;
-  const first = await cutPage(route, { tailLines: 100 });
-  route.state.lines = rotate(route.state.lines);
-  const second = await boundedPage(route, { tailLines: 100, cursor: first.data.cursor });
-  return [first.data, second.data] as const;
-}
-
-test("container checkpoint recovery does not duplicate an observed window-loss gap", async () => {
-  const start = Date.now() - 120_000;
-  // The burst replaces the whole tail before the byte-cut snapshot drains.
-  // Actual missing rows still require one window gap, not a second gap for the
-  // discarded checkpoint alongside that same observed loss.
-  const [, second] = await rotatedWindow(
-    "wire-cut-burst-gap",
-    range(100).map((index) => ordinaryRow(start, index)),
-    (lines) => [...lines, ...range(100).map((index) => ordinaryRow(start, 100 + index))],
-  );
-  assert.equal(gapCount(second, "window_exceeded"), 1);
-});
-
-test("container checkpoint recovery keeps an unknown-time reset visible", async () => {
-  const start = Date.now() - 120_000;
-  // The timed frontier cannot locate an unknown row in a changed snapshot.
-  // Recovering timed rows must keep that reset visible, even on a short tail.
-  const [, second] = await rotatedWindow(
-    "wire-cut-unknown-reset",
-    range(80).map((index) => ({
-      ...ordinaryRow(start, index),
-      ...(index === 0 && { time: null }),
-    })),
-    ([, ...rest]) => [{ time: null, raw: "changed unknown-time diagnostic" }, ...rest],
-  );
-  assert.ok(gapCount(second, "window_exceeded") > 0);
-});
-
-test("container shortened timed checkpoints disclose missing undelivered rows", async () => {
-  const start = Date.now() - 120_000;
-  // Rotation can leave a short surviving window in the same container. Its
-  // later times establish progress, not continuity with the unread snapshot.
-  const [, second] = await rotatedWindow(
-    "wire-cut-shortened-timed-window",
-    range(80).map((index) => ordinaryRow(start, index)),
-    (lines) => lines.slice(-5),
-  );
-  assert.equal(lineRecords(second).length, 5);
-  assert.ok(gapCount(second, "window_exceeded") > 0);
-});
-
-test("container same-size short replacements disclose missing undelivered rows", async () => {
-  const start = Date.now() - 120_000;
-  // Rotation retains the same row count but replaces the unread part with newer rows.
-  const [, second] = await rotatedWindow(
-    "wire-cut-same-size-short-window",
-    range(80).map((index) => ordinaryRow(start, index, "old")),
-    () =>
-      range(80).map((index) => ({
-        time: iso(start + (100 + index) * 1000),
-        raw: gatewayJson(`new=${index}`),
-      })),
-  );
-  assert.equal(lineRecords(second).length, 80);
-  assert.equal(gapCount(second, "window_exceeded"), 1);
-});
-
-test("container checkpoint recovery that still covers the delivered frontier reports no loss", async () => {
-  const start = Date.now() - 120_000;
-  // Rotation drops only the oldest, already delivered row. The changed window still
-  // starts before the delivered frontier, so every undelivered row survives.
-  const [first, second] = await rotatedWindow(
-    "wire-cut-covered-frontier",
-    range(80).map((index) => ordinaryRow(start, index)),
-    (lines) => lines.slice(1),
-  );
-  assert.deepEqual([...rowIds(first), ...rowIds(second)], range(80));
-  assert.equal(gapCount(second, "window_exceeded"), 0);
-});
-
-// Ordinary rows whose rows from `from` on share one timestamp group.
-function groupedRows(start: number, from: number) {
-  return range(80).map((index) => ({
-    ...ordinaryRow(start, index),
-    ...(index >= from && { time: iso(start + from * 1000) }),
-  }));
-}
-
-test("container checkpoint recovery discloses rows lost inside the frontier time group", async () => {
-  const start = Date.now() - 120_000;
-  // The surviving window starts at the delivered frontier time, so undelivered
-  // rows of that group can sit before it; a later row lets time recovery start.
-  const [first, second] = await rotatedWindow(
-    "wire-cut-frontier-group-loss",
-    groupedRows(start, 60),
-    (lines) => [...lines.slice(-3), ordinaryRow(start, 80)],
-  );
-  const frontier = rowIds(first).at(-1);
-  assert.ok(frontier !== undefined && frontier >= 60 && frontier < 76);
-  assert.deepEqual(rowIds(second), [77, 78, 79, 80]);
-  assert.ok(gapCount(second, "window_exceeded") > 0);
-});
-
-test("container checkpoint recovery discloses a reordered changed window", async () => {
-  const start = Date.now() - 120_000;
-  // An undelivered row now dates before the frontier, so time resumption drops it.
-  const [, second] = await rotatedWindow(
-    "wire-cut-reordered-window",
-    range(80).map((index) => ordinaryRow(start, index)),
-    (lines) => {
-      const last = lines.at(-1);
-      assert.ok(last);
-      return [...lines.slice(1, -1), { ...last, time: iso(start) }];
-    },
-  );
-  assert.ok(gapCount(second, "window_exceeded") > 0);
-});
-
-test("container checkpoint recovery discloses frontier rows its hash history cannot place", async () => {
-  const start = Date.now() - 120_000;
-  // The delivered group outgrows the frontier hashes and a changed row breaks the
-  // positional proof, so undelivered rows of that group cannot be told apart.
-  const [first, second] = await rotatedWindow(
-    "wire-cut-frontier-history-loss",
-    groupedRows(start, 3),
-    (lines) => {
-      const groupStart = lines[3];
-      assert.ok(groupStart);
-      return [
-        ...lines.slice(1, 3),
-        { time: groupStart.time, raw: gatewayJson("changed group row") },
-        ...lines.slice(3),
-      ];
-    },
-  );
-  assert.ok(rowIds(first).length > 3 + 16);
-  assert.ok(gapCount(second, "window_exceeded") > 0);
-});
-
-test("container checkpoint recovery reports a lost window and withheld frontier rows once", async () => {
-  const start = Date.now() - 120_000;
-  // As above, with a later row that moves the frontier past the withheld group rows.
-  // The lost checkpoint and the unreadable frontier rows are one gap, not two.
-  const [, second] = await rotatedWindow(
-    "wire-cut-frontier-history-advance",
-    groupedRows(start, 3),
-    (lines) => {
-      const groupStart = lines[3];
-      assert.ok(groupStart);
-      return [
-        ...lines.slice(1, 3),
-        { time: groupStart.time, raw: gatewayJson("changed group row") },
-        ...lines.slice(3),
-        ordinaryRow(start, 80),
-      ];
-    },
-  );
-  assert.deepEqual(rowIds(second), [80]);
-  assert.equal(gapCount(second, "window_exceeded"), 1);
-});
-
-test("container checkpoint recovery discloses a window whose clock stepped back", async () => {
-  const start = Date.now() - 120_000;
-  // Rotation dropped the delivered frontier and the rows after it, and the node
-  // clock stepped back: the new rows are ordered and all before the frontier.
-  const [, second] = await rotatedWindow(
-    "wire-cut-clock-step-back",
-    range(80).map((index) => ordinaryRow(start, index)),
-    () => range(6).map((index) => ordinaryRow(start, 40 + index, "after-step")),
-  );
-  assert.ok(gapCount(second, "window_exceeded") > 0);
-});
+registerContainerCheckpointRecoveryCases();

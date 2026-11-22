@@ -1,34 +1,51 @@
 import type { OpenShellCredentialGatewaySelection } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type {
   CredentialProviderDefinition,
   ComputeDriver,
   CredentialGatewayDriver,
   CredentialSource,
   EgressInstallation,
-  EgressRequest,
 } from "../../packages/contracts/src/index.ts";
 import type {
   OpenClawController,
   PlatformStateStore,
   PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import {
-  CredentialProxy,
-  type EgressAuthorityPorts,
-} from "../../packages/occ/src/credential-proxy.ts";
+import { CredentialProxy } from "../../packages/occ/src/credential-proxy.ts";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
+
+function editProviderCatalog(t: TestContext, catalog: readonly CredentialProviderDefinition[]) {
+  const providers = catalog as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((provider) => provider.sourceType.type === "openai");
+  assert.ok(original, "the fixture registers an OpenAI provider");
+  return { providers, original };
+}
+
+function editProviderSlot(t: TestContext, catalog: readonly CredentialProviderDefinition[]) {
+  const providers = catalog as CredentialProviderDefinition[];
+  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
+  const original = providers[index];
+  assert.ok(original, "the fixture registers an OpenAI provider");
+  t.after(() => {
+    providers[index] = original;
+  });
+  return { providers, index, original };
+}
 
 test("classification diagnostics reject contradictory reports and preserve audit-write refusal", async (t) => {
   // This checks the shared registry's provider and audit ports. The PostgreSQL
   // egress case separately proves signed transport and persisted attribution.
   const f = await syntheticDispatchFixture(t, new EgressSendReceipts(new InMemoryPlatformState()));
-  const ports = f.ports as unknown as EgressAuthorityPorts;
+  const ports = f.ports;
   const peer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(peer);
   const installed = await ports.installation(peer);
@@ -81,7 +98,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
         body: Buffer.from(
           JSON.stringify({ model: "fixture-model", input: "hello", store: !scenario.accept }),
         ),
-      } as unknown as EgressRequest;
+      };
       const reads = f.reads;
       const result = await proxy.resolve(
         "synthetic-peer",
@@ -110,10 +127,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
 test("fresh static source refuses duplicate provider identity in either catalog order", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const injections = [0, 0];
   const entries = injections.map((_, index): CredentialProviderDefinition => ({
     ...original,
@@ -164,10 +178,7 @@ test("fresh static source refuses duplicate provider identity in either catalog 
 test("fresh static source keeps catalog order for distinct provider identities", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const injections: string[] = [];
   const make = (id: string): CredentialProviderDefinition => ({
     ...original,
@@ -205,10 +216,7 @@ test("fresh static source keeps catalog order for distinct provider identities",
 test("fresh static source refuses a provider duplicate added during material resolution", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   let injections = 0;
   const provider: CredentialProviderDefinition = {
     ...original,
@@ -281,10 +289,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
       }),
   });
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   let classifiers = 0;
   const healthy: CredentialProviderDefinition = {
     ...original,
@@ -352,7 +357,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     t,
     new EgressSendReceipts(new InMemoryPlatformState()),
   );
-  const ports = synthetic.ports as unknown as EgressAuthorityPorts;
+  const ports = synthetic.ports;
   const syntheticPeer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(syntheticPeer);
   const installed = await ports.installation(syntheticPeer);
@@ -384,7 +389,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     "synthetic-peer",
     syntheticPeer.sandboxId,
     {
-      ...(synthetic.request as unknown as EgressRequest),
+      ...synthetic.request,
       bindingId: healthyRoute.binding.binding.id,
     },
     AbortSignal.timeout(5_000),
@@ -393,13 +398,131 @@ test("credential exchange refuses a conflicted eligible provider before route fa
   assert.equal(synthetic.reads, 1);
 });
 
+test("static deployment refuses ambiguous or incompatible providers without redirecting its exact binding", async (t) => {
+  const f = await staticEgressFixture(t, { admitRevision: false });
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
+  const alternate = { ...original, ref: { ...original.ref, id: "another-provider" } };
+  const deploy = () =>
+    f.request("POST", `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`);
+  const controller: OpenClawController = f.controller;
+  const reads = f.countSecretReads();
+
+  // Source admission succeeded. A changed catalog cannot redirect the saved reference.
+  const incompatible: CredentialProviderDefinition = {
+    ...original,
+    sourceType: {
+      ...original.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+    },
+  };
+  const duplicateDuringPlanning: CredentialProviderDefinition = {
+    ...original,
+    normalizeGrant(...args) {
+      const grant = original.normalizeGrant.apply(this, args);
+      providers.push(original);
+      return grant;
+    },
+  };
+  const changedLifecycle: CredentialProviderDefinition = {
+    ...original,
+    sourceType: { ...original.sourceType },
+    routes(...args) {
+      const routes = original.routes.apply(this, args);
+      Reflect.set(this.sourceType, "rotation", "refresh");
+      return routes;
+    },
+  };
+  // A valid plan must not survive replacement while OCC finishes admission.
+  const replacedAfterPlanning = { ...original };
+  const compute = controller.selectedDriver("compute");
+  const validate = compute.validateExecutionAdmission;
+  assert.ok(validate);
+  t.after(() => {
+    compute.validateExecutionAdmission = validate;
+  });
+  compute.validateExecutionAdmission = function (...args) {
+    validate.apply(this, args);
+    if (providers[0] === replacedAfterPlanning) {
+      providers[0] = original;
+    }
+  };
+  for (const [reason, entries, status] of [
+    ["replaced after plan construction", [replacedAfterPlanning], 409],
+    ["duplicated while building the grant", [duplicateDuringPlanning], 409],
+    ["incompatible while building routes", [changedLifecycle], 409],
+    ["missing", [alternate], 503],
+    ["duplicate", [original, { ...original }], 409],
+    ["managed login", [incompatible], 409],
+    [
+      "different type",
+      [{ ...original, sourceType: { ...original.sourceType, type: "other" } }],
+      409,
+    ],
+  ] as const) {
+    providers.splice(0, providers.length, ...entries);
+    const response = await deploy();
+    const revisions = await controller.transact((unit) =>
+      unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+    );
+    assert.deepEqual(
+      { status: response.status, revisions: revisions.length, reads: f.countSecretReads() - reads },
+      { status, revisions: 0, reads: 0 },
+      reason,
+    );
+  }
+  // First deployment can create transport Secrets outside the revision transaction.
+  // Change the registration during the real Kubernetes status read, after planning.
+  const { placement } = f;
+  const provision = t.mock.fn(placement.provisionAgentRuntimeCredentials.bind(placement));
+  const binding = { namespace: f.namespace, agent: f.agent };
+  const transportConfigured = async () =>
+    (await placement.getAgentRuntimeCredentialStatus(binding)).transportConfigured;
+  const stored = f.countStoredSecrets();
+  let changeProvider = true;
+  Object.assign(compute, {
+    requiresAgentRuntimeCredentials: true,
+    async getAgentRuntimeCredentialStatus(input) {
+      const status = await placement.getAgentRuntimeCredentialStatus(input);
+      if (changeProvider) {
+        providers[0] = replacedAfterPlanning;
+      }
+      return status;
+    },
+    provisionAgentRuntimeCredentials: provision,
+  } satisfies Partial<ComputeDriver>);
+  providers.splice(0, providers.length, original);
+  assert.equal(await transportConfigured(), false);
+  const refused = await deploy();
+  const revisions = await controller.transact((unit) =>
+    unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+  );
+  assert.deepEqual(
+    {
+      status: refused.status,
+      revisions: revisions.length,
+      provisions: provision.mock.callCount(),
+      newSecrets: f.countStoredSecrets() - stored,
+      transport: await transportConfigured(),
+    },
+    { status: 409, revisions: 0, provisions: 0, newSecrets: 0, transport: false },
+  );
+  assert.equal(f.countSecretReads(), reads);
+  changeProvider = false;
+  providers.splice(0, providers.length, alternate, original);
+  const healthy = await deploy();
+  assert.equal(healthy.status, 202);
+  assert.equal(provision.mock.callCount(), 1);
+  assert.equal(await transportConfigured(), true);
+  const revision = await controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, healthy.data.id),
+  );
+  assert.deepEqual(revision?.egressPlan?.routes[0]?.binding.source.provider, original.ref);
+});
+
 test("credential exchange refuses duplicate and substituted providers before material access", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const duplicate = { ...original, ref: { ...original.ref, label: "conflicting label" } };
   const reads = f.secretReads;
   for (const entries of [
@@ -408,6 +531,22 @@ test("credential exchange refuses duplicate and substituted providers before mat
   ]) {
     providers.splice(0, providers.length, ...entries);
     assert.ok((await f.resolve(f.capture())).refused);
+  }
+
+  // A matching reference alone does not authorize a different credential lifecycle.
+  for (const sourceType of [
+    { ...original.sourceType, type: "other" },
+    {
+      ...original.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+    },
+  ] as const) {
+    providers.splice(0, providers.length, { ...original, sourceType });
+    const result = await f.resolve(f.capture());
+    assert.deepEqual(
+      { refused: Boolean(result.refused), reads: f.secretReads - reads },
+      { refused: true, reads: 0 },
+    );
   }
 
   let substituteClassifications = 0;
@@ -436,9 +575,7 @@ test("credential exchange refuses duplicate and substituted providers before mat
 test("credential exchange refuses provider replacement during a pending Secret read", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   let substituteCalls = 0;
   const replacement = {
     ...original,
@@ -451,9 +588,6 @@ test("credential exchange refuses provider replacement during a pending Secret r
       return Reflect.apply(original.inject, this, args);
     },
   };
-  t.after(() => {
-    providers[index] = original;
-  });
   const reads = f.secretReads;
   const release = f.pauseSecretReads();
   t.after(release);
@@ -481,7 +615,8 @@ test("credential exchange withholds a response after provider method replacement
   assert.ok("egress" in f);
   const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
   const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
-  const registered = providers[index]!;
+  const registered = providers[index];
+  assert.ok(registered, "the fixture registers an OpenAI provider");
   let classifications = 0;
   let injections = 0;
   const provider: CredentialProviderDefinition = {
@@ -551,12 +686,7 @@ test("credential exchange preserves the original possible-send receipt after pro
       }),
   });
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   const captured = f.capture();
   const { ready } = await f.resolve(captured);
   assert.ok(ready);
@@ -604,12 +734,7 @@ test("credential exchange withholds an observed response after provider replacem
       }),
   });
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   const captured = f.capture();
   const { ready } = await f.resolve(captured);
   assert.ok(ready);
@@ -628,12 +753,7 @@ test("credential exchange withholds an observed response after provider replacem
 test("credential exchange cuts a cached stream lease after provider replacement", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   const captured = f.capture();
   const { ready } = await f.resolve(captured);
   assert.ok(ready);
@@ -649,10 +769,7 @@ test("credential exchange cuts a cached stream lease after provider replacement"
 test("an unbound source update keeps its admitted provider when same-type providers reorder", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const validations: string[] = [];
   const instrument = (id: string): CredentialProviderDefinition => ({
     ...original,
@@ -731,12 +848,7 @@ test("an unbound source update keeps its admitted provider when same-type provid
 test("a source update withholds resolved material after its provider or injector changes", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   let originalCalls = 0;
   let replacementCalls = 0;
   const a: CredentialProviderDefinition = {
@@ -897,11 +1009,17 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.providerRequests.length, 0);
 });
 
+function assertSandboxNamespaceResolution(
+  compute: ComputeDriver,
+): asserts compute is ComputeDriver & Required<Pick<ComputeDriver, "resolveSandboxNamespace">> {
+  assert.equal(typeof compute.resolveSandboxNamespace, "function");
+}
+
 test("live static registration does not require Compute placement", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
@@ -1042,8 +1160,8 @@ test("live static registration losing to DELETE preserves its deleting row witho
       }),
   });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace");
   const registration = t.mock.method(gateway, "registerSource");
@@ -1099,10 +1217,7 @@ test("live static registration losing to DELETE preserves its deleting row witho
 test("capability discovery omits only conflicting static provider types", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const catalog = await gateway.listSourceTypes({ signal: AbortSignal.timeout(1000) });
   const model = catalog.find((entry) => entry.type === "openai")!;
@@ -1276,10 +1391,7 @@ test("live adoption keeps catalog order for distinct provider identities", async
     assert.ok("egress" in f);
     assert.ok(f.legacySource);
     assert.equal(f.legacySource.egress, undefined);
-    const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-    const saved = [...providers];
-    t.after(() => providers.splice(0, providers.length, ...saved));
-    const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+    const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
     const entries = order.map((id): CredentialProviderDefinition => ({
       ...original,
       ref: { ...original.ref, id },
@@ -1373,8 +1485,8 @@ test("explicit live adoption does not require Compute placement", async (t) => {
   assert.ok("egress" in f);
   assert.ok(f.legacySource);
   await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
   });

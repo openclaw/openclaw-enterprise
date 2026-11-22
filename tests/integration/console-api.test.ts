@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { type IncomingHttpHeaders, type OutgoingHttpHeaders } from "node:http";
-import { request as httpsRequest } from "node:https";
+import {
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+} from "node:http";
+import { request as httpsRequest, Server as HttpsServer } from "node:https";
 import { stripTypeScriptTypes } from "node:module";
+import { text } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -17,8 +22,8 @@ import {
   memberRole,
 } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,
@@ -1207,20 +1212,54 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   assert.equal(missing.status, 404);
 });
 
+function createSecretAnswerReadRecorder(t: TestContext) {
+  const unit = new AsyncLocalStorage<symbol>();
+  let units = 0;
+  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
+  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
+    read: (work) => {
+      units += 1;
+      return unit.run(Symbol(), () => state.read(work));
+    },
+    transact: (work) => state.transact(work),
+  });
+
+  function observe(iamDriver: Fixture["iamDriver"], answer: () => Promise<string[]>) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (request.resource.kind === "secret") {
+        decisions.push({ action: request.action, unitId: unit.getStore() });
+      }
+      return authorize.call(iamDriver, request);
+    };
+    t.after(() => {
+      iamDriver.authorize = authorize;
+    });
+
+    return async () => {
+      decisions.length = 0;
+      units = 0;
+      const denied = await answer();
+      // All Secret decisions for this answer must share the same read unit.
+      const unitId = decisions[0]?.unitId;
+      assert.notEqual(unitId, undefined, "Expected a Secret decision inside a read unit");
+      assert.ok(
+        decisions.every((decision) => decision.unitId === unitId),
+        "Secret decisions must share one read unit",
+      );
+      return { denied, units, decisions: [...decisions] };
+    };
+  }
+
+  return { wrapState, observe };
+}
+
 // The answer makes one decision per readable Secret. They share one platform read unit, so the
 // native IAM Driver reads its policy once for all of them; outside a unit each would check out
 // its own database connection and policy read (finding 2473). The units the answer opens do not
 // grow with the number of Secrets.
 test("the Agent Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<boolean>();
-  let units = 0;
-  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
-    read: (work) => {
-      units += 1;
-      return unit.run(true, () => state.read(work));
-    },
-    transact: (work) => state.transact(work),
-  });
+  const { wrapState, observe } = createSecretAnswerReadRecorder(t);
   const { fixture, namespace, agent, app, bot, member } = await secretAnswerFixture(t, {
     wrapState,
   });
@@ -1235,23 +1274,7 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
     [],
   );
   editor.grant("configuration", "update", "configuration", agent.configurationId);
-  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, inUnit: unit.getStore() === true });
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  t.after(() => {
-    fixture.iamDriver.authorize = authorize;
-  });
-  const measure = async () => {
-    decisions.length = 0;
-    units = 0;
-    const denied = await editor.answer();
-    return { denied, units, decisions: [...decisions] };
-  };
+  const measure = observe(fixture.iamDriver, editor.answer);
   const few = await measure();
   // The bound Slack Secrets and the fixture's Harness authentication Secret.
   assert.equal(few.denied.length, 3);
@@ -1261,9 +1284,8 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
   }
   const many = await measure();
   assert.equal(many.denied.length, 9);
-  // Each readable Secret costs a read and an operate decision, all inside a read unit.
+  // Each readable Secret costs a read and an operate decision in the shared read unit.
   assert.equal(many.decisions.filter(({ action }) => action === "operate").length, 9);
-  assert.ok(many.decisions.every(({ inUnit }) => inUnit));
   assert.equal(many.units, few.units);
 });
 
@@ -1440,15 +1462,7 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<symbol>();
-  let units = 0;
-  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
-    read: (work) => {
-      units += 1;
-      return unit.run(Symbol(), () => state.read(work));
-    },
-    transact: (work) => state.transact(work),
-  });
+  const { wrapState, observe } = createSecretAnswerReadRecorder(t);
   const { fixture, namespace, model, bot, member } = await namespaceSecretAnswerFixture(t, {
     wrapState,
   });
@@ -1461,27 +1475,7 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, unitId: unit.getStore() });
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  t.after(() => {
-    fixture.iamDriver.authorize = authorize;
-  });
-  const measure = async () => {
-    decisions.length = 0;
-    units = 0;
-    const denied = await creator.answer();
-    // All Secret decisions for this answer must share the same read unit.
-    const unitId = decisions[0]?.unitId;
-    assert.notEqual(unitId, undefined);
-    assert.ok(decisions.every((decision) => decision.unitId === unitId));
-    return { denied, units, decisions: [...decisions] };
-  };
+  const measure = observe(fixture.iamDriver, creator.answer);
   const few = await measure();
   const expectedDenied = [model.id, bot.id];
   assert.deepEqual(few.denied, [...expectedDenied].sort());
@@ -1716,6 +1710,54 @@ test("console static routes expose only public assets and preserve API JSON fail
   const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
   assert.equal(errorBody(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
+});
+
+test("Console HTTPS ingress stops listening before it closes connections and awaits its close callback", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const origin = new URL(fixture.origin);
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
+    httpsRequest(
+      new URL("/console/", origin),
+      {
+        hostname: "127.0.0.1",
+        servername: origin.hostname,
+        headers: { host: origin.host },
+      },
+      resolve,
+    )
+      .on("error", reject)
+      .end();
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(await text(response), /src="\/console\/console\.mjs"/);
+
+  // Observe Node's listener and callback while both shutdown methods run normally.
+  const { close, closeAllConnections } = HttpsServer.prototype;
+  let listeningAtSweep: boolean | undefined;
+  let closeCallbackRan = false;
+  t.mock.method(HttpsServer.prototype, "closeAllConnections", function (this: HttpsServer) {
+    listeningAtSweep = this.listening;
+    return closeAllConnections.call(this);
+  });
+  t.mock.method(
+    HttpsServer.prototype,
+    "close",
+    function (this: HttpsServer, callback?: (error?: Error) => void) {
+      if (callback === undefined) {
+        return close.call(this);
+      }
+      return close.call(this, (error) => {
+        closeCallbackRan = true;
+        callback(error);
+      });
+    },
+  );
+
+  // The next fixture cleanup may proceed only after the HTTPS server has closed.
+  fixture.registerCleanupBeforeAppClose(() => {
+    assert.equal(listeningAtSweep, false);
+    assert.equal(closeCallbackRan, true);
+  });
 });
 
 test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {

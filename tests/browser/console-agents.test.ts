@@ -35,12 +35,12 @@ import type {
   IAMRoleWire,
   SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { IAMDriver } from "../../packages/contracts/src/index.ts";
-
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+  type IAMDriver,
+} from "../../packages/contracts/src/index.ts";
+
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -86,18 +86,20 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
-  ADMINISTRATOR_ACCESS_DENIED,
-  AGENT_CREATE_DENIED,
   AGENT_SAVE_DENIED,
-  createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
-  AGENT_CREATE_PERMISSIONS_UNREAD,
   CHANNELS_NEED_DEDICATED,
   REPOSITORY_ACCESS_NOT_CONFIGURED,
-  REPOSITORY_CHOICES_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import {
+  ADMINISTRATOR_ACCESS_DENIED,
+  AGENT_CREATE_DENIED,
+  createDenied,
+  AGENT_CREATE_PERMISSIONS_UNREAD,
+  REPOSITORY_CHOICES_CREATE_DENIED,
+} from "../helpers/refusal-access.ts";
+import { restrict } from "../helpers/iam-grants.ts";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),

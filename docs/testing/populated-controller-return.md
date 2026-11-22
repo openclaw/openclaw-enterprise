@@ -112,7 +112,15 @@ HTTP 200 with the original Installation ID counts as a successful observation.
 A successful sample includes `requestId` when the `x-request-id` header and
 `meta.requestId` match and have the controller’s request ID format. The client omits
 the ID if it contains a known protected value. To identify the serving Pod, find
-that ID in a corresponding `http.completed` record from a known Pod. Samples without the ID still count as successful.
+that ID in a corresponding `http.completed` record from a known Pod. Samples
+without the ID still count as successful.
+
+For a successful sample with a validated request ID, `upstreamSocketReused`
+reports whether the rehearsal proxy reused its HTTP connection to the API.
+An absent field means reuse is unknown. Even a fresh client connection to
+the proxy can reach the old Pod over a pooled upstream connection.
+A successful read on the new Pod alone cannot establish that the old Pod has drained.
+
 Response bodies and credentials are omitted. If recording fails, the test reports
 the write failure alongside any upgrade failure, preserving the upgrade as the
 primary cause.
@@ -169,11 +177,40 @@ includes the checks while both controllers are stopped and the single resume.
 Its success flag covers that sequence. Later fleet checks and model replies have
 their own results. Both receipts use the sample outcomes and cadence described above.
 
+The ordinary controller upgrade also writes `controller-api-endpoints.json`.
+This read-only observer surrounds the unchanged HTTP sampler. It binds the API
+Service UID before the action and records the named Service, its labeled
+EndpointSlices and API Pods. The `during` phase covers the HTTP recorder, including
+its baseline request and final receipt write. Each read has UTC start and finish
+times and monotonic offsets. To compare windows, align the HTTP samples by UTC
+and use the HTTP receipt’s own `cadence.startOffsetMs` and `endOffsetMs` for
+the upgrade action. The two files use different monotonic origins. Polls sleep one second after a sample;
+slow reads leave larger gaps. Reads have a two-second Kubernetes timeout and a
+three-second command timeout, plus the fixture's bounded termination grace.
+
+Match slice Service-owner UIDs to `boundServiceUID` and endpoint target UIDs to
+Pod UIDs. A null binding means the baseline Service was not observed successfully;
+the observer never adopts a replacement. Missing, stale or unmatched owner and
+target UIDs leave attribution unknown even when a labeled slice is present.
+An empty `objects` list means the scoped read returned zero objects. A placeholder
+EndpointSlice with an owner reference to the named core `v1` Service can report
+`endpoints: null`. The receipt records an empty `endpoints` list for that slice.
+Missing readiness conditions stay null.
+A command failure has status `read-error` and leaves the result unknown. After a
+timeout, the observer can continue when the runner confirms that the command
+exited and its process group is gone. An interruption or uncertain command cleanup
+stops the observer. If this occurs during the baseline, the fixture stops before it
+starts the upgrade. The three reads run independently. Polling cannot locate exact
+transition times or prove reachability. Compare their UTC windows with the HTTP
+samples. Pod condition transition timestamps come from Kubernetes.
+`actionSucceeded` covers the upgrade and HTTP recorder, while
+`complete` describes observer completion. Partial receipts remain uncertain.
+
 In the fresh `run_dir` from the lane command, retain each available receipt before removing the runner. A phase
 the test never reached has no receipt. An interrupted phase can leave a partial one.
 
 ```sh
-for receipt in forward-api-availability.json runtime-api-availability.json; do
+for receipt in forward-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
   for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
     if [ -f "$source" ]; then
       install -m 600 "$source" "$run_dir/$receipt" || exit 1

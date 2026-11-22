@@ -46,8 +46,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
       "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
@@ -64,8 +63,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
       "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
@@ -83,8 +81,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ]
     },
     {
@@ -100,8 +97,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
       "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
@@ -136,8 +132,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
       "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
@@ -155,8 +150,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ]
     },
     {
@@ -175,8 +169,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ]
     },
     {
@@ -200,8 +193,7 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ]
     },
     {
@@ -220,13 +212,9 @@
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
-        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
-      "env": {
-        "OCC_TEST_NAMESPACE_OPENSHELL_REAL": "1",
-        "OCC_TEST_OPENSHELL_HARNESS": "openclaw"
-      }
+      "env": { "OCC_TEST_NAMESPACE_OPENSHELL_REAL": "1", "OCC_TEST_OPENSHELL_HARNESS": "openclaw" }
     },
     {
       "path": "tests/integration/openshell-git-retention-real.test.ts",
@@ -234,15 +222,13 @@
         "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
         "OpenShell retains its runtime after Git expiry and worker restart",
         "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+      ]
     },
     {
       "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
       "expectedTests": [
         "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+      ]
     }
   ],
   "focusedEnv": ["OCC_TEST_OPENSHELL_HARNESS", "OCC_TEST_OPENSHELL_MODEL_BASE_URL"],

@@ -5,31 +5,45 @@ import test from "node:test";
 import { ownPortForward } from "../helpers/port-forward-cleanup.ts";
 
 // These are inert local processes, not kubectl or a Kubernetes installation.
+async function assertForwarderShutdown(
+  script: string,
+  {
+    signal,
+    repeatClose = false,
+    ...ownerOptions
+  }: { signal: NodeJS.Signals; repeatClose?: boolean; graceMs?: number },
+) {
+  const child = spawn(process.execPath, ["-e", script], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const owner = ownPortForward(child, ownerOptions);
+  const closed = once(child, "close");
+  let observedClose = false;
+  child.once("close", () => {
+    observedClose = true;
+  });
+  try {
+    await once(child.stdout, "data");
+    await owner.close();
+    assert.equal(observedClose, true);
+    assert.equal(child.signalCode, signal);
+    if (repeatClose) {
+      await owner.close();
+    }
+  } finally {
+    child.kill("SIGKILL");
+    await closed;
+  }
+}
+
 test(
   "operator forwarder shutdown waits for normal closure and can repeat",
   { timeout: 5_000 },
   async () => {
-    const child = spawn(
-      process.execPath,
-      ["-e", "console.log('ready'); setInterval(() => {}, 1000)"],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    const owner = ownPortForward(child);
-    const closed = once(child, "close");
-    let observedClose = false;
-    child.once("close", () => {
-      observedClose = true;
+    await assertForwarderShutdown("console.log('ready'); setInterval(() => {}, 1000)", {
+      signal: "SIGTERM",
+      repeatClose: true,
     });
-    try {
-      await once(child.stdout, "data");
-      await owner.close();
-      assert.equal(observedClose, true);
-      assert.equal(child.signalCode, "SIGTERM");
-      await owner.close();
-    } finally {
-      child.kill("SIGKILL");
-      await closed;
-    }
   },
 );
 
@@ -37,26 +51,10 @@ test(
   "operator forwarder shutdown escalates a stubborn child before returning",
   { timeout: 5_000 },
   async () => {
-    const child = spawn(
-      process.execPath,
-      ["-e", "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"],
-      { stdio: ["ignore", "pipe", "pipe"] },
+    await assertForwarderShutdown(
+      "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)",
+      { graceMs: 100, signal: "SIGKILL" },
     );
-    const owner = ownPortForward(child, { graceMs: 100 });
-    const closed = once(child, "close");
-    let observedClose = false;
-    child.once("close", () => {
-      observedClose = true;
-    });
-    try {
-      await once(child.stdout, "data");
-      await owner.close();
-      assert.equal(observedClose, true);
-      assert.equal(child.signalCode, "SIGKILL");
-    } finally {
-      child.kill("SIGKILL");
-      await closed;
-    }
   },
 );
 

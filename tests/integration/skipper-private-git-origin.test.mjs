@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { get as httpGet } from "node:http";
 import { json } from "node:stream/consumers";
-import { Agent, request } from "node:https";
-import { once } from "node:events";
-import { connect } from "node:net";
-import { connect as connectTls } from "node:tls";
+import { request } from "node:https";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -16,10 +13,19 @@ import {
   withdrawDuringFetchCommand,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
-import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
+import { registerSkipperPrivateGitReplacementCases } from "./skipper-private-git-replacement-cases.ts";
 
+/**
+ * @param {{ origin: string, tls: { ca?: Buffer, cert?: Buffer } }} fixture
+ * @param {string} method
+ * @param {string} path
+ * @param {string} [authorization]
+ * @param {unknown} [body]
+ * @param {{ afterHeaders?: () => Promise<void>, contentType?: string, agent?: import("node:https").Agent | false }} [options]
+ */
 function api(
   fixture,
   method,
@@ -64,6 +70,26 @@ function api(
     }
   });
 }
+
+test("private origin reports a denied process-group probe before starting Git", async (t) => {
+  const kill = process.kill;
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid < 0 && signal === 0) {
+      throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
+    }
+    return kill(pid, signal);
+  });
+  // The invalid ref bounds startup even where the group probe must not run.
+  const message =
+    process.platform === "win32"
+      ? "fixture requires POSIX process groups"
+      : process.pid === 1
+        ? "command failed (exit 1)"
+        : "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.";
+  await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
+    message,
+  });
+});
 
 test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
   const shortRoot = await mkdtemp("/tmp/skipper-test-");
@@ -518,135 +544,7 @@ test(
   },
 );
 
-test("replacement permits only the original B credential's first issuer retirement", async (t) => {
-  const origin = await startSkipperPrivateGitOrigin({ witnessIssuedGit: true });
-  t.after(() => origin.close());
-  const issue = async () => {
-    const response = await api(
-      origin,
-      "POST",
-      `/app/installations/${origin.installationId}/access_tokens`,
-      `Bearer ${origin.createAppJwt()}`,
-      { repository_ids: [73], permissions: { metadata: "read", contents: "write" } },
-    );
-    assert.equal(response.status, 201);
-    return { auth: "Bearer " + response.body.token, index: origin.snapshot().tokens.at(-1).index };
-  };
-  const a = await issue();
-  const b = await issue();
-  const observe = () => origin.observeReplacementOrigin(a.index, b.index);
-  const revoke = async (auth, options) =>
-    (await api(origin, "DELETE", "/installation/token", auth, undefined, options)).status;
-  const denied = (check) => assert.throws(check, { code: "ERR_ASSERTION" });
-  const clean = observe();
-  clean();
-  assert.equal(await origin.probeIssuedGit(a.index), 200);
-  denied(clean);
-  clean(1);
-  const git = observe();
-  assert.equal(await origin.probeIssuedGit(b.index), 200);
-  denied(() => git(1));
-  const discovery = `/${origin.repository}.git/info/refs?service=git-upload-pack`;
-  for (const [path, auth, status] of [
-    [discovery, b.auth, 200],
-    [discovery, undefined, 401],
-    ["/unrecognized", a.auth, 404],
-  ]) {
-    const check = observe();
-    assert.equal((await api(origin, "GET", path, auth)).status, status);
-    denied(check);
-  }
-  origin.refuseTokenRetirement(a.index);
-  const wrong = observe();
-  assert.equal(await revoke(a.auth), 503);
-  denied(wrong);
-  const unknown = observe();
-  assert.equal(await revoke("Bearer invalid"), 401);
-  denied(unknown);
-  const issuance = observe();
-  await issue();
-  denied(issuance);
-
-  // B's first HTTP request can use TLS accepted before observation. A bare
-  // connection opened afterward must still fail even though the totals rise by one each.
-  const url = new URL(origin.origin);
-  const options = { host: url.hostname, port: Number(url.port) };
-  // The TLS connection already belongs to the baseline. Only the parsed request
-  // can distinguish this traffic from an idle connection.
-  for (const [name, headers, status] of [
-    [
-      "unsupported expectation",
-      "GET / HTTP/1.1\r\nHost: fixture.invalid\r\nExpect: unsupported",
-      417,
-    ],
-    ["missing Host", "GET / HTTP/1.1", 400],
-    ["CONNECT", "CONNECT fixture.invalid:443 HTTP/1.1\r\nHost: fixture.invalid", undefined],
-    [
-      "upgrade",
-      "GET / HTTP/1.1\r\nHost: fixture.invalid\r\nConnection: upgrade\r\nUpgrade: example",
-      404,
-    ],
-  ]) {
-    await t.test(name, { timeout: 5000 }, async (t) => {
-      const socket = connectTls({ ...options, ca: origin.tls.ca });
-      t.after(() => socket.destroy());
-      await once(socket, "secureConnect");
-      const check = observe();
-      check();
-      socket.setEncoding("ascii");
-      let response = "";
-      socket.on("data", (chunk) => (response += chunk));
-      socket.end(headers + "\r\n\r\n");
-      await once(socket, "end");
-      if (status === undefined) {
-        assert.equal(response, "");
-      } else {
-        assert.ok(response.startsWith(`HTTP/1.1 ${status} `));
-      }
-      denied(check);
-    });
-  }
-  const tls = connectTls({ ...options, ca: origin.tls.ca });
-  t.after(() => tls.destroy());
-  await once(tls, "secureConnect");
-  const withExtra = observe();
-  const prior = origin.snapshot().connections;
-  const raw = connect(options);
-  t.after(() => raw.destroy());
-  await once(raw, "connect");
-  await waitUntil(
-    "extra raw connection accepted",
-    () => origin.snapshot().connections === prior + 1,
-    3000,
-  );
-  const preconnected = observe();
-  const agent = new Agent();
-  agent.createConnection = () => tls;
-  assert.equal(await revoke(b.auth, { agent }), 204);
-  preconnected();
-  denied(withExtra);
-  assert.equal(await revoke(b.auth), 401);
-  denied(preconnected);
-
-  const next = await issue();
-  const fresh = origin.observeReplacementOrigin(a.index, next.index);
-  assert.equal(await revoke(next.auth), 204);
-  fresh();
-
-  const pipelined = await issue();
-  const checkPipeline = origin.observeReplacementOrigin(a.index, pipelined.index);
-  const pipeline = connectTls({ ...options, ca: origin.tls.ca });
-  t.after(() => pipeline.destroy());
-  await once(pipeline, "secureConnect");
-  pipeline.resume();
-  pipeline.write(
-    `DELETE /installation/token HTTP/1.1\r\nHost: fixture.invalid\r\nAuthorization: ${pipelined.auth}\r\n\r\n` +
-      "GET /unrecognized HTTP/1.1\r\nHost: fixture.invalid\r\nConnection: close\r\n\r\n",
-  );
-  await once(pipeline, "end");
-  assert.equal(origin.snapshot().endpoints["other:503"], 1);
-  denied(checkPipeline);
-});
+registerSkipperPrivateGitReplacementCases(api);
 
 test(
   "private origin accepts caller TLS and an explicit bridge listener",
@@ -744,11 +642,11 @@ function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
   ].join("\n");
 }
 
-async function controlledModel(t) {
+async function controlledModel(t, cmd = "set -eu; printf 'private git task'") {
   const directory = await temporaryDirectory(t, "skipper-model-");
   const path = join(directory, "command.json");
   const command = {
-    cmd: "set -eu; printf 'private git task'",
+    cmd,
     id: "skipper-test",
     expiresAt: Date.now() + 170_000,
   };
@@ -779,6 +677,41 @@ async function controlledModel(t) {
 function toolCall(events) {
   return events.find((event) => event.type === "response.output_item.done").item;
 }
+
+test("the installed Skipper model preserves the exit status of its Git command", async (t) => {
+  const cwd = await temporaryDirectory(t, "skipper-model-git-");
+  const env = cleanEnvironment({ HOME: cwd });
+  const commit =
+    "git -C work -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet --allow-empty -m fixture";
+  const command = commit + " && git -C work rev-parse HEAD";
+  async function execute() {
+    const model = await controlledModel(t, command);
+    const call = toolCall(model.next());
+    const { code, stdout, stderr } = await run("sh", ["-c", JSON.parse(call.arguments).cmd], {
+      cwd,
+      env,
+      allowFailure: true,
+    });
+    const answer = model.result(call, nativeToolOutput({ exit: code, output: stdout + stderr }));
+    return { code, stdout, answer };
+  }
+
+  const missing = await execute();
+  assert.equal(missing.code, 128);
+  assert.equal(missing.stdout, "");
+  assert.equal(missing.answer, "SKIPPER_INCOMPLETE_skipper-test");
+
+  await run("git", ["init", "--quiet", "work"], { cwd, env });
+  const success = await execute();
+  const head = await run("git", ["-C", "work", "rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd,
+    env,
+  });
+  assert.equal(success.code, 0);
+  assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
+  assert.equal(success.stdout, head.stdout + "SKIPPER_COMPUTE_DONE_skipper-test\n");
+  assert.equal(success.answer, "SKIPPER_COMPUTE_DONE_skipper-test");
+});
 
 test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
   const model = await controlledModel(t);
@@ -857,6 +790,7 @@ test("the installed Skipper model requires terminal success and keeps failure di
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(
       model.observations.some((event) => event.event === "skipper-native-poll"),
@@ -874,6 +808,24 @@ test("the installed Skipper model rejects a changed native session and stops pol
     "SKIPPER_INCOMPLETE_skipper-test",
   );
   assert.equal(model.observations.at(-1).status, "unrecognized");
+
+  // Replay the mixed-session history with a terminal result after losing callback state.
+  model.restart();
+  const beforeReplay = model.observations.length;
+  assert.equal(
+    model.result(
+      { ...poll, call_id: model.command.id + "-wait-2" },
+      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(model.observations.length, beforeReplay + 1);
+  assert.equal(model.observations[beforeReplay].modelFixtureSelectedTerminalSuccess, undefined);
+  assert.partialDeepStrictEqual(model.observations[beforeReplay], {
+    event: "skipper-native-result",
+    id: model.command.id,
+    status: "unrecognized",
+  });
 
   const expired = await controlledModel(t);
   const exec = toolCall(expired.next());

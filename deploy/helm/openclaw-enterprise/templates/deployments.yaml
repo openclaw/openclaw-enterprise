@@ -354,6 +354,8 @@ spec:
               value: {{ include "openclaw.installationSecretNamespace" $ | quote }}
             - name: NODE_ENV
               value: production
+            - name: OCC_CONTROL_PLANE_AUDIT_ENABLED
+              value: {{ ternary "true" "false" $.Values.controlPlaneAudit.enabled | quote }}
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: OCC_CONSOLE_THEME_DIR
               value: /etc/openclaw/console-theme
@@ -453,17 +455,6 @@ spec:
               value: {{ include "openclaw.trustedProxy.header" $ | quote }}
             {{- end }}
             {{- end }}
-            {{- if $.Values.slackProxy.enabled }}
-            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
-              value: {{ include "openclaw.slackProxy.url" $ | quote }}
-            - name: OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST
-              value: {{ printf "%s.%s.svc" (include "openclaw.slackProxy.serviceName" $) $.Release.Namespace | quote }}
-            {{- else if $.Values.api.channelDirectoryProxyUrl }}
-            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
-              value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
-            {{- end }}
-            - name: OCC_API_HTTPS_EGRESS_OPEN
-              value: {{ include "openclaw.api.httpsEgressOpen" $ | quote }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             - name: OCC_AGENT_RUNTIME_LOGS_ENABLED
@@ -634,17 +625,17 @@ spec:
           # Liveness detects a stuck run loop from the marker age, not from probe latency.
           readinessProbe:
             exec:
-              command: [node, scripts/production-healthcheck.mjs, worker, ready]
+              command: [node, scripts/production-healthcheck.ts, worker, ready]
             timeoutSeconds: 5
           livenessProbe:
             exec:
-              command: [node, scripts/production-healthcheck.mjs, worker]
+              command: [node, scripts/production-healthcheck.ts, worker]
             timeoutSeconds: 5
           # Like the API, a slow boot gets 2 min before liveness starts. A 5 s period keeps
           # the Node probe from taking CPU from the booting worker.
           startupProbe:
             exec:
-              command: [node, scripts/production-healthcheck.mjs, worker]
+              command: [node, scripts/production-healthcheck.ts, worker]
             timeoutSeconds: 5
             periodSeconds: 5
             failureThreshold: 24
