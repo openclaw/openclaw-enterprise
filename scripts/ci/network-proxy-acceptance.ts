@@ -880,10 +880,43 @@ export function assertAcceptanceWindow(now = Date.now()): void {
   );
 }
 
+export async function verifyAcceptanceDispatch(
+  token: string,
+  env: NodeJS.ProcessEnv = process.env,
+  read: Reader = fetch,
+): Promise<void> {
+  const id = env.GITHUB_RUN_ID ?? "";
+  assert.ok(token && /^[1-9][0-9]*$/.test(id), "Acceptance dispatch identity is missing");
+  const run = await json(
+    await read(
+      `https://api.github.com/repos/${networkProxyAcceptance.repository}/actions/runs/${id}`,
+      {
+        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      },
+    ),
+    "Acceptance dispatch check",
+  );
+  assert.ok(
+    String(run.id) === id &&
+      run.path === ".github/workflows/full-integration.yml" &&
+      run.event === "workflow_dispatch" &&
+      run.head_branch === "main" &&
+      run.head_sha === env.GITHUB_SHA &&
+      run.run_attempt === 1 &&
+      run.display_title === `Network Proxy Acceptance ${networkProxyAcceptance.source}` &&
+      typeof run.created_at === "string",
+    "Acceptance dispatch provenance is invalid",
+  );
+  assertAcceptanceWindow(Date.parse(run.created_at));
+}
+
 export async function admitAcceptance(): Promise<void> {
   assertAcceptanceWindow();
   const result = await validateFullIntegrationPreflight();
   assert.ok(result.selectedLane === "slack" && !result.runAll, "Acceptance must select only Slack");
+  await verifyAcceptanceDispatch(process.env.GITHUB_TOKEN ?? "");
   await verifyAcceptanceSource(process.env.GITHUB_TOKEN ?? "");
 }
 

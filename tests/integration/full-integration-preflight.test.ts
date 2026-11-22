@@ -19,6 +19,7 @@ import {
   validateClearanceEvidence,
   verifyAcceptanceIdentities,
   verifyAcceptanceSource,
+  verifyAcceptanceDispatch,
   verifySlackQuarantine,
 } from "../../scripts/ci/network-proxy-acceptance.ts";
 import {
@@ -82,6 +83,28 @@ test("acceptance dispatch admits only its immutable UTC activation interval", ()
   assert.throws(() => assertAcceptanceWindow(start - 1), /outside/);
   assert.doesNotThrow(() => assertAcceptanceWindow(start));
   assert.throws(() => assertAcceptanceWindow(end), /outside/);
+});
+
+test("acceptance refuses a dispatch created outside the interval even when execution starts inside it", async () => {
+  const sha = "a".repeat(40);
+  let created: string = networkProxyAcceptance.startsAt;
+  const read = async () =>
+    Response.json({
+      id: 42,
+      path: ".github/workflows/full-integration.yml",
+      event: "workflow_dispatch",
+      head_branch: "main",
+      head_sha: sha,
+      run_attempt: 1,
+      display_title: `Network Proxy Acceptance ${networkProxyAcceptance.source}`,
+      created_at: created,
+    });
+  const env = { GITHUB_RUN_ID: "42", GITHUB_SHA: sha };
+  await verifyAcceptanceDispatch("reader", env, read);
+  created = new Date(Date.parse(networkProxyAcceptance.startsAt) - 1000).toISOString();
+  await assert.rejects(verifyAcceptanceDispatch("reader", env, read), /outside/);
+  created = networkProxyAcceptance.expiresAt;
+  await assert.rejects(verifyAcceptanceDispatch("reader", env, read), /outside/);
 });
 
 test("clearance approval binds independent VM and Socket evidence to the exact run and source", () => {
