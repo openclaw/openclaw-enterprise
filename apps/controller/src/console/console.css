@@ -3072,6 +3072,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   grid-template-columns: 160px minmax(0, 1fr);
   gap: var(--space-4) var(--space-5);
 }
+.agent-settings-summary {
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  row-gap: var(--space-3);
+}
 .configuration-summary dt {
   color: var(--muted);
 }

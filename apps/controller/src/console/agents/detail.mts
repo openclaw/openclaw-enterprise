@@ -453,7 +453,7 @@ function summary(
   details: [string, string | Node | null | undefined][],
 ) {
   const primary = configuredModel(values);
-  const list = element("dl", { className: "configuration-summary" });
+  const list = element("dl", { className: "configuration-summary agent-settings-summary" });
   for (const [name, value] of [
     ["Model", typeof primary === "string" ? primary : "Not specified"],
     ...details,
