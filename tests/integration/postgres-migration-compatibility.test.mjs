@@ -1487,7 +1487,8 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preNativeGitDelivery"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preNativeGitDelivery"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1846,8 +1847,9 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     for (const schemas of [false, true]) {
-      void context.test(
+      const subtest = context.test(
         `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "fresh", { schemas });
@@ -1876,6 +1878,7 @@ test(
           assert.deepEqual(await historySnapshot(db), after);
         },
       );
+      subtests.push(subtest);
     }
     // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
     const histories = await coveringNewestPrefix("populated canonical", 62, [
@@ -1939,10 +1942,11 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preNativeGitDelivery"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preNativeGitDelivery"],
     ]);
     for (const [prefix, history] of histories) {
-      void context.test(`populated canonical ${history}`, async (child) => {
+      const subtest = context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
@@ -1966,7 +1970,7 @@ test(
           assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
           await assertSourceOwners?.();
           await assertCompletedHistory(db, receipts);
-          if (prefix !== 88) {
+          if (history !== "preNativeGitDelivery") {
             await assertUpgradedRevisionReadable(db);
           }
           assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
@@ -1978,7 +1982,7 @@ test(
           assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
           await assertUpgradedAuthentication(db);
         };
-        if (prefix !== 88) {
+        if (history !== "preNativeGitDelivery") {
           await upgrade();
         }
         if (history === "preHumanAuthenticationResults") {
@@ -2064,7 +2068,7 @@ test(
           ).rows[0].allowed,
           true,
         );
-        if (prefix === 87 || prefix === 88) {
+        if (prefix === 87 || history === "preNativeGitDelivery") {
           // An app-role writer can bypass OCC. A valid broader network allowance must still
           // cover every injected request, and standalone execution cannot add repository delivery.
           const original = (
@@ -2299,12 +2303,14 @@ test(
             await db.app.query("ROLLBACK");
           }
         }
-        if (prefix === 88) {
+        if (history === "preNativeGitDelivery") {
           // Preserve populated standalone v8 snapshots that already passed the 0088 check.
           await upgrade();
         }
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2453,6 +2459,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("Provider continuation", 75, [
       [32, "backendTerminology"],
@@ -2497,9 +2504,10 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preNativeGitDelivery"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preNativeGitDelivery"],
     ])) {
-      void context.test(history, async (child) => {
+      const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
         // Stock Drizzle appends later canonical migrations while retaining Provider fingerprints.
@@ -2514,7 +2522,9 @@ test(
         // Approver storage appends to either continuation without rewriting existing receipts.
         await assertCompletedHistory(db, receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2611,6 +2621,9 @@ test(
       history: "preTokenServiceSourceOwnership",
     });
     const current = await logicalRestoreSnapshot(upgraded);
+    context.diagnostic(
+      `Upgraded restored prefix 84 via 85: ${catalogDigest(await migrationCatalog(upgraded.migrator))}`,
+    );
     assert.deepEqual(current.receipts, native.receipts);
     assert.deepEqual(current.identities, at85.identities);
     for (const flag of ["--require-current", undefined]) {
@@ -2619,6 +2632,31 @@ test(
         history: "completed",
       });
       assert.deepEqual(await logicalRestoreSnapshot(upgraded), current);
+    }
+
+    // The production command must recognize archives from each predecessor.
+    for (const [prefix, history] of [
+      [88, "preStaticConnectionTemplates"],
+      [89, "preNativeGitDelivery"],
+    ]) {
+      await context.test(history, async (child) => {
+        const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
+          prefix,
+        });
+        const upgrade = await restoreHistoryArchive(
+          child,
+          fixture,
+          await dumpHistoryArchive(fixture, predecessor),
+        );
+        assert.deepEqual(await runHistoryCommand(upgrade, "production"), { ok: true, history });
+        child.diagnostic(
+          `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(upgrade.migrator))}`,
+        );
+        assert.deepEqual(await runHistoryCommand(upgrade, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
+      });
     }
 
     // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
@@ -2710,6 +2748,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("rollback", 75, [
       [0, "empty"],
@@ -2762,9 +2801,10 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preNativeGitDelivery"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preNativeGitDelivery"],
     ])) {
-      void context.test(`prefix ${prefix} transaction`, async (child) => {
+      const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
           await seedCanonicalData(db, {
@@ -2790,7 +2830,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [88, "CREATE FUNCTION"],
+                [89, "CREATE FUNCTION"],
+                [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
                 [86, "CREATE TRIGGER"],
                 [85, "ALTER TABLE"],
@@ -2822,10 +2863,14 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 88) {
-          // Abort 0089 after replacing the execution check, while installing the session guard.
+        } else if (prefix === 89) {
+          // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =
             "IF to_regprocedure('occ.repository_git_network_admission_is_valid(jsonb)') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 88) {
+          // Abort 0089 after it has created the static version table and its current-version FK.
+          failAt =
+            "IF to_regclass('occ.static_key_template_versions') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 87) {
           // Abort 0088 after its new validator functions exist, before it replaces constraints.
           failAt =
@@ -2881,7 +2926,9 @@ test(
         });
         await assertCompletedHistory(db, before.receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -3143,15 +3190,21 @@ test(
     );
     const nativePreviewHash = "19319a8b5bf7d714437a563b863f6ab3ead8a4ecefc3ed1d065a62cfe1d4e5e1";
     assert.equal(createHash("sha256").update(nativePreviewSql).digest("hex"), nativePreviewHash);
+    const nativeDeliverySql = await readFile(
+      join(migrationsDirectory, "0090_native_git_delivery.sql"),
+    );
+    const nativeDeliveryHash = "d8dd9f9b4b1fde20f9f1bb3819558e27fc08aa8518cc4b71c27f25240bed4dcb";
+    assert.equal(createHash("sha256").update(nativeDeliverySql).digest("hex"), nativeDeliveryHash);
     void context.test("standalone and native Git receipts in reverse order", async (child) => {
       const db = await historyDatabase(child, fixture, "reversed_native", {
         prefix: manifest.entries.length,
       });
       const receipts = await historyReceipts(db.migrator);
-      const [standalone, native] = receipts.slice(-2);
+      const standalone = receipts[87];
+      const native = receipts[89];
       assert.deepEqual(
         [standalone, native].map(({ hash }) => hash),
-        manifest.entries.slice(-2).map(({ sha256 }) => sha256),
+        [manifest.entries[87].sha256, nativeDeliveryHash],
       );
       // A correct final catalog cannot qualify receipts published in the wrong order.
       await db.migrator.query(
@@ -3162,12 +3215,23 @@ test(
       );
       await assertHistoryRefused(db, /applied receipts differ from canonical history/);
     });
-    for (const [prefix, label] of [
-      [85, "premerge repository ACL and native Git receipts"],
-      [87, "premerge native Git in standalone credential deployment slot"],
+    for (const [prefix, label, tag] of [
+      [85, "premerge repository ACL and native Git receipts", "0087_native_git_delivery"],
+      [
+        87,
+        "premerge native Git in standalone credential deployment slot",
+        "0088_native_git_delivery",
+      ],
+      [88, "premerge native Git in static connection templates slot", "0089_native_git_delivery"],
     ]) {
       void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "oldnative", { prefix });
+        await seedCanonicalData(db, {
+          preset: true,
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
         const directory = await mkdtemp(join(tmpdir(), "openclaw-premerge-native-"));
         const entries = [];
         const expected = [];
@@ -3187,17 +3251,18 @@ test(
             expected.push([sha256, entries[0].when]);
             await writeFile(join(directory, `${entries[0].tag}.sql`), bytes);
           }
-          const { sha256: _standaloneHash, ...standalone } = manifest.entries[87];
-          assert.equal(standalone.tag, "0088_standalone_credential_deployment");
-          const native = {
-            ...standalone,
-            idx: prefix + 1 + entries.length,
-            when: prefix === 85 ? standalone.when - 1 : standalone.when,
-            tag: prefix === 85 ? "0087_native_git_delivery" : "0088_native_git_delivery",
-          };
+          const { sha256: occupiedHash, ...slot } = manifest.entries[prefix + entries.length];
+          const native = { ...slot, tag };
           entries.push(native);
-          expected.push([nativePreviewHash, native.when]);
-          await writeFile(join(directory, `${native.tag}.sql`), nativePreviewSql);
+          // The abandoned 0089 used the same SQL now in 0090, at the timestamp
+          // assigned to the static connection templates migration.
+          const [sql, hash] =
+            prefix === 88
+              ? [nativeDeliverySql, nativeDeliveryHash]
+              : [nativePreviewSql, nativePreviewHash];
+          assert.notEqual(occupiedHash, hash);
+          expected.push([hash, native.when]);
+          await writeFile(join(directory, `${native.tag}.sql`), sql);
           await writeFile(
             join(directory, "meta/_journal.json"),
             JSON.stringify({ version: "7", dialect: "postgresql", entries }),
@@ -3214,7 +3279,9 @@ test(
             .map(({ hash, created_at }) => [hash, Number(created_at)]),
           expected,
         );
+        const data = await canonicalData(db);
         await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+        assert.deepEqual(await canonicalData(db), data);
       });
     }
 

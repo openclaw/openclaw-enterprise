@@ -64,6 +64,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   PostgresCommitOutcomeUnknownError,
@@ -1622,19 +1623,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       validateConfiguration(body);
     }
 
-    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
-    // Older handlers would otherwise ignore a requested provider or credential destination.
-    if (
-      body?.mode === "static_bearer" &&
-      (operation.operationId === "createConnectionTemplate" ||
-        operation.operationId === "updateConnectionTemplate")
-    ) {
-      throw failure(
-        501,
-        "NOT_IMPLEMENTED",
-        "Static Connection Templates are unavailable on this controller.",
-      );
-    }
+    // TODO(RFC-0034): Remove this guard when the ModelProvider implementation is available.
     if (
       (body &&
         "modelProviderId" in body &&
@@ -3841,7 +3830,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         failure: error.failure,
       });
     }
-    if (
+    if (error instanceof CredentialDeliveryFailedError) {
+      const params = request.params as { namespaceId?: string; credentialSourceId?: string };
+      app.log.warn({
+        event: "credential.delivery_failed",
+        requestId: request.id,
+        namespaceId: params.namespaceId,
+        credentialSourceId: params.credentialSourceId,
+        code: "CREDENTIAL_DELIVERY_FAILED",
+      });
+    } else if (
       mapped.status === 503 &&
       mapped.code === "DEPENDENCY_UNAVAILABLE" &&
       error instanceof Error &&

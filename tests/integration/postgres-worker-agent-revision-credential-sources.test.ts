@@ -9,7 +9,6 @@ import type {
   ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import {
-  InstalledDriver,
   OpenClawController,
   CredentialDeploymentFailedError,
   ResourceStateConflictError,
@@ -18,6 +17,25 @@ import { installationControllerOptions } from "../../apps/controller/src/composi
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import {
+  MANAGED_BY,
+  MANAGED_BY_LABEL,
+  createOpenShellBackend,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
+import type {
+  OpenShellGatewayClient,
+  OpenShellProviderCreateRequest,
+  OpenShellProviderResponse,
+  OpenShellSandboxProviderStatus,
+  OpenShellStoredProviderProfile,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -43,6 +61,186 @@ registerDeploymentWithdrawalCases(cases);
 registerWithdrawalMaintenanceCases(cases);
 registerFiniteGitCases(import.meta.url);
 
+function recordingActiveGateway(
+  namespaceId: string,
+  workspace: string,
+  sandboxId: string,
+  sourceId: string,
+) {
+  const sandboxName = "active-source-sandbox";
+  const providerName = openShellProviderName(sourceId);
+  const workspaceId = randomUUID();
+  const attachmentEpoch = randomUUID();
+  const networkInstanceId = randomUUID();
+  const policyHash = "a".repeat(64);
+  const updates: OpenShellProviderCreateRequest[] = [];
+  const receiptReads: string[] = [];
+  let profile: OpenShellStoredProviderProfile | undefined;
+  let provider: OpenShellProviderResponse | undefined;
+  let status: OpenShellSandboxProviderStatus | undefined;
+  const sandbox = {
+    id: sandboxId,
+    name: sandboxName,
+    workspace,
+    labels: {},
+    annotations: {},
+    serviceUrls: {},
+    spec: { providers: [] as string[], provider_attachment_epoch: attachmentEpoch },
+    configurationActivated: true,
+    configurationAdmission: {
+      state: 2,
+      provider_env_revision: "2",
+      config_revision: "2",
+      policy_hash: policyHash,
+    },
+    mainProcessInstanceId: networkInstanceId,
+  };
+  const client = {
+    async getWorkspace(name) {
+      assert.equal(name, workspace);
+      return {
+        id: workspaceId,
+        name: workspace,
+        labels: { [MANAGED_BY_LABEL]: MANAGED_BY, "openclaw.dev/namespace-id": namespaceId },
+      };
+    },
+    async getProviderProfile(requestWorkspace, id) {
+      assert.equal(requestWorkspace, workspace);
+      assert.equal(id, providerName);
+      return profile;
+    },
+    async importProviderProfile(requestWorkspace, supplied) {
+      assert.equal(requestWorkspace, workspace);
+      assert.equal(supplied.id, providerName);
+      profile = {
+        id: supplied.id,
+        resourceVersion: "1",
+        annotations: supplied.annotations,
+        definition: {
+          credentials: supplied.credentials.map((credential) => ({
+            name: credential.name,
+            env_vars: credential.envVars,
+            required: credential.required,
+            auth_style: credential.authStyle,
+            header_name: credential.headerName,
+            stable_placeholder: credential.stablePlaceholder,
+          })),
+        },
+      };
+    },
+    async getProvider(requestWorkspace, name) {
+      assert.equal(requestWorkspace, workspace);
+      assert.equal(name, providerName);
+      return provider;
+    },
+    async createProvider(request) {
+      assert.equal(request.workspace, workspace);
+      assert.equal(request.name, providerName);
+      assert.equal(request.type, providerName);
+      provider = {
+        id: randomUUID(),
+        workspace,
+        profileWorkspace: workspace,
+        name: request.name,
+        type: request.type,
+        labels: request.labels,
+        config: request.config ?? {},
+        resourceVersion: "1",
+      };
+      return provider;
+    },
+    async updateProviderCredentialsConditionally(request, expectedVersion) {
+      assert.ok(provider);
+      assert.equal(request.workspace, workspace);
+      assert.equal(request.name, providerName);
+      assert.deepEqual(sandbox.spec.providers, [providerName]);
+      assert.equal(expectedVersion, provider.resourceVersion);
+      updates.push(request);
+      provider = { ...provider, config: request.config ?? {}, resourceVersion: "2" };
+      const mutationId = randomUUID();
+      const receiptId = randomUUID();
+      const desired = {
+        sandboxId,
+        sandbox: sandboxName,
+        attachmentEpoch,
+        providerId: provider.id!,
+        providerResourceVersion: provider.resourceVersion,
+        providerEnvRevision: "2",
+        configRevision: "2",
+        policyHash,
+      };
+      const time = new Date().toISOString();
+      status = {
+        state: "PROVIDER_READINESS_STATE_READY",
+        completedOperationId: receiptId,
+        receipt: {
+          receiptId,
+          kind: "PROVIDER_MUTATION_KIND_UPDATE",
+          workspace,
+          provider: provider.name,
+          desired,
+        },
+        observed: {
+          sessionId: randomUUID(),
+          sequence: "1",
+          attachmentEpoch,
+          providerEnvRevision: "2",
+          configRevision: "2",
+          policyHash,
+          credentialsInstalled: true,
+          policyActive: true,
+          launchEnvironmentInstalled: true,
+          processInstanceId: randomUUID(),
+          reason: "",
+        },
+        networkInstanceId,
+        observedTime: time,
+        evaluatedTime: time,
+      };
+      return {
+        ...provider,
+        mutationId,
+        targetReceipts: [
+          {
+            receipt_id: receiptId,
+            mutation_id: mutationId,
+            kind: "PROVIDER_MUTATION_KIND_UPDATE",
+            workspace,
+            provider: provider.name,
+            desired: {
+              sandbox_id: sandboxId,
+              sandbox: sandboxName,
+              provider_id: provider.id,
+              provider_resource_version: provider.resourceVersion,
+            },
+          },
+        ],
+      };
+    },
+    async getSandbox(request) {
+      assert.equal(request.workspace, workspace);
+      assert.equal(request.name, sandboxName);
+      return sandbox;
+    },
+    async getSandboxProviderStatus(
+      requestWorkspace,
+      requestedSandbox,
+      requestedProvider,
+      _signal,
+      receiptId,
+    ) {
+      assert.equal(requestWorkspace, workspace);
+      assert.equal(requestedSandbox, sandboxName);
+      assert.equal(requestedProvider, providerName);
+      assert.ok(receiptId && status);
+      receiptReads.push(receiptId);
+      assert.equal(receiptId, status.receipt?.receiptId);
+      return status;
+    },
+  } satisfies Partial<OpenShellGatewayClient>;
+  return { client, updates, receiptReads, sandbox, provider: () => provider, status: () => status };
+}
+
 async function stagedCredentialScenario(
   fixture: RevisionFixture,
   context: TestContext,
@@ -62,12 +260,18 @@ async function stagedCredentialScenario(
   const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
   baseline.name = "baseline";
   baseline.endpoints[0]!.host = "baseline.example.test";
-  const runtime = await loadInstallationFile(context, installation);
+  const gatewayTransport: Partial<OpenShellGatewayClient> = {};
+  const runtime = await loadInstallationFile(context, installation, {
+    createOpenShellBackend: (definition) =>
+      createOpenShellBackend(definition, {
+        gatewayClient: completeOpenShellGatewayClient(gatewayTransport),
+      }),
+  });
   assert.ok(runtime?.credentialDeliveryRegistration && runtime.sandboxDriver);
   const registration = runtime.credentialDeliveryRegistration;
   const sandbox = registration.require("sandbox");
-  // Compute and the Worker-side Proxy are controlled. Admission, the Worker, TokenService,
-  // PostgreSQL, and Native IAM remain real; this does not qualify native OpenShell delivery.
+  // Control Compute and deployment configuration only. The API and Worker share the exact
+  // selected native Proxy; its Source notification and Gateway receipt handling remain real.
   const deliveries: {
     namespace: Readonly<Namespace>;
     targetRef: Parameters<CredentialProxyDriver["configureDeployment"]>[1]["targetRef"];
@@ -75,55 +279,27 @@ async function stagedCredentialScenario(
     binding: DeploymentCredentialBinding;
     credential: ResolvedCredential;
   }[] = [];
-  const proxy: CredentialProxyDriver = {
-    capability: "credential_proxy_delivery",
-    id: sandbox.id,
-    implementation: sandbox.implementation,
-    async deployProxy() {
-      throw new Error("Unexpected Proxy staging in controlled Compute.");
-    },
-    async configureDeployment(deploymentContext, input) {
-      const supplied = input.bindings[0];
-      assert.ok(supplied && input.bindings.length === 1);
-      deliveries.push({
-        namespace: deploymentContext.namespace,
-        targetRef: input.targetRef,
-        configurationId: input.configurationId,
-        binding: supplied.binding,
-        credential: await supplied.resolveCredential(),
-      });
-      return {
-        credentialProjections: [
-          {
-            bindingRef: supplied.binding.bindingRef,
-            environment: supplied.binding.projection.environment,
-            placeholder: { kind: "runtime" },
-          },
-        ],
-      };
-    },
-    async getDeploymentStatus() {
-      throw new Error("Unexpected native readiness observation in controlled Compute.");
-    },
-    async removeDeployment() {
-      throw new Error("Unexpected Proxy removal in controlled Compute.");
-    },
+  const proxy = registration.require("credential_proxy_delivery");
+  proxy.configureDeployment = async (deploymentContext, input) => {
+    const supplied = input.bindings[0];
+    assert.ok(supplied && input.bindings.length === 1);
+    deliveries.push({
+      namespace: deploymentContext.namespace,
+      targetRef: input.targetRef,
+      configurationId: input.configurationId,
+      binding: supplied.binding,
+      credential: await supplied.resolveCredential(),
+    });
+    return {
+      credentialProjections: [
+        {
+          bindingRef: supplied.binding.bindingRef,
+          environment: supplied.binding.projection.environment,
+          placeholder: { kind: "runtime" },
+        },
+      ],
+    };
   };
-  const workerRegistration = new InstalledDriver(
-    {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configuration: {
-        sandbox: runtime.installation.drivers.sandbox!.configuration,
-        backend: runtime.installation.backend[0],
-      },
-    },
-    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
-  );
-  assert.deepEqual(workerRegistration.ref, registration.ref);
-  const workerNamespaceLifecycleBindings = runtime.namespaceLifecycleBindings?.map((binding) =>
-    binding.owner === registration ? { ...binding, owner: workerRegistration } : binding,
-  );
   const placedName = `placed-${randomUUID().slice(0, 8)}`;
   const compute = extendCompute({
     ...fixture.compute,
@@ -224,8 +400,8 @@ async function stagedCredentialScenario(
         },
       },
       secretDriver,
-      namespaceLifecycleBindings: workerNamespaceLifecycleBindings,
-      credentialDeliveryRegistration: workerRegistration,
+      namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+      credentialDeliveryRegistration: registration,
       sandboxDriver: sandbox,
     }),
   } satisfies NonNullable<Parameters<RevisionFixture["start"]>[1]>;
@@ -239,6 +415,7 @@ async function stagedCredentialScenario(
     enrolledCredential,
     deliveries,
     placedName,
+    gatewayTransport,
     currentAgent: () => fixture.currentAgent(owner),
   };
 }
@@ -275,7 +452,7 @@ cases.revisionTest(
 );
 
 cases.revisionTest(
-  "standalone activation commits the prepared revision before first startup",
+  "standalone activation commits the prepared revision and delivers an active Source PATCH",
   async (fixture, context) => {
     let preparations = 0;
     let activations = 0;
@@ -291,6 +468,7 @@ cases.revisionTest(
       deliveries,
       placedName,
       currentAgent,
+      gatewayTransport,
     } = await stagedCredentialScenario(fixture, context, (compute) => ({
       ...compute,
       async prepareRevision(revision, revisionContext) {
@@ -368,31 +546,113 @@ cases.revisionTest(
         credential: { credential: enrolledCredential, version: canonical.version },
       },
     ]);
+    // Worker shutdown closes its database pool. Source PATCH must retain the API-bound placement
+    // resolver instead of depending on a resolver installed by the Worker.
+    await fixture.stop();
 
-    // A Source used by the active staged revision cannot rotate until delivery notification
-    // and retry can settle its existing projections. Refusal must leave custody unchanged.
-    const updateAudit = () =>
-      auditEvent(
-        fixture.installation.id,
-        namespaceId,
-        actorId,
-        "openclaw.credential_sources.update",
-        source.ref,
-      );
-    await assert.rejects(
-      controller.updateManagedCredentialSource(
-        actorId,
-        { namespaceId, credentialSourceId: source.id },
-        { secret: { opaque: randomUUID() } },
-        updateAudit,
-        (reasonCode) => ({ ...updateAudit(), outcome: "failure", reasonCode }),
-      ),
-      (error: unknown) =>
-        error instanceof ResourceStateConflictError && /active staged revision/.test(error.message),
-    );
+    // The Worker has committed a real active v8 binding. Control only the Gateway transport:
+    // the selected native Proxy must push the committed Source version and acknowledge the
+    // attached target's UPDATE receipt before the authenticated Source PATCH succeeds.
+    const nativeProxy = controller.selectedDriver("credential_proxy_delivery");
+    assert.ok(nativeProxy instanceof OpenShellCredentialProxyDriver);
+    const gateway = recordingActiveGateway(namespaceId, placedName, sandboxId, source.id);
+    Object.assign(gatewayTransport, gateway.client);
+    const preparedProvider = await prepareOccTokenServiceProviderCopy({
+      client: gateway.client,
+      workspace: placedName,
+      namespaceId,
+      binding: revision.credentialDeployment!.bindings[0]!,
+      resolveCredential: () => tokenService.resolveCredential(sourceInstance, context.signal),
+      signal: context.signal,
+    });
+    // The Worker-side deployment Proxy is controlled in this fixture. Simulate its existing
+    // Gateway attachment explicitly; creating a Provider alone does not attach it to a Sandbox.
+    gateway.sandbox.spec.providers.push(preparedProvider.name);
+
+    const origin = "https://console.oce.localhost";
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: fixture.installation.id,
+      baseURL: origin,
+      agentDomain: "agents.oce.localhost",
+      secret: "active-source-update-integration-session-secret",
+      pool: fixture.observerPool,
+    });
+    const credentials = {
+      email: `source-updater-${randomUUID()}@example.test`,
+      password: randomUUID(),
+    };
+    const iam = await fixture.state.loadNativeIAMState(fixture.installation.id);
+    const roleId = iam.bindings.find((binding) => binding.subjectId === fixture.actor.id)?.roleId;
+    assert.ok(roleId);
+    const account = await auth.createAccount({ ...credentials, name: "Source updater" });
+    const seed = auth.principalSeed(account, { roleId });
+    await fixture.state.appendNativeIAMPrincipal(seed);
+    // Additional password accounts receive an Installation-only grant. Give this account
+    // exact update authority on the already active Source through the regular IAM caller.
+    const sourceUpdateRole = await controller.createIAMRole(actorId, {
+      namespaceId,
+      permissions: [{ action: "update", resourceKind: "credential_source" }],
+    });
+    await controller.createIAMAccessBinding(actorId, {
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: seed.principal.id,
+      roleId: sourceUpdateRole.id,
+      resourceKind: "credential_source",
+      resourceId: source.id,
+    });
+    const app = createFastifyApp({
+      controller,
+      iamDriver: controller.selectedDriver("iam"),
+      resolveHarness: resolveApprovedHarness,
+      auditSink: fixture.state.auditSink,
+      auth,
+      development: { enabled: false },
+    });
+    const replacement = randomUUID();
+    try {
+      const session = await signInToControllerApp(app, credentials, { origin });
+      const updated = await app.inject({
+        method: "PATCH",
+        url: `/namespaces/${namespaceId}/credential-sources/${source.id}`,
+        headers: {
+          host: new URL(origin).host,
+          ...authenticatedHeaders(session),
+          "content-type": "application/json",
+        },
+        payload: { secret: { opaque: replacement } },
+      });
+      assert.equal(updated.statusCode, 200, updated.body);
+      assert.equal(updated.body.includes(replacement), false);
+    } finally {
+      await app.close();
+    }
+    const current = await tokenService.resolveCredential(sourceInstance, context.signal);
+    assert.equal(current.credential, replacement);
+    assert.notEqual(current.version, canonical.version);
+    assert.equal(gateway.updates.length, 1);
+    const { workspace, name, credentials: delivered, config } = gateway.updates[0]!;
     assert.deepEqual(
-      await tokenService.resolveCredential(sourceInstance, AbortSignal.timeout(5_000)),
-      canonical,
+      { workspace, name, credentials: delivered, config },
+      {
+        workspace: placedName,
+        name: preparedProvider.name,
+        credentials: { OPENAI_API_KEY: replacement },
+        config: { oce_source_version: current.version },
+      },
+    );
+    assert.equal(gateway.provider()?.config.oce_source_version, current.version);
+    assert.deepEqual(gateway.receiptReads, [gateway.status()?.receipt?.receiptId]);
+    assert.equal((await currentAgent())?.activeRevisionId, revision.id);
+    assert.deepEqual(
+      (
+        await fixture.observerPool.query(
+          "SELECT state,config FROM occ.credential_sources WHERE id=$1",
+          [source.id],
+        )
+      ).rows,
+      [{ state: "ready", config: { provider_preset: "openai" } }],
     );
 
     // Live withdrawal cannot use the legacy withdrawal path for staged TokenService delivery.

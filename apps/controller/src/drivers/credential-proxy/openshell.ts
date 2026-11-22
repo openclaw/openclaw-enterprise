@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
 import { sandboxNetworkGrantsWithinCeiling } from "@openclaw-enterprise/contracts";
@@ -10,6 +11,10 @@ import type {
   CredentialDeploymentReadiness,
   CredentialProjection,
   CredentialProxyRouting,
+  CredentialSourceReference,
+  CredentialUpdateNotification,
+  Namespace,
+  ResolvedCredential,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -40,6 +45,7 @@ import {
   prepareOccTokenServiceProviderCopy,
   readOwnedOpenShellPushedProvider,
   readOpenShellPushedProvider,
+  updateOccTokenServiceProviderCopy,
 } from "./openshell-pushed-provider.ts";
 
 /** Deliver OCC TokenService credentials as Provider copies to the paired OpenShell Sandbox. */
@@ -49,6 +55,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
+  private sourceNamespaceResolver?: (
+    sourceRef: CredentialSourceReference,
+    signal: AbortSignal,
+  ) => Promise<Readonly<Namespace>>;
 
   constructor(selection: {
     readonly id: string;
@@ -74,6 +84,153 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.implementation = selection.implementation;
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
+  }
+
+  /** Bind server-owned Source placement after platform state and Compute are available. */
+  bindSourceNamespaceResolver(
+    resolve: (
+      sourceRef: CredentialSourceReference,
+      signal: AbortSignal,
+    ) => Promise<Readonly<Namespace>>,
+  ): void {
+    this.sourceNamespaceResolver = resolve;
+  }
+
+  async notifyCredentialUpdated(
+    notification: CredentialUpdateNotification,
+    resolveCredential: () => Promise<ResolvedCredential>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const sourceRef = notification.sourceRef;
+    if (
+      sourceRef.kind !== "credential_source" ||
+      !sourceRef.id ||
+      !sourceRef.namespaceId ||
+      !this.sourceNamespaceResolver
+    ) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    const namespace = await this.sourceNamespaceResolver(sourceRef, signal);
+    if (namespace.id !== sourceRef.namespaceId || namespace.status !== "ready") {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    const workspace = openShellWorkspaceName(namespace);
+    const client = this.backend.client.clientForNamespace(namespace.name);
+    const result = await updateOccTokenServiceProviderCopy({
+      client,
+      workspace,
+      sourceRef,
+      ...(notification.version === undefined ? {} : { version: notification.version }),
+      resolveCredential,
+      signal,
+    });
+    if (!result) {
+      return;
+    }
+    const { provider, update } = result;
+    if (!update.mutationId || !Array.isArray(update.targetReceipts)) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    for (const receipt of update.targetReceipts) {
+      const target = asRecord(receipt.desired);
+      if (
+        receipt.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
+        receipt.mutation_id !== update.mutationId ||
+        receipt.provider !== provider.name ||
+        receipt.workspace !== workspace ||
+        typeof receipt.receipt_id !== "string" ||
+        !receipt.receipt_id ||
+        typeof target?.sandbox_id !== "string" ||
+        !target.sandbox_id ||
+        typeof target.sandbox !== "string" ||
+        !target.sandbox ||
+        target.provider_id !== provider.id ||
+        String(target.provider_resource_version) !== provider.resourceVersion
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      const sandboxId = target.sandbox_id;
+      const sandboxName = target.sandbox;
+      const readTarget = async () => {
+        const sandbox = await client.getSandbox({ workspace, name: sandboxName }, signal);
+        if (
+          !sandbox ||
+          sandbox.id !== sandboxId ||
+          sandbox.name !== sandboxName ||
+          sandbox.workspace !== workspace ||
+          !Array.isArray(sandbox.spec?.providers) ||
+          !sandbox.spec.providers.includes(provider.name)
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        return sandbox;
+      };
+      let sandbox = await readTarget();
+      if (sandbox.configurationActivated === false) {
+        continue;
+      }
+      const readStatus = () =>
+        client.getSandboxProviderStatus(
+          workspace,
+          sandboxName,
+          provider.name,
+          signal,
+          receipt.receipt_id,
+        );
+      let status = await readStatus();
+      while (
+        status.state === "PROVIDER_READINESS_STATE_PENDING" ||
+        status.state === "PROVIDER_READINESS_STATE_PERSISTED"
+      ) {
+        await delay(250, undefined, { signal });
+        status = await readStatus();
+      }
+      sandbox = await readTarget();
+      const desired = status.receipt?.desired;
+      const observed = status.observed;
+      const admission = sandbox.configurationAdmission;
+      if (
+        status.state !== "PROVIDER_READINESS_STATE_READY" ||
+        (status.reason !== undefined &&
+          status.reason !== "PROVIDER_READINESS_REASON_UNSPECIFIED") ||
+        status.receipt?.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
+        status.receipt.workspace !== workspace ||
+        status.receipt.provider !== provider.name ||
+        status.receipt.receiptId !== receipt.receipt_id ||
+        status.completedOperationId !== receipt.receipt_id ||
+        !desired ||
+        desired.sandboxId !== sandbox.id ||
+        desired.sandbox !== sandbox.name ||
+        desired.providerId !== provider.id ||
+        desired.providerResourceVersion !== provider.resourceVersion ||
+        !desired.attachmentEpoch ||
+        desired.attachmentEpoch !== sandbox.spec?.provider_attachment_epoch ||
+        !positiveRevision(desired.providerEnvRevision) ||
+        !positiveRevision(desired.configRevision) ||
+        !/^[0-9a-f]{64}$/.test(desired.policyHash) ||
+        admission?.state !== 2 ||
+        admission.provider_env_revision !== desired.providerEnvRevision ||
+        admission.config_revision !== desired.configRevision ||
+        admission.policy_hash !== desired.policyHash ||
+        !observed?.sessionId ||
+        !positiveRevision(observed.sequence) ||
+        (observed.reason !== "" && observed.reason !== "PROVIDER_READINESS_REASON_UNSPECIFIED") ||
+        observed.attachmentEpoch !== desired.attachmentEpoch ||
+        observed.providerEnvRevision !== desired.providerEnvRevision ||
+        observed.configRevision !== desired.configRevision ||
+        observed.policyHash !== desired.policyHash ||
+        !observed.credentialsInstalled ||
+        !observed.policyActive ||
+        !observed.launchEnvironmentInstalled ||
+        !observed.processInstanceId ||
+        !status.networkInstanceId ||
+        status.networkInstanceId !== sandbox.mainProcessInstanceId ||
+        !validObservationTimes(status.observedTime, status.evaluatedTime)
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+    }
   }
 
   async deployProxy(
