@@ -34,45 +34,36 @@ const SUPPORTED_AGENT_RUNTIME_IDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The setting path (`....agentRuntime.id`) of the first model policy in the document that names
- * the Claude Code agent runtime, or undefined: agents.defaults.models, each agents.entries
- * entry's models, each models.providers provider and its catalog rows. A lenient read for
- * Compute, which renders an already admitted document: resolveConfiguredAgentRuntimeId has
- * refused a document whose policies conflict or name another provider, so one such policy
- * means the Gateway spawns Claude Code.
+ * The setting path (`....agentRuntime.id`) of the policy that selects the Claude Code agent
+ * runtime for the Configuration's models, or undefined when they select another runtime. It reads
+ * resolveConfiguredAgentRuntimeId's resolution, as Configuration save does
+ * (requireConsistentModelPolicy): every primary and fallback model of agents.defaults.model and of
+ * each agents.entries model, with the entry's, the defaults', the catalog row's and the provider's
+ * policy for it. Each of them must select the same runtime, and every model listed in
+ * agents.defaults.models or an entry's models (the models a chat may switch to) must set the
+ * primary model's, so one of them selecting Claude Code means they all do. A policy no selected
+ * model reads, such as an unused provider's, selects nothing. A document the resolution refuses,
+ * or one that waits on a Preset variable, gives undefined: every deployment resolves the filled
+ * document and refuses it before Compute renders it.
  */
 export function claudeCodeRuntimeSetting(
   values: Readonly<OpenClawConfigurationDocument>,
 ): string | undefined {
-  const namesClaudeCode = (policy: unknown): boolean =>
-    asRecord(asRecord(policy)?.agentRuntime)?.id === CLAUDE_CLI_AGENT_RUNTIME_ID;
-  const modelPolicies = (host: unknown, path: string): Array<readonly [unknown, string]> =>
-    Object.entries(asRecord(asRecord(host)?.models) ?? {}).map(
-      ([model, policy]) => [policy, keyedSettingPath(path, model)] as const,
-    );
-  const agents = asRecord(values.agents);
-  const providers = Object.entries(asRecord(asRecord(values.models)?.providers) ?? {});
-  const policies = [
-    ...modelPolicies(agents?.defaults, "agents.defaults.models"),
-    ...Object.entries(asRecord(agents?.entries) ?? {}).flatMap(([key, entry]) =>
-      modelPolicies(entry, entryModelsPath(key)),
-    ),
-    ...providers.flatMap(([providerId, provider]) => {
-      const path = keyedSettingPath("models.providers", providerId);
-      const rows = asRecord(provider)?.models;
-      return [
-        [provider, path] as const,
-        ...(Array.isArray(rows)
-          ? rows.map((row, index) => [row, `${path}.models[${index}]`] as const)
-          : []),
-      ];
-    }),
-  ];
-  const selecting = policies.find(([policy]) => namesClaudeCode(policy));
-  return selecting === undefined ? undefined : `${selecting[1]}.agentRuntime.id`;
+  let resolution: ModelPolicyResolution;
+  try {
+    resolution = resolveModelPolicy(values, true);
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError) {
+      return undefined;
+    }
+    throw error;
+  }
+  return resolution.runtime === CLAUDE_CLI_AGENT_RUNTIME_ID
+    ? `${resolution.policy!()}.agentRuntime.id`
+    : undefined;
 }
 
-/** Whether any model policy in the document names the Claude Code agent runtime. */
+/** Whether the Configuration's models select the Claude Code agent runtime. */
 export function selectsClaudeCodeRuntime(values: Readonly<OpenClawConfigurationDocument>): boolean {
   return claudeCodeRuntimeSetting(values) !== undefined;
 }
@@ -655,6 +646,13 @@ export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocumen
   }
 }
 
+// The runtime resolveModelPolicy resolves, and the setting path of the first policy that selects
+// it, when a policy does.
+interface ModelPolicyResolution {
+  readonly runtime: string | undefined;
+  readonly policy?: () => string;
+}
+
 /**
  * resolveConfiguredHarnessId's rules, in its order, for deployment and, as a `draft`, for
  * Configuration save (requireConsistentModelPolicy). A draft skips only the rules that a document
@@ -669,7 +667,7 @@ function resolveModelPolicy(
   values: Readonly<OpenClawConfigurationDocument>,
   draft: boolean,
   agent?: ModelPolicyAgent,
-): string | undefined {
+): ModelPolicyResolution {
   // Shape refusals come first.
   requireAgentsShape(values);
   const agents = asRecord(values.agents);
@@ -824,9 +822,11 @@ function resolveModelPolicy(
   );
 
   if (primary === undefined) {
-    return draft ? undefined : "openclaw";
+    return { runtime: draft ? undefined : "openclaw" };
   }
   const resolved = new Set<string>();
+  // The first candidate's policy that selects its runtime; all candidates select the same one.
+  let selectingPolicy: (() => string) | undefined;
   const catalogs = new Map<string, CatalogIndex>();
 
   // The Harness one candidate selects. `entryKey` names the agents.entries entry whose `models`
@@ -976,6 +976,7 @@ function resolveModelPolicy(
         ),
       );
     }
+    selectingPolicy ??= first?.[1];
     return selected ?? "openclaw";
   };
 
@@ -1025,7 +1026,7 @@ function resolveModelPolicy(
       "The configured Agent models select conflicting Harness runtimes.",
     );
   }
-  return [...resolved][0];
+  return { runtime: [...resolved][0], policy: selectingPolicy };
 }
 
 /**
@@ -1049,7 +1050,7 @@ export function resolveConfiguredAgentRuntimeId(
   values: Readonly<OpenClawConfigurationDocument>,
   agent?: ModelPolicyAgent,
 ): string {
-  return resolveModelPolicy(values, false, agent)!;
+  return resolveModelPolicy(values, false, agent).runtime!;
 }
 
 /**

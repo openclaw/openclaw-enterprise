@@ -6338,6 +6338,7 @@ async function exerciseEmbeddedReplacement(scenario) {
     baseUrl,
     predecessorManagedMode,
     agentRuntimeId,
+    unusedProviderPolicy,
   } = scenario;
   const modelRef = `${providerId}/${model}`;
   const modelPolicy = agentRuntimeId === undefined ? {} : { agentRuntime: { id: agentRuntimeId } };
@@ -6422,6 +6423,7 @@ async function exerciseEmbeddedReplacement(scenario) {
             apiKey: `\${${environmentName}}`,
             models: [{ id: model, name: "Selected model", contextWindow: 128000, maxTokens: 8192 }],
           },
+          ...unusedProviderPolicy,
         },
       },
       channels: { slack: { enabled: false, botToken: "${SLACK_BOT_TOKEN}" } },
@@ -6755,6 +6757,10 @@ async function exerciseEmbeddedReplacement(scenario) {
       ),
       false,
     );
+    assert.equal(
+      gatewayPod.initContainers.some(({ name }) => name === "prepare-claude-code-settings"),
+      false,
+    );
     // Other runtimes keep the Configuration's node commands.
     assert.equal(
       JSON.parse(
@@ -6847,6 +6853,17 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       baseUrl: "https://api.openai.com/v1",
       predecessorManagedMode: false,
     },
+    // A Claude Code policy on a provider no selected model uses selects nothing: the Gateway
+    // renders as an ordinary one.
+    {
+      providerId: "openai",
+      model: "gpt-5",
+      environmentName: "OPENAI_API_KEY",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      predecessorManagedMode: false,
+      unusedProviderPolicy: { anthropic: { agentRuntime: { id: "claude-cli" } } },
+    },
     {
       providerId: "anthropic",
       model: "claude-sonnet-4-5",
@@ -6866,9 +6883,11 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     },
   ]) {
     await t.test(
-      scenario.agentRuntimeId === undefined
-        ? scenario.providerId
-        : `${scenario.providerId} through ${scenario.agentRuntimeId}`,
+      scenario.agentRuntimeId !== undefined
+        ? `${scenario.providerId} through ${scenario.agentRuntimeId}`
+        : scenario.unusedProviderPolicy !== undefined
+          ? `${scenario.providerId} beside an unused claude-cli provider policy`
+          : scenario.providerId,
       () => exerciseEmbeddedReplacement(scenario),
     );
   }
@@ -6899,6 +6918,30 @@ test("the Claude Code agent runtime is admitted for embedded OpenClaw only", () 
         null,
       ),
     /agents\.defaults\.models selects the Claude Code agent runtime, which runs only under embedded OpenClaw: set the Agent's executionMode to embedded/,
+  );
+  // A runtime an agents.entries model alone selects counts the same; the refusal comes before
+  // any other rule, and the node host refusal applies too.
+  const entryLocal = {
+    agents: {
+      entries: {
+        main: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } },
+      },
+    },
+    models: configuration.models,
+  };
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        apiKeyAuth,
+        entryLocal,
+        null,
+      ),
+    /selects the Claude Code agent runtime, which runs only under embedded OpenClaw/,
+  );
+  assert.throws(
+    () => driver.validateConfiguration({ ...entryLocal, tools: { exec: { host: "node" } } }),
+    /tools\.exec\.host must be "auto" or "gateway" with the claude-cli agent runtime/,
   );
   // The runtime applies tool policy to file and web tools, so Configuration save admits a deny
   // of them, and the setting that turns native WebSearch off, as for the default runtime.
