@@ -2,11 +2,12 @@ import { requestFailure } from "./api-client.mjs";
 import { button, element, requestIdLine } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
+import type { ConnectionTemplate, OAuthClient } from "@openclaw-enterprise/contracts";
 
 export function oauthDeleteButton(
   context: Pick<ConsolePageContext, "request" | "isCurrent">,
   kind: "connection template" | "OAuth client",
-  item: { id: string; displayName: string },
+  item: ConnectionTemplate | OAuthClient,
   scope: string,
   refresh: (message?: string) => Promise<unknown>,
   fallbackFocus: HTMLButtonElement,
@@ -21,6 +22,13 @@ export function oauthDeleteButton(
 
   function open() {
     const title = `Delete ${kind}`;
+    let effect = "This permanently removes the client registration from OCE.";
+    if (kind === "connection template") {
+      effect = "This permanently deletes the template and its saved versions.";
+      if ("current" in item && item.current.mode !== "static_bearer") {
+        effect += " Its registered OAuth clients stay available.";
+      }
+    }
     const dialog = element("dialog", {
       className: "dialog dialog--framed",
       "aria-label": title,
@@ -44,13 +52,7 @@ export function oauthDeleteButton(
           ` · ${scope}`,
         ),
         element("p", { className: "resource-id" }, item.id),
-        element(
-          "p",
-          { id: "oauth-delete-effect" },
-          kind === "connection template"
-            ? "This permanently deletes the template and its saved versions. Its registered OAuth clients stay available."
-            : "This permanently removes the client registration from OCE.",
-        ),
+        element("p", { id: "oauth-delete-effect" }, effect),
         feedback,
       ),
       element("div", { className: "dialog-actions" }, close, confirm),

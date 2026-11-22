@@ -1,20 +1,16 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { promisify } from "node:util";
 import { chromium } from "playwright";
 
+import { caAndLeaf } from "../helpers/certificates.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { launchTrustingBrowser } from "../helpers/trusted-chromium.ts";
-
-const run = promisify(execFile);
-const repository = new URL("../../", import.meta.url);
 
 async function serveNativePage(t: TestContext, tls: { cert: Buffer; key: Buffer }) {
   const requests: { host: string | undefined; cookie: string }[] = [];
@@ -64,23 +60,18 @@ export async function createNativeConsoleFixture<Options extends object>(
   const remove = () => rm(directory, { recursive: true, force: true });
   try {
     const certificates = join(directory, "tls");
-    const scope = `console-browser-${randomBytes(6).toString("hex")}`;
-    const { stdout } = await run(
-      "go",
-      ["run", "./tests/helpers/dev-browser-tls", certificates, scope],
-      {
-        cwd: repository,
-      },
-    );
-    const hosts: unknown = JSON.parse(stdout);
-    assert.ok(typeof hosts === "object" && hosts !== null);
-    assert.ok("consoleHost" in hosts && typeof hosts.consoleHost === "string");
-    assert.ok("nativeDomain" in hosts && typeof hosts.nativeDomain === "string");
-    assert.ok("cookieDomain" in hosts && typeof hosts.cookieDomain === "string");
-    const { consoleHost, nativeDomain, cookieDomain } = hosts;
+    await mkdir(certificates, { mode: 0o700 });
+    const cookieDomain = `console-browser-${randomBytes(6).toString("hex")}.oce.localhost`;
+    const consoleHost = `console.${cookieDomain}`;
+    const nativeDomain = `agents.${cookieDomain}`;
+    const tls = await caAndLeaf(certificates, {
+      caName: "OCC development browser CA",
+      commonName: consoleHost,
+      subjectAltName: `DNS:${consoleHost},DNS:*.${nativeDomain}`,
+    });
     const ingressTLS = {
-      cert: await readFile(join(certificates, "browser-tls.crt")),
-      key: await readFile(join(certificates, "browser-tls.key")),
+      cert: await readFile(tls.certPath),
+      key: await readFile(tls.keyPath),
     };
     const fixture = await createConsoleAppFixture(t, {
       ...options,
@@ -118,7 +109,7 @@ export async function createNativeConsoleFixture<Options extends object>(
       consoleHost,
       nativeDomain,
       cookieDomain,
-      browserOptions: browserOptions([join(certificates, "browser-ca.crt")]),
+      browserOptions: browserOptions([tls.caPath]),
       untrustedBrowserOptions: browserOptions([]),
     };
   } catch (error) {

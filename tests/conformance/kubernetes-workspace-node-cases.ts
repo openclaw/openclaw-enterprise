@@ -212,6 +212,7 @@ export async function checkLegacyWorkspaceNodeRetirement() {
         async listNamespacedPod() {
           return { items: [] };
         },
+        readNamespacedService: notFound,
         readNamespacedConfigMap: notFound,
         async readNamespacedSecret({ name }: ReadSecret) {
           const secret = secrets.get(name);
@@ -499,20 +500,20 @@ export async function checkActivationWorkspaceNodeRefusals() {
     ),
   ];
   const gatewayName = `gateway-${digest(revision.agentId)}`;
-  const gateway = driver["deployment"](
-    gatewayName,
-    { namespaceId: tenant.id, agentId: revision.agentId },
-    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
-    { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
-    gatewayName,
-    "gateway",
-    {},
-    "info",
-    driver["gatewayConfiguration"](revision, "previous-device", {
+  const gateway = driver["deployment"]({
+    name: gatewayName,
+    ownership: { namespaceId: tenant.id, agentId: revision.agentId },
+    namespace: { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+    images: { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
+    serviceAccountName: gatewayName,
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: driver["gatewayConfiguration"](revision, "previous-device", {
       name: kubernetesNamespaceName(tenant.id),
       plane: "execution",
     }),
-  );
+  });
   const pod = asRecord(asRecord(gateway.spec?.template)?.spec);
   assert.ok(Array.isArray(pod?.containers));
   const env = asRecord(pod.containers[0])?.env;

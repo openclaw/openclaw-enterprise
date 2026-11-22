@@ -8,6 +8,7 @@ import {
   laneArgs,
   runnerArtifactPaths,
   runRunnerAsync,
+  writeRunnerLaneFiles,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -181,7 +182,7 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     const marker = join(root, "state/started");
     // The preparation returns half a second before the deadline.
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         "export async function prepareFile() {",
         "  const left = Number(process.env.CI_RUNNER_DEADLINE_MS) - Date.now();",
@@ -276,8 +277,9 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     const root = await createRunnerFixture(t);
     const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-prepare");
     const preparing = join(root, "state/preparing");
+    const laterStarted = join(root, "state/later-started");
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         'import { writeFileSync } from "node:fs";',
         "export async function prepareFile({ file }) {",
@@ -291,11 +293,17 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
       ].join("\n"),
     );
     const source = 'import test from "node:test";\ntest("runs", () => {});\n';
-    const files = ["hung", "later"].map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
-    for (const { path } of files) {
-      await writeFile(join(root, path), source);
-    }
-    await writeRunnerManifest(root, { lanes: { prepare: { files } } });
+    await writeRunnerLaneFiles(root, "prepare", ["hung", "later"], source);
+    await writeFile(
+      join(root, "tests/integration/later.test.mjs"),
+      [
+        'import { writeFileSync } from "node:fs";',
+        'import test from "node:test";',
+        `writeFileSync(${JSON.stringify(laterStarted)}, "");`,
+        'test("runs", () => {});',
+        "",
+      ].join("\n"),
+    );
 
     // The runner's clock stands still from the start until the preparation has started, so the
     // deadline comes three seconds after that however long the host takes to get there.
@@ -327,11 +335,14 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     assert.equal(hung.nodeExitCode, null);
     assert.equal(hung.counts.total, 0);
     assert.equal(hung.cleanup, null);
-    // The file behind it starts nothing past the deadline.
+    // The file behind it starts nothing past the deadline, including module top-level code.
     assert.deepEqual(
       later.issues.map((entry) => entry.code),
       ["lane-deadline"],
     );
+    assert.equal(later.nodeExitCode, null);
+    assert.equal(later.counts.total, 0);
+    await assert.rejects(readFile(laterStarted), { code: "ENOENT" });
     assert.match(
       result.stderr,
       /run-tests: issue prepare-timeout tests\/integration\/hung\.test\.mjs: prepareFile did not finish within \d+ ms, cut to the lane deadline/,

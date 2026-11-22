@@ -92,7 +92,7 @@
       "y": 388,
       "w": 245,
       "h": 75,
-      "lines": ["CredentialProxyDriver", "Supplies the repository Git binding"],
+      "lines": ["LegacyEgressProxyDriver", "Supplies the repository Git binding"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"

@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { test, type TestContext } from "node:test";
+
+import {
+  assertAbsent,
+  cutCredentials,
+  cutOffsets,
+  keyBody,
+  multiLineCredentials,
+  registeredCutSecret,
+} from "../fixtures/cut-credentials.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("the redactor removes URL userinfo of any shape and multi-line private keys", async () => {
   const { failureSecrets, redactFailure, redactLogLine, redactOutputLine, redactOutputLines } =
@@ -410,8 +424,320 @@ test("the redactor removes structured, multi-word and short secret values", asyn
     ["secretName: occ-gateway-password", null],
     ["tokenCount: 3", null],
     ["design=compact", null],
+    ["signal: 'SIGTERM'", null],
     ["SyntaxError: Unexpected token '}'", null],
   ] satisfies [line: string, expected: string | null][]) {
     assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line, line);
   }
+});
+
+test("a value the input limit cuts and a key with a suffix stay out of every surface", async () => {
+  const {
+    failureInputLimit,
+    failureSecrets,
+    redactFailure,
+    redactFailureDetail,
+    redactLogLine,
+    redactOutputLine,
+    redactOutputLines,
+  } = await import("../../scripts/ci/failure-redaction.ts");
+  const secrets = failureSecrets([{}]);
+  const marker = "[redacted credential-bearing line]";
+  // Every surface a failure's text reaches: results and the job log, the diagnostics
+  // report's message and stack and its output entries, and a container log line.
+  const surfaces = (text: string, using = secrets) =>
+    JSON.stringify([
+      redactFailure({ message: text, frame: text }, using, "/repo"),
+      redactFailureDetail({ message: text, stack: text }, using, "/repo"),
+      redactOutputLines([`diagnostic: ${text}`.slice(0, failureInputLimit)], using, "/repo", 1_000),
+      redactLogLine(text, using, failureInputLimit),
+    ]);
+  const words = (length: number) =>
+    "log line ok fine\n".repeat(Math.ceil(length / 17)).slice(0, length);
+  const header = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
+  const payload = `eyJ${"c3ludGhldGljUGF5bG9hZA".repeat(40)}`;
+  const jwt = `${header}.${payload}.${"c3ludGhldGljU2ln".repeat(20)}`;
+  const password = "c3ludGhldGljUGFzcw".repeat(40);
+
+  // The reporter's cut at the input limit lands inside a JWT before its second dot, or
+  // inside a URL password before its "@", so no rule matches the rest, which is longer
+  // than the dropped tail.
+  for (const [value, inside] of [
+    [jwt, 300],
+    [jwt, 600],
+    [jwt, header.length + payload.length],
+    [
+      syntheticCredentialUrl({
+        protocol: "redis",
+        username: "default",
+        password,
+        host: "cache",
+        port: 6379,
+      }),
+      500,
+    ],
+    [`{"jwt":"${jwt}"}`, 700],
+  ] satisfies [string, number][]) {
+    const text = `${words(failureInputLimit - inside - 1)} ${value}`.slice(0, failureInputLimit);
+    assertAbsent(surfaces(text), value.slice(0, inside), `cut ${inside} into ${value.slice(0, 8)}`);
+  }
+  // Whole JWTs before the cut shrink the text, so the 600 and 1,000 character windows reach it.
+  const long = `${header}.eyJ${"c3ludGhldGljTG9uZw".repeat(200)}`;
+  const shrunk = `${Array.from({ length: 12 }, () => jwt).join(" ")} ${long}`;
+  assertAbsent(surfaces(shrunk.slice(0, failureInputLimit)), long.slice(0, 1_400), "after 12 JWTs");
+  // At the limit and one over (the redaction's own cut), not one under.
+  for (const length of [failureInputLimit, failureInputLimit + 1]) {
+    const line = `${words(failureInputLimit - 601)} ${jwt}`.slice(0, length);
+    assertAbsent(redactLogLine(line, secrets, 20_000), jwt.slice(0, 600), `length ${length}`);
+  }
+  const under = words(failureInputLimit - 2 - jwt.length);
+  assert.equal(redactLogLine(`${under} ${jwt}`, secrets, 20_000), `${under} [redacted]`);
+  // A cut text of ordinary words keeps what it kept: everything but the last 256 characters.
+  const plain = words(failureInputLimit);
+  assert.equal(
+    redactFailureDetail({ message: plain }, secrets, "/repo")?.message,
+    plain.slice(0, -256),
+  );
+  assert.equal(
+    redactFailure({ message: plain }, secrets, "/repo").message,
+    `${plain.slice(0, 600)}... [truncated]`,
+  );
+  // The credential-line check still sees the cut run: a secret's marker there drops the line.
+  const named = failureSecrets([{ GITHUB_APP_PRIVATE_KEY: "fixturePrivateValue0" }]);
+  const lead = words(failureInputLimit - 1_600);
+  assert.equal(
+    redactFailureDetail(
+      { message: `${lead} ${"x".repeat(500)}fixturePrivateValue0${"y".repeat(1_100)}` },
+      named,
+      "/repo",
+    )?.message,
+    `${lead.slice(0, lead.lastIndexOf("\n") + 1)}${marker}`,
+  );
+
+  // A keyword with a suffix after "_" or "-" (a kubeconfig's client-key-data).
+  const key = `Zml4dHVyZUtleURhdGE${"QUJD".repeat(60)}`;
+  for (const name of [
+    "client-key-data",
+    "client_key_data",
+    "api_key_file",
+    "secret-access-key-id",
+  ]) {
+    for (const [text, expected] of [
+      [`${name}: ${key} after`, `${name}: [redacted] after`],
+      [`${name}=${key} next=keep`, `${name}=[redacted] next=keep`],
+      [`{"${name}":"${key}","after":1}`, `{"${name}":"[redacted]","after":1}`],
+      [
+        `users:\n- name: admin\n  user:\n    ${name}: ${key}\n    after: 1`,
+        `users:\n- name: admin\n  user:\n    ${name}: [redacted]\n    after: 1`,
+      ],
+    ] satisfies [string, string][]) {
+      assert.equal(redactLogLine(text, secrets, 1_000), expected);
+      assertAbsent(surfaces(text), key, `${name} in ${text.slice(0, 20)}`);
+    }
+  }
+  assert.equal(
+    redactFailure({ message: `private-key-pem: ${key}` }, secrets, "/repo").message,
+    "private-key-pem: [redacted]",
+  );
+  // The credential-line check runs before it: a secret's marker after such a key drops the line.
+  assert.equal(
+    redactOutputLine("stdout: client-key-data: fixturePrivateValue0 rest", named, "/repo", 1_000),
+    marker,
+  );
+  // Such a value is masked after the bound, so a long one does not pull the text after
+  // it into the 600 (message), 240 (frame) or 1,000 (output entry) character window.
+  const later = "fixtureTextAfterTheBound";
+  const front = `api_key_file=${key.repeat(5)} ${later}`;
+  const windowed = redactFailure({ message: front, frame: front }, secrets, "/repo");
+  assert.equal(windowed.message, "api_key_file=[redacted]... [truncated]");
+  assert.equal(windowed.frame, "api_key_file=[redacted]... [truncated]");
+  assert.deepEqual(redactOutputLines([`diagnostic: ${front}`], secrets, "/repo", 1_000), [
+    "diagnostic: api_key_file=[redacted]... [truncated]",
+  ]);
+  // A "[redacted]" longer than the value it replaces still keeps the caller's bound
+  // (600, 240, 160 plus the marker); the cut ends before a "[redacted]" it would split.
+  const many = "token_a=b ".repeat(200);
+  const bounded = redactFailure({ message: many, frame: many }, secrets, "/repo");
+  const line = redactLogLine(many, secrets, 160);
+  assert.equal(bounded.message?.length, 612);
+  assert.equal(bounded.frame?.length, 251);
+  assert.equal(line.length, 175);
+  assert.equal(line, `${"token_a=[redacted] ".repeat(8)}token_a=... [truncated]`);
+  assert(bounded.message?.endsWith("token_a=... [truncated]"));
+
+  // A registered secret with spaces that the cut splits: dropping the last
+  // max(256, longest secret) characters removes what is left of it.
+  const spaced = Array.from({ length: 40 }, (_, index) => `Zml4${index}U3BhY2VkU2Vj`).join(" ");
+  const spacedSecrets = failureSecrets([{ FIXTURE_SPACED_SECRET: spaced }]);
+  const split = `${words(failureInputLimit - 300)} ${spaced}`.slice(0, failureInputLimit);
+  assertAbsent(surfaces(split, spacedSecrets), spaced, "a split spaced secret");
+});
+
+// What one failed wait publishes: the runner's projection of the written record for the
+// diagnostics artifact, and, without a record directory, the test's diagnostic line.
+async function containerLogCapture(t: TestContext) {
+  const { failureSecrets } = await import("../../scripts/ci/failure-redaction.ts");
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.ts");
+  const { followContainerLog } = await import("../helpers/container-log-capture.ts");
+  const bin = await temporaryDirectory(t, "cut-capture-bin-");
+  const streams = await temporaryDirectory(t, "cut-capture-streams-");
+  const records = await temporaryDirectory(t, "cut-capture-records-");
+  setEnvironment(t, { OPENCLAW_CI_CONTAINER_LOG_DIR: records });
+  // The kubectl stand-in prints the files its two arguments name to stderr and stdout.
+  await writeCommand(
+    bin,
+    "kubectl",
+    'import { readFileSync } from "node:fs";\n' +
+      "process.stderr.write(readFileSync(process.argv[2]));\n" +
+      "process.stdout.write(readFileSync(process.argv[3]));",
+    { interpreter: process.execPath },
+  );
+  const secrets = failureSecrets([{ OCC_TEST_CUT_SECRET: registeredCutSecret }]);
+  const follow = async (context: TestContext) => {
+    const log = followContainerLog({
+      args: [join(streams, "stderr"), join(streams, "stdout")],
+      env: { ...process.env, PATH: commandPath(bin) },
+      target: { namespace: "occ-agent-a", pod: "gateway-0", container: "gateway" },
+      snapshot: async () => ({}),
+    });
+    await assert.rejects(
+      log.attachOnFailure(context, "cut wait", async () => {
+        throw new Error("cut wait failed");
+      }),
+      /cut wait failed/,
+    );
+  };
+  return async (stderr: string, stdout: string) => {
+    await writeFile(join(streams, "stderr"), stderr);
+    await writeFile(join(streams, "stdout"), stdout);
+    await follow(t);
+    const [name, ...others] = await readdir(records);
+    assert.ok(name !== undefined && others.length === 0, "one record per failed wait");
+    const path = join(records, name);
+    const record: unknown = JSON.parse(await readFile(path, "utf8"));
+    await rm(path);
+    const projected = projectContainerLog(record, secrets);
+    assert.ok(projected, "projected container log record");
+    const diagnostics: string[] = [];
+    await withEnvironment({ OPENCLAW_CI_CONTAINER_LOG_DIR: undefined }, () =>
+      follow({
+        name: t.name,
+        fullName: t.fullName,
+        diagnostic: (message: string) => {
+          diagnostics.push(message);
+        },
+      } as TestContext),
+    );
+    assert.equal(diagnostics.length, 1, "one diagnostic line per failed wait");
+    return { projected, shown: `${JSON.stringify(projected)}\n${diagnostics.join("\n")}` };
+  };
+}
+
+test("a credential cut at the start of a captured container log stays out of its record", async (t) => {
+  const capture = await containerLogCapture(t);
+  const before = "2026-11-19T00:00:00.000Z before";
+  const lineEnd = "fixture-cut-line-end";
+  const truncation = "... [truncated]";
+  for (const { name, text, secret } of cutCredentials) {
+    const singleLine = !text.includes("\n");
+    for (const offset of cutOffsets(text)) {
+      // The capture keeps the last 2,048 characters of kubectl's stderr, and the last
+      // 2 MiB of a line that has not ended. Both windows start `offset` into the credential.
+      const cutLine = `${text.slice(offset)} ${lineEnd}\n`;
+      const notes = `kubectl: fixture notes ${"n".repeat(2_048 - cutLine.length - 24)}\n`;
+      const stderr = `kubectl: fixture note\nkubectl: ${text.slice(0, offset)}${cutLine}${notes}`;
+      const longLine = `${text.slice(offset)} ${lineEnd} `.padEnd(2 * 1024 * 1024, "z");
+      const stdout = `${before}\n${singleLine ? `${before} ${text.slice(0, offset)}${longLine}` : ""}`;
+      const { projected, shown } = await capture(stderr, stdout);
+      const label = `${name} cut ${offset} in`;
+      // The cut line is dropped whole, so even one remaining character is not published.
+      assert(!shown.includes(lineEnd), `${label}: the cut line is published`);
+      assertAbsent(shown, secret.slice(Math.max(0, offset - text.indexOf(secret))), label);
+      assert.deepEqual(projected.lines, [before], label);
+      // The unterminated line over 2 MiB counts as an omitted line.
+      assert.equal(projected.omittedLines, singleLine ? 1 : 0, label);
+      if (singleLine) {
+        // The window is redacted and bounded to 2,000 characters whole; then its first line
+        // goes, so the line after the cut remains, whole or up to that bound.
+        const error = projected.stream.error ?? "";
+        const kept = error.endsWith(truncation) ? error.slice(0, -truncation.length) : error;
+        assert(error === notes || (kept.length > 1_000 && notes.startsWith(kept)), label);
+      }
+    }
+  }
+  // Under the limit nothing is cut, so nothing is dropped.
+  const { projected: short } = await capture(
+    `kubectl: ${cutCredentials[2]!.text}\nkubectl: fixture note\n`,
+    "",
+  );
+  assert.equal(short.stream.error, "kubectl: password=[redacted]\nkubectl: fixture note\n");
+});
+
+test("a cut stderr window is redacted whole before its first line is dropped", async (t) => {
+  const capture = await containerLogCapture(t);
+  // A value that a rule masks past a line break keeps its anchor while the window is
+  // redacted: the cut before the anchor drops only what redaction left of the first line.
+  const words = "kubectl: fixture prefix words ";
+  for (const { name, text, secrets: values } of multiLineCredentials) {
+    for (const offset of [0, 1, Math.floor(words.length / 2), words.length - 1]) {
+      const cutLine = `${words.slice(offset)}${text}\n`;
+      const notes = `kubectl: fixture notes ${"n".repeat(2_048 - cutLine.length - 24)}\n`;
+      const { shown } = await capture(
+        `kubectl: fixture note\n${words.slice(0, offset)}${cutLine}${notes}`,
+        "",
+      );
+      for (const value of values) {
+        assertAbsent(shown, value, `${name} cut ${offset} in`);
+      }
+    }
+  }
+});
+
+test("a cut stderr window that nothing is left of says that it was cut", async (t) => {
+  const capture = await containerLogCapture(t);
+  // A window without a line break says that it was cut instead of disappearing.
+  const { projected: oneLine } = await capture(`kubectl: ${"n".repeat(3_000)}`, "");
+  assert.equal(oneLine.stream.error, "[diagnostics: cut stderr; first line dropped]");
+});
+
+test("a line over the 2 MiB buffer evicts the lines before it, so a later END masks the key above it", async (t) => {
+  const capture = await containerLogCapture(t);
+  // The follower's push of a line over its buffer evicts every earlier line, so the END line
+  // after the key body is the first END, and the key body above it stays masked.
+  const marker = "[redacted credential-bearing line]";
+  const after = "2026-11-19T00:00:02Z after";
+  const huge = `2026-11-19T00:00:01Z huge ${"q".repeat(3 * 1024 * 1024)}`;
+  const evicted = await capture(
+    "",
+    [
+      "2026-11-19T00:00:00Z note -----END PRIVATE KEY----- seen earlier",
+      `${huge} -----BEGIN PRIVATE KEY-----`,
+      ...keyBody,
+      "-----END PRIVATE KEY-----",
+      `${after}\n`,
+    ].join("\n"),
+  );
+  for (const value of keyBody) {
+    assertAbsent(evicted.shown, value, "an earlier END line");
+  }
+  assert.deepEqual(evicted.projected.lines, [marker, marker, marker, after]);
+  assert.equal(evicted.projected.omittedLines, 2);
+});
+
+test("an END in an unterminated line over 2 MiB masks the lines above it", async (t) => {
+  const capture = await containerLogCapture(t);
+  const marker = "[redacted credential-bearing line]";
+  const before = "2026-11-19T00:00:00.000Z before";
+  const huge = `2026-11-19T00:00:01Z huge ${"q".repeat(3 * 1024 * 1024)}`;
+  // An END in the last 2 MiB of a line that never ends masks the lines above it before
+  // that cut line is left out.
+  const open = await capture(
+    "",
+    [before, ...keyBody, `${huge} -----END PRIVATE KEY----- tail`].join("\n"),
+  );
+  for (const value of keyBody) {
+    assertAbsent(open.shown, value, "an END in the cut line");
+  }
+  assert.deepEqual(open.projected.lines, [marker, marker, marker]);
+  assert.equal(open.projected.omittedLines, 1);
 });

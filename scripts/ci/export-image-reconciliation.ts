@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { isRecord } from "./records.ts";
 
 const cleanupResourceKinds = new Set([
   "ci-otel-backend",
@@ -11,10 +12,6 @@ const cleanupResourceKinds = new Set([
   "k3d-cluster",
   "image-tag",
 ]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 async function readState(path: string): Promise<unknown> {
   try {

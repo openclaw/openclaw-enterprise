@@ -11,11 +11,8 @@ lifecycle. This page owns Kubernetes setup and operator procedures.
 
 The Driver stores values for environment delivery, transient server-side
 hosted plugin discovery, and [credential source](../credential-sources.md)
-registration. **Experimental** Codex OAuth device login stores only a private
-Gateway handle and source reference here. Atomic compare-and-swap fences
-concurrent polling and cancellation. Provider tokens remain in the external
-credential service; no runtime handoff seals or consumes this Secret. See
-[Codex OAuth storage](kubernetes-compute/codex-oauth-storage.md).
+registration. OCC stores [Codex device-login sessions](kubernetes-compute/codex-oauth-storage.md)
+in PostgreSQL.
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
 namespaces. The two-cluster profile retains separate control-cluster storage.
@@ -222,6 +219,16 @@ verify a model request before revoking the old key upstream. Revision preparatio
 reads the current CP source and delivers the admitted fields into the DP runtime
 Secret before starting the Harness. An unchanged Configuration or Secret reference
 does not remove the need to deploy again.
+
+If a [credential source](../credential-sources.md) holds the key as a Gateway
+copy, also run `occ credential-source update ID` after updating the Secret and
+before deploying. A deployment alone starts the new version with the old copy.
+See [Update a source](../credential-sources.md#update-a-source).
+
+With OpenShell, that source update briefly disconnects the workspace node of
+every running Agent that uses the source, even when nothing changed. A turn that
+starts meanwhile can fail with HTTP 500, and so can a native OpenClaw turn
+already in progress. Update the source while those Agents are idle.
 
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.

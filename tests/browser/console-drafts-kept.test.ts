@@ -54,6 +54,7 @@ import {
   RESOURCE_NOT_FOUND,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { callbackGate } from "../helpers/wait-for.ts";
 import { createDraftStore } from "../../apps/controller/src/console/drafts.mts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
@@ -146,9 +147,9 @@ const settled = (page: Page) => page.locator(settledView).waitFor();
 // Refocusing the window rechecks the session and Namespace access.
 const refocus = (page: Page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 
-// Fails the next `/namespaces` read, as a dropped connection would.
+// Fails the next `/namespaces` read, as a dropped connection would. Await `reached()` for it.
 async function failNextNamespacesRead(page: Page) {
-  const failed = Promise.withResolvers<void>();
+  const failed = callbackGate("the failed /namespaces read");
   let armed = true;
   await page.route("**/namespaces", async (route) => {
     if (!armed || route.request().method() !== "GET") {
@@ -156,10 +157,12 @@ async function failNextNamespacesRead(page: Page) {
       return;
     }
     armed = false;
-    await route.abort("connectionreset");
-    failed.resolve();
+    await failed.run(async () => {
+      await route.abort("connectionreset");
+      failed.resolve();
+    });
   });
-  return failed.promise;
+  return failed;
 }
 
 async function startDefaultPreset(page: Page) {
@@ -372,9 +375,9 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   await startDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Kept draft");
 
-  const failed = failNextNamespacesRead(page);
+  const failed = await failNextNamespacesRead(page);
   await sidebarLink(page, "Namespaces").click();
-  await failed;
+  await failed.reached();
   await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   // Hiding private content does not need dropping the in-memory draft (finding 1935).
   assert.equal(await asksBeforeUnload(page), true);
@@ -439,9 +442,9 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
   const editor = page.getByLabel("Configuration JSON", { exact: true });
   await editor.fill('{"edited": true}');
 
-  const failed = failNextNamespacesRead(page);
+  const failed = await failNextNamespacesRead(page);
   await refocus(page);
-  await failed;
+  await failed.reached();
   await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();

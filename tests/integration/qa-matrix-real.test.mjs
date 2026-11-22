@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -101,7 +103,7 @@ test(
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
-      await import("../helpers/qa-repository.mjs");
+      await import("../helpers/qa-repository.ts");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
     const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.ts");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
@@ -135,6 +137,63 @@ test(
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
     }
+    if (selection.channelUpgrade) {
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "one-off channel upgrade through the regular Agent workflow",
+        async () => {
+          const result = await promisify(execFile)(
+            process.execPath,
+            [
+              "--test",
+              "--test-concurrency=1",
+              "tests/integration/channel-egress-disabled-helm-real.test.ts",
+              "tests/integration/channel-egress-upgrade-helm-real.test.ts",
+            ],
+            {
+              env: {
+                ...process.env,
+                OCC_TEST_SLACK_LIVE: "1",
+                OCC_TEST_CHANNEL_EGRESS_UPGRADE: "1",
+              },
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "channel-egress-upgrade",
+      );
+    }
+    if (selection.nativeRestart) {
+      const { arrangeProductionTopology, assertInterruptedGatewayTurnResumes } =
+        await import("../helpers/harness-topology-k3d-real.mjs");
+      const { boundedTeardown } = await import("../helpers/bounded-teardown.ts");
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "native restart continuation and cancellation",
+        async () => {
+          const { context: topologyContext } = boundedTeardown(context, {
+            label: "native restart topology teardown",
+          });
+          const topology = await arrangeProductionTopology(
+            topologyContext,
+            "dedicated",
+            undefined,
+            {
+              gatewayPassword: true,
+              nativeAdmin: { enabled: true },
+            },
+          );
+          // Reuse the real Agent API workflow, retained volumes and native model turns.
+          await assertInterruptedGatewayTurnResumes(topologyContext, topology);
+        },
+        "native-restart",
+      );
+    }
     if (selection.namespaceLifecycle) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(context, "kubernetes/OpenShell", "Namespace gateway before any Agent", () =>
@@ -160,6 +219,45 @@ test(
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
       );
+      const { runNativeProfileUpgradeScenario } =
+        await import("../helpers/native-profile-upgrade.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "fixed pre-feature OCE installation upgrades the same retained Agent to delegated native profiles",
+        () => runNativeProfileUpgradeScenario(context),
+        "oidc-agent-chat-upgrade",
+      );
+    }
+    for (const gitReplacement of [false, true].filter((git) =>
+      git ? selection.gitReplacement : selection.providerReplacement,
+    )) {
+      const { verifyOpenShellProviderReplacement } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        gitReplacement ? "managed Git replacement" : "managed Provider replacement",
+        () => verifyOpenShellProviderReplacement(context, { gitReplacement }),
+        gitReplacement ? "openshell-git-replacement" : "openshell-provider-replacement",
+      );
+    }
+    if (selection.templateResources) {
+      const inputs = JSON.parse(
+        await readFile(process.env.OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE, "utf8"),
+      );
+      const { verifyOpenShellTemplateResources } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      for (const workspaceMode of ["operator", "managed"]) {
+        assert.ok(inputs[workspaceMode], `Select the prepared ${workspaceMode} installation`);
+        await stage(
+          context,
+          `kubernetes/Codex/OpenShell/${workspaceMode}`,
+          `${workspaceMode} template sizing, workspace access and real model turn`,
+          () => verifyOpenShellTemplateResources(context, inputs[workspaceMode], workspaceMode),
+          "openshell-template-resources",
+        );
+      }
     }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
@@ -227,6 +325,9 @@ test(
                 artifacts,
                 {
                   repositoryInputs: selection.repository,
+                  disableNativeAdmin: selection.cells
+                    .filter((cell) => cell.installation === installation)
+                    .every((cell) => cell.scenarios.every((scenario) => scenario === "http-chat")),
                 },
               );
               await prepareQaPluginCatalogs(fixture);
@@ -299,7 +400,8 @@ test(
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
-                            apiKeyAuth: name === "codex-search-config",
+                            apiKeyAuth: name === "codex-search-config" || name === "http-chat",
+                            httpChat: name === "http-chat",
                           });
                         },
                       );
@@ -329,6 +431,15 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "http-chat",
+                    async (agent, step) => {
+                      const { verifyQaHttpChat } = await import("../helpers/qa-http-chat.ts");
+                      await step("human and service HTTP turns and isolated conversations", () =>
+                        verifyQaHttpChat(f, agent),
+                      );
+                    },
+                  ],
                   [
                     "agent-audit",
                     async (agent, step) => {

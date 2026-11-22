@@ -8,7 +8,7 @@ last_verified: "2026-11-04"
 
 ## Check useful Git work and conversation continuity
 
-From the repository root, use Node.js 24 or newer, Git, OpenSSL, matching installed
+From the repository root, use a Node.js version supported by [the workspace](../../package.json), Git, OpenSSL, matching installed
 workspace dependencies, and an owned disposable PostgreSQL fixture. Follow the
 [prepared PostgreSQL setup](./postgresql.md#revision-worker-tests). Inside its
 cleanup-trapped subshell, replace the `run-tests` command with these commands.
@@ -16,7 +16,7 @@ Each case copies the migrated template and runs as the limited application role.
 Clearing stale overrides ensures it uses this run's prepared database:
 
 ```sh
-node scripts/ci/prepare.mjs --lane postgres-application \
+node scripts/ci/prepare.ts --lane postgres-application \
   --file tests/integration/postgres-external-protected-git.test.ts \
   --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
@@ -194,7 +194,7 @@ forward to the API service alive across Pod replacement. Include setup, test,
 fresh API readiness, evidence and cleanup in the actual slot and outer deadline.
 
 ```sh
-node tests/fixtures/egress-custody-postgres-observer.mjs "$new_observer_dir" "$data_port"
+node tests/fixtures/egress-custody-postgres-observer.ts "$new_observer_dir" "$data_port"
 ```
 
 In the qualification shell, set the four connected inputs from the lane manifest,

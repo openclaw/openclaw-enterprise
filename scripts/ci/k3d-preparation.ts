@@ -1,10 +1,11 @@
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { deleteOwnedK3dCluster } from "./cleanup.ts";
+import { ensureImage } from "./image-pull.ts";
 import { redactCredentialLine } from "./k3d-node-log.ts";
 import {
   ANSI_COLOR,
@@ -12,10 +13,7 @@ import {
   k3dHostMetrics,
 } from "./k3d-preparation-diagnostics.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
-import {
-  prepareOpenShellClusterBootstrap,
-  prepareOpenShellPodSecurityAdmission,
-} from "./openshell.ts";
+import { prepareOpenShellClusterBootstrap } from "./openshell.ts";
 import { commandAvailable, execFile, type PreparationChild } from "./prepare-command.ts";
 import { ownedName } from "./resource-names.ts";
 
@@ -65,14 +63,13 @@ export type K3dCluster = PreparationResource & {
   nodeImage?: string;
   disabledK3sAddons?: readonly string[];
   kubectl?: string;
-  runtimeClass?: string;
-  runtimeHandler?: string;
-  podSecurityAdmissionConfig?: string;
-  podSecurityAdmissionContainerPath?: string;
-  podSecurityAdmissionK3dArgs?: string[];
   kubernetesVersion?: string;
   pluginStatusProxyCidrs?: string;
 };
+
+function ipv4Number(address: string) {
+  return address.split(".").reduce((number, octet) => number * 256 + Number(octet), 0);
+}
 
 const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
 
@@ -134,16 +131,10 @@ function isK3dCluster(value: unknown): value is K3dCluster {
     [
       resource.nodeImage,
       resource.kubectl,
-      resource.runtimeClass,
-      resource.runtimeHandler,
-      resource.podSecurityAdmissionConfig,
-      resource.podSecurityAdmissionContainerPath,
       resource.kubernetesVersion,
       resource.pluginStatusProxyCidrs,
     ].every((field) => field === undefined || typeof field === "string") &&
-    (resource.disabledK3sAddons === undefined || isStringList(resource.disabledK3sAddons)) &&
-    (resource.podSecurityAdmissionK3dArgs === undefined ||
-      isStringList(resource.podSecurityAdmissionK3dArgs))
+    (resource.disabledK3sAddons === undefined || isStringList(resource.disabledK3sAddons))
   );
 }
 
@@ -238,16 +229,15 @@ export function createK3dPreparation({
       });
       resource.nodeImage = bootstrap.k3sImage;
       resource.kubectl = bootstrap.kubectl;
-      resource.runtimeClass = bootstrap.runtimeClass;
-      resource.runtimeHandler = bootstrap.runtimeHandler;
-      const podSecurityAdmission = await prepareOpenShellPodSecurityAdmission({
-        directory,
-        runtimeClass: bootstrap.runtimeClass,
-      });
-      resource.podSecurityAdmissionConfig = podSecurityAdmission.path;
-      resource.podSecurityAdmissionContainerPath = podSecurityAdmission.containerPath;
-      resource.podSecurityAdmissionK3dArgs = podSecurityAdmission.k3dArgs;
       await writeState(statePath, state);
+    }
+    // k3d pulls the node image only when the engine lacks it, inside the create's
+    // timeout and without retries. Pull it here with pullImage's retries instead.
+    const nodeImage = resource.nodeImage;
+    if (nodeImage) {
+      await k3dStage(state, "k3d-node-image", () =>
+        ensureImage(nodeImage, { execFile, docker: process.env.OCC_DOCKER_BIN ?? "docker" }),
+      );
     }
     try {
       if (crossNodePluginStatus) {
@@ -258,7 +248,6 @@ export function createK3dPreparation({
         "create",
         cluster,
         ...(resource.nodeImage ? ["--image", resource.nodeImage] : []),
-        ...(resource.podSecurityAdmissionK3dArgs ?? []),
         "--servers",
         "1",
         "--agents",
@@ -561,6 +550,94 @@ export function createK3dPreparation({
     }
   }
 
+  async function prepareSlackHelmPluginStatusProxy(
+    state: PreparationState,
+    env: Record<string, string>,
+  ) {
+    const cluster = findK3dCluster(state);
+    const node = cluster?.nodes[0];
+    if (
+      state.lane !== "slack" ||
+      !cluster ||
+      state.resources.filter(({ kind }) => kind === "k3d-cluster").length !== 1 ||
+      cluster.owner !== state.prefix ||
+      cluster.status !== "ready" ||
+      cluster.nodes.length !== 1 ||
+      node !== `k3d-${cluster.name}-server-0` ||
+      cluster.context !== `k3d-${cluster.name}` ||
+      !isAbsolute(cluster.kubeconfig) ||
+      cluster.kubeconfig !== env.OCC_TEST_KUBERNETES_KUBECONFIG ||
+      cluster.context !== env.OCC_TEST_KUBERNETES_CONTEXT
+    ) {
+      throw new Error(
+        "Slack Helm preparation requires a ready, owned single-server CI k3d cluster.",
+      );
+    }
+
+    return k3dStage(state, "k3d-slack-helm-status-proxy", async () => {
+      const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
+      const kubectlArgs = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
+      const timeoutMs = 15_000;
+      await validateLoopbackKubeconfig(cluster.kubeconfig, cluster.context, kubectl, timeoutMs);
+      const { stdout } = await execFile(kubectl, [...kubectlArgs, "get", "nodes", "-o", "json"], {
+        timeoutMs,
+      });
+      const snapshot: unknown = JSON.parse(stdout);
+      const items = asRecord(snapshot)?.items;
+      const actualNode =
+        Array.isArray(items) && items.length === 1 ? asRecord(items[0]) : undefined;
+      if (asRecord(actualNode?.metadata)?.name !== node) {
+        throw new Error(
+          "Slack Helm preparation requires only the owned k3d server to be registered.",
+        );
+      }
+
+      const podCidr = asRecord(actualNode?.spec)?.podCIDR;
+      const [network, prefix, extra] = typeof podCidr === "string" ? podCidr.split("/") : [];
+      if (
+        !network ||
+        !isIPv4(network) ||
+        !prefix ||
+        !/^(?:1[6-9]|2[0-8])$/.test(prefix) ||
+        extra !== undefined
+      ) {
+        throw new Error("The Slack Helm k3d server must have a canonical bounded IPv4 Pod CIDR.");
+      }
+      const start = ipv4Number(network);
+      const size = 2 ** (32 - Number(prefix));
+      if (start % size !== 0) {
+        throw new Error("The Slack Helm k3d server must have a canonical bounded IPv4 Pod CIDR.");
+      }
+
+      // Lane preparation waits for cert-manager and Envoy Pods. Probe the first
+      // Pod address after the bridge address to measure the route Pods use.
+      const destination = [...network.split(".").slice(0, 3), (start % 256) + 2].join(".");
+      const route = await execFile(
+        process.env.OCC_DOCKER_BIN ?? "docker",
+        ["exec", node, "ip", "route", "get", destination],
+        { timeoutMs },
+      );
+      const devices = [...route.stdout.matchAll(/\bdev\s+(\S+)/g)];
+      if (devices.length !== 1 || devices[0]?.[1] !== "cni0") {
+        throw new Error("The Slack Helm plugin status proxy route must use cni0.");
+      }
+      const sources = [...route.stdout.matchAll(/\bsrc\s+(\S+)/g)];
+      const source = sources[0]?.[1];
+      if (sources.length !== 1 || !source || !isIPv4(source) || source.startsWith("127.")) {
+        throw new Error(
+          "Unable to determine the Slack Helm plugin status proxy source IPv4 address.",
+        );
+      }
+      const address = ipv4Number(source);
+      if (address <= start || address >= start + size - 1) {
+        throw new Error(
+          "The Slack Helm plugin status proxy source must be a host in the node Pod CIDR.",
+        );
+      }
+      return `${source}/32`;
+    });
+  }
+
   async function waitForPluginStatusProxySource(cluster: string, destination: string) {
     const deadline = Date.now() + 120_000;
     while (Date.now() < deadline) {
@@ -598,19 +675,14 @@ export function createK3dPreparation({
     kubeconfig: string,
     context: string,
     kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl",
+    timeoutMs?: number,
   ) {
-    const result = await execFile(kubectl, [
-      "--kubeconfig",
-      kubeconfig,
-      "--context",
-      context,
-      "config",
-      "view",
-      "--minify",
-      "--flatten",
-      "-o",
-      "json",
-    ]);
+    const args = ["--kubeconfig", kubeconfig, "--context", context];
+    const result = await execFile(
+      kubectl,
+      [...args, "config", "view", "--minify", "--flatten", "-o", "json"],
+      { timeoutMs },
+    );
     const configuration: unknown = JSON.parse(result.stdout);
     const clusters = asRecord(configuration)?.clusters;
     const first: unknown = Array.isArray(clusters) ? clusters[0] : undefined;
@@ -630,5 +702,5 @@ export function createK3dPreparation({
     }
   }
 
-  return { ensureK3dCluster, k3dStage };
+  return { ensureK3dCluster, k3dStage, prepareSlackHelmPluginStatusProxy };
 }

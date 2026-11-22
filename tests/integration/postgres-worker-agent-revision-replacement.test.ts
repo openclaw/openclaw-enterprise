@@ -1610,3 +1610,78 @@ revisionTest(
     assert.equal(await activeRevisionId(fixture, owner), newer.id);
   },
 );
+
+revisionTest(
+  "a stop during preparation prevents activation before a later deployment",
+  async (fixture) => {
+    const owner = await fixture.agent("restart-preparation-race", { executionMode: "dedicated" });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const preparing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const activated: string[] = [];
+    const driver = countingExclusiveCompute(fixture, {
+      onPrepare: async (revision) => {
+        if (revision.revision === 1) {
+          entered();
+          await blocked;
+        }
+      },
+    });
+    const compute: ComputeDriver = {
+      ...driver.compute,
+      id: "restart-preparation-race",
+      async activateRevision(revision, context) {
+        activated.push(revision.id);
+        await driver.compute.activateRevision?.(revision, context);
+      },
+    };
+    fixture.controller.registerDriver(compute);
+    fixture.controller.selectDriver("compute", compute.id);
+    const configuration = await fixture.controller.createConfiguration(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-4.1"),
+    });
+    await fixture.controller.updateAgent(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      configurationId: configuration.id,
+      gatewayManagedMode: false,
+    });
+    const deploy = () =>
+      fixture.controller.deployAgent(
+        fixture.actor.id,
+        { namespaceId: fixture.namespace.id, agentId: owner.id },
+        resolveApprovedHarness,
+      );
+    const first = await deploy();
+    await fixture.start(compute);
+    try {
+      await preparing;
+      // Stop while Compute is preparing. Desired stopped state must prevent activation.
+      // A later deployment starts a new workload; Stop no longer fences that startup.
+      await fixture.controller.stopAgent(fixture.actor.id, fixture.namespace.id, owner.id);
+      release();
+      await fixture.work(
+        { id: first.id, idempotencyKey: `agent_revision:${first.id}:reconcile` },
+        "succeeded",
+      );
+      assert.equal(activated.includes(first.id), false);
+      assert.equal((await fixture.currentAgent(owner))?.desiredRuntimeState, "stopped");
+      const successor = await deploy();
+      await fixture.work(
+        { id: successor.id, idempotencyKey: `agent_revision:${successor.id}:reconcile` },
+        "succeeded",
+      );
+      assert.equal(activated.includes(first.id), false);
+      assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, successor.id);
+    } finally {
+      release();
+    }
+  },
+);

@@ -28,8 +28,10 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
-  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
-  sets `enabled: true`. The next deployment applies that selection.
+  `policyScopeByPlugin` limits each catalog entry: `enablement_only` exposes its
+  master switch; `tool_human_approval` also permits `all_actions` or `none` on
+  individual selected tools. Unlisted entries use Driver-wide capabilities.
+  The next deployment applies saved selections.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
 - `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
@@ -39,6 +41,21 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   undefined. A plugin that needs a bound credential can refuse an Installation
   that cannot deliver it. OCC checks placement before saving selections and
   again when it admits deployment.
+- `describeDeployment({plugin, selection, connections})` (optional) returns
+  [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
+  for one admitted catalog identity. The OpenClaw Driver accepts
+  `{catalog: "driver", pluginId}`. Its `installation` tools name the Gateway or
+  Harness, the material to install and the selected tools. Any plugin can declare
+  network requirements for installation or invocation, with HTTP or MCP request
+  restrictions where needed. Each configured credential names its source,
+  environment, presentation, tool IDs and only the invocation requirement IDs
+  eligible for injection under `credentials[requirement][connection]`. Network
+  requirements not referenced by a credential connection need no credential,
+  including requests to a different path on the same host. Discovery can be
+  public or authenticated. For example, Google public discovery uses separate
+  GET paths without injection, while Slack MCP tool discovery uses its account.
+  An empty connection map preserves an unconnected slot. A credentialless plugin
+  declares no slots.
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.

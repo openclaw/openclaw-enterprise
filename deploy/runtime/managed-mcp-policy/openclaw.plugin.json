@@ -1,0 +1,21 @@
+{
+  "id": "oce-managed-mcp-policy",
+  "name": "Managed MCP policy",
+  "description": "Apply the deployed Agent's MCP tool approval policy before invoking its worker.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["servers"],
+    "properties": {
+      "nodeId": { "type": "string", "minLength": 1 },
+      "servers": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": { "enum": ["allow", "ask"] }
+        }
+      }
+    }
+  }
+}

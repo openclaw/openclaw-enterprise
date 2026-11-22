@@ -56,6 +56,7 @@ import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-account
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
@@ -2215,7 +2216,7 @@ test("a saved Configuration's summary keeps the Secret name while it rereads it"
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   // The reread can reach this route after the status shows, so wait for it rather than count
   // (finding 2223); the name must stay while the reread is held.
-  await rereading;
+  await within(rereading, "the rebuilt summary's held Secret reread");
   assert.ok(reads >= 2, "the rebuilt summary rereads the Secret");
   assert.equal(await name.isVisible(), true);
   assert.deepEqual(await metadataLoading.jsonValue(), []);
@@ -2247,7 +2248,7 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
   await waitForEnabled(plugins);
   await page.getByRole("button", { name: "Disable Slack" }).click();
-  await refreshing;
+  await within(refreshing, "the held Configuration refresh");
   assert.equal(await plugins.isDisabled(), true);
   assert.equal(
     await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),

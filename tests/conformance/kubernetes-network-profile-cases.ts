@@ -9,7 +9,25 @@ import type {
   ComputeRevisionContext,
   HarnessExecutionMode,
 } from "../../packages/contracts/src/index.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
+import {
+  type Labels,
+  type RenderedPolicy,
+  firstPeerSelector,
+  isNetworkPolicy,
+  matchLabels,
+  observedResource,
+  podSelector,
+  podTemplate,
+  policyRules,
+  renderedPolicies,
+  resourceLabels,
+  resourceRecord,
+  resourceRecords,
+  selectorMatches,
+  serviceSelector,
+  templateLabels,
+  templateMetadata,
+} from "../helpers/kubernetes-rendered-resources.ts";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
 import {
   authContext,
@@ -18,115 +36,12 @@ import {
   preparedAuth,
   routedOptions,
   routedRevision,
-  selectorMatches,
   tenant,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
-
-type Labels = Record<string, string>;
-type FixtureResource = NonNullable<
-  ReturnType<ReturnType<typeof workspaceSetupFixture>["objects"]["get"]>
->;
-type ResourceSpec = { metadata: object; spec?: unknown };
-
-type RenderedPolicy = {
-  kind: "NetworkPolicy";
-  metadata: { name: string; namespace?: string; uid?: string; resourceVersion?: string };
-  spec: Record<string, unknown>;
-};
-
-export function isNetworkPolicy(value: unknown): value is RenderedPolicy {
-  const resource = asRecord(value);
-  const metadata = asRecord(resource?.metadata);
-  return (
-    resource?.kind === "NetworkPolicy" &&
-    typeof metadata?.name === "string" &&
-    (metadata.namespace === undefined || typeof metadata.namespace === "string") &&
-    (metadata.uid === undefined || typeof metadata.uid === "string") &&
-    (metadata.resourceVersion === undefined || typeof metadata.resourceVersion === "string") &&
-    asRecord(resource.spec) !== undefined
-  );
-}
-
-export function renderedPolicies(entries: unknown): RenderedPolicy[] {
-  assert.ok(Array.isArray(entries));
-  return entries.map((entry: unknown) => {
-    const resource = resourceRecord(entry, "targeted policy").resource;
-    assert.ok(isNetworkPolicy(resource), "expected a rendered NetworkPolicy");
-    return resource;
-  });
-}
 
 export function computeDriver(value: unknown) {
   assert.ok(value instanceof KubernetesComputeDriver);
   return value;
-}
-
-export function resourceRecord(value: unknown, field: string) {
-  const record = asRecord(value);
-  assert.ok(record, `expected ${field} to be an object`);
-  return record;
-}
-
-export function resourceRecords(value: unknown, field: string) {
-  assert.ok(Array.isArray(value), `expected ${field} to be an array`);
-  return value.map((entry: unknown) => resourceRecord(entry, field));
-}
-
-export function observedResource(resource: FixtureResource | undefined, kind: string) {
-  assert.ok(resource, `expected stored ${kind}`);
-  assert.equal(resource.kind, kind);
-  return resource;
-}
-
-function labelValues(value: unknown): value is Labels {
-  const record = asRecord(value);
-  return record !== undefined && Object.values(record).every((label) => typeof label === "string");
-}
-
-function resourceLabels(value: unknown, field: string) {
-  assert.ok(labelValues(value), `expected ${field} to contain string labels`);
-  return value;
-}
-
-export function podSelector(resource: ResourceSpec) {
-  return resourceRecord(resourceRecord(resource.spec, "policy spec").podSelector, "pod selector");
-}
-
-function podTemplate(resource: ResourceSpec) {
-  return resourceRecord(resourceRecord(resource.spec, "Deployment spec").template, "Pod template");
-}
-
-function templateMetadata(resource: ResourceSpec) {
-  return resourceRecord(podTemplate(resource).metadata, "Pod template metadata");
-}
-
-export function templateLabels(resource: ResourceSpec) {
-  return resourceLabels(templateMetadata(resource).labels, "Pod template labels");
-}
-
-export function policyRules(resource: ResourceSpec, direction: "egress" | "ingress") {
-  return resourceRecords(resourceRecord(resource.spec, "policy spec")[direction], direction);
-}
-
-function policyPeers(rule: Record<string, unknown> | undefined, direction: "to" | "from") {
-  assert.ok(rule, `expected policy rule with ${direction} peers`);
-  return resourceRecords(rule[direction], direction);
-}
-
-export function matchLabels(selector: Record<string, unknown>) {
-  return resourceLabels(selector.matchLabels, "selector matchLabels");
-}
-
-export function serviceSelector(resource: ResourceSpec) {
-  return resourceLabels(resourceRecord(resource.spec, "Service spec").selector, "Service selector");
-}
-
-export function firstPeerSelector(resource: ResourceSpec, direction: "ingress" | "egress") {
-  const peers = policyPeers(
-    policyRules(resource, direction)[0],
-    direction === "ingress" ? "from" : "to",
-  );
-  return resourceRecord(peers[0]?.podSelector, "peer podSelector");
 }
 
 export const ORDINARY_PROFILE_LABEL = "openclaw.dev/network-profile";
@@ -163,7 +78,6 @@ export function profileNetworkDriver() {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://192.0.2.15:3128" },
       },
     }),
   );
@@ -232,24 +146,30 @@ export function profileNetworkWorkload(
           servicePrincipalId: revision.servicePrincipalId,
           revisionId: revision.id,
         };
-  return driver["deployment"](
-    `network-${role}`,
+  return driver["deployment"]({
+    name: `network-${role}`,
     ownership,
     namespace,
-    { runtime: `${role}:local`, workspaceSetup: "openclaw-enterprise/gateway-fixture:local" },
-    `network-${role}`,
+    images: {
+      runtime: `${role}:local`,
+      workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+    },
+    serviceAccountName: `network-${role}`,
     role,
-    {},
-    "info",
-    role === "gateway"
-      ? driver["gatewayConfiguration"](revision, undefined, executionNamespace)
-      : undefined,
-    role === "gateway" && embedded,
-    role === "gateway" && embedded ? revision.servicePrincipalId : undefined,
-    role === "agent" || embedded
-      ? preparedAuth(driver, executionNamespace.name, embedded)
-      : undefined,
-  );
+    environment: {},
+    loggingLevel: "info",
+    configuration:
+      role === "gateway"
+        ? driver["gatewayConfiguration"](revision, undefined, executionNamespace)
+        : undefined,
+    embedded: role === "gateway" && embedded,
+    workloadServicePrincipalId:
+      role === "gateway" && embedded ? revision.servicePrincipalId : undefined,
+    harnessAuth:
+      role === "agent" || embedded
+        ? preparedAuth(driver, executionNamespace.name, embedded)
+        : undefined,
+  });
 }
 
 export function checkWorkloadTemplateProfiles() {

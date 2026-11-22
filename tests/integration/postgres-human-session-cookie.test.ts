@@ -4,7 +4,7 @@ import { createServer } from "node:https";
 import test from "node:test";
 import pg from "pg";
 import { chromium, type Browser } from "playwright";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -17,7 +17,7 @@ import {
   recordData,
   text,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(

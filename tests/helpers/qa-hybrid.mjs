@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { gatewayRoutingPins } from "../../scripts/ci/routing.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
+import { qaHybridRoutingValues } from "./qa-hybrid-routing.ts";
 import { waitFor } from "./qa-wait.ts";
 import { registerQaSecret } from "./qa-secrets.ts";
 
@@ -170,11 +171,13 @@ export async function prepareHybridInstallation(f) {
   const services = yamlMapping(compose, "services");
   const controllerEnv = yamlMapping(services, "controller", "environment");
   const bootstrapEnv = yamlMapping(services, "bootstrap", "environment");
+  // The mount copy belongs to the container UID; read the retained host-owned input.
+  const passwordFile = join(f.stateDirectory, "initial-admin-password");
   f.consoleUrl = controllerEnv.OCC_AUTH_BASE_URL;
   f.browserCA = join(f.stateDirectory, "browser-ca.crt");
   f.credentials = {
     email: bootstrapEnv.OPENCLAW_DEV_EMAIL,
-    password: bootstrapEnv.OPENCLAW_DEV_PASSWORD,
+    password: await readFile(passwordFile, "utf8"),
   };
   // Use the same pinned controllers as the shipped Kubernetes-only launcher.
   for (const pin of Object.values(gatewayRoutingPins)) {
@@ -230,31 +233,15 @@ export async function prepareHybridInstallation(f) {
   const serviceIp = async (service) => inspect((await f.compose("ps", "-q", service)).trim());
   const nodeIp = await inspect(nodeName);
   const compute = f.configuration.drivers.compute.configuration;
-  const values = {
-    images: { controller: f.controllerChartImage },
-    auth: { baseUrl: f.consoleUrl },
-    bootstrap: { adminEmail: f.credentials.email, password: { claimName: "bootstrap-password" } },
-    api: {
-      clients: [
-        { namespace: "envoy-gateway-system", podLabels: { "app.kubernetes.io/name": "envoy" } },
-      ],
-    },
-    database: { cidrs: [`${await serviceIp("postgres")}/32`] },
-    cluster: { cidrs: [`${nodeIp}/32`], port: 6443 },
-    agentNativeAdmin: {
-      enabled: false,
-      domain: controllerEnv.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
-    },
-    gatewayRouting: {
-      enabled: true,
-      gatewayClassName: "eg",
-      gatewayName: "openclaw-enterprise-agent-gateways",
-      hostname: nodeName,
-      serviceType: "NodePort",
-      apiKeySecretName: "occ-private-gateway-key",
-      remoteNodeCidrs: [],
-    },
-  };
+  const values = qaHybridRoutingValues({
+    controllerChartImage: f.controllerChartImage,
+    consoleUrl: f.consoleUrl,
+    adminEmail: f.credentials.email,
+    databaseIp: await serviceIp("postgres"),
+    nodeIp,
+    nodeName,
+    agentNativeAdminDomain: controllerEnv.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+  });
   async function render() {
     values.gatewayRouting.remoteNodeCidrs = [
       `${await serviceIp("controller")}/32`,

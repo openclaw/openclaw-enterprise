@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-16 14:39"
-last_updated_session: "authoring-run/e5aafd87-9592-4149-91ef-70e267b07458"
+updated: "2026-11-22 10:45"
+last_updated_session: "authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e"
 ---
 
 # GitHub Actions testing flow
@@ -13,7 +13,7 @@ last_updated_session: "authoring-run/e5aafd87-9592-4149-91ef-70e267b07458"
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
+- `.github/workflows/qa-advisory.yml:jobs`: QA every six hours on `main`; post-merge when `QA_ADVISORY_ON_PUSH=true`; trusted PRs select [advisory QA](../testing/ci/qa-advisory.md).
 - `.github/workflows/full-integration.yml:jobs`: scheduled and approved manual main integrations, pinned to `github.sha`.
 
 ## Flow
@@ -72,18 +72,19 @@ graph TD
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
 Kubernetes runners require kernel NetworkPolicy enforcement.
 
-Pull requests compare the verified merge to its first parent using that parent’s policy.
-The second parent must match the event head. Main pushes use `before` policy for the
-`before`→verified `after` diff. Missing history,
-forced pushes, and older policies retain full CI.
-Decoding preserves leading UTF-8 BOMs.
+Pull requests use the verified merge’s first-parent policy and diff. Its second parent must
+match the event head. Main pushes use the `before` policy for the verified `before`→`after`
+diff. Forced pushes, older policies and missing history retain full CI.
+Filename decoding preserves leading UTF-8 BOMs.
 `scripts/ci/impact.ts:documentationPath` admits allowlisted Markdown, `docs/docs.json`
 and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
 symlinks require full CI.
 
-Registered test changes may include docs and their own lane-manifest entries. CI runs
-the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
-`checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
+Registered test edits may include docs and corresponding manifest entries. The word
+`export` in either version selects full CI because consumers can compute import paths.
+Otherwise eligible tests run both trees’ owning lanes, plus `checks-baseline-2` for
+TypeScript or `checks-baseline-1` for fixture-only coverage. Other changes, test-only
+main pushes and remaining events require full CI. Unverifiable inputs fail closed.
 
 `CI Required` rechecks mode and lanes: impact, static checks and selected lanes
 must succeed; other jobs must skip. Full/tests modes aggregate same-source results;
@@ -97,19 +98,17 @@ selecting tests or gating CI. Base-loaded policy cannot prevent PR workflow chan
 Focused jobs verify SHA and ordered PR parents. QA materializes only the
 [selected credential](../testing/ci/qa-advisory.md#trigger).
 
-Full Integration pins `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
-rechecks main, cadence and receipts under lock.
-`scripts/ci/full-integration-schedule-history.ts:readUnmarkedClock` requires explicit
-targeting to ignore live shared work.
-`scripts/ci/full-integration-preflight.ts:fetchGithubJson` distinguishes malformed
-JSON from request failures; diagnostics omit raw content.
-Manual dispatch verifies dispatcher, team and environment.
-Slack serializes channel/app access; installation and Skipper Git serialize per branch.
-Retries require [approved dispatch](../testing/ci/configuration.md#environments).
+[Scheduled admission](../testing/ci/full-integration.md#trigger) checks `github.sha`,
+cadence and receipts under lock. Cooldown skips coverage lookup.
+`readUnmarkedClock` skips explicitly targeted live work.
+Scheduled GETs share one 502/503/504 retry. `Retry-After` or zero quota suppresses it.
+“Scheduled preflight diagnostic” shows stage and allowlisted HTTP codes.
+Reruns require [fresh approved dispatch](../testing/ci/configuration.md#environments)
+(dispatcher, team, environment). Slack serializes per channel/app. Installation
+and Skipper Git serialize per branch.
 
-First-attempt `all` reuse requires completed execution
-(`scripts/ci/full-integration-reuse.ts:validateResults`). Success selects artifacts,
-skipping lanes. Failure uses preflight’s fresh fallback.
+First-attempt `all` reuses results accepted by `scripts/ci/full-integration-reuse.ts:validateResults`.
+Otherwise lanes run fresh.
 QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 
 Migration and application suites own separate PostgreSQL servers. Kubernetes
@@ -120,7 +119,7 @@ Fixture lanes verify NetworkPolicy enforcement.
 `scripts/ci/run-tests.ts:runLane` runs files sequentially except audited
 `parallelFiles`. State and cleanup stay runner-local.
 
-Only the native IAM barrier test receives its migrated PostgreSQL database and both application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
+Only the native IAM barrier test receives its migrated PostgreSQL database and application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
 
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
@@ -131,16 +130,14 @@ Dependency caches for PR merge-refs and main exclude results and credential-bear
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:main` and `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
+`scripts/ci/prepare-cli.ts:runPreparationCli` and `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
 
-See [resource preparation](github-actions-testing/preparation.md).
+[Resource preparation](github-actions-testing/preparation.md).
 
-`scripts/ci/prepare.mjs:prepareLane` pre-pulls `logging-collector`’s configured
-Collector and Node images and the shared Prometheus and Grafana pins.
+`scripts/ci/prepare.ts:prepareLane` pre-pulls `logging-collector`’s
+Collector and Node images plus Prometheus and Grafana pins.
 `scripts/ci/k3d-image-admission.ts:ensureDockerSourceImage` verifies local digests or calls
-`scripts/ci/image-pull.ts:pullImage` and checks the downloaded digest. Registry 5xx/rate
-limits retry within the shared budget; missing manifests/authorization refusals
-fail immediately. Unpinned Node overrides retain test-owned pulls.
+`scripts/ci/image-pull.ts:pullImage` and checks the downloaded digest. Registry 5xx/rate limits retry within budget; missing manifests or authorization refusals fail immediately. Unpinned Node overrides retain test-owned pulls.
 
 Full Integration requires [compatible cache exports](github-actions-testing/preparation.md)
 before OpenShell source builds. These retain their builder and fixed epoch;
@@ -254,12 +251,10 @@ server/network deletion and volume checks. After a persisted mutation marker,
 fixture fallback requires completed cleanup. Verified pre-mutation refusals permit fallback.
 See [named-volume limits](../testing/local.md#staged-sign-in-cleanup).
 
-`scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
-`scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
-Completion drains output, kills grouped descendants and returns command status.
-At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL still apply after
-direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
-Windows bounds streams and terminates only the direct child.
+`scripts/ci/command-supervision.ts:runCommand` awaits exit and pipe closure for preparation and cleanup.
+For POSIX groups, `scripts/ci/cleanup-command.ts` stops the group when caller IPC closes.
+At [timeout](../testing/ci/configuration.md#runner-overrides), the caller sends TERM, then KILL after one grace period.
+After another, the caller closes retained pipes. Windows signals its direct child.
 
 `scripts/ci/runner-process.ts:killDescendants` stops cleanup groups before sweeping descendants.
 `tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
@@ -279,10 +274,10 @@ awaits an approved resource ledger.
 ## Debugging and Verification
 
 - `node scripts/ci/run-tests.ts audit` checks checkout inventory against the suite map.
-- `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-*.test.ts'` checks runner outcomes, process cleanup, preparation, redaction, startup, and OpenShell reporting.
-- After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
+- `node --test tests/integration/ci-runner.test.ts 'tests/integration/ci-runner-*.test.ts'` checks runner outcomes, process cleanup, preparation, redaction, startup, and OpenShell reporting.
+- Serialize unstable local Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
-- Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
+- Retain sanitized results for seven days. Exclude private state and credentials. Recover teardown from run-owned state on its original host and path.
 
 ## Related docs
 
@@ -296,6 +291,14 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 10:45: Trace the shared parent-side command supervisor. (authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e - 427e14ba93239035c9cc7445dcf19710d72bab67)
+
+- 2026-11-19 19:23: Retry reads and report failures. (authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954 - ebcbd2f60535c36b3a9b63847a2d052363cd29a6)
+
+- 2026-11-18 03:26: Use TypeScript preparation. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
+
+- 2026-11-18 01:27: Update preparation pointer. (authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)
 
 - 2026-11-16 14:39: Trace k3d reset. (authoring-run/e5aafd87-9592-4149-91ef-70e267b07458 - 6b5a5de39078edb635f92d983bef6f364af1007d)
 

@@ -18,7 +18,7 @@ import {
   grantQaRepositoryBranch,
   qaRepositoryServiceConfig,
 } from "../helpers/qa-repository-preparation.ts";
-import { prepareQaRepository } from "../helpers/qa-repository.mjs";
+import { prepareQaRepository } from "../helpers/qa-repository.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

@@ -8,17 +8,19 @@ import type { Locator } from "playwright";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
-  AGENT_CREATE_DENIED,
+  AGENT_CREATE_ACCESS_CHECK,
   AGENT_DEPLOY_NOT_INCLUDED,
   CHANNELS_NEED_DEDICATED,
-  DIAGNOSTICS_DENIED,
   SECRET_CREATE_DENIED,
+  SECRET_CREATE_MEMBER_DENIED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
+import { AGENT_CREATE_DENIED, DIAGNOSTICS_DENIED } from "../helpers/refusal-access.ts";
 import {
   answerDeployGrantsSources,
   AGENT_READ,
   accessibleDescription,
+  apiRequests,
   detailUrl,
   expectReachableReason,
   grantInstallationAdministration,
@@ -26,11 +28,13 @@ import {
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
+  settlePageRequests,
   shippedPreset,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
-import { restrict } from "../helpers/iam-grants.ts";
+import { bindRole, restrict } from "../helpers/iam-grants.ts";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
 const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");
@@ -205,7 +209,7 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
   await expectReachableReason(
     page,
     page.getByRole("button", { name: "Create Secret", exact: true }),
-    SECRET_CREATE_DENIED,
+    SECRET_CREATE_MEMBER_DENIED,
   );
 
   // Credentials: each read-only Slack token field's status says what is bound.
@@ -220,6 +224,84 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
 });
 
 // Configure Slack stays in the Tab order while that reason shows (class of finding 2899).
+test("an appointed administrator without Namespace action grants gets neutral access checks", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Shared research", { ready: true });
+  // The appointed administrator has no Agent read grant, even though the Namespace has an Agent.
+  const hiddenAgent = await fixture.createAgent(namespace.id, "Private Agent", nativeValues("pa"));
+  const account = await fixture.createNamespaceMember("appointed-admin", namespace.id, [
+    ["read", "namespace"],
+  ]);
+  const administrator = fixture.policy.roles.find(
+    ({ name }) => name === "Installation administrator",
+  );
+  assert.ok(administrator);
+  // Password account appointment binds this Role to the exact Installation. The account has
+  // Namespace read separately, and no deny Restriction or Namespace create/delete grant.
+  bindRole(fixture.policy, account.principal.id, {
+    id: "appointed-admin-installation",
+    roleId: administrator.id,
+    resource: { kind: "installation", id: installation.id },
+  });
+  assert.deepEqual(fixture.policy.restrictions, []);
+  const session = await fixture.signIn(account.credentials);
+  const permissions = await fixture.request("GET", `/namespaces/${namespace.id}/permissions`, {
+    session,
+  });
+  assert.equal(permissions.status, 200);
+  assert.deepEqual(permissions.data, {
+    installation: { administer: true },
+    agents: { create: false },
+    secrets: { create: false },
+    delete: false,
+  });
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const agentListPath = `/namespaces/${namespace.id}/agents`;
+  const listResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === agentListPath && response.request().method() === "GET",
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, account.credentials);
+  assert.equal((await listResponse).status(), 200);
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Create Agent", exact: true }),
+    AGENT_CREATE_ACCESS_CHECK,
+  );
+  assert.equal(
+    await page.getByRole("heading", { name: /^No Agents/ }).textContent(),
+    "No Agents to show",
+  );
+  await page
+    .getByText("Agents you can read in this Namespace appear here.", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByText(hiddenAgent.name, { exact: true }).count(), 0);
+  assert.equal(await page.getByText(hiddenAgent.id, { exact: true }).count(), 0);
+  await settlePageRequests(page);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.deepEqual(
+    requests
+      .filter(({ path }) => /^\/namespaces\/[^/]+\/agents(?:[/?]|$)/.test(path))
+      .map(({ path }) => path.split("?")[0]),
+    [agentListPath],
+  );
+  await page.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Create Secret", exact: true }),
+    SECRET_CREATE_DENIED,
+  );
+  await page.goto(`${fixture.origin}/console/namespaces?namespace=${namespace.id}`);
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Delete Shared research", exact: true }),
+    "Deleting this Namespace requires Namespace delete. Check your access and whether an IAM Restriction applies.",
+  );
+});
+
 test("Configure Slack on an embedded Agent is described by the execution mode", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described channels");
   const agent: unknown = await fixture.createAgent(

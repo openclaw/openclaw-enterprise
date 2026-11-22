@@ -1,12 +1,12 @@
 # Agent native admin UI
 
-Native browser access is disabled by default. OCC uses the caller's OCE session
-and Agent permissions to proxy Gateway chat or administration over HTTP and
-WebSocket. [Gateway managed mode](#gateway-managed-mode) limits administration.
+Native browser access defaults to disabled. OCC proxies HTTP/WebSocket
+chat or administration using OCE sessions and exact-Agent permissions.
+[Gateway managed mode](#gateway-managed-mode) limits administration.
 
 ## Host-only session exchange
 
-For guarded OIDC sign-in, select `agentNativeAdmin.sessionMode: host-only-exchange`
+For guarded OIDC, select `agentNativeAdmin.sessionMode: host-only-exchange`
 (`OCC_AGENT_NATIVE_ADMIN_SESSION_MODE=host-only-exchange`) and omit
 `agentNativeAdmin.sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN`. Console and Agent
 origins must use same-site HTTPS and route to OCC. Launch creates no account or grant.
@@ -25,8 +25,7 @@ redirects or transfers access.
 
 ## Who can open it
 
-The console’s Agent browser surface requires a human session and exact Agent
-`operate` or `administer` permission. `operate` grants chat access;
+Console access requires a human session and exact-Agent `operate` or `administer`. `operate` grants chat access;
 `administer` retains administration access and takes precedence when both are
 granted. Agent `read` alone and service API keys grant neither mode.
 
@@ -52,7 +51,7 @@ Configuration before queueing its deployment. Its existing provisioning
 permissions still apply.
 
 Both paths save `controlUi.enabled`, the exact derived HTTPS origin (including
-its port), `gateway.publicOrigin`, and trusted-proxy admin device approval in the
+its port), `gateway.publicOrigin`, and the trusted-proxy machine policy in the
 initial Configuration. It preserves existing allowed origins, Secret bindings,
 and unrelated settings. Conflicting authentication modes, unsupported auth fields,
 disabled device authentication, and host-header origin fallback are refused.
@@ -68,9 +67,9 @@ Browser preparation does not change the creator's Agent permissions.
 - HTTPS Console and Agent DNS hosts that share a non-public suffix. In shared-cookie mode OCC derives the cookie domain automatically; see [shared sessions](authentication.md#native-admin-shared-sessions). The Agent suffix is required even when browser access is disabled.
 - Private gateway routing (enabled by default). [Prepare its prerequisites](../guides/deploy/workspace-routing.md#requirements) and [Envoy routing](gateway-routing.md) before installation. Helm rejects native admin when routing is disabled; the API needs each Agent's private route.
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
-- The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match the version. The [mode-specific endpoint](#agent-host-identity) must map from private `wss:` to private `https:`.
-- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval. The machine identity grant supplies admin authority; device auto-approval can stay limited to read/write. The support check rejects token auth, disabled device auth, and host-header origin fallback.
-- Chat additionally requires `gateway.auth.trustedProxy.requiredHeaders` to include `x-openclaw-scopes` in the saved Configuration and a runtime that enforces the [chat authority ceiling](#native-authority-and-drift). Preserve other required headers when adding it.
+- The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match. The [browser transport](#agent-host-identity) must map from private `wss:` to private `https:`.
+- The native Configuration must retain the machine's `occ-workspace-files` identity and `operator.admin` grant, enable `controlUi`, and allow the exact Agent origin. The support check rejects token auth, disabled device authentication, and host-header origin fallback. Browser access neither requires nor creates device auto-approval.
+- A qualified runtime must support delegated profiles and enforce the [scope ceiling](#native-authority-and-drift). Chat also requires `x-openclaw-scopes` in saved `trustedProxy.requiredHeaders`; preserve other required headers.
 
 Local development uses the existing loopback HTTPS proxy for Console sessions in
 Compose and Kubernetes-only profiles. Compose with Kubernetes Compute and
@@ -122,14 +121,17 @@ Without a valid session, `/` or `/chat/main[/<session>]` navigations can return 
 Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redirected. The same page load without that header, including every Safari navigation, stays HTTP `403` with one **Sign in** link to that console URL. Link previews, API requests, and WebSocket upgrades send no navigation Fetch Metadata and keep their ordinary refusal.
 
 Native HTTP admission returns `503 DEPENDENCY_UNAVAILABLE` on session-store failure,
-timeout or failed denial audit. Unavailable Agents return `403`; refused WebSocket
-upgrades close. Retry after recovery.
+timeout, failed denial audit or, for an authorized caller, a deployment in progress or
+no Gateway answer, so the Agent UI reconnects. Stopped and unsupported Agents return
+`403`. An authorized caller's eligible navigation shows **Agent unavailable**, or
+**Agent not responding** (Gateway silent), with a Console link. Callers without
+access get the same `403` in every state; refused WebSocket upgrades close.
 
 The Console’s authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
 
-A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
+A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`.
 
-After a failed reconnect and same-origin health response of `401` or `403`, the Control UI offers **Reconnect in browser**. The link opens `/` on the current Agent host, without automatic navigation or carrying the chat path or query. This prompts an access check, not proof of expiry; OCC decides whether to offer sign-in or refuse.
+If a failed reconnect's health probe and Control UI configuration get `401` or `403`, the Control UI shows **Sign in to continue loading content**, an access check, not proof of expiry. **Sign in** opens `/` in a new tab, then offers **Check again**. After **Not now** the prompt stays closed; the tab reconnects and recovers after a sign-in elsewhere or a reload, which drops the draft.
 
 ### Unsupported reasons
 
@@ -150,19 +152,19 @@ https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 
 Admission resolves the irreversible host hash through platform state without a separate registry or cache. Unknown hosts, wrong suffixes, deleted Agents and ambiguous matches fail closed.
 
-Administration and workspace-file access use the Compute Driver's
-`getGatewayEndpoint`, typically:
+Workspace-file access uses the Compute Driver's `getGatewayEndpoint`, typically:
 
 ```text
 wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
 ```
 
-Chat uses the optional [`getGatewayChatEndpoint`](drivers/compute.md#method-get-gateway-chat-endpoint),
-which must enforce the chat authority ceiling. Missing support returns
-`unsupported`; OCC never falls back to the administrative endpoint. Kubernetes
-uses a separate `/native-chat/` route on the existing managed HTTPRoute.
+Both browser modes use optional [`getGatewayBrowserRequest`](drivers/compute.md#method-get-gateway-browser-request).
+It returns a private endpoint and trusted headers for the server-resolved
+Installation, Principal, and mode. Missing support returns `unsupported`; OCC
+never falls back to the machine endpoint. Kubernetes uses `/native-browser/`
+on the existing managed HTTPRoute and a separate credential for each revision.
 
-For browser proxying, OCC maps the selected endpoint to the same authority and path over `https:`. Workspace-file access continues to use the original `wss:` endpoint. Native HTTP requests and WebSocket upgrades both pass through the OCC API process before reaching the private gateway. The HTTP proxy blocks native service-worker script requests and appends `worker-src 'none'` to proxied Content Security Policy so Agent content cannot register a browser service worker on the isolated Agent origin.
+OCC maps browser requests to the endpoint's HTTPS authority and path; WebSocket upgrades also pass through OCC. Workspace files retain WSS. The proxy blocks service-worker script requests and adds CSP `worker-src 'none'` to prevent service-worker registration.
 
 ## Shared session boundary
 
@@ -180,17 +182,25 @@ requirements and behavior when managed mode is off.
 
 ## Native authority and drift
 
-OCC selects native authority on the server for each human session. Both modes
-use the existing `occ-workspace-files` identity. The chat route overwrites
-`x-openclaw-scopes` with `operator.sessions.write`; the runtime intersects this
-ceiling with identity and device grants. It permits conversation operations
-and implies `operator.sessions.read`. The administrative route retains its
-existing authority. Browser headers cannot widen that ceiling. OCC records the
-human IAM principal, exact Agent and selected mode in audit evidence.
+Each OCE Principal receives a Gateway-local native profile, independent of email
+or provider. Attached sign-in methods, reconnects, regrants, and redeployment
+reuse it while native storage is retained. No OCE account-linking API or database
+table is added.
+
+OCC delegates `operator.admin` for `administer`, or `operator.sessions.write`
+for `operate`. The latter permits conversation operations and implies session
+read. Delegated scopes are both grant and ceiling; native roles and session
+rules can narrow them. Browser headers, static identity grants, and device grants
+cannot widen them. Delegated access issues no reusable device token. OCC audits
+Principal, Agent, mode, and `details.nativeAdmin.subject`; native sessions retain creator/sender attribution.
+
+The internal binding is not a user-editable alias: attach sign-in methods in
+OCE. Native aliases and merges cannot combine OCE Principals. Profiles do not
+isolate tools, credentials, files, or execution.
 
 Chat access does not grant native configuration writes, device or pairing
 administration, approval management, or elevated gateway commands. A runtime
-that cannot enforce the selected narrow scopes is unsupported for chat mode.
+must support delegated authentication before either browser mode is enabled.
 
 With Gateway managed mode off, native changes stay in gateway-local state.
 Kubernetes reloads the managed snapshot on Pod recreation or redeployment. Save

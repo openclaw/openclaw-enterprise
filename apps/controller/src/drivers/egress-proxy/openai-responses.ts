@@ -612,7 +612,12 @@ export type ResponseOutputContent =
   { type: "output_text"; text: string } | { type: "refusal"; refusal: string };
 type ResponseOutputItem =
   | { type: "message"; content: ResponseOutputContent[] }
-  | { type: "reasoning" | "custom_tool_call" }
+  | {
+      type: "reasoning";
+      summary: { text: string }[];
+      content?: { text: string }[];
+    }
+  | { type: "custom_tool_call" }
   | { type: "function_call"; arguments: string };
 export type ItemEvent = {
   type: "response.output_item.added" | "response.output_item.done";
@@ -620,14 +625,23 @@ export type ItemEvent = {
   item: ResponseOutputItem & { id: string };
 };
 export type ItemContentEvent = {
-  type: string;
   output_index: number;
   item_id: string;
   delta?: string;
   arguments?: string;
   content_index?: number;
-  part?: ResponseOutputContent;
-};
+  summary_index?: number;
+} & (
+  | {
+      type: "response.content_part.added" | "response.content_part.done";
+      part: ResponseOutputContent;
+    }
+  | {
+      type: "response.reasoning_summary_part.added" | "response.reasoning_summary_part.done";
+      part: { type: "summary_text"; text: string };
+    }
+  | { type: string; part?: never }
+);
 export type ResponsesEvent = { type: string; sequence_number?: number } & (
   | { response: { id: string; status: string; output: ResponseOutputItem[] } }
   | ItemEvent

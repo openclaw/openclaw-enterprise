@@ -10,16 +10,20 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   answerDeployGrantsSources,
   apiRequests,
+  asksBeforeUnload,
   detailUrl,
+  grantSecretOperate,
   hasFocus,
   holdRequests,
   login,
   MEMBER_WRITE,
+  memberWriteWithout,
   nativeValues,
   newPage,
   revokeMemberGrant,
   selectSecret,
   settlePageRequests,
+  waitForEnabled,
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.ts";
@@ -706,3 +710,131 @@ for (const change of ["remove before", "insert before", "remove active", "keep a
     assert.deepEqual(persisted.data.harnessAuth, { method: "api_key", source: c.ref });
   });
 }
+
+test("Create Agent discards a pending model Secret even after switching providers and back", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Provider change");
+  const original = await fixture.createSecret(
+    namespace.id,
+    "Original choice",
+    "synthetic-original",
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(submit);
+  const key = page.getByLabel("API key Secret", { exact: true });
+  const provider = page.getByLabel("Provider", { exact: true });
+  const permission = `${fixture.origin}/namespaces/${namespace.id}/permissions/secrets`;
+  const held = await holdRequests(t, page, permission, { once: true });
+  const requests = apiRequests(page, fixture.origin);
+
+  await selectSecret(page, "API key Secret", original);
+  await held.requested;
+  await provider.selectOption("anthropic");
+  await provider.selectOption("openai");
+  const answer = responseTo(page, "GET", permission);
+  held.release();
+  assert.equal((await answer).status(), 200);
+  await waitForEnabled(key);
+  await settlePageRequests(page);
+  assert.equal(await key.inputValue(), "");
+  assert.equal(await page.getByRole("link", { name: /View model credential Secret/ }).count(), 0);
+  const staged = page.getByText("Secret selected. Create Agent binds it.", { exact: true });
+  assert.equal(await staged.count(), 0);
+
+  // Only a new choice applies. Changing the authentication method clears its success hint too.
+  await selectSecret(page, "API key Secret", original);
+  await staged.waitFor();
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  assert.equal(await staged.count(), 0);
+  assert.equal(await page.getByLabel("Service account token Secret").inputValue(), "");
+  assert.deepEqual(writeRequests(requests), []);
+});
+
+test("Create Agent waits for the replacement model Secret before validating", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model replacement");
+  const first = await fixture.createSecret(namespace.id, "First choice", "synthetic-first");
+  const second = await fixture.createSecret(namespace.id, "Second choice", "synthetic-second");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(submit);
+  const key = page.getByLabel("API key Secret", { exact: true });
+  const base = `${fixture.origin}/namespaces/${namespace.id}`;
+  const permission = `${base}/permissions/secrets`;
+  const requests = apiRequests(page, fixture.origin);
+  // A failed read leaves no cached answer, so the replacement waits for a fresh check.
+  await page.route(permission, (route) => route.abort(), { times: 1 });
+  await key.fill(first.name);
+  await page.getByRole("option", { name: first.name }).waitFor();
+  const searching = await asksBeforeUnload(page);
+  await key.press("Enter");
+  await waitForEnabled(key);
+  assert.equal(await key.inputValue(), first.name);
+  const selected = await asksBeforeUnload(page);
+  const name = page.getByLabel("Agent name");
+  await name.fill("Replacement");
+  await page.getByLabel("Model", { exact: true }).selectOption({ index: 1 });
+
+  // Let the Controller validate the selected reference, but stop before the first write.
+  await page.route(`${base}/configurations`, (route) => route.abort());
+  const held = await holdRequests(t, page, permission, { once: true });
+  await selectSecret(page, "API key Secret", second);
+  await held.requested;
+  assert.equal(await key.isDisabled(), true);
+  assert.equal(await submit.isDisabled(), true);
+  const reason = page.getByText("Checking Secret access…", { exact: true });
+  assert.equal(await submit.getAttribute("aria-describedby"), await reason.getAttribute("id"));
+  await submit.click({ force: true });
+  await name.press("Enter");
+  await submit.evaluate((button: HTMLButtonElement) => button.form!.requestSubmit());
+  await settlePageRequests(page);
+  assert.deepEqual(writeRequests(requests), []);
+  held.release();
+
+  await waitForInputValue(key, second.name);
+  const validation = responseTo(page, "POST", `${base}/agents/validate`);
+  await submit.click();
+  const validated = await validation;
+  assert.equal(validated.status(), 204);
+  assert.deepEqual(validated.request().postDataJSON().harnessAuth.source, second.ref);
+  assert.equal(searching, false);
+  assert.equal(selected, true);
+});
+
+test("a late Secret refusal cannot replace the current authentication method's choice", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Method change");
+  const denied = await fixture.createSecret(namespace.id, "Old key", "synthetic-key");
+  const allowed = await fixture.createSecret(namespace.id, "Current token", "synthetic-token");
+  const member = await fixture.createNamespaceMember(
+    "method-change",
+    namespace.id,
+    memberWriteWithout(["operate", "secret"]),
+  );
+  grantSecretOperate(fixture, namespace.id, member.principal, [allowed.id]);
+  const { page } = await newPage(t, fixture);
+  const permission = `${fixture.origin}/namespaces/${namespace.id}/permissions/secrets`;
+  const held = await holdRequests(t, page, permission, { once: true });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const requests = apiRequests(page, fixture.origin);
+  await selectSecret(page, "API key Secret", denied);
+  await held.requested;
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  const token = page.getByLabel("Service account token Secret");
+  // Both choices share one permission read. Only the newer one may use the answer.
+  assert.equal(await token.isEnabled(), true);
+  await selectSecret(page, "Service account token Secret", allowed);
+  assert.equal(await token.isDisabled(), true);
+  const answer = responseTo(page, "GET", permission);
+  held.release();
+  const response = await answer;
+  assert.equal(response.status(), 200);
+  assert.deepEqual((await response.json()).data.operateDenied, [denied.id]);
+  await waitForInputValue(token, allowed.name);
+  await page.getByText("Secret selected. Create Agent binds it.").waitFor();
+  assert.equal(await page.getByText(/Old key cannot be chosen/).count(), 0);
+  assert.deepEqual(writeRequests(requests), []);
+});

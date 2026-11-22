@@ -22,7 +22,9 @@ Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
 and cloud metadata access remain denied where those addresses fall inside the
 model egress exclusions below.
 
-A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
+For a same-cluster provider with revision-specific Harness Pods, set `network.providerHarness` to `{ "mode": "namespace", "port": 8080 }` with the actual transport port. `harnessPeerLabels` returns the Pod labels for the requested Namespace, Agent, revision, and agent workload role, or `undefined` until that Pod exists. Compute limits Gateway egress to that peer. An outbound-only OpenClaw worker needs no inbound peer. If a predecessor still serves during preparation, its grant stays available. Dedicated Kubernetes replacement stops the predecessor before preparing the candidate. A missing candidate gets no Harness route. Activation admits only the candidate.
+
+For a fixed provider endpoint, configure
 `network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
 `address`, and `port`. Compute maps the hostname to that address,
 limits Gateway egress to the peer, and disables its direct Harness route.
@@ -111,10 +113,10 @@ endpoint, Pod and Service CIDRs, and metadata endpoint fall inside them. A
 dedicated Agent has one authentication-only egress policy, pinned to its latest
 prepared Agent revision ID. Stop leaves it and the Agent's runtime and plugin-status
 policies, selecting no Pod, until the next preparation or Agent deletion.
-Channels require an approved HTTP(S) proxy in `runtime.channels`: a literal IP
-endpoint, or the exact
-Helm-managed proxy Service URL paired with `runtime.channels.managedProxy`.
-Direct public channel-provider access is denied.
+Channels require [managed channel egress](channel-egress.md) in
+`runtime.channelEgress`. Each Gateway uses its assigned Envoy listener;
+NetworkPolicies select its Agent revision and binding. Direct public
+channel-provider access is denied. OCC uses a separate provider listener.
 
 ## Explicit network profiles
 

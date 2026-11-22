@@ -54,6 +54,7 @@ export async function createNativeIngressTransport({
     server,
     sockets,
     certificateSpki,
+    certificateFingerprint: new X509Certificate(certificate.cert).fingerprint256,
     setUpstream(url: string) {
       upstream = new URL(url);
       assert.equal(

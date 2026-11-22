@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentDeviceAuthorizationResponse,
   CredentialSourceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { SecretDriver } from "../../packages/contracts/src/drivers/secret/index.ts";
 import {
   assertNoCredentials,
   createFixture,
@@ -84,7 +82,6 @@ export function registerDeviceAuthorizationSessionCases() {
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.deepEqual(fixture.gateway.calls, before, "owner mismatch must precede external calls");
     const stored = await fixture.stored(login);
-    assert.equal(stored.version, 2);
     assert.equal(stored.credentialGatewayId, fixture.gateway.id);
     assert.equal(stored.credentialRefreshId, fixture.refresh.id);
     assert.equal(stored.sourceId, original.sourceId);
@@ -121,7 +118,6 @@ export function registerDeviceAuthorizationSessionCases() {
     const refused = await pending;
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     const stored = await fixture.stored(login);
-    assert.equal(stored.version, 2);
     assert.equal(stored.credentialGatewayId, fixture.gateway.id);
     assert.equal(stored.credentialRefreshId, fixture.refresh.id);
     assert.equal(stored.sourceId, original.sourceId);
@@ -159,7 +155,18 @@ export function registerDeviceAuthorizationSessionCases() {
   });
 
   test("expiry closes the login handle without removing the ready source or its discovery", async (t) => {
-    const fixture = await createFixture(t);
+    const fixture = await createFixture(t, {
+      formatExpiresAt: (at) =>
+        new Date(at + 9 * 60 * 60 * 1000).toISOString().replace("Z", "+09:00"),
+    });
+    const pending = await fixture.start();
+    await fixture.clock.advance(15 * 60 * 1000 + 1);
+    // Expiry compares instants even when a selected Refresh Driver uses a timezone offset.
+    await fixture.controller.expireAuthenticationStates(32);
+    const expired = await fixture.stored(pending);
+    assert.equal(expired.phase, "cancelled");
+    assert.equal(expired.privateState, undefined);
+    assert.equal(expired.encryptedChallenge, undefined);
     const login = await readyLogin(fixture);
     await fixture.clock.advance(24 * 60 * 60 * 1000);
     assert.equal((await fixture.poll(login)).status, 409);
@@ -185,24 +192,6 @@ export function registerDeviceAuthorizationSessionCases() {
       409,
     );
     assertNoCredentials(fixture);
-  });
-
-  test("missing login-session fencing refuses device authorization before Gateway I/O", async (t) => {
-    const fixture = await createFixture(t);
-    const login = await fixture.start();
-    const before = fixture.gateway.calls.length;
-    // Remove the optional capability after start so both new and existing logins fail closed.
-    const secretDriver: SecretDriver = fixture.secretDriver;
-    delete secretDriver.compareAndSwap;
-    assert.equal(
-      (await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } })).status,
-      501,
-    );
-    await fixture.clock.advance(5000);
-    const poll = await fixture.poll(login);
-    const { error } = fixture.fixtureResponse(poll, 501, ErrorResponse, "poll without fencing");
-    assert.equal(error.message, "Device authorization is unavailable for the Secret Driver.");
-    assert.equal(fixture.gateway.calls.length, before);
   });
 }
 

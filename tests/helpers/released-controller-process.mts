@@ -14,7 +14,7 @@ import type {
   NamespaceResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { PreparedAuthAccount } from "../../apps/controller/src/auth/index.ts";
-import { controllerIAMConfiguration, defaultUsersIAM } from "./default-users-iam.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "./default-users-iam.ts";
 import { createReadyComputeDriver } from "./development.ts";
 
 type NamespaceId = NamespaceResponse["data"]["id"];
