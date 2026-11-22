@@ -70,12 +70,9 @@ Verify cloud volume detach and node fencing separately.
 The [State and Lifecycle check](ci/required-checks.md#scenarios) traces a deploy
 from request to worker success and checks the direct Agent audit grant.
 
-For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
-[credentialed runtime](openshell.md). Delete only your disposable cluster:
-
-```sh
-k3d cluster delete oce
-```
+Live OAuth uses [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md). After your fixture's tests (including direct
+[routing](#private-gateway-routing)), delete only that cluster with `k3d cluster delete '<name>'`.
 
 ### Installation handoff
 
@@ -516,26 +513,30 @@ establish recovery after worker retry exhaustion or an aged node reconnect after
 its pairing code expires. Remote Codex plugin installation needs a separate
 ChatGPT-backed credential and proof.
 
-When finished, remove only the clusters and network created above:
-
-```sh
-k3d_local cluster delete openclaw-k8s-local-cp openclaw-k8s-local-dp
-docker --context "$OCE_DOCKER_CONTEXT" network rm oce-two-cluster-local
-```
-
-Remove the private test directory when you no longer need its kubeconfigs.
-
 ### Upgrade the execution chart
 
 Upgrade the execution release before the control-plane image upgrade:
 
 ```bash
-helm upgrade <execution-release> deploy/helm/openclaw-execution \
-  --kube-context <execution-context> --namespace <execution-system-namespace> \
-  -f <execution-values.yaml>
+# Fixture kubeconfig "$OCE_TEST_DIR/dp.kubeconfig"
+helm upgrade '<execution-release>' deploy/helm/openclaw-execution \
+  --kubeconfig '<execution-kubeconfig>' \
+  --kube-context '<execution-context>' --namespace '<execution-system-namespace>' \
+  -f '<execution-values.yaml>'
 ```
 
 Pass the installation values; do not use `--reuse-values`. Keep
 `agentRuntimeLogs.enabled` equal to the CP chart value. The control-plane
 [upgrade preflight](../guides/deploy/production-upgrade.md) checks tenant grants
 before stopping the old controller.
+
+### Test cleanup
+
+Verify upgrades after testing. Remove only your clusters and network.
+
+```sh
+k3d_local cluster delete openclaw-k8s-local-cp openclaw-k8s-local-dp
+docker --context "$OCE_DOCKER_CONTEXT" network rm oce-two-cluster-local
+```
+
+Remove the private directory when kubeconfigs are unneeded.
