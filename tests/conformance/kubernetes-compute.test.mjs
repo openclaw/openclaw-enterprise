@@ -246,6 +246,7 @@ import {
   checkDiagnosticsIngressWithoutPlugins,
   checkPreparationGatewayFailure,
   checkPreparationTimeoutAndApiStatuses,
+  checkPreparedNativeRuntimeReadback,
   checkPrivateRuntimeDiagnostics,
   checkPrivateSecretWriteApiAnswers,
   checkPrivateSecretWriteTransportFailures,
@@ -6285,6 +6286,11 @@ test("native channel settings require readable Secret bindings", async () => {
     driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackAccount({ name }), {});
   }
 });
+
+test(
+  "Kubernetes prepared native withdrawal rereads the ready Gateway and Harness",
+  checkPreparedNativeRuntimeReadback,
+);
 
 test(
   "Kubernetes runtime diagnostics read exact private Pod status without native sends",
