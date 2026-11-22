@@ -1266,6 +1266,13 @@ p {
   background: var(--color-surface-hover);
   box-shadow: inset 3px 0 var(--color-focus);
 }
+@media (forced-colors: active) {
+  .resource-linked:has(:focus-visible),
+  :is(.agent-table, .oauth-catalog-table) tbody tr:has(:focus-visible) {
+    outline: 2px solid Highlight;
+    outline-offset: var(--focus-offset-inset);
+  }
+}
 .resource-list-header {
   border-bottom: 1px solid var(--color-border);
 }
