@@ -143,9 +143,8 @@ name, prompt, schedule and enabled state. Stale native revisions return 409.
 
 ## Native contract and ownership
 
-Resolve the selected running Agent revision through its existing Compute Driver
-and private endpoint. Verify runtime provenance, native access, administrative
-transport, required methods and an unambiguous server-selected native Agent.
+Require the selected Driver's instance-pinned transport, native administrative
+access, required methods and an unambiguous server-selected native Agent.
 OCC invokes only `cron.add`, `cron.list`, `cron.get`, `cron.update`,
 `cron.remove` and `cron.runs`, plus the bounded qualification reads above.
 The underlying administrative credential stays private.
@@ -214,14 +213,21 @@ with reservation. Existing rows without trusted binding evidence are eligible
 only for their proven model-only ceiling. Never infer a tool-bearing grant by
 scanning an existing job or current catalog.
 
-Extend the Compute Driver contract with optional
-`verifyAgentAutomationRuntime(revision, qualification)`. Before POST, the Driver
-must verify that the running Gateway uses the guarded launcher and qualified
-version. Bind evidence to the selected revision, Pod UID, container ID and
-actual image identity. Missing or stale evidence refuses admission. An older
-running Gateway requires redeployment. OCC compares the Driver's opaque
-binding identities. Runtime-specific origin, catalog and network checks belong
-to the Driver and Harness. Submit this RFC before covered implementation.
+Add one optional Compute Driver operation,
+`openAgentAutomationTransport(revision, qualification)`. It returns a private
+RPC connection bound to the exact verified Gateway instance. Before dispatch,
+verify the selected revision, Pod UID, container ID, actual image, guarded
+launcher/version, effective policy and trust configuration. Require a fresh
+deployment if the guard is missing. Refuse absent or stale evidence.
+
+Use an exact Pod proxy or a revision-specific route only if the Driver can
+prove that the WebSocket reached that instance (including handshake and identity
+recheck where required). An Agent-wide chat Service can route to another
+revision during cutover and cannot qualify. Use the same pinned connection
+through each operation, including eligibility read and mutation. If replacement
+invalidates the binding, stop dispatch. After a possibly sent write, return
+`UNKNOWN_OUTCOME` without reconnecting or replaying. Runtime details belong
+to the Driver and Harness. Submit the contract before implementation.
 
 Before **every** native Gateway process spawn, including supervisor respawn
 and kubelet container restart, the launcher verifies the effective plugin
@@ -283,7 +289,9 @@ Retire the job or deny at the service to withdraw a running grant.
   port. On dedicated Codex verify credential isolation. Reject an old launcher,
   stale Pod/container evidence, mutable plugin origin, changed digest and
   unsupported Node switch. Repeat after native respawn and container restart
-  with an overdue job. Verify no unqualified process executes it.
+  with an overdue job. Race RPC admission with old and new Pods during
+  cutover. Verify the checked instance receives the mutation or the request
+  fails, and that the other instance receives no mutation.
 
 ## Delivery status
 
