@@ -2593,7 +2593,7 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 // else is an API key. The binary must be the image's pinned version: a missing or
 // different one also holds the Gateway with UNAVAILABLE, before any turn could reach it.
 // The managed env outranks the spawned environment. It always turns off updates and
-// feedback prompts and points every model slot Claude Code fills by itself (aliases, the
+// feedback prompts, bounds Claude Code's own API retries, and points every model slot Claude Code fills by itself (aliases, the
 // small/fast and subagent models, classifiers) at the primary model, so it calls only the
 // admitted model. Telemetry, error reporting and other nonessential traffic stay off unless
 // the admitted Configuration sets telemetry.enabled (OCE_AGENT_RUNTIME_TELEMETRY=enabled).
@@ -2628,6 +2628,10 @@ const CLAUDE_CODE_SETTINGS_HARDENING = Object.freeze({
   DISABLE_FEEDBACK_COMMAND: "1",
   DISABLE_BUG_COMMAND: "1",
   CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+  // The pinned binary retries every failed API request 10 times by default, a rejected
+  // credential (401) included: about 3 minutes before a turn reports it. 4 bounds every
+  // retry class alike and keeps about 8 s of backoff for transient errors.
+  CLAUDE_CODE_MAX_RETRIES: "4",
   // Unset, these send requests or headers outside the admitted endpoint's contract.
   ANTHROPIC_CUSTOM_HEADERS: "",
   CLAUDE_CODE_AUTO_MODE_SERVER: "",

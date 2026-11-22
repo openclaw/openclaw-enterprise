@@ -104,7 +104,10 @@ settings' `env` takes precedence over the process environment. It always turns o
 `ANTHROPIC_CUSTOM_HEADERS`, and sets every model that Claude Code selects by
 itself (`ANTHROPIC_MODEL`, the `opus`, `sonnet` and `haiku` aliases, the
 small/fast, subagent and classifier models) to the primary model. Claude Code
-therefore calls only the admitted model.
+therefore calls only the admitted model. `CLAUDE_CODE_MAX_RETRIES` is `4`: it
+bounds Claude Code's own retries of a failed model request, of every kind,
+because by default it retries a rejected credential for about three minutes. An
+authentication failure now ends the turn within about 10 seconds.
 
 Telemetry is off by default. Deployment admission sets the OpenClaw setting
 `telemetry.enabled` to `false` when it is unset. Then the file also sets

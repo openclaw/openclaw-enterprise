@@ -186,8 +186,8 @@ const selectedEnvironment = {
   OPENCLAW_HARNESS_PROBE_CONFIG: PROBE_CONFIG({ baseUrl: "https://api.anthropic.com" }),
 };
 
-// Settings Claude Code reads that OCE always sets: no self-update or feedback prompts, no extra
-// headers or side endpoints.
+// Settings Claude Code reads that OCE always sets: no self-update or feedback prompts, bounded
+// API retries, no extra headers or side endpoints.
 const ALWAYS = {
   DISABLE_AUTOUPDATER: "1",
   DISABLE_UPDATES: "1",
@@ -196,6 +196,7 @@ const ALWAYS = {
   DISABLE_FEEDBACK_COMMAND: "1",
   DISABLE_BUG_COMMAND: "1",
   CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+  CLAUDE_CODE_MAX_RETRIES: "4",
   ANTHROPIC_CUSTOM_HEADERS: "",
   CLAUDE_CODE_AUTO_MODE_SERVER: "",
   CLAUDE_CODE_CLIENT_DATA_URL: "",
@@ -294,6 +295,9 @@ test("an API key and the default endpoint produce hardened managed settings on a
       ANTHROPIC_API_KEY: "sk-ant-api03-fixture-key",
     },
   });
+  // Claude Code's own retries are bounded, a rejected credential (401) included, so an
+  // authentication failure reaches the turn in seconds rather than after its default 10 retries.
+  assert.equal(readSettings(written.directory).env.CLAUDE_CODE_MAX_RETRIES, "4");
   // The version check ran against the image binary without the credential or the probe
   // configuration.
   assert.equal(calls.length, 1);
