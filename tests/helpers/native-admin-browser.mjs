@@ -2400,7 +2400,11 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       "oidc-operator-chat",
     );
   } catch (error) {
-    await nativePage.screenshot({ path: join(media, "oidc-chat-failure.png"), fullPage: true });
+    try {
+      await nativePage.screenshot({ path: join(media, "oidc-chat-failure.png"), fullPage: true });
+    } catch {
+      // Preserve the chat failure if the diagnostic screenshot fails.
+    }
     throw error;
   }
   await assertNativeAttribution(nativePage, initialReply, operatorProfile.id, initialMarker);
