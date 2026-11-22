@@ -158,12 +158,31 @@ export function createAgentAutomationHandlers(options: {
     if (!nativeAdminConfigurationSupported(selection.revision, target.origin)) {
       throw dependencyUnavailable();
     }
+    const unqualified = () =>
+      failure(503, "AUTOMATIONS_UNQUALIFIED", "The Agent automation policy is not qualified.");
     if (!options.access) {
-      throw failure(
-        503,
-        "AUTOMATIONS_UNQUALIFIED",
-        "The controller has no qualified automation transport.",
-      );
+      throw unqualified();
+    }
+    const updateInput = body as unknown as AgentAutomationUpdateInput;
+    const disableOnly =
+      operation === "updateAgentAutomation" &&
+      updateInput.enabled === false &&
+      updateInput.name === undefined &&
+      updateInput.prompt === undefined &&
+      updateInput.schedule === undefined;
+    if (create || (operation === "updateAgentAutomation" && !disableOnly)) {
+      let qualified: boolean;
+      try {
+        qualified =
+          (await controller
+            .selectedDriver("compute")
+            .evaluateAgentAutomationPolicy?.(selection.revision)) !== undefined;
+      } catch {
+        throw dependencyUnavailable();
+      }
+      if (!qualified) {
+        throw unqualified();
+      }
     }
     async function assertCurrent() {
       await options.reauthenticate(request, context);
@@ -418,6 +437,7 @@ export function createAgentAutomationHandlers(options: {
             failure(409, "RESOURCE_CONFLICT", "The automation has an unsupported configuration."),
           )
           .with("unavailable", () => dependencyUnavailable())
+          .with("unqualified", unqualified)
           .with("unknown", () =>
             failure(503, "UNKNOWN_OUTCOME", "The automation mutation outcome is unknown."),
           )

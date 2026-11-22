@@ -40,7 +40,7 @@ type Method =
   | "system.info";
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 export type AutomationGatewayErrorCode =
-  "unavailable" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown";
+  "unavailable" | "unqualified" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown";
 export class AutomationGatewayError extends Error {
   readonly code: AutomationGatewayErrorCode;
   constructor(code: AutomationGatewayErrorCode) {
@@ -435,7 +435,7 @@ export function createNativeAgentAutomationsAccess(
         async captureToolGrant() {
           const policy = target.policy;
           if (!policy) {
-            throw new AutomationGatewayError("unavailable");
+            throw new AutomationGatewayError("unqualified");
           }
           if (policy.bindings.length === 0) {
             return policy.grant;
@@ -675,7 +675,7 @@ export function createNativeAgentAutomationsAccess(
               ),
             );
           if (!disableOnly && !grantStillApproved) {
-            throw new AutomationGatewayError("unavailable");
+            throw new AutomationGatewayError("unqualified");
           }
           if (!disableOnly && record.toolGrant.tools.length > 0) {
             const live = await session.captureToolGrant();
@@ -687,7 +687,7 @@ export function createNativeAgentAutomationsAccess(
                 ),
               )
             ) {
-              throw new AutomationGatewayError("unavailable");
+              throw new AutomationGatewayError("unqualified");
             }
           }
           const patch = {
