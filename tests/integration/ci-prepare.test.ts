@@ -23,6 +23,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.ts";
+import { registerNativeProfileUpgradeCases } from "./ci-prepare-native-profile-upgrade-cases.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { listen } from "../helpers/listen.ts";
 import {
@@ -63,6 +64,8 @@ const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
 const packagingNodeBaseImage = JSON.parse(
   await readFile(join(repositoryRoot, "scripts/ci/test-suites/images-packaging.json"), "utf8"),
 ).prepare.defaultEnv.NODE_BASE_IMAGE;
+
+registerNativeProfileUpgradeCases({ repositoryRoot, writeState });
 
 async function writeState(path: string, state: unknown) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -267,45 +270,30 @@ function modelImageRoleNotices(stderr: string) {
 }
 
 test("model preparation notices follow completed CLI phases", async (t) => {
-  const root = await fixture(t);
-  const fetchStub = join(root, "offline.cjs");
-  await writeFile(fetchStub, "globalThis.fetch = async () => new Response(null, { status: 404 });");
-  for (const suppliedImages of [false, true]) {
-    const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
-      GITHUB_ACTIONS: "true",
-      OPENAI_API_KEY: "synthetic-model-key",
-      OCC_TEST_OPENAI_MODEL: "synthetic-model",
-      NODE_BASE_IMAGE: nodeBaseImage,
-      NODE_OPTIONS: `--require="${fetchStub}"`,
-      // The empty source directory fails validation only when an image build is requested.
-      OCC_K3D_OPENCLAW_SOURCE: root,
-      ...(suppliedImages
-        ? {
-            OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
-            OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
-          }
-        : {}),
-    });
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 1, prepared.stderr);
-    assertStderrMatch(prepared.stderr, suppliedImages ? /download failed: HTTP 404/ : /Dockerfile/);
-    assert.deepEqual(modelPreparationNotices(prepared.stderr), [
-      ["k3d-cluster-preparation", "success"],
-      ["postgres-start", "success"],
-      ...(suppliedImages
-        ? [
-            ["runtime-image-preparation", "success"],
-            ["gateway-routing", "failure"],
-          ]
-        : [
-            ["image-build-or-reuse", "failure"],
-            ["runtime-image-preparation", "failure"],
-          ]),
-    ]);
-    assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
-    await commands.cleanupSuccessfully();
-  }
+  const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "2",
+    GITHUB_SHA: "a".repeat(40),
+    OPENAI_API_KEY: "synthetic-model-key",
+    OCC_TEST_OPENAI_MODEL: "synthetic-model",
+    NODE_BASE_IMAGE: nodeBaseImage,
+    OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+  });
+  const prepared = await commands.prepare();
+  assert.equal(prepared.status, 1, prepared.stderr);
+  // The fixture kubectl refuses the seccomp namespace, the first step after image import.
+  assertStderrMatch(prepared.stderr, /create namespace .* failed/);
+  assert.deepEqual(modelPreparationNotices(prepared.stderr), [
+    ["k3d-cluster-preparation", "success"],
+    ["postgres-start", "success"],
+    ["runtime-image-preparation", "failure"],
+  ]);
+  assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
+  assert.doesNotMatch(prepared.stderr, /^::notice title=Production Observability timing::/m);
+  await commands.cleanupSuccessfully();
 });
 
 test("model image notices time only requested builds and preserve each outcome", async (t) => {
@@ -399,6 +387,96 @@ test("model preparation notices preserve outcomes and require Actions and a know
     ["postgres-start", "success"],
     ["gateway-routing", "failure"],
   ]);
+});
+
+test("Production Observability notices retain a failed preparation phase", async (t) => {
+  const root = await fixture(t);
+  const docker = join(root, "docker");
+  const lane = "k3d-observability";
+  const sha = "a".repeat(40);
+  const canary = "synthetic-observability-command-failure";
+  // A missing executable inside the first timed phase must leave the
+  // phase red without disclosing the command path in the notice.
+  await writeFile(docker, `#!/bin/sh\nprintf '%s\\n' '${canary}' >&2\nexit 48\n`, { mode: 0o700 });
+  const result = await spawnResult(
+    process.execPath,
+    [preparePath, "--lane", lane, "--state", join(root, "state.json")],
+    {
+      env: {
+        PATH: root,
+        TMPDIR: root,
+        OCC_HELM_BIN: "/bin/true",
+        OCC_DOCKER_BIN: docker,
+        OPENCLAW_CI_K3D_BIN: "/bin/true",
+        OCC_KUBECTL_BIN: join(root, canary),
+        GITHUB_ACTIONS: "true",
+        GITHUB_RUN_ID: "12345",
+        GITHUB_RUN_ATTEMPT: "2",
+        GITHUB_SHA: sha,
+      },
+    },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assertStderrMatch(result.stderr, new RegExp(canary));
+  assert.match(
+    result.stderr,
+    /\[ci-timing\] lane=k3d-observability phase=cluster-build-pull duration_ms=\d+/,
+  );
+  const notices = result.stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=Production Observability timing::"));
+  const binding = `::notice title=Production Observability timing::lane=${lane} run_id=12345 run_attempt=2 source_sha=${sha} phase=cluster-build-pull`;
+  assert.equal(notices.length, 2, "failed preparation must publish one start and one terminal");
+  assert.equal(notices[0], `${binding} event=start`);
+  assert.match(
+    notices[1] ?? "",
+    new RegExp(`^${binding} event=finish outcome=failure elapsed_ms=[0-9]+$`),
+  );
+});
+
+test("Production Observability notices accept only fixed outcomes for each phase", async () => {
+  const noticeModule = new URL("../../scripts/ci/observability-phase-notice.ts", import.meta.url);
+  // An untyped caller can supply values outside the TypeScript outcome union.
+  const probe = `const { startObservabilityPhase } = await import(process.argv[1]);
+const [phase, outcome] = process.argv.slice(2);
+startObservabilityPhase("k3d-observability", phase)(outcome, 5);`;
+
+  const canary = "synthetic-outcome-canary";
+  const preparePhase = "workload-image-imports";
+  const cleanupPhase = "lane-cleanup";
+  const sha = "a".repeat(40);
+  const env = {
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "2",
+    GITHUB_SHA: sha,
+  };
+
+  for (const [phase, outcome, terminal] of tuples([
+    [preparePhase, `failure\n::notice::${canary}`],
+    [preparePhase, `failure%0A::notice::${canary}`],
+    [cleanupPhase, "unknown"],
+    [preparePhase, "skipped"],
+    [preparePhase, "success", "success elapsed_ms=5"],
+    [preparePhase, "failure", "failure elapsed_ms=5"],
+    [cleanupPhase, "skipped", "skipped"],
+  ])) {
+    const result = await spawnResult(
+      process.execPath,
+      ["--input-type=module", "-e", probe, noticeModule.href, phase, outcome],
+      { env },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /^::notice::/m, "unexpected workflow command");
+    assert.doesNotMatch(result.stderr, new RegExp(canary), "unexpected outcome text");
+    const binding = `::notice title=Production Observability timing::lane=k3d-observability run_id=12345 run_attempt=2 source_sha=${sha} phase=${phase}`;
+    const expected = [`${binding} event=start\n`];
+    if (terminal) {
+      expected.push(`${binding} event=finish outcome=${terminal}\n`);
+    }
+    assert.equal(result.stderr, expected.join(""), `unexpected notices for ${phase} ${outcome}`);
+  }
 });
 
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
@@ -1732,7 +1810,7 @@ registerHooks({
   });
 
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
-    for (const failure of ["transient", "missing-manifest"]) {
+    for (const failure of ["transient", "missing-manifest", "invalid-node-reference"]) {
       await t.test(failure, async (t) => {
         const root = await fixture(t);
         const statePath = join(root, "logging-state.json");
@@ -1791,21 +1869,35 @@ process.exit(2);
           ["--lane", "logging-collector", "--state", statePath, "--github-env", githubEnv],
           {
             OCC_DOCKER_BIN: dockerPath,
-            OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
+            // Fails validation while the first worker is inspecting the Collector,
+            // before either worker can start a queued metrics image. No sleep/race.
+            OCC_TEST_LOGGING_NODE_IMAGE:
+              failure === "invalid-node-reference" ? `invalid ${customNodeImage}` : customNodeImage,
             CI_METRICS_PULL_FAILURE: failure,
             GITHUB_STEP_SUMMARY: summary,
           },
         );
 
-        const outcome = failure === "missing-manifest" ? "failure" : "success";
+        const outcome = failure === "transient" ? "success" : "failure";
         assert.match(
           await readFile(summary, "utf8"),
           new RegExp(`^- logging-collector / image-pulls: ${outcome} \\(\\d+ ms\\)\\n$`),
         );
 
-        const pulls = (await readCommandLines(join(root, "docker.jsonl")))
-          .filter((args) => args[0] === "pull")
-          .map((args) => args[1]);
+        const commands = await readCommandLines(join(root, "docker.jsonl"));
+        const pulls = commands.filter((args) => args[0] === "pull").map((args) => args[1]);
+        if (failure === "invalid-node-reference") {
+          assert.equal(result.status, 1);
+          assert.match(result.stderr, /OCC_TEST_LOGGING_NODE_IMAGE must be an immutable image/);
+          assert.deepEqual(pulls, [loggingCollectorImage]);
+          assert.ok(commands.every((args) => args.at(-1) === loggingCollectorImage));
+          assert.ok(
+            commands.some((args) => args.includes("{{.Id}}")),
+            "active pull finished verification",
+          );
+          await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
+          return;
+        }
         if (failure === "missing-manifest") {
           assert.notEqual(result.status, 0);
           assert.match(result.stderr, /manifest unknown/);
@@ -2330,16 +2422,6 @@ if (args[0] === "pull") {
         }
       }
     }
-    // The new finite-Git installer still consumes a PAT; joining the installer
-    // lane must not make its file-level preparation accept an API key alone.
-    for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {
-      cases.push({
-        harness: "codex",
-        credentials,
-        file: "tests/integration/openshell-git-finite-removal-real.test.ts",
-        ...(credentials.includes("CODEX_ACCESS_TOKEN") ? {} : { missing: "CODEX_ACCESS_TOKEN" }),
-      });
-    }
     // Generic workflows use API keys even when an unrelated managed PAT is present.
     // PAT-only input must fail before the preparer creates a state file or any resources.
     for (const file of [
@@ -2350,6 +2432,8 @@ if (args[0] === "pull") {
       "tests/integration/openshell-refresh-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts",
     ]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
@@ -2422,8 +2506,8 @@ if (args[0] === "pull") {
     }
   });
 
-  // Each complete OpenShell cohort includes API-key and PAT workflows. Reject
-  // either missing input before creating shared resources.
+  // The installer cohort uses only API keys; the mixed cohorts also retain PAT
+  // workflows. Reject each missing input before creating shared resources.
   for (const lane of ["openshell", "openshell-policy", "openshell-installers"]) {
     for (const harness of ["codex", "openclaw"]) {
       for (const credentials of [
@@ -2460,9 +2544,11 @@ if (args[0] === "pull") {
             10_000,
           );
           assert.equal(result.status, 1);
-          const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
-            (name) => !credentials.includes(name),
-          );
+          const required =
+            lane === "openshell-installers"
+              ? ["OPENAI_API_KEY"]
+              : ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"];
+          const missing = required.filter((name) => !credentials.includes(name));
           if (missing.length) {
             assert.match(result.stderr, /Missing required CI input/u);
             for (const name of missing) {
@@ -2653,7 +2739,11 @@ if (args[0] === "pull") {
       // Real Git identifies this checkout; Docker, PostgreSQL and k3d are command
       // fixtures. This proves fail-closed orchestration, not image or model execution.
       await symlink("/usr/bin/git", join(dirname(commands.statePath), "bin", "git"));
-      const prepared = await commands.prepare();
+      const prepared = await commands.prepare(
+        lane === "gateway-routing"
+          ? ["--selected-file", "tests/integration/harness-topology-k3d-routing-real.test.mjs"]
+          : [],
+      );
       assert.equal(prepared.status, 1, lane);
       assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
       assert.deepEqual(modelPreparationNotices(prepared.stderr), []);

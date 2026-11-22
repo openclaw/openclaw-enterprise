@@ -32,19 +32,19 @@ A shell can export a readable key. Even with the key hidden, every process can u
 route because Box cannot identify the caller's executable. Use separate Agents for processes
 with different rights.
 
-| Path                                                                                                                                                         | Who holds the credential?                   | Evidence and limits                                                                                                                                                                               |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Merged in-Pod Sandbox ([#6370](https://github.com/openclaw/openclaw-enterprise/pull/6370), [listener TLS](https://github.com/openclaw/openclaw/pull/201499)) | Codex can read the key by default.          | Helm model turns, replacement refusal, files and memory on ARM with the [Box #482 container agent](https://github.com/strands-agents/box/pull/482). Stock Box lacks this dependency.              |
-| [Draft preview #6948](https://github.com/openclaw/openclaw-enterprise/pull/6948), off by default                                                             | Separate trusted supervisor container       | Two callers shared a placeholder in component checks (`a27c810`). Both received HTTP 401 with the masked invented key. Installed inference with a real key, Git and withdrawal remain unverified. |
-| Protected execution proposed here                                                                                                                            | Native Box parent supervising its own child | Not implemented. The separate-host Git demonstration cannot qualify any of these paths.                                                                                                           |
+| Path                                                                                                                                                         | Who holds the credential?                   | Evidence and limits                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Merged in-Pod Sandbox ([#6370](https://github.com/openclaw/openclaw-enterprise/pull/6370), [listener TLS](https://github.com/openclaw/openclaw/pull/201499)) | Codex can read the key by default.          | Helm model turns, replacement refusal, files and memory on ARM with the [Box #482 container agent](https://github.com/strands-agents/box/pull/482). Stock Box lacks this dependency.               |
+| [Draft preview #6948](https://github.com/openclaw/openclaw-enterprise/pull/6948), off by default                                                             | Separate trusted supervisor container       | Two callers shared a placeholder in component checks (`d3706d84`). Both received HTTP 401 with the masked invented key. Installed inference with a real key, Git and withdrawal remain unverified. |
+| Protected execution proposed here                                                                                                                            | Native Box parent supervising its own child | Not implemented. The separate-host Git demonstration cannot qualify any of these paths.                                                                                                            |
 
 ### Interim preview for a dedicated Codex API key
 
-**May every contained process exercise all the dedicated key's
-authority at `POST https://api.openai.com/v1/responses`?** Callers control headers, query and body,
-including model selection, provider tools and remote MCP servers. A compromised tool could ask the
-trusted provider to send Agent data to such a server and incur charges. No spend cap is verified.
-Approval would cover Responses authority alone. The same credential secrecy requirement applies.
+**Every process in this Agent may use the dedicated key through
+`POST https://api.openai.com/v1/responses`. None may read or recover the key.**
+Callers choose the query, request body and other headers. They can use any model, provider
+tool or remote MCP server the key permits. A compromised process can spend money and send
+Agent data through the provider. The route imposes no spending limit.
 
 `policy.network.experimentalOpenAiModelCredential` requires a dedicated least-privilege provider
 identity and dedicated Codex with `api_key` authentication. Allow only that public HTTPS route on
@@ -52,8 +52,8 @@ port 443. Refuse aliases, managed plugins and standalone search. Only the superv
 key read-only. Box reads `env://OPENAI_API_KEY`, supplies a fresh placeholder per execution and
 substitutes the key on egress. Refuse missing or malformed placeholders.
 
-Stop the old execution, confirm retirement, rotate the provider key, then deploy the new Agent
-revision. If retirement is uncertain, hold deployment.
+Stop the old execution and confirm retirement before deploying the new revision. Revoke and
+replace any key the old execution could read. If retirement is uncertain, hold deployment.
 
 <a id="scope"></a>
 
@@ -137,7 +137,8 @@ required online authorization and exact dispatch guarantees.
 
 ### Database entities
 
-No changes. Worker and State owners must decide how to persist and recover startup identity.
+No schema changes specified. Worker and State must persist and recover startup identity.
+The representation remains open.
 
 ### Driver contracts
 

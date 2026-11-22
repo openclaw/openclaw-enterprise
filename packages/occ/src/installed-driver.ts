@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   ComputeLifecycleHooks,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   Driver,
   DriverByCapability,
   DriverCapability,
@@ -146,7 +146,7 @@ export class InstalledDriver {
   }
 
   /** Admission needs both operational views; release still requires the observed recipient. */
-  requireRepositoryGitTransport(): NonNullable<CredentialProxyDriver["bindRepositoryGit"]> {
+  requireRepositoryGitTransport(): NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]> {
     const sandbox = this.require("sandbox");
     const proxy = this.require("credential_proxy");
     if (!sandbox.repositoryAccess || typeof proxy.bindRepositoryGit !== "function") {

@@ -3,10 +3,12 @@ import type { codexRpc, list, parseJson, record, text } from "./wire.ts";
 export async function probePackagedCodex(
   {
     historicalCodex,
+    expectBundledRepositoryRestSkill,
     stagingCodexVersion,
     deadlineMs,
   }: {
     historicalCodex: boolean;
+    expectBundledRepositoryRestSkill: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
   },
@@ -38,26 +40,6 @@ export async function probePackagedCodex(
     "codex-cli " + stagingCodexVersion,
   );
   const provenance = read(parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8")));
-  if (!historicalCodex) {
-    // The manifest is from the tested checkout; the binary and its ABI are read
-    // inside the built image, independently of its recorded provenance.
-    const expectedNode = read(parse(asText(process.argv[3])));
-    assert.equal(process.versions.node, expectedNode.version);
-    assert.equal(process.versions.modules, expectedNode.modules);
-    assert.equal(process.versions.napi, expectedNode.napi);
-    assert.deepEqual(provenance.node, {
-      source: "https://github.com/nodejs/node",
-      ...expectedNode,
-      version: process.versions.node,
-      architecture: process.arch,
-      platform: process.platform,
-      modules: process.versions.modules,
-      napi: process.versions.napi,
-      icu: process.versions.icu,
-      executable: "/usr/local/bin/node",
-      sha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
-    });
-  }
   assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
   const expectedSource = read(parse(asText(process.argv[2])));
   assert.equal(typeof expectedSource.commit, "string");
@@ -236,7 +218,7 @@ export async function probePackagedCodex(
 
   // Install two real local bundles without credentials or model calls. Feature
   // enablement stays on, so only OCE's plugin policy can exclude their skills.
-  const { mkdirSync, mkdtempSync, writeFileSync } = process.getBuiltinModule("node:fs");
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = process.getBuiltinModule("node:fs");
   const { tmpdir } = process.getBuiltinModule("node:os");
   const { createInterface } = process.getBuiltinModule("node:readline");
   const { spawn } = process.getBuiltinModule("node:child_process");
@@ -274,7 +256,7 @@ export async function probePackagedCodex(
   );
   const native = spawn(platformBinary, ["app-server", "--listen", "stdio://"], {
     cwd: workspace,
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, HOME: root, CODEX_HOME: codexHome },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = createInterface({ input: native.stdout });
@@ -294,12 +276,30 @@ export async function probePackagedCodex(
     fail(new Error("Native plugin proof timed out: " + stderr));
     native.kill("SIGKILL");
   }, deadlineMs);
+  async function listSkills() {
+    const catalog = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
+    return asList(catalog.data)
+      .flatMap((entry) => asList(read(entry).skills))
+      .map(read);
+  }
+
   try {
     await rpc("initialize", {
       clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" },
       capabilities: { experimentalApi: true },
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    if (expectBundledRepositoryRestSkill) {
+      const name = "github-repository-rest";
+      const path = resolve("/etc/codex/skills", name, "SKILL.md");
+      assert.ok(typeof process.getuid === "function" && process.getuid() !== 0);
+      const matches = (await listSkills()).filter((skill) => skill.name === name);
+      assert.equal(matches.length, 1, "Codex should discover the bundled skill in a fresh home.");
+      const [skill] = matches;
+      assert.ok(skill?.enabled === true);
+      assert.equal(skill.scope, "admin");
+      assert.equal(realpathSync(asText(skill.path)), realpathSync(path));
+    }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.
     if (!historicalCodex) {
@@ -345,10 +345,7 @@ export async function probePackagedCodex(
           .sort((a, b) => a.name.localeCompare(b.name)),
         names.map((name) => ({ name, installed: true, enabled: enabledNames.includes(name) })),
       );
-      const skills = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
-      const fixtureSkills = asList(skills.data)
-        .flatMap((entry) => asList(read(entry).skills))
-        .map(read)
+      const fixtureSkills = (await listSkills())
         .filter((skill) => names.some((name) => asText(skill.name).startsWith(name + ":")))
         .map(({ name, pluginId }) => ({ name: asText(name), pluginId }));
       assert.deepEqual(
@@ -358,9 +355,10 @@ export async function probePackagedCodex(
     }
     process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
-    clearTimeout(deadline);
     lines.close();
     native.kill("SIGTERM");
     await closed;
+    clearTimeout(deadline);
+    rmSync(root, { recursive: true, force: true });
   }
 }

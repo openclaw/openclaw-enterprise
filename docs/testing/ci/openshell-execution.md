@@ -191,7 +191,7 @@ initialization, running, readiness, and observation. They retain no Pod identity
 or configuration. Pod readiness timing does not replace the model and required
 worker proof.
 
-`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+`tests/helpers/local-first-agent-native-placement.ts:nativeWorkerPlacementObservation`
 classifies public placement errors and projects environment/tunnel states, node
 connection and capability counts, and exact workspace-node matches. The expected
 node comes from the selected revision's Gateway Pod. Failure reads of

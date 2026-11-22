@@ -1,6 +1,10 @@
 import { DriverConfigurationDescriptorSchema } from "./driver-configurations.ts";
 import { Type } from "typebox";
 import { AgentId, NamespaceId, RevisionId, Meta } from "./common.ts";
+import {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+} from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
 
 export const SandboxPolicyParams = Type.Object(
@@ -17,6 +21,18 @@ export const SandboxPolicyParams = Type.Object(
 );
 export const SandboxPolicyRevisionParams = Type.Object(
   { ...SandboxPolicyParams.properties, revisionId: RevisionId },
+  { additionalProperties: false },
+);
+
+const RepositoryNetworkGrantSchema = Type.Object(
+  {
+    repository: Type.String({
+      pattern: repositoryNetworkGrantPattern.source,
+      description: "Canonical lowercase GitHub owner/name without a .git suffix.",
+      not: { type: "string", pattern: "\\.git$|\\s" },
+    }),
+    access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+  },
   { additionalProperties: false },
 );
 
@@ -41,6 +57,12 @@ export const SandboxPolicySchema = Type.Object(
     agentId: AgentId,
     version: SandboxPolicyVersion,
     additions: SandboxNetworkGrantsSchema,
+    repositoryNetworkPolicy: Type.Optional(
+      Type.Array(RepositoryNetworkGrantSchema, {
+        description: "Saved repository grants. An empty array denies all repositories.",
+        maxItems: maxRepositoryNetworkGrants,
+      }),
+    ),
     application: Type.Optional(SandboxPolicyApplicationSchema),
     applied: Type.Optional(
       Type.Object(
@@ -67,11 +89,20 @@ export const SandboxPolicyViewResponse = Type.Object(
         policy: SandboxPolicySchema,
         configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
-        protectedExecution: Type.Boolean({
+        protectedExecution: Type.Union([Type.Boolean(), Type.Null()], {
           description:
-            "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
+        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
+          description:
+            "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
+          maxItems: maxRepositoryNetworkGrants,
+        }),
+        repositoryNetworkPolicySaveSupported: Type.Boolean({
+          description:
+            "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",
+        }),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
         deployedPolicyVersion: Type.Optional(
@@ -92,7 +123,7 @@ export const SandboxPolicyViewResponse = Type.Object(
         unavailableReason: Type.Optional(
           Type.String({
             description:
-              "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+              "Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list.",
           }),
         ),
       },
@@ -105,7 +136,17 @@ export const SandboxPolicyViewResponse = Type.Object(
 export type SandboxPolicyViewWire = Type.Static<typeof SandboxPolicyViewResponse>["data"];
 
 export const SandboxPolicyUpdateBody = Type.Object(
-  { expectedVersion: SandboxPolicyVersion, additions: SandboxNetworkGrantsSchema },
+  {
+    expectedVersion: SandboxPolicyVersion,
+    additions: SandboxNetworkGrantsSchema,
+    repositoryNetworkPolicy: Type.Optional(
+      Type.Array(RepositoryNetworkGrantSchema, {
+        description:
+          "Omit to preserve the saved grants. Send an empty array to change an existing list to deny-all. Send empty arrays for both additions and repositoryNetworkPolicy to withdraw under protected execution or without Sandbox Driver support. This version refuses a first list and nonempty lists.",
+        maxItems: maxRepositoryNetworkGrants,
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 export const SandboxPolicyValidateBody = Type.Object(
@@ -121,7 +162,7 @@ export const SandboxPolicyApplyBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
   },
 );
 export const SandboxPolicyEditingBody = Type.Object(

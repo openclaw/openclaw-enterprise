@@ -6,6 +6,33 @@ namespace and prerequisite controllers through your infrastructure workflow firs
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.
 
+## Collect EKS addresses
+
+Use the cluster ARN from your infrastructure outputs and the intended kubeconfig
+and context. This works before the OCE namespace and prerequisite controllers
+exist. You need AWS CLI access to call `sts get-caller-identity`,
+`eks describe-cluster`, and `ec2 describe-network-interfaces`. The Kubernetes
+identity needs to read the `default/kubernetes` Service and list its EndpointSlices.
+
+Address collection pins the verified server and CA and runs with kubectl
+preferences disabled. This also disables any credential plugin rules in
+`kuberc`. Proceed only if the credential owner permits it for this trusted
+kubeconfig and context. In that case, explicitly set `KUBECTL_KUBERC=false` in
+the environment for the collection command. Where the credential owner requires
+kubectl preferences, collect the addresses through the infrastructure workflow.
+
+```bash
+node scripts/diagnose-kubernetes-prerequisites.ts \
+  --inventory-eks "$EKS_CLUSTER_ARN" --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
+```
+
+Success prints JSON with `apiCidrs` for API egress and `eks.webhookCidrs` for
+webhook ingress. Each address has a `/32` prefix. Review the addresses against
+the infrastructure policies and use the reviewed values in the plan below.
+The reads take place in sequence. Repeat them if the infrastructure changes.
+A failed or incomplete read exits with status 2 and leaves stdout empty. It
+writes the reason and any available `Next:` guidance to stderr.
+
 ## Select the resources and expected addresses
 
 Save a JSON plan outside the checkout. Use the names of your installed controller

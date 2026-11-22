@@ -17,7 +17,7 @@ import {
   recordData,
   text,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
