@@ -2977,6 +2977,17 @@ function repositories(
         ? undefined
         : snapshot.predecessorReplacements.get(agentKey(namespaceId, agentId)),
     recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+      if (
+        input.executionIdentity !== undefined &&
+        (typeof input.executionIdentity !== "string" ||
+          !/^[\x21-\x7e]{1,256}$/.test(input.executionIdentity))
+      ) {
+        throw new ScopeViolationError("The predecessor execution identity is invalid.");
+      }
+      // Memory can record pending work, but it cannot verify a claimed queue lease.
+      if (input.completionClaim !== undefined) {
+        return undefined;
+      }
       const agent = await agents.findAgent(namespaceId, agentId);
       if (!agent || agent.activeRevisionId !== input.predecessorRevisionId) {
         return undefined;
@@ -2992,10 +3003,22 @@ function repositories(
       const previous =
         current?.predecessorRevisionId === input.predecessorRevisionId ? current : undefined;
       const now = new Date().toISOString();
+      const completionStartedAt =
+        previous?.completionStartedAt ??
+        (input.beginCompletion === true &&
+        input.phase === "pre-stop" &&
+        previous?.phase !== "stopping"
+          ? now
+          : undefined);
+      const executionIdentity = previous?.executionIdentity ?? input.executionIdentity;
       const saved = immutableCopy({
-        ...input,
+        predecessorRevisionId: input.predecessorRevisionId,
+        candidateRevisionId: input.candidateRevisionId,
         phase: previous?.phase === "stopping" ? "stopping" : input.phase,
         startedAt: previous?.startedAt ?? now,
+        ...(completionStartedAt === undefined ? {} : { completionStartedAt }),
+        ...(executionIdentity === undefined ? {} : { executionIdentity }),
+        ...(previous?.stopCompleted === true ? { stopCompleted: true as const } : {}),
         ...(previous?.stoppingAt
           ? { stoppingAt: previous.stoppingAt }
           : input.phase === "stopping"
@@ -3004,6 +3027,20 @@ function repositories(
       });
       snapshot.predecessorReplacements.set(key, saved);
       return saved;
+    },
+    confirmPredecessorStop: async (namespaceId, agentId, predecessorRevisionId, stoppingAt) => {
+      const key = agentKey(namespaceId, agentId);
+      const current = snapshot.predecessorReplacements.get(key);
+      if (
+        current?.phase === "stopping" &&
+        current.predecessorRevisionId === predecessorRevisionId &&
+        current.stoppingAt === stoppingAt
+      ) {
+        snapshot.predecessorReplacements.set(
+          key,
+          immutableCopy({ ...current, stopCompleted: true }),
+        );
+      }
     },
     findAgentForBrowsing: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     listAgentsForBrowsing: async (namespaceId) => agents.listAgents(namespaceId),

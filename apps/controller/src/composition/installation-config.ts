@@ -1,5 +1,6 @@
 import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
+import { createGatewayPredecessorCompletion } from "../gateway/predecessor-completion.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
 import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
@@ -1818,6 +1819,11 @@ async function composeInstallationConfiguration(
         : { preparedRepositoryIngress: true }),
       preprovisionedNamespace,
       nodeEnrollment: createGatewayNodeEnrollment(() =>
+        readWorkspaceFilesApiKey(
+          nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
+        ),
+      ),
+      predecessorCompletion: createGatewayPredecessorCompletion(() =>
         readWorkspaceFilesApiKey(
           nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
         ),

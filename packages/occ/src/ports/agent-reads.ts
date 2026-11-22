@@ -45,6 +45,9 @@ export interface PredecessorReplacement {
   readonly phase: "pre-stop" | "stopping";
   readonly startedAt: string;
   readonly stoppingAt?: string;
+  readonly stopCompleted?: true;
+  readonly completionStartedAt?: string;
+  readonly executionIdentity?: string;
 }
 
 export interface AgentRevisionReadRepository {

@@ -138,9 +138,23 @@ export async function checkChannelPolicyDiagnostic() {
     // The work item has already passed revision admission. Only Kubernetes transport and the
     // database reads for its current claim and empty predecessor set are substituted.
     Object.assign(worker["queue"], { heartbeat: async () => claim });
+    const agentLookups: [namespaceId: string, agentId: string][] = [];
     Object.assign(worker["state"], {
       read: async (read: (view: unknown) => unknown) =>
-        read({ revisions: { listRevisionMetadata: () => [revision] } }),
+        read({
+          revisions: { listRevisionMetadata: () => [revision] },
+          agents: {
+            async findAgent(namespaceId: string, agentId: string) {
+              agentLookups.push([namespaceId, agentId]);
+              return {
+                id: revision.agentId,
+                namespaceId: revision.namespaceId,
+                servicePrincipalId: revision.servicePrincipalId,
+                desiredRuntimeState: "running" as const,
+              };
+            },
+          },
+        }),
     });
     const { workspaceSetup: _setup, ...prepareContext } = context;
     const generic =
@@ -148,6 +162,7 @@ export async function checkChannelPolicyDiagnostic() {
     await assert.rejects(worker["prepareRevision"](claim, revision, prepareContext), {
       message: generic,
     });
+    assert.deepEqual(agentLookups, [[revision.namespaceId, revision.agentId]]);
     assert.equal(
       records.some(({ kind }) => kind === "Deployment"),
       false,

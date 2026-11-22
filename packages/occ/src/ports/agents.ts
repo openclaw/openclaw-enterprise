@@ -55,8 +55,23 @@ export interface AgentRepository extends AgentReadRepository {
       readonly predecessorRevisionId: string;
       readonly candidateRevisionId: string;
       readonly phase: "pre-stop" | "stopping";
+      readonly beginCompletion?: true;
+      readonly executionIdentity?: string;
+      /** Require the existing candidate's pre-stop phase and unexpired completion window. */
+      readonly completionClaim?: {
+        readonly idempotencyKey: string;
+        readonly claimToken: string;
+        readonly windowMs: number;
+      };
     },
   ): Promise<Readonly<PredecessorReplacement> | undefined>;
+  /** Caller holds the Namespace and Agent locks. Confirm only the same committed stop. */
+  confirmPredecessorStop(
+    namespaceId: string,
+    agentId: string,
+    predecessorRevisionId: string,
+    stoppingAt: string,
+  ): Promise<void>;
   createAgent(
     agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
   ): Promise<Readonly<Agent>>;

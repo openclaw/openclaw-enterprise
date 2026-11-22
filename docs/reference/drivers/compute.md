@@ -47,6 +47,8 @@ kind: reference/driver
   - [`activateRevision`](#method-activate-revision)
   - [`deactivateRevision`](#method-deactivate-revision)
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
+  - [`canWaitForPredecessorCompletion`](#method-can-wait-for-predecessor-completion)
+  - [`waitForPredecessorCompletion`](#method-wait-for-predecessor-completion)
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
   - [`getGatewayBrowserRequest`](#method-get-gateway-browser-request)
@@ -128,6 +130,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-snapshot-runtime-inputs"></a>`snapshotRuntimeInputs`                                                   | Optional    | Capture bounded private launch inputs after admission; omission preserves legacy behavior. These facts are not execution authority.                                                                                                                                                                                                                       |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
+| <a id="method-can-wait-for-predecessor-completion"></a>`canWaitForPredecessorCompletion`                             | Optional    | Qualify compatible image updates.                                                                                                                                                                                                                                                                                                                         |
+| <a id="method-wait-for-predecessor-completion"></a>`waitForPredecessorCompletion`                                    | Optional    | Renew completion using the worker's deadline, identity and stopping callback.                                                                                                                                                                                                                                                                             |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
 | <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private machine workspace WSS address, or `undefined`.                                                                                                                                                                                                                                                                                                    |
 | <a id="method-get-gateway-browser-request"></a>`getGatewayBrowserRequest`                                            | Optional    | Resolve authorized per-human browser transport. Keep credential headers private. Unsupported transport or missing credentials fails closed, without machine fallback.                                                                                                                                                                                     |
@@ -198,19 +202,19 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 
 ### Startup failure evidence
 
-An ordinary `ready: false` keeps preparation pending. Return a
+`ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
-The worker rejects another revision's readiness result. For a held startup
-failure, return validated `runtimeFailure` evidence for this revision:
-`component`, `check`, `checkedAt`, `code`, and an optional
-[`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
-provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains which failures end deployment immediately, such as
-[`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
+The worker rejects readiness for another revision. For a held startup failure,
+return validated `runtimeFailure` evidence for this revision with `component`,
+`check`, `checkedAt`, `code`, and optional
+[`cause`](../agents/deployment.md#model-check-failure-cause). Exclude credentials,
+provider messages, and untrusted observations. See the [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
+for immediate failures, such as [`crash-loop`](kubernetes-compute.md#troubleshooting),
+and failures that wait until the deadline.
 
 Throw `ComputePreparationFailedError` for terminal initialization failure.
-The worker records the failed deployment and queues `stopRevision` for that
-candidate in one transaction. After restart it resumes cleanup.
+The worker atomically records failure and queues the candidate's `stopRevision`.
+Cleanup resumes after restart.
 
 <a id="optional-runtime-diagnostics"></a>
 <a id="optional-runtime-status-and-logs"></a>
@@ -286,18 +290,16 @@ sequenceDiagram
 ```
 
 Before calling Compute, the worker checks its selected identity and current
-credential references.
-Activation must be safe to repeat. A failed activation after selection resumes
-at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
-both version 5 `online-request` and version 6 `request-hook-observed` support
-selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
-and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
-record the selection. The original work stays queued until that revision is ready;
-only then does the worker activate it, retire its predecessor, and complete the work.
+credential references. Activation must be repeatable. Failed activation after
+selection resumes at finalization. [Protected Git startup](../repository-credentials/protected-openshell-git.md)
+versions 5 `online-request` and 6 `request-hook-observed` permit selection before
+readiness when Compute reports `heldForRepositoryGitMaterial` and
+`REPOSITORY_GIT_ROUTE_PENDING` without runtime failure. Work remains queued until
+the revision is ready. The worker then activates it, retires its predecessor,
+and completes the work.
 
-Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
-before closing credentials and stopping predecessors. Failed stop blocks preparation.
-Repeated stops must preserve workspace data; stopped revisions cannot be recreated.
+See [planned replacement](../agents/planned-replacement.md) for completion waiting,
+credential closure and predecessor stops.
 
 ### SandboxDriver coordination
 

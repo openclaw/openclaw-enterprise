@@ -188,6 +188,7 @@ export function bindPlatformUnitOfWork(
     agents: bindRepository(repositories.agents, lifetime, [
       ...platformReadMethods.agents,
       "recordPredecessorReplacement",
+      "confirmPredecessorStop",
       "createAgent",
       "lockAgent",
       "updateConfiguration",

@@ -1652,6 +1652,8 @@ export type {
   ProtectedRepositoryNetworkPolicySaveContext,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
+  PredecessorCompletionContext,
+  PredecessorCompletionResult,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,

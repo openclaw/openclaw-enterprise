@@ -11,24 +11,47 @@ import type {
 import { PostgresPlatformState, type OpenClawController } from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { ComputeStopYieldedError } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres, databaseUrl } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
+import { denyDeploy } from "../helpers/postgres-worker-refused-candidate.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
-for (const retained of [true, false]) {
+for (const scenario of ["retained", "separate", "explicit Stop", "refused replacement"] as const) {
+  const retained = scenario !== "separate";
+  const stopDuringCompletion = scenario === "explicit Stop";
+  const finishRefusedReplacement = scenario === "refused replacement";
   test(
-    `worker replaces protected enrollment with ${retained ? "a retained Sandbox" : "separate Sandboxes"} (PostgreSQL)`,
+    scenario === "retained" || scenario === "separate"
+      ? `worker replaces protected enrollment with ${retained ? "a retained Sandbox" : "separate Sandboxes"} (PostgreSQL)`
+      : stopDuringCompletion
+        ? "explicit Stop retains protected enrollment until a yielded drain resumes and stops (PostgreSQL)"
+        : "a refused replacement retires protected predecessor enrollment after its full drain (PostgreSQL)",
     { ...requiresPostgres, timeout: 60_000 },
     async (t) => {
       let app!: Awaited<ReturnType<typeof postgresApp>>;
       const f = await staticEgressFixture(t, {
         recordInstallation: false,
         appFactory: async (context: TestContext, options = {}) => {
-          app = await postgresApp(context, { ...options, recordOperations: true });
+          const configured = "computeDriver" in options ? options.computeDriver : undefined;
+          const admissionCompute =
+            configured !== null && typeof configured === "object" ? configured : undefined;
+          assert.ok(!stopDuringCompletion || admissionCompute, "missing deployment Compute");
+          app = await postgresApp(context, {
+            ...options,
+            recordOperations: true,
+            ...(stopDuringCompletion && {
+              // The normal Deploy admission records the pre-stop boundary for exclusive Compute.
+              computeDriver: {
+                ...admissionCompute,
+                requiresStoppedPredecessors: () => true,
+              },
+            }),
+          });
           return app;
         },
       });
@@ -36,22 +59,33 @@ for (const retained of [true, false]) {
       const receipts = new Map<string, EgressInstallation>();
       const contexts = new Map<string, ComputeRevisionContext>();
       const events: Readonly<Record<string, unknown>>[] = [];
+      const preparations = new Set<string>();
+      const stopped = new Set<string>();
+      const retryStop = Promise.withResolvers<void>();
       let failStop = false;
+      let predecessorStops = 0;
       // Compute simulates runtime observations; the real worker, API and PostgreSQL own
       // admission, enrollment custody, activation and retirement. This is not OpenShell proof.
       const compute: ComputeDriver = {
         ...app.controller.selectedDriver("compute"),
         requiresStoppedPredecessors: () => retained,
+        ...(stopDuringCompletion && {
+          canWaitForPredecessorCompletion: () => true,
+          waitForPredecessorCompletion: async () => "waiting" as const,
+        }),
         async prepareRevision(revision, context) {
           assert.ok(context?.recordEgressInstallation);
           assert.ok(revision.egressPlan);
+          preparations.add(revision.id);
           contexts.set(revision.id, context);
           let receipt = receipts.get(revision.id);
           if (!receipt) {
             receipt = {
               ...f.installation,
               sandboxId:
-                retained || revision.id === f.revision.id ? f.installation.sandboxId : randomUUID(),
+                revision.id === f.revision.id || (retained && revision.agentId === f.agent.id)
+                  ? f.installation.sandboxId
+                  : randomUUID(),
               plan: revision.egressPlan,
               enforcement: {
                 ...f.installation.enforcement,
@@ -63,7 +97,7 @@ for (const retained of [true, false]) {
             };
             receipts.set(revision.id, receipt);
           }
-          if (revision.id !== f.revision.id) {
+          if (revision.agentId === f.agent.id && revision.id !== f.revision.id) {
             const predecessor = await current(f.installation);
             assert.equal(
               predecessor?.plan.execution.revisionId,
@@ -83,10 +117,22 @@ for (const retained of [true, false]) {
             ready: true,
           };
         },
-        async stopRevision() {
+        async stopRevision(revision) {
+          if ((stopDuringCompletion || finishRefusedReplacement) && revision.id === f.revision.id) {
+            predecessorStops += 1;
+            if (predecessorStops === 1) {
+              if (finishRefusedReplacement) {
+                // The next deployment pass is refused before its usual predecessor sweep.
+                await denyDeploy({ observerPool: app.pool, namespace: f.namespace }, f.agent);
+              }
+              throw new ComputeStopYieldedError("predecessor drain yielded");
+            }
+            await retryStop.promise;
+          }
           if (failStop) {
             throw new Error("Simulated stop failure");
           }
+          stopped.add(revision.id);
         },
         async retireRevision() {},
       };
@@ -100,7 +146,9 @@ for (const retained of [true, false]) {
           ...base.installation,
           drivers: {
             ...base.installation.drivers,
-            configuration: { id: app.controller.selectedDriver("configuration").id },
+            configuration: {
+              id: app.controller.selectedDriver("configuration").id,
+            },
             sandbox: {
               id: f.sandboxDriver.id,
               implementation: f.sandboxDriver.implementation,
@@ -153,11 +201,29 @@ for (const retained of [true, false]) {
             JSON.stringify(
               events
                 .filter((event) => event.revisionId === id)
-                .map(({ event, outcome, code, step }) => ({ event, outcome, code, step })),
+                .map(({ event, outcome, code, step }) => ({
+                  event,
+                  outcome,
+                  code,
+                  step,
+                })),
             ),
           );
           throw error;
         });
+      const waitForEvent = (description: string, match: Record<string, unknown>) =>
+        waitFor(
+          () =>
+            `${description} (observed ${JSON.stringify(
+              events.map(({ event, outcome, code }) => ({ event, outcome, code })),
+            )})`,
+          () =>
+            events.find(
+              (event) =>
+                event.event === "worker.completed" &&
+                Object.entries(match).every(([key, value]) => event[key] === value),
+            ),
+        );
       await worker.start();
       await completed(f.revision.id);
       const old = receipts.get(f.revision.id)!;
@@ -165,6 +231,136 @@ for (const retained of [true, false]) {
       const captured = f.capture();
       const ready = (await f.resolve(captured)).ready;
       assert.ok(ready, "the current receipt must authorize credential selection");
+
+      if (stopDuringCompletion) {
+        assert.ok(f.source);
+        const namespacePath = `/namespaces/${f.namespace.id}`;
+        const unrelated = await app.request("POST", `${namespacePath}/agents`, {
+          body: {
+            name: "unrelated-agent",
+            configurationId: f.agent.configurationId,
+            executionMode: "dedicated",
+            harnessAuth: { method: "credential_source", sourceId: f.source.id },
+            credentialSources: [{ sourceId: f.source.id }],
+          },
+        });
+        assert.equal(unrelated.status, 201);
+        const role = await app.request("POST", `${namespacePath}/iam/roles`, {
+          body: {
+            name: "unrelated-inference-use",
+            permissions: [{ action: "operate", resourceKind: "credential_source" }],
+          },
+        });
+        assert.equal(role.status, 201);
+        const unrelatedGrant = await app.request("POST", `${namespacePath}/iam/access-bindings`, {
+          body: {
+            subjectKind: "identity",
+            subjectId: unrelated.data.servicePrincipalId,
+            roleId: role.data.id,
+            resourceKind: "credential_source",
+            resourceId: f.source.id,
+          },
+        });
+        assert.equal(unrelatedGrant.status, 201);
+        const unrelatedRevision = await app.deployAgent(f.namespace.id, unrelated.data.id);
+        await completed(unrelatedRevision.id);
+        const unrelatedReceipt = receipts.get(unrelatedRevision.id)!;
+        assert.deepEqual(await current(unrelatedReceipt), unrelatedReceipt);
+
+        const candidate = await app.deployAgent(f.namespace.id, f.agent.id);
+        try {
+          await waitForEvent("committed completion deferral before Stop", {
+            revisionId: candidate.id,
+            outcome: "pending",
+            code: "PREDECESSOR_COMPLETION_WAITING",
+          });
+          assert.deepEqual(await current(old), old, "completion waiting keeps enrollment current");
+          assert.equal(
+            predecessorStops,
+            0,
+            "completion waiting must leave the predecessor running",
+          );
+
+          await app.controller.stopAgent(app.principal.id, f.namespace.id, f.agent.id);
+          await waitForEvent("committed Stop yield", {
+            agentId: f.agent.id,
+            revisionId: f.revision.id,
+            outcome: "pending",
+            code: "AGENT_STOP_YIELDED",
+          });
+          assert.deepEqual(await current(old), old, "a yielded stop cannot retire enrollment");
+          assert.equal(preparations.has(candidate.id), false);
+        } finally {
+          retryStop.resolve();
+        }
+        await waitForEvent("confirmed Stop", {
+          agentId: f.agent.id,
+          revisionId: f.revision.id,
+          outcome: "success",
+          code: "AGENT_STOPPED",
+        });
+        assert.equal(predecessorStops, 2);
+        assert.ok(stopped.has(f.revision.id));
+        assert.equal(
+          await current(old),
+          undefined,
+          "confirmed Stop retires predecessor enrollment",
+        );
+        assert.deepEqual(
+          await app.state.read((view) =>
+            view.credentialSources.findRevisionEgressInstallation(f.namespace.id, f.revision.id),
+          ),
+          old,
+          "retirement retains the predecessor's historical receipt",
+        );
+        await waitForEvent("stopped Agent's candidate reaches its terminal Work result", {
+          workId: `agent_revision:${candidate.id}:reconcile`,
+          outcome: "success",
+        });
+        assert.equal(preparations.has(candidate.id), false);
+        const stoppedAgent = await app.state.read((view) =>
+          view.agents.findAgent(f.namespace.id, f.agent.id),
+        );
+        assert.equal(stoppedAgent?.desiredRuntimeState, "stopped");
+        assert.equal(stoppedAgent?.activeRevisionId, undefined);
+        assert.equal(stopped.has(unrelatedRevision.id), false);
+        assert.deepEqual(await current(unrelatedReceipt), unrelatedReceipt);
+        const stillActive = await app.state.read((view) =>
+          view.agents.findAgent(f.namespace.id, unrelated.data.id),
+        );
+        assert.equal(stillActive?.activeRevisionId, unrelatedRevision.id);
+        assert.equal(stillActive?.desiredRuntimeState, "running");
+        return;
+      }
+
+      if (finishRefusedReplacement) {
+        const candidate = await app.deployAgent(f.namespace.id, f.agent.id);
+        try {
+          await waitForEvent("replacement yielded its predecessor stop", {
+            revisionId: candidate.id,
+            outcome: "pending",
+            code: "PREDECESSOR_STOP_YIELDED",
+          });
+          assert.deepEqual(await current(old), old, "yielded replacement retains enrollment");
+          assert.equal(preparations.has(candidate.id), false);
+          await makeWorkDue(app.pool, `agent_revision:${candidate.id}:reconcile`);
+          await waitFor("refusal resumes the predecessor drain", () =>
+            predecessorStops === 2 ? true : undefined,
+          );
+          assert.deepEqual(await current(old), old, "full drain is still awaiting confirmation");
+        } finally {
+          retryStop.resolve();
+        }
+        await waitForEvent("replacement refusal after predecessor drain", {
+          revisionId: candidate.id,
+          outcome: "permanent",
+          code: "AUTHORIZATION_DENIED",
+        });
+        assert.ok(stopped.has(f.revision.id));
+        assert.equal(await current(old), undefined, "confirmed full drain retires enrollment");
+        assert.equal(preparations.has(candidate.id), false);
+        return;
+      }
 
       failStop = retained;
       const nextMetadata = await app.deployAgent(f.namespace.id, f.agent.id);
@@ -262,7 +458,9 @@ test("memory enrollment custody permits replacement only after retiring the pred
     unit.credentialSources.retireEgressInstallation(f.namespace.id, f.revision.id),
   );
   await record(next);
-  await assert.rejects(record(f.installation), { name: "ResourceStateConflictError" });
+  await assert.rejects(record(f.installation), {
+    name: "ResourceStateConflictError",
+  });
   assert.deepEqual(
     await controller.transact((unit) =>
       unit.credentialSources.findEgressInstallation(next.sender.id, next.sandboxId),

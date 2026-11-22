@@ -669,6 +669,11 @@ test("production embedded replacements preserve their active Service across fail
             locks.push(["agent", ...arguments_]);
             return activeAgent;
           },
+          findPredecessorReplacement: async (requestedNamespaceId, requestedAgentId) => {
+            assert.equal(requestedNamespaceId, namespaceId);
+            assert.equal(requestedAgentId, agentId);
+            return undefined;
+          },
           compareAndSetActiveRevision: async (...arguments_) => {
             compareAndSetAttempts++;
             assert.deepEqual(arguments_, [namespaceId, agentId, predecessor.id, candidate.id]);
