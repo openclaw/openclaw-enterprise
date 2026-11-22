@@ -6395,27 +6395,15 @@ test("the Claude Code agent runtime is admitted for embedded OpenClaw only", () 
       ),
     /agents\.defaults\.models selects the Claude Code agent runtime, which runs only under embedded OpenClaw: set the Agent's executionMode to embedded/,
   );
-  // A tool policy the runtime would ignore is refused at Configuration save, unlike Harness
-  // gaps a draft may still fill (finding 2142); an exec-only deny list stays valid.
-  assert.throws(
-    () => driver.validateConfiguration({ ...configuration, tools: { deny: ["write"] } }),
-    {
-      name: "ConfigurationHarnessError",
-      message:
-        /^Configuration setting tools\.deny restricts Claude Code's native file or web tools/,
-    },
-  );
-  assert.doesNotThrow(() =>
-    driver.validateConfiguration({ ...configuration, tools: { deny: ["exec", "process"] } }),
-  );
-  // The default runtime enforces the same deny list itself.
-  assert.doesNotThrow(() =>
-    driver.validateConfiguration({
-      agents: { defaults: { model } },
-      models: configuration.models,
-      tools: { deny: ["write"] },
-    }),
-  );
+  // The runtime applies tool policy to file and web tools, so Configuration save admits a deny
+  // of them, and the setting that turns native WebSearch off, as for the default runtime.
+  for (const tools of [
+    { deny: ["write", "web_search"] },
+    { deny: ["exec", "process"] },
+    { web: { search: { enabled: false } } },
+  ]) {
+    assert.doesNotThrow(() => driver.validateConfiguration({ ...configuration, tools }));
+  }
 });
 
 test(

@@ -202,7 +202,6 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CLAUDE_CLI_AGENT_RUNTIME_ID,
-  ClaudeCodeToolPolicyError,
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
@@ -2983,10 +2982,6 @@ function requireConfiguredModelProviders(
     harnessId = resolveConfiguredHarnessId(resolvable);
     authentication = harnessModelAuthentication(resolvable, harnessId === "openclaw");
   } catch (error) {
-    // A Claude Code tool policy the runtime would ignore is not a draft gap: refuse it at save.
-    if (error instanceof ClaudeCodeToolPolicyError) {
-      throw error;
-    }
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
     }

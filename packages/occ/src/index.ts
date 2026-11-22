@@ -262,7 +262,6 @@ export type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 export type { ServiceAccountReadRepository } from "./ports/service-accounts.ts";
 export {
   CLAUDE_CLI_AGENT_RUNTIME_ID,
-  ClaudeCodeToolPolicyError,
   harnessIdForAgentRuntime,
   resolveConfiguredAgentRuntimeId,
   resolveConfiguredHarnessId,
