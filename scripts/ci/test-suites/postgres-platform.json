@@ -262,6 +262,13 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-secret-metadata-authorization.test.ts",
+      "expectedTests": [
+        "Secret collection keeps Namespace and candidate grants in one PostgreSQL snapshot",
+        "Secret detail keeps its grant and consumer grants in one PostgreSQL snapshot"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-secret-state.test.ts",
       "expectedTests": [
         "in-memory state persists Secret metadata and binding references without values",

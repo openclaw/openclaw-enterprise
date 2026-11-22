@@ -23,6 +23,9 @@ Credential issuance and provider internals are outside this flow.
 
 - `POST /namespaces/:namespaceId/secrets`: a ready Namespace and caller
   authorization to create the Secret in that Namespace.
+- `GET /namespaces/:namespaceId/secrets`: metadata for readable Secrets.
+- `GET /namespaces/:namespaceId/secrets/:secretId`: exact Secret metadata and
+  readable consumer references.
 - Configuration create/update, Agent create/update assignment, and the existing
   Agent deployment action: authorized exact Secret references, same-Namespace
   bindings, exact Agent assignment authority, and an approved Harness/Compute
@@ -288,6 +291,14 @@ are unchanged.
 Dedicated Gateway infrastructure restarts read canonical channel Secrets
 directly. Failed cutover does not restore old source values. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
+
+For the collection GET, OCC validates the exact Namespace identity, then authorizes
+Namespace `read`, resolves that Namespace, lists its Secret metadata, and filters
+by exact Secret `read` within one State read. For the detail GET, OCC authorizes
+the exact Secret before lookup, enumerates the bounded consumer page, and checks
+which consumers may be named within the same read. With PostgreSQL State and
+Native IAM selected, authorization and metadata share the existing read-only,
+repeatable-read State unit.
 
 [deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
 Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization

@@ -225,8 +225,8 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
     namespaceId: string,
     secretId: string,
   ): Promise<Readonly<SecretDetail>> {
-    await authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
     return read(async (state) => {
+      await authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
       await exactNamespace(state, namespaceId);
       const secret = await state.secrets.findSecret(namespaceId, secretId);
       if (!secret) {
@@ -243,8 +243,10 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<SecretMetadata>[]> {
-    const namespace = await deps.getNamespace(principalId, namespaceId);
+    namespaceIdentity(namespaceId);
     return read(async (state) => {
+      await authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
+      const namespace = await exactNamespace(state, namespaceId);
       const readable: Readonly<SecretMetadata>[] = [];
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
         if (

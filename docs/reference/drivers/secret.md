@@ -61,7 +61,15 @@ OCC authorizes creation on the Namespace's Secret collection.
 only Secrets on which the caller also has exact-resource `read`. An empty list
 means no readable Secrets. Exact Secret reads, updates, and deletion require
 `read`, `update`, and `delete`, respectively. Reads return metadata from OCC;
-they do not call the Driver or return a value. Binding or assigning a Secret
+they do not call the Driver or return a value.
+
+With PostgreSQL State and Native IAM selected, OCC authorizes and reads collection
+or detail metadata within the same read-only, repeatable-read State unit. The
+detail read also checks whether each consumer may be named in that unit. A
+response may complete under the policy its read observed; a later request uses a
+fresh State read for grants and revocations.
+
+Binding or assigning a Secret
 also requires the caller to have `operate` on it. Deployment requires both the
 deploying actor and the consuming Agent's ServicePrincipal to have `operate` on
 each Secret; the worker rechecks them before preparing delivery. Registering a
