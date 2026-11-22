@@ -357,7 +357,7 @@ export function createRuntimeLogComputeDriver(options: RuntimeLogComputeOptions 
                 pod: request.pod,
                 podUid: harness ? request.podUid : (state.readPodUid ?? state.podUid),
                 container: request.container,
-                restartCount: state.readRestartCount ?? state.restartCount,
+                restartCount: state.readRestartCount ?? (harness ? 0 : state.restartCount),
               },
               observedAt: "2026-09-30T12:00:01.000Z",
               lines: source.slice(-request.tailLines),
