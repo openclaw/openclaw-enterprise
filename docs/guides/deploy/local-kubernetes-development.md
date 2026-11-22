@@ -305,10 +305,11 @@ for model access or protected Git. The Compose-backed profile still permits
 unauthenticated Gateway users inside its disposable, loopback-owned cluster.
 Do not carry that setting into a shared cluster or container network.
 
-Because this cluster is disposable and single-profile, the helper binds the chart's tenant worker, configuration, and Secret ClusterRoles
-to the OCE service accounts cluster-wide. This is not a production RBAC pattern:
-production and shared clusters must use the tenant-local RoleBindings in the
-production deployment guide.
+In disposable single-profile development, worker, configuration and Secret bindings
+remain cluster-wide. `occ dev up` binds the automation observer only in the
+verified bootstrap backing namespace. Additional Namespaces require an
+[operator binding](production-agents.md#grant-automation-observation). Production
+and shared clusters require tenant-local bindings for every role.
 
 To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).

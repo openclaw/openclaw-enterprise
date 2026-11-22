@@ -99,12 +99,13 @@ a read-only root filesystem and no mounts replacing `/app`.
 The route renders the default backend `weight: 1` explicitly so API defaulting
 does not change the spec used for strict readback.
 
-Automation verification requires only these additional `tenant-api` grants in the
-[control chart](../../deploy/helm/openclaw-enterprise/templates/rbac.yaml): Services
-`get`, HTTPRoutes `get`, EndpointSlices `list` and NetworkPolicies `get`.
-The existing `tenant-configuration` binding supplies ConfigMap `get`.
-[Tenant-local RoleBindings](../guides/deploy/production-agents.md#grant-tenant-rolebindings)
-scope access to the Gateway namespace. These reads need no execution-chart grants.
+Automation verification uses the [control chart's](../../deploy/helm/openclaw-enterprise/templates/rbac.yaml)
+separate, deliberately unbound `${RELEASE}-openclaw-tenant-automation-observer`
+ClusterRole. An [operator-created tenant-local binding](../guides/deploy/production-agents.md#grant-automation-observation)
+limits its reads to the Gateway namespace; the shared `tenant-api` role
+does not receive them. Existing `tenant-configuration` bindings provide ConfigMap
+`get`. The worker does not write RBAC, and supported automations need no
+execution-plane binding.
 
 The native adapter checks bounded, nonempty handshake boot ID and same-socket
 `system.info` process-instance ID plus positive PID. Only the hostname is compared

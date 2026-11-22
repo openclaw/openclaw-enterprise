@@ -239,10 +239,11 @@ Optional `caBundle` supplies public PEM CA trust; all bundles together must fit
 65,536 bytes. Never include private keys. Compute projects trust and verifies deployed endpoint
 assets before admission. Bindings capture endpoint, egress and CA identity.
 
-Revision-owned Services/operator HTTPRoutes retain Envoy authentication. Before
-cron requests, Compute and the broker verify the selected Pod/container,
+Revision-owned Services/operator HTTPRoutes retain Envoy authentication and require
+[tenant-local observation grants](../../guides/deploy/production-agents.md#grant-automation-observation). Before
+cron requests, Compute and the broker verify Pod/container,
 EndpointSlice targets and same-socket Gateway identity; no Agent-wide fallback.
-Revision cleanup removes these resources. [Qualification and retirement](../agent-automations.md#execution-qualification)
+Revision cleanup removes them. [Qualification and retirement](../agent-automations.md#execution-qualification)
 remain required. Attestation removal does not stop running cron; disable/delete
 jobs or deny service-side calls. MCP qualification remains pending.
 

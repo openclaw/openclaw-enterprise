@@ -43,7 +43,7 @@ discovery again after the worker creates it.
 
 Single-cluster Compute uses the same tenant namespace for runtime roles and
 canonical storage. Use the Helm release and Kubernetes namespace from the
-control-plane install. The chart prefixes the three tenant ClusterRoles with
+control-plane install. The chart prefixes tenant ClusterRoles with
 the release name and creates fixed-name ServiceAccounts in the install namespace.
 
 ```bash
@@ -87,7 +87,25 @@ OCC IAM grants remain required. Workload ServiceAccounts receive no Secret API
 access. Namespace workload managers are trusted for both roles. Use disjoint
 trusted Gateway and Harness node pools. For the experimental two-cluster
 profile, grant these storage roles in the separately discovered control target
-and worker/observer roles in the execution target. See [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
+and worker/Gateway-observer roles in the execution target. See [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
+
+### Grant automation observation
+
+For automations, bind the chart's deliberately unbound
+`${RELEASE}-openclaw-tenant-automation-observer` ClusterRole to the API in the
+backing tenant namespace for single-cluster Compute. With `executionCluster`, set
+`TENANT_NAMESPACE` to the separately discovered control target (the control-plane
+Gateway namespace), using control-plane `KUBECONFIG_FILE` and `CONTEXT`:
+
+```bash
+tenant_kubectl create rolebinding openclaw-enterprise-automation-observer \
+  --clusterrole="$RELEASE-openclaw-tenant-automation-observer" --serviceaccount="$API_SA"
+```
+
+It grants Services, HTTPRoutes and NetworkPolicies `get`, and EndpointSlices `list`.
+ConfigMaps `get` comes from the existing configuration binding. The operator creates
+this binding; the worker does not write RBAC. Dedicated nonempty MCP is refused;
+no automation-observer binding belongs in the Agent execution namespace.
 
 ### Confirm the Namespace is ready
 
