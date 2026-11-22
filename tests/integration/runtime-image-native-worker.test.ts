@@ -638,6 +638,7 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
         "tests/helpers/available-port.ts",
         "tests/helpers/reuse-port-preload.ts",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/src/drivers/compute/agent-automation-guard.ts",
         "apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts",
         "apps/controller/plugins/marketplace.json",
         ...managedInstalls.map(
