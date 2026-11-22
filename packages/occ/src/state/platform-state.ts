@@ -49,6 +49,7 @@ import { cancelledDeviceAuthorization } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  isCanonicalRepositoryGrantList,
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
@@ -2834,6 +2835,7 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    supportsRepositoryNetworkPolicy: true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
@@ -2856,6 +2858,17 @@ function repositories(
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy ownership or version.");
       }
+      const grants = policy.repositoryNetworkPolicy;
+      if (grants !== undefined && !isCanonicalRepositoryGrantList(grants)) {
+        throw new ScopeViolationError("Repository network policy grants must be canonical.");
+      }
+      if (
+        (existing.repositoryNetworkPolicy !== undefined && grants === undefined) ||
+        (policy.version === existing.version &&
+          !isDeepStrictEqual(grants, existing.repositoryNetworkPolicy))
+      ) {
+        throw new ScopeViolationError("Invalid repository network policy transition.");
+      }
       const application = policy.application;
       const previousApplication = existing.application;
       if (
@@ -2871,6 +2884,13 @@ function repositories(
         const revision = (snapshot.revisions.get(key) ?? []).find(
           ({ id }) => id === application.revisionId,
         );
+        if (
+          grants !== undefined ||
+          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+          application.snapshot.repositoryNetworkPolicy !== undefined
+        ) {
+          throw new ScopeViolationError("Repository network policy requires a new deployment.");
+        }
         if (
           revision === undefined ||
           application.policyVersion !== policy.version ||
@@ -3476,6 +3496,12 @@ function repositories(
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
       await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
       const key = agentKey(revision.namespaceId, revision.agentId);
+      if (
+        snapshot.sandboxPolicies.get(key)?.repositoryNetworkPolicy !== undefined ||
+        revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+      ) {
+        throw new ScopeViolationError("Repository network policy revisions are unsupported.");
+      }
       const previous = snapshot.revisions.get(key) ?? [];
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");

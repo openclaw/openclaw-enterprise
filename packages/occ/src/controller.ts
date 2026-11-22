@@ -1,4 +1,7 @@
-import type { AgentAutomationOwnership } from "@openclaw-enterprise/contracts";
+import type {
+  AgentAutomationOwnership,
+  RepositoryNetworkGrant,
+} from "@openclaw-enterprise/contracts";
 import type { BindAgentAutomationInput, ReserveAgentAutomationInput } from "./agent-automations.ts";
 import {
   createControllerComposition,
@@ -1668,6 +1671,7 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     return this.composition.sandboxPolicyOperations.updateAgentSandboxPolicy(
       principalId,
@@ -1676,6 +1680,7 @@ export class OpenClawController {
       facet,
       expectedVersion,
       additions,
+      repositoryNetworkPolicy,
     );
   }
 

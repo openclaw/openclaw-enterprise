@@ -141,7 +141,7 @@ The transaction stores the public UUID, creator, exact target, `toolGrant` and
 admission audit. The grant contains exact names and opaque binding fingerprints;
 credential values are not stored there.
 `packages/occ/src/state/postgres-agent-automations.ts` and
-`migrations/0087_agent_automations.sql` enforce immutable ownership/grant fields and
+`migrations/0088_agent_automations.sql` enforce immutable ownership/grant fields and
 one-time native identity binding.
 
 ### 4. Create disabled, bind, then activate with native CAS

@@ -85,8 +85,38 @@ export function assertSourceRef(ref: string | undefined) {
   }
 }
 
+export function assertNetworkProxyAcceptance(env: NodeJS.ProcessEnv): void {
+  const selection = env.INPUT_NETWORK_PROXY_ACCEPTANCE;
+  const clearance = env.INPUT_NETWORK_PROXY_CLEARANCE_RUN ?? "";
+  const attempt = env.INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT ?? "1";
+  if (clearance && !/^[1-9][0-9]*$/.test(attempt)) {
+    throw new Error("Network proxy clearance requires an exact attempt.");
+  }
+  if (
+    clearance &&
+    (env.INPUT_NETWORK_PROXY_ACCEPTANCE !== "true" || !/^[1-9][0-9]*$/.test(clearance))
+  ) {
+    throw new Error("Network proxy clearance requires acceptance mode and an exact run ID.");
+  }
+  if (selection === undefined || selection === "" || selection === "false") {
+    return;
+  }
+  if (
+    selection !== "true" ||
+    env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
+    env.GITHUB_REF !== "refs/heads/main" ||
+    env.GITHUB_RUN_ATTEMPT !== "1" ||
+    env.INPUT_LANE !== "slack"
+  ) {
+    throw new Error(
+      "Network proxy acceptance requires a first-attempt main dispatch of the Slack lane.",
+    );
+  }
+}
+
 function assertRunContext(env: NodeJS.ProcessEnv) {
   assertSourceRef(env.GITHUB_REF);
+  assertNetworkProxyAcceptance(env);
   if (env.GITHUB_REPOSITORY !== repository || env.GITHUB_REF_TYPE !== "branch") {
     throw new Error("Full integration requires this repository and the main branch.");
   }

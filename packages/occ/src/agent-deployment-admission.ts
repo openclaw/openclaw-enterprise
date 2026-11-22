@@ -1,4 +1,5 @@
 import { agentAutomationGrantSupported } from "./agent-automation-policy.ts";
+import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   assertExecutionAdmission,
@@ -335,6 +336,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         );
       }
       if (first === undefined) {
+        await deploymentSandboxPolicy(
+          state,
+          dependencies.authority,
+          principalId,
+          namespace.id,
+          agent.id,
+        );
         await dependencies.provisioningWorker.guardAgentProvisioning(
           state,
           namespace.id,
@@ -404,6 +412,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           );
         }
       }
+      const policy = await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        namespace.id,
+        lockedAgent.id,
+      );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -656,7 +671,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         );
       }
       const sandboxPolicy = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
-        state,
+        policy,
         principalId,
         lockedAgent,
         revisionHarness,
