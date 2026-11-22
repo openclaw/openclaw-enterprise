@@ -50,6 +50,10 @@ export const SlackMcpTools = {
   ...story("slackMcpTools"),
   name: "Choose tools for a connected Slack account",
 };
+export const SlackMcpAccountRecovery = {
+  ...story("slackMcpAccountRecovery"),
+  name: "Recover a Slack account after access is restored",
+};
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");

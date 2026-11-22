@@ -92,15 +92,16 @@ retires stale **Add**, preserves drafts and offers **Load plugins** (catalog), *
 or **Retry tools** (details).
 
 For saved Agents, catalog or hosted-details `403` clears cached **Add** and tools.
-Use **Load plugins** unless a managed tool-details `403` requires **Recheck access**.
-Both tabs retain guidance and the latest refusal request ID through a failed
-recheck. Its capabilities `GET` must confirm matching Driver, policy, release and
-slot bindings and valid, unique source IDs. A later catalog or hosted-details
-`403` requires another recheck. After success, explicitly load catalog and tools
-with an eligible, independently connected source. Recovery preserves unsaved
-selections and approvers.
+Use **Load plugins** unless managed tool discovery requires **Recheck access**.
+Both tabs keep current refusal guidance and IDs on cancel or failure. The
+capabilities `GET` checks Driver, policy, release, slot bindings and unique valid
+source IDs. A later discovery `403` can reopen recovery. After success,
+**Recheck access** disappears. Load plugins and tools with an eligible,
+independently connected source.
 
-`409 AGENT_DELETING` retires discovery and blocks rechecking.
+After managed refusal recovery, choose **Recheck accounts** on an enabled card
+with an empty slot. Both rechecks clear discovery and cancel pending reads. Drafts and
+approvers stay intact. `409 AGENT_DELETING` blocks recovery.
 
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
 `requires_local_executor`. `true` requires skills. Details reject unmatched

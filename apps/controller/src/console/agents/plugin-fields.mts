@@ -72,7 +72,7 @@ export interface PluginFieldsOptions {
     | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
-  onRecheckAccess?: (() => void) | null;
+  onRecheckAccess?: ((slot?: AgentPluginCredentialSlot) => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
@@ -313,6 +313,7 @@ export function createPluginFields({
     "aria-labelledby": "plugin-dialog-title",
   });
   dismissOnBackdrop(dialog);
+  const done = button("Done", () => dialog.close());
   const configure = button("Configure plugins", () => {
     if (disabled) {
       return;
@@ -350,7 +351,7 @@ export function createPluginFields({
       "div",
       { className: "plugin-dialog-header" },
       element("h2", { id: "plugin-dialog-title" }, "Configure plugins"),
-      button("Done", () => dialog.close()),
+      done,
     ),
     element("p", { className: "hint" }, saveHint),
     accessHelp,
@@ -1063,6 +1064,20 @@ export function createPluginFields({
     return toolDetails;
   }
 
+  function canRecheckAccounts(slot: AgentPluginCredentialSlot) {
+    return (
+      dialog.open &&
+      !disabled &&
+      catalog?.canRecheck === true &&
+      !catalog.access &&
+      tabState().activeId === slot.pluginId &&
+      selections()?.[slot.pluginId]?.enabled === true &&
+      capabilities?.credentialSlots?.includes(slot) === true &&
+      slot.toolDiscovery &&
+      slot.sources.length === 0
+    );
+  }
+
   function render(focusRefusal = false) {
     rememberExpandedTools();
     const active = document.activeElement;
@@ -1140,7 +1155,7 @@ export function createPluginFields({
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
     loadPlugins.hidden = (configuredOnly && !reloadRequired) || !onLoadPlugins;
-    accessActions.hidden = !catalog?.canRecheck || !onRecheckAccess;
+    accessActions.hidden = !catalog?.access || !catalog.canRecheck || !onRecheckAccess;
     recheckAccess.textContent =
       catalog?.access === "checking" ? "Checking access…" : "Recheck access";
     pagination.hidden = configuredOnly || !onLoadPlugins;
@@ -1297,6 +1312,7 @@ export function createPluginFields({
             ),
           );
           if (!catalog?.access && !sources.length) {
+            const canRecheck = catalog?.canRecheck && slot.toolDiscovery && onRecheckAccess;
             details.append(
               element(
                 "p",
@@ -1304,6 +1320,26 @@ export function createPluginFields({
                 "No compatible, ready credential is available to both you and this Agent.",
               ),
             );
+            if (canRecheck) {
+              details.append(
+                element(
+                  "p",
+                  { className: "hint" },
+                  "After access is restored, recheck accounts. Then load plugins and tools again.",
+                ),
+              );
+              const action = button(
+                "Recheck accounts",
+                () => {
+                  if (action.isConnected) {
+                    canRecheck(slot);
+                  }
+                },
+                { size: "sm", "aria-label": `Recheck accounts for ${slot.label}` },
+              );
+              action.dataset.recheckAccounts = "";
+              details.append(action);
+            }
           }
           if (slot.toolDiscovery && !current && sources.length > 0) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
@@ -1604,7 +1640,17 @@ export function createPluginFields({
       );
     }
     updateDetailDisabled(values === null);
-    if (focusedCatalogControl) {
+    if (active?.hasAttribute("data-recheck-accounts") && catalog?.access === "checking") {
+      recheckAccess.focus();
+    } else if (active === recheckAccess && accessActions.hidden && !focusRefusal) {
+      [loadPlugins, detail.querySelector<HTMLElement>("h3"), search, done]
+        .find(
+          (control) =>
+            control?.checkVisibility({ visibilityProperty: true }) &&
+            !control.matches(":disabled, [aria-disabled='true']"),
+        )
+        ?.focus();
+    } else if (focusedCatalogControl) {
       if (
         !focusRefusal &&
         (focusedCatalogControl.closest("[hidden]") || (!reloadRequired && tabState().activeId))
@@ -1665,6 +1711,7 @@ export function createPluginFields({
       describeCatalogControls();
       updateDetailDisabled(selections() === null);
     },
+    canRecheckAccounts,
     resetSearch() {
       // Discovery calls this when credentials or the provider change.
       for (const state of tabs) {

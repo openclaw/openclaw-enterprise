@@ -182,11 +182,19 @@ turns.
 
 In **Pages/Agent detail → Choose tools for a connected Slack account**, select the
 simulated account and load tools. After the simulated permission error, choose
-**Recheck access**, then **Load plugins**. Reopen Slack and load its tools.
+**Recheck access**. Verify it disappears and focus moves to **Load plugins**
+when the recheck still owns focus. Choose **Load plugins**, reopen Slack and
+load its tools.
 Enable a tool, open **Tool policy**, and set **Require approval for** to **Every
 action**. Confirm unsupported settings are disabled. Save, reopen, and verify the
 selection. Disable the tool to remove its approval setting. The displayed note
 explains that Gateway approval does not cover direct credentialed scripts.
+
+In **Pages/Agent detail → Recover a Slack account after access is restored**,
+follow the same steps through **Recheck access** and **Load plugins**. Reopen
+Slack. Check that no account is eligible. Activate **Recheck accounts** with the
+keyboard. Focus moves to **Load plugins**. Load plugins, reopen Slack, and load
+tools for the restored account.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844

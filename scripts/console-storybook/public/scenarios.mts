@@ -67,6 +67,12 @@ type AuthoredRule = Omit<FixtureRule, "data"> &
     | { data?: never }
     | { suffix: "/native-admin"; data: { status: "unavailable" } }
     | {
+        suffix: "/plugins/capabilities";
+        data: NonNullable<PluginFieldsOptions["capabilities"]> & {
+          discoveryCredential: "none" | "required";
+        };
+      }
+    | {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions";
         data: PermissionSnapshot;
       }
@@ -276,6 +282,8 @@ const agentDetailScenarios = createAgentDetailScenarios({
   currentVersion,
   candidateVersion,
 });
+
+const slackMcpTools = agentDetailScenarios.configuration.slackMcpTools;
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 const authoredScenarios = {
@@ -1011,12 +1019,40 @@ const authoredScenarios = {
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
   slackMcpTools: {
-    ...agentDetailScenarios.configuration.slackMcpTools,
+    ...slackMcpTools,
     steps: [
       "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
-      "After the refusal, check that the notice shows the request ID and Recheck access. Choose Recheck access and wait for the confirmation.",
+      "After the refusal, verify the request ID and Recheck access. Activate Recheck access with the keyboard. Verify it disappears and Load plugins receives focus.",
       "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
       "Choose Done and expand Plugin selections JSON to confirm the selected account remains in the draft.",
+    ],
+  } satisfies LocalScenario,
+  slackMcpAccountRecovery: {
+    ...slackMcpTools,
+    name: "Recover a Slack account after access is restored",
+    description: "Recover a managed Slack account that is temporarily ineligible for discovery.",
+    rules: [
+      ...slackMcpTools.rules,
+      {
+        suffix: "/plugins/capabilities",
+        method: "GET",
+        skip: 1,
+        once: true,
+        data: {
+          ...slackMcpTools.pluginCapabilities,
+          discoveryCredential: slackMcpTools.pluginDiscoveryCredential,
+          credentialSlots: slackMcpTools.pluginCapabilities.credentialSlots.map((slot) => ({
+            ...slot,
+            sources: [],
+          })),
+        },
+      },
+    ],
+    steps: [
+      "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
+      "After the permission error, choose Recheck access, then Load plugins. Reopen Slack and check that no account is eligible.",
+      "Activate Recheck accounts with the keyboard. Verify Load plugins receives focus and the catalog is empty.",
+      "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
     ],
   } satisfies LocalScenario,
   pluginsDetailIdentityRefused: {

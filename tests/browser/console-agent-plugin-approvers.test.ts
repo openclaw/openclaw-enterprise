@@ -1055,10 +1055,14 @@ async function expectManagedBlocked(
   await ui.button("Available plugins").click();
 }
 
-async function recheckManaged(ui: ManagedAccessBrowser, status: number) {
+async function recheckManaged(
+  ui: ManagedAccessBrowser,
+  status: number,
+  activate = () => ui.button("Recheck access").click(),
+) {
   const [response] = await Promise.all([
     responseTo(ui.page, "GET", ui.capabilitiesUrl),
-    ui.button("Recheck access").click(),
+    activate(),
   ]);
   assert.equal(response.status(), status);
   if (status !== 401) {
@@ -1154,7 +1158,18 @@ for (const loss of [
     await expectManagedBlocked(ui, refusal);
     assert.equal(ui.rechecks(), 0, "the refusal must not trigger an automatic recheck");
 
-    const checked = await recheckManaged(ui, action ? 403 : 200);
+    const narrowCard = loss === "Agent source";
+    if (narrowCard) {
+      await ui.button("Configured plugins").click();
+      await pluginCard(ui.dialog, slackPluginId).waitFor();
+      await ui.page.setViewportSize({ width: 390, height: 720 });
+    }
+    const recheck = ui.button("Recheck access");
+    const staleRecheck = await recheck.elementHandle();
+    const checked = await recheckManaged(ui, action ? 403 : 200, async () => {
+      await recheck.focus();
+      await ui.page.keyboard.press("Enter");
+    });
     assert.deepEqual(
       ui.reads(),
       [{}, managedDetailsBody(sourceId)],
@@ -1166,6 +1181,18 @@ for (const loss of [
       await ui.checkDraft();
     } else {
       await expectAccounts(checked, [siblingId]);
+      assert.equal(await recheck.isVisible(), false);
+      const recovered = ui.dialog.getByRole("status").filter({ hasText: "Access rechecked." });
+      await recovered.waitFor();
+      assert.doesNotMatch(await recovered.innerText(), /Request ID:/);
+      assert.equal(
+        await ui.button("Load plugins").evaluate((node) => node === document.activeElement),
+        true,
+      );
+      if (narrowCard) {
+        await ui.page.setViewportSize({ width: 1280, height: 800 });
+        await ui.button("Available plugins").click();
+      }
       await loadFreshManaged(ui, [siblingId]);
       assert.notEqual(
         await ui.account.inputValue(),
@@ -1178,6 +1205,11 @@ for (const loss of [
       await ui.account.selectOption(siblingId);
       const editedDraft = await ui.input.inputValue();
       await loadManagedTools(ui, siblingId);
+      await staleRecheck.dispatchEvent("click");
+      // A healthy catalog and its loaded tools survive the stale action.
+      assert.equal(await ui.tool.isVisible(), true);
+      assert.equal(await ui.button("Slack").isVisible(), true);
+      assert.equal(await recheck.isVisible(), false);
       await ui.checkDraft(editedDraft);
       assert.deepEqual(ui.reads(), [
         {},
@@ -1190,6 +1222,176 @@ for (const loss of [
     ui.checkNoWrites();
   });
 }
+
+test("An empty managed account slot rechecks a regrant and requires fresh discovery", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  const { page, sourceId, siblingId } = ui;
+  const restriction = ui.denySource(sourceId);
+  ui.denySource(siblingId);
+  const refusal = await refuseManaged(ui);
+  await expectManagedBlocked(ui, refusal);
+
+  const recheck = ui.button("Recheck access");
+  const held = await holdRequests(t, page, ui.capabilitiesUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const done = ui.button("Done");
+  try {
+    const checked = recheckManaged(ui, 200, async () => {
+      await recheck.focus();
+      await page.keyboard.press("Enter");
+    });
+    await within(held.requested, "the empty capabilities response");
+    await done.focus();
+    held.release();
+    await expectAccounts(await checked, []);
+  } finally {
+    held.release();
+  }
+  assert.equal(await recheck.isVisible(), false);
+  assert.equal(await done.evaluate((node) => node === document.activeElement), true);
+  await loadFreshManaged(ui, []);
+  assert.equal((await ui.loadTools.isVisible()) && (await ui.loadTools.isEnabled()), false);
+  await ui.checkDraft();
+
+  liftRestriction(ui.fixture.policy, restriction);
+  const accountRecheck = ui.button("Recheck accounts for Slack user account");
+  const staleAccountRecheck = await accountRecheck.elementHandle();
+  const reads = ui.reads();
+  const regrant = await holdRequests(t, page, ui.capabilitiesUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  try {
+    const checked = recheckManaged(ui, 200, async () => {
+      await accountRecheck.focus();
+      await page.keyboard.press("Enter");
+    });
+    await within(regrant.requested, "the regranted capabilities response");
+    const checking = ui.button("Checking access…");
+    assert.equal(await checking.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await checking.isEnabled(), false);
+    assert.equal(await ui.button("Load plugins").isEnabled(), false);
+    assert.equal(await pluginRow(ui.dialog, googlePluginId).count(), 0);
+    await staleAccountRecheck.dispatchEvent("click");
+    regrant.release();
+    await expectAccounts(await checked, [sourceId]);
+  } finally {
+    regrant.release();
+  }
+  assert.equal(
+    await ui.button("Load plugins").evaluate((node) => node === document.activeElement),
+    true,
+  );
+  assert.equal(await recheck.isVisible(), false);
+  assert.equal(await accountRecheck.isVisible(), false);
+  assert.equal(await pluginRow(ui.dialog, googlePluginId).count(), 0);
+  assert.deepEqual(ui.reads(), reads, "the GET must retire discovery without a POST");
+  assert.equal(ui.rechecks(), 2);
+  await ui.checkDraft();
+
+  await loadFreshManaged(ui, [sourceId]);
+  assert.equal(await ui.account.inputValue(), sourceId, "the draft still names this account");
+  assert.deepEqual(ui.reads(), [...reads, {}], "only the explicit catalog reload ran");
+  await loadManagedTools(ui, sourceId);
+  ui.checkNoWrites();
+});
+
+test("Canceled managed rechecks keep current refusal guidance across reopen and later failures", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  const { page, dialog, sourceId, siblingId } = ui;
+  const restriction = ui.denySource(sourceId);
+  ui.denySource(siblingId);
+  const original = await refuseManaged(ui);
+  await expectManagedBlocked(ui, original);
+
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const recheck = ui.button("Recheck access");
+  const checking = "Checking plugin access and account eligibility.";
+  const guidance = dialog.getByRole("status").filter({ hasText: "Choose Recheck access." });
+
+  async function cancelHeldRecheck(action: Locator, sources: string[], refusal?: DiscoveryRefusal) {
+    const reads = ui.reads();
+    const count = ui.rechecks();
+    const held = await holdRequests(t, page, ui.capabilitiesUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    try {
+      await action.click();
+      const captured = await within(held.requested, "the real capabilities reply");
+      assert.ok(captured);
+      assert.equal(captured.status(), 200);
+      assert.deepEqual(
+        accountSlot(await captured.json()).sources.map(({ id }) => id),
+        sources,
+      );
+      await dialog.getByText(checking, { exact: true }).waitFor();
+      await Promise.all([
+        page.waitForEvent("requestfailed", {
+          predicate: (request) =>
+            request.url() === ui.capabilitiesUrl && request.method() === "GET",
+        }),
+        ui.button("Done").click(),
+      ]);
+      await dialog.waitFor({ state: "hidden" });
+      await configure.click();
+      await guidance.waitFor();
+      assert.equal(await recheck.isEnabled(), true);
+      assert.equal(await dialog.getByText(checking, { exact: true }).count(), 0);
+      if (refusal) {
+        await expectDiscoveryNotice(dialog, refusal, managedAccessAdvice);
+      } else {
+        assert.doesNotMatch(await guidance.innerText(), /Request ID:/);
+      }
+      held.release();
+      await nextFrames(page);
+      assert.equal(await recheck.isEnabled(), true);
+      assert.equal(await guidance.isVisible(), true);
+      assert.equal(await ui.button("Load plugins").isEnabled(), false);
+      assert.equal(await pluginRow(dialog, googlePluginId).count(), 0);
+      assert.equal(await ui.tool.count(), 0);
+      assert.equal(ui.rechecks(), count + 1, "reopen must not recheck automatically");
+      assert.deepEqual(ui.reads(), reads, "cancellation must not replay discovery");
+      await ui.checkDraft();
+    } finally {
+      held.release();
+    }
+  }
+
+  await cancelHeldRecheck(recheck, [], original);
+  await expectAccounts(await recheckManaged(ui, 200), []);
+  await loadFreshManaged(ui, []);
+  const accountRecheck = ui.button("Recheck accounts for Slack user account");
+  const reads = ui.reads();
+  const restrictionOnEdit = ui.denyAgent("update");
+  const current = await refusedDiscovery(
+    await recheckManaged(ui, 403, () => accountRecheck.click()),
+    accessDenied.code,
+  );
+  assert.notEqual(current.id, original.id);
+  await expectDiscoveryNotice(dialog, current, managedAccessAdvice);
+  const failed = await refusedDiscovery(await recheckManaged(ui, 403), accessDenied.code);
+  assert.notEqual(failed.id, current.id);
+  await expectDiscoveryNotice(dialog, current, managedAccessAdvice);
+  const message = await guidance.innerText();
+  assert.ok(message.includes(`Request ID: ${failed.id}`));
+  assert.ok(!message.includes(original.id));
+  assert.deepEqual(ui.reads(), reads);
+  await ui.checkDraft();
+
+  liftRestriction(ui.fixture.policy, restrictionOnEdit);
+  await expectAccounts(await recheckManaged(ui, 200), []);
+  await loadFreshManaged(ui, []);
+  liftRestriction(ui.fixture.policy, restriction);
+  await cancelHeldRecheck(accountRecheck, [sourceId]);
+  assert.equal(ui.rechecks(), 6);
+  ui.checkNoWrites();
+});
 
 test("A later catalog refusal retires recovered Add and a regranted source still needs Agent update", async (t) => {
   const ui = await managedAccessBrowser(t);

@@ -1,4 +1,8 @@
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type {
+  AgentPluginCredentialSlot,
+  PluginCatalogEntry,
+  PluginCatalogPage,
+} from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   type CatalogDirection,
@@ -107,8 +111,10 @@ export function createPluginDiscovery({
   let prefetched = false;
   let searchTimer: number | undefined;
   let requests = new AbortController();
-  // Keep the recovery context after a successful recheck so a later refusal can renew the gate.
-  let managedRefusal: { requestId: string | undefined } | undefined;
+  // Keep the managed recovery path available after clearing the active refusal.
+  let managedRecovery = false;
+  let currentRefusal: { requestId: string | undefined } | undefined;
+  const retryAccessAdvice = () => withRequestId(managedAccessAdvice, currentRefusal?.requestId);
   let catalog: Pick<
     PluginFieldCatalog,
     "status" | "message" | "nextCursor" | "setup" | "reloadRequired" | "access"
@@ -134,7 +140,7 @@ export function createPluginDiscovery({
       }
     },
     onCancelDiscovery: cancel,
-    ...(applyRecheckedCapabilities && { onRecheckAccess: () => void recheckAccess() }),
+    ...(applyRecheckedCapabilities && { onRecheckAccess: (slot) => void recheckAccess(slot) }),
     onLoadTools: (id, connection) => void loadTools(id, connection),
   });
 
@@ -149,7 +155,9 @@ export function createPluginDiscovery({
         pageNumber: pageIndex + 1,
         hasPrevious: pageIndex > 0,
         canLoad: available,
-        canRecheck: !!managedRefusal && catalog.access !== "deleting",
+        canRecheck:
+          managedRecovery &&
+          (available || catalog.access === "denied" || catalog.access === "checking"),
         message:
           catalog.message ??
           (typeof statusMessage === "function" ? statusMessage() : statusMessage),
@@ -226,9 +234,10 @@ export function createPluginDiscovery({
         ),
         "deleting",
       );
-    } else if (managed || managedRefusal) {
-      managedRefusal = { requestId: error.requestId };
-      retireCatalog(withRequestId(managedAccessAdvice, error.requestId), "denied");
+    } else if (managed || managedRecovery) {
+      managedRecovery = true;
+      currentRefusal = { requestId: error.requestId };
+      retireCatalog(retryAccessAdvice(), "denied");
     } else {
       const denial = typeof deniedMessage === "function" ? deniedMessage() : deniedMessage;
       retireCatalog(withRequestId(`${denial} Choose Load plugins to try again.`, error.requestId));
@@ -249,20 +258,15 @@ export function createPluginDiscovery({
     });
   }
 
-  async function recheckAccess() {
-    if (
-      !applyRecheckedCapabilities ||
-      !managedRefusal ||
-      !context.isCurrent() ||
-      isPending() ||
-      catalog.access === "checking" ||
-      catalog.access === "deleting"
-    ) {
+  async function recheckAccess(slot?: AgentPluginCredentialSlot) {
+    if (!applyRecheckedCapabilities || !managedRecovery || !context.isCurrent() || isPending()) {
       return;
     }
-    const { requestId } = managedRefusal;
-    const refusal = withRequestId(managedAccessAdvice, requestId);
-    retireCatalog(refusal, "checking");
+    if (slot ? !fields.canRecheckAccounts(slot) : catalog.access !== "denied") {
+      return;
+    }
+
+    retireCatalog("Checking plugin access and account eligibility.", "checking");
     render();
     const current = generation;
     const isCurrent = () => context.isCurrent() && current === generation;
@@ -274,14 +278,13 @@ export function createPluginDiscovery({
         return;
       }
       if (applyRecheckedCapabilities(response)) {
+        currentRefusal = undefined;
         delete catalog.access;
-        catalog.message = withRequestId(
-          "Access rechecked. Choose Load plugins to discover available plugins again.",
-          requestId,
-        );
+        catalog.message =
+          "Access rechecked. Choose Load plugins to discover available plugins again.";
       } else {
         catalog.access = "denied";
-        catalog.message = `${refusal} Plugin capabilities could not be confirmed for this setup.`;
+        catalog.message = `${retryAccessAdvice()} Plugin capabilities could not be confirmed for this setup.`;
       }
     } catch (cause) {
       if (!isCurrent()) {
@@ -290,9 +293,9 @@ export function createPluginDiscovery({
       const error = requestFailure(cause);
       if (error.status === 401) {
         context.onExpired();
-      } else if (!(error.status === 409 && retireSavedDiscovery(error))) {
+      } else if (!((error.status === 409 || !currentRefusal) && retireSavedDiscovery(error))) {
         catalog.access = "denied";
-        catalog.message = `${refusal} ${withRequestId("Access could not be rechecked.", error.requestId)}`;
+        catalog.message = `${retryAccessAdvice()} ${withRequestId("Access could not be rechecked.", error.requestId)}`;
       }
     } finally {
       if (isCurrent()) {
@@ -306,6 +309,7 @@ export function createPluginDiscovery({
     invalidateRequests();
     if (catalog.access === "checking") {
       catalog.access = "denied";
+      catalog.message = retryAccessAdvice();
     }
     if (pending) {
       resetCatalogPage(
