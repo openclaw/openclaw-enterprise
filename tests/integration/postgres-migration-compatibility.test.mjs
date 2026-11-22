@@ -955,6 +955,12 @@ async function assertCompletedHistory(db, previous = []) {
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
+      // Only the exact creator can discard a proven uncommitted reservation.
+      [
+        "occ.discard_unbound_agent_automation(text,text,uuid,text)",
+        true,
+        "search_path=pg_catalog, pg_temp",
+      ],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
       ["occ.hold_agent_audit_policy(text)", true],
