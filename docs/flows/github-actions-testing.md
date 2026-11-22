@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-19 19:23"
-last_updated_session: "authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954"
+updated: "2026-11-22 10:45"
+last_updated_session: "authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e"
 ---
 
 # GitHub Actions testing flow
@@ -250,12 +250,10 @@ server/network deletion and volume checks. After a persisted mutation marker,
 fixture fallback requires completed cleanup. Verified pre-mutation refusals permit fallback.
 See [named-volume limits](../testing/local.md#staged-sign-in-cleanup).
 
-`scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
-`scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
-Completion drains output, kills grouped descendants and returns command status.
-At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL still apply after
-direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
-Windows bounds streams and terminates only the direct child.
+`scripts/ci/command-supervision.ts:runCommand` awaits exit and pipe closure for preparation and cleanup.
+On POSIX, `scripts/ci/cleanup-command.ts` kills the owned group when caller IPC closes.
+At [timeout](../testing/ci/configuration.md#runner-overrides), the caller sends TERM, then KILL after one grace period.
+Escaped descendants’ pipes close after another. Windows signals only the direct child.
 
 `scripts/ci/runner-process.ts:killDescendants` stops cleanup groups before sweeping descendants.
 `tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
@@ -292,6 +290,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 10:45: Trace the shared parent-side command supervisor. (authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e - 427e14ba93239035c9cc7445dcf19710d72bab67)
 
 - 2026-11-19 19:23: Retry reads and report failures. (authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954 - ebcbd2f60535c36b3a9b63847a2d052363cd29a6)
 
