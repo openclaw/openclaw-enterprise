@@ -267,6 +267,35 @@ export function registerHelmCases(): void {
   });
 
   test(
+    "a repository token Secret selects the worker's token path; exactly one authority is required",
+    { skip: helmSkip },
+    async (t) => {
+      const { appKeySecretName: _appKey, ...withoutAuthority } = repositoryConfiguration();
+      const repository = { ...withoutAuthority, tokenSecretName: "occ-repository-token" };
+      const output = await render("codex", codexInput({ repository }));
+      t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+      assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+      assert.match(output.installation, /tokenPath: \/etc\/openclaw\/prepared-repository\/token\n/);
+      assert.doesNotMatch(output.installation, /privateKeyPath/);
+      assert.match(output.values, /tokenSecretName: occ-repository-token\n/);
+      assert.doesNotMatch(output.values, /appKeySecretName/);
+      const manifests = helmTemplate(output);
+      assert.match(manifests, /name: "occ-repository-token"\n\s+items:\n\s+- key: "token"\n\s+path: token\n/);
+      assert.doesNotMatch(manifests, /private-key\.pem/);
+      for (const refused of [
+        withoutAuthority,
+        { ...repository, appKeySecretName: "occ-repository-app-key" },
+      ]) {
+        await assertPreflightFailure(
+          "codex",
+          codexInput({ repository: refused }),
+          /repository requires exactly one of appKeySecretName and tokenSecretName\./,
+        );
+      }
+    },
+  );
+
+  test(
     "preflight refuses sign-in Secrets that ChatGPT or repository credentials use, as Helm does",
     { skip: helmSkip },
     async () => {

@@ -67,6 +67,7 @@ interface RepositoryValues {
   registryConfigMapName?: string;
   serviceConfigSecretName?: string;
   appKeySecretName?: string;
+  tokenSecretName?: string;
   tlsSecretName?: string;
   publicCaSecretName?: string;
   serviceName?: string | undefined;
@@ -1408,6 +1409,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "registryConfigMapName",
       "serviceConfigSecretName",
       "appKeySecretName",
+      "tokenSecretName",
       "tlsSecretName",
       "publicCaSecretName",
       "serviceName",
@@ -1573,6 +1575,7 @@ function dedicatedSecrets(
             [
               "serviceConfigSecretName",
               "appKeySecretName",
+              "tokenSecretName",
               "preparedCustodySecretName",
               "tlsSecretName",
             ] as const
@@ -2282,9 +2285,16 @@ function buildRendered(
         diagnostics,
         resourceNameRule,
       ),
-      appKeySecretName: asString(
+      // Exactly one repository authority: the App key, or a fine-grained token (native Git).
+      appKeySecretName: optionalString(
         repository,
         ["repository", "appKeySecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
+      tokenSecretName: optionalString(
+        repository,
+        ["repository", "tokenSecretName"],
         diagnostics,
         resourceNameRule,
       ),
@@ -2309,9 +2319,17 @@ function buildRendered(
         description: "an IPv4 CIDR",
       }),
     } satisfies RepositoryValues;
+    if ((credentials.appKeySecretName === undefined) === (credentials.tokenSecretName === undefined)) {
+      diagnostics.errors.push(
+        "repository requires exactly one of appKeySecretName and tokenSecretName.",
+      );
+    }
     values.repositoryCredentials = credentials;
     installation.backend.push(preparedRepositoryBackend({ backendId: credentials.backendId }));
-    installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
+    installation.repository = preparedRepositoryInstallation({
+      sessionDurationSeconds: 86_400,
+      source: credentials.tokenSecretName === undefined ? "app" : "token",
+    });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,
       podLabels: {

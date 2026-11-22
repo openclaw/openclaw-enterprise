@@ -9,16 +9,19 @@ export const REPOSITORY_DRIVER_ID = "repository-credentials";
 export const REPOSITORY_REGISTRY_PATH = "/etc/openclaw/repository-registry/registry.json";
 export const REPOSITORY_CONTROL_SOCKET = "/run/openclaw/repository-control/private/control.sock";
 export const REPOSITORY_PUBLIC_CA_PATH = "/etc/openclaw/repository-ca/ca.crt";
-// Only the worker mounts this directory: private-key.pem and custody.key.
+// Only the worker mounts this directory: custody.key with private-key.pem or token.
 export const PREPARED_REPOSITORY_DIRECTORY = "/etc/openclaw/prepared-repository";
 
 /** The Installation's `repository` section. */
 export function preparedRepositoryInstallation({
   id = REPOSITORY_DRIVER_ID,
   sessionDurationSeconds,
+  source = "app",
 }: {
   id?: string;
   sessionDurationSeconds: number;
+  /** The repository authority: the App key, or a fine-grained token Secret. */
+  source?: "app" | "token";
 }) {
   return {
     id,
@@ -29,7 +32,9 @@ export function preparedRepositoryInstallation({
     },
     preparedGitHub: {
       custodyKeyPath: `${PREPARED_REPOSITORY_DIRECTORY}/custody.key`,
-      privateKeyPath: `${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`,
+      ...(source === "token"
+        ? { tokenPath: `${PREPARED_REPOSITORY_DIRECTORY}/token` }
+        : { privateKeyPath: `${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem` }),
     },
   };
 }
