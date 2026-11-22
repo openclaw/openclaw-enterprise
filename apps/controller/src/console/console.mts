@@ -1196,6 +1196,22 @@ function focusInShownView() {
         return;
       }
       target.focus({ preventScroll: true });
+      if (
+        rebuilt &&
+        document.activeElement === target &&
+        target.dataset.refocusKey === key &&
+        focused instanceof HTMLInputElement &&
+        target instanceof HTMLInputElement &&
+        focused.type === "search" &&
+        target.type === "search" &&
+        target.value === focused.value
+      ) {
+        target.setSelectionRange(
+          focused.selectionStart,
+          focused.selectionEnd,
+          focused.selectionDirection ?? undefined,
+        );
+      }
       // A rebuilt row can be taller than the one it replaces: a reread that finds the Agent
       // deleting adds its badge above the row's icons. The restored icon then sat cut off at the
       // viewport's bottom with its row note below the fold (finding 2976). Keep the control's

@@ -790,8 +790,13 @@ const authoredScenarios = {
   agentsSearch: {
     group: "Pages/Agents",
     name: "No search matches",
-    actions: [{ selector: 'input[type="search"]', value: "no-such-agent" }],
-    description: "Search returns no matches without changing the Namespace.",
+    actions: [{ selector: 'input[type="search"]', value: "no-such-agent", focus: true }],
+    description: "Clear a search, browse Agent names and open a match with the keyboard.",
+    steps: [
+      "Press Enter. Stay on No matching Agents. Press Escape to restore the list.",
+      "Press Down twice to focus the second name, then Up to focus the first. Escape returns to search.",
+      "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the Agent name has focus.",
+    ],
   } satisfies LocalScenario,
   noNamespaces: {
     group: "Pages/Agents",
