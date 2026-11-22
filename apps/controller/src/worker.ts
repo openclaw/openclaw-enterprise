@@ -138,7 +138,11 @@ import type { InstallationRuntimeDrivers } from "./composition/installation-conf
 import { installTokenServiceDriver } from "./composition/token-service.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
-import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
+import { ConfigurationFailure as ComputeConfigurationFailure } from "./drivers/compute/configuration-failure.ts";
+import type {
+  NativeRepositoryWithdrawalSession,
+  PreparedRepositoryGitMaterialState,
+} from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
   captureNamespaceHint,
@@ -153,6 +157,7 @@ import { HarnessExposureSweep } from "./worker/harness-exposure-sweep.ts";
 import {
   createRevisionCredentialResolver,
   resolveRevisionCredentialSource,
+  resolveRevisionHarnessAuth,
   revisionHarnessSourceId,
   revisionSecretBindings,
   UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT,
@@ -230,6 +235,11 @@ export interface ControllerWorkerOptions {
   readonly repositoryGitMaterial?: (
     revisionId: string,
   ) => Promise<PreparedRepositoryGitMaterialState>;
+  /** The selected native prepared Git owner observes terminal custody for the exact sessions. */
+  readonly observeNativeRepositoryWithdrawal?: (
+    revision: Readonly<AgentRevision>,
+    sessions: readonly NativeRepositoryWithdrawalSession[],
+  ) => Promise<"disposed" | "pending" | "unsafe">;
 }
 
 type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
@@ -337,6 +347,7 @@ const REPOSITORY_CLEANUP_RECHECK_AGE_DIVISOR = 40;
 interface RepositoryExpiryWithdrawal {
   readonly withdrawal: "withdrawn" | "pending" | "retire-runtime";
   readonly denial?: RevisionDispatchResult;
+  readonly nativeRemoval?: true;
 }
 
 type RepositoryCleanupEffect = RepositoryCleanupOutcome & {
@@ -1395,6 +1406,7 @@ export class ControllerWorker {
   private readonly onHealthy: (() => Promise<void>) | undefined;
   private readonly onProgress: (() => Promise<void>) | undefined;
   private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
+  private readonly observeNativeRepositoryWithdrawal: ControllerWorkerOptions["observeNativeRepositoryWithdrawal"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
@@ -1585,6 +1597,7 @@ export class ControllerWorker {
     this.healthClock = options.healthClock ?? (() => performance.now());
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
+    this.observeNativeRepositoryWithdrawal = options.observeNativeRepositoryWithdrawal;
     this.repositoryPolicy = drivers?.repositoryPolicy;
     this.repositoryAdmission = drivers?.repositoryAdmission;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
@@ -1651,12 +1664,8 @@ export class ControllerWorker {
     this.resolveRevisionSecretContext = createRevisionCredentialResolver({
       state: this.state,
       compute: this.compute,
-      secretDriverId: this.secretDriverId,
-      credentialGateway: this.credentialGateway,
-      proxyDriver: this.proxyDriver,
+      ...this.revisionHarnessCredentialDependencies,
       credentialDeliveryRef: this.credentialDeliveryRegistration?.ref,
-      currentTokenServiceInstanceId: () =>
-        this.provisioningController?.currentTokenServiceInstanceId(),
     });
   }
 
@@ -2075,6 +2084,16 @@ export class ControllerWorker {
       this.pendingHealth = undefined;
     });
     return this.pendingHealth;
+  }
+
+  private get revisionHarnessCredentialDependencies() {
+    return {
+      secretDriverId: this.secretDriverId,
+      credentialGateway: this.credentialGateway,
+      proxyDriver: this.proxyDriver,
+      currentTokenServiceInstanceId: () =>
+        this.provisioningController?.currentTokenServiceInstanceId(),
+    };
   }
 
   private async loadIAMState(): Promise<NativeIAMState> {
@@ -2711,6 +2730,12 @@ export class ControllerWorker {
     return this.state.transactWithQueue(async (unit, queue) => {
       const expiry = effect.runtime?.kind === "expiry" ? effect.runtime : undefined;
       let { settled } = effect;
+      if (expiry?.nativeRemoval === true) {
+        // Configured IAM writers take this lock before Namespace and Agent.
+        await unit.installations.holdIAMConfiguration("shared");
+      }
+      const agent =
+        effect.runtime === undefined ? undefined : await this.lockClaimAgent(unit, claim);
       requireClaimRenewal(await queue.heartbeat(claim));
       if (expiry?.denial !== undefined) {
         await this.appendRevisionDenial(unit, claim, expiry.denial);
@@ -2719,7 +2744,6 @@ export class ControllerWorker {
         const stoppedRevision = effect.runtime.revision;
         // Record a confirmed runtime stop even when session disposal is still pending.
         // A newer active revision and the Agent's desired run state are left intact.
-        const agent = await this.lockClaimAgent(unit, claim);
         if (agent?.servicePrincipalId === stoppedRevision.servicePrincipalId) {
           await unit.agents.compareAndClearActiveRevision(
             claim.namespaceId,
@@ -2732,7 +2756,6 @@ export class ControllerWorker {
         // Recheck the exact active owner under admission's locks after the supplier call. A
         // replacement or terminal retirement wins, including over pending. Stop keeps its
         // own supersedable runtime disposition while finite withdrawal remains fenced.
-        const agent = await this.lockClaimAgent(unit, claim);
         const owner = {
           namespaceId: claim.namespaceId,
           agentId: claim.agentId!,
@@ -2741,13 +2764,26 @@ export class ControllerWorker {
         const expiryState = await queue.repositoryExpiryState(owner);
         const waitingForStop =
           expiryState === "removal" && agent?.desiredRuntimeState === "stopped";
-        if (
+        let retireRuntime =
           expiry.withdrawal === "retire-runtime" ||
+          (expiry.nativeRemoval === true && expiryState !== "removal") ||
           !ownsActiveRepositoryRevision(agent, expiry.revision) ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
-          expiryState === "retiring"
-        ) {
+          expiryState === "retiring";
+        if (!retireRuntime && expiry.nativeRemoval === true && agent !== undefined) {
+          const refusal = await this.validateRetainedModelAuthority(
+            claim,
+            agent,
+            expiry.revision,
+            unit,
+          );
+          if (refusal?.authorization !== undefined) {
+            await this.appendRevisionDenial(unit, claim, refusal);
+          }
+          retireRuntime = refusal !== undefined;
+        }
+        if (retireRuntime) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
           await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
           const code = "REPOSITORY_RUNTIME_RETIREMENT_QUEUED";
@@ -2857,6 +2893,36 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
+      if (
+        expiry === "removal" &&
+        this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
+      ) {
+        const refusal = await this.validateRetainedModelAuthority(claim, agent, revision);
+        signal.throwIfAborted();
+        if (refusal !== undefined) {
+          return {
+            withdrawal: "retire-runtime",
+            ...(refusal.authorization === undefined ? {} : { denial: refusal }),
+          };
+        }
+        try {
+          validateExecutionAdmission(compute, revision, this.credentialDeliveryRegistration?.ref);
+        } catch (error) {
+          if (!(error instanceof ComputeConfigurationFailure)) {
+            throw error;
+          }
+          return { withdrawal: "retire-runtime" };
+        }
+        if (agent.desiredRuntimeState === "running") {
+          // Resume independent source-withdrawal work through its own queued claim.
+          await this.recoverPendingCredentialWithdrawals(claim, revision);
+        }
+        signal.throwIfAborted();
+        return {
+          withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal),
+          nativeRemoval: true,
+        };
+      }
       // These facts are independent. A failed read cannot erase a definite authority loss
       // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
       const [authorization, modelWithdrawn] = await Promise.allSettled([
@@ -2934,6 +3000,124 @@ export class ControllerWorker {
         return { withdrawal: "pending" };
       }
     });
+  }
+
+  private async validateRetainedModelAuthority(
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+    unit?: PlatformUnitOfWork,
+  ): Promise<RevisionDispatchResult | undefined> {
+    const authorize = async (
+      view: PlatformReadView,
+    ): Promise<RevisionDispatchResult | undefined> => {
+      if (unit !== undefined && !(await unit.installations.holdPrincipalAccount(claim.actorId))) {
+        return { outcome: "permanent", code: "ACTOR_REVOKED" };
+      }
+      return this.authorizeRevision(claim, agent, revision, "withdraw", view);
+    };
+    const resolveModel = async (view: PlatformReadView) => {
+      const auth = revision.harnessAuth;
+      if (unit !== undefined && isServiceAccountHarnessAuth(auth)) {
+        // The credential and binding writers hold this same account row.
+        await unit.serviceAccounts.lockServiceAccount(revision.namespaceId, auth.source.id);
+      }
+      const backend = await this.resolveRevisionBackend(revision, view);
+      if (backend !== undefined) {
+        return backend;
+      }
+      const harness = await resolveRevisionHarnessAuth(
+        revision,
+        { state: this.state, ...this.revisionHarnessCredentialDependencies },
+        view,
+      );
+      return "result" in harness ? harness.result : undefined;
+    };
+    if (unit === undefined) {
+      // Independent read transactions preserve an authoritative refusal even if the
+      // other query aborts its own PostgreSQL transaction.
+      const [permission, model] = await Promise.allSettled([
+        this.state.read(authorize),
+        this.state.read(resolveModel),
+      ]);
+      const refusal =
+        (permission.status === "fulfilled" ? permission.value : undefined) ??
+        (model.status === "fulfilled" ? model.value : undefined);
+      if (refusal !== undefined) {
+        return refusal;
+      }
+      if (permission.status === "rejected") {
+        throw permission.reason;
+      }
+      if (model.status === "rejected") {
+        throw model.reason;
+      }
+      return undefined;
+    }
+
+    // Keep the existing claim and owner locks while recovering from a failed
+    // authorization statement, so a successful model refusal can still commit.
+    // A broken connection cannot roll back the savepoint and the transaction retries.
+    await this.state.queryInTransaction(unit, "SAVEPOINT retained_model_authorization");
+    const [permission] = await Promise.allSettled([authorize(unit)]);
+    if (permission.status === "rejected") {
+      await this.state.queryInTransaction(
+        unit,
+        "ROLLBACK TO SAVEPOINT retained_model_authorization",
+      );
+    }
+    await this.state.queryInTransaction(unit, "RELEASE SAVEPOINT retained_model_authorization");
+    if (permission.status === "fulfilled" && permission.value !== undefined) {
+      return permission.value;
+    }
+    const model = await resolveModel(unit);
+    if (model === undefined && permission.status === "rejected") {
+      throw permission.reason;
+    }
+    return model;
+  }
+
+  private async withdrawFiniteNativeRepositoryAccess(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+    const observePrepared = this.observeNativeRepositoryWithdrawal;
+    if (!observePrepared || typeof this.compute.observeRevision !== "function") {
+      return "retire-runtime";
+    }
+    try {
+      // The caller already observed the irreversible removal fence. Neither receipt
+      // observation can issue a credential or reopen the original admission.
+      const broker = await this.repositoryCredentials.observeFiniteNativeWithdrawal(revision);
+      signal.throwIfAborted();
+      if (broker.state !== "disposed") {
+        return broker.state === "pending" ? "pending" : "retire-runtime";
+      }
+      const prepared = await observePrepared(revision, broker.sessions);
+      signal.throwIfAborted();
+      if (prepared !== "disposed") {
+        return prepared === "pending" ? "pending" : "retire-runtime";
+      }
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // The fenced claim can retry receipt reads. The final transaction still
+      // rechecks the removal, revision owner and required model credential.
+      return unrecoverableRead(error) ? "retire-runtime" : "pending";
+    }
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    try {
+      const runtime = await this.compute.observeRevision(revision, deadline);
+      deadline.throwIfAborted();
+      return runtime?.state === "running" ? "withdrawn" : "pending";
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // An unavailable status read leaves the fenced claim pending.
+      return "pending";
+    }
   }
 
   /** Log a stuck cleanup's cause once per work item and cause, not on every recheck. */
@@ -5612,6 +5796,7 @@ export class ControllerWorker {
     agent: Readonly<Agent>,
     revision: Readonly<AgentRevision>,
     operation: "reconcile" | "withdraw",
+    view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     const denied = await this.authorizeDeploymentActor(claim, agent, revision, operation);
     if (denied !== undefined) {
@@ -5663,12 +5848,12 @@ export class ControllerWorker {
     // revision can attach. A withdrawn source, pending or revoked, never attaches again
     // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
     // before maintenance re-queues the withdrawal itself.
+    const listWithdrawals = (state: PlatformReadView) =>
+      state.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id);
+    const withdrawals =
+      view === undefined ? await this.state.read(listWithdrawals) : await listWithdrawals(view);
     const withdrawnSourceIds = new Set(
-      (
-        await this.state.read((view) =>
-          view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
-        )
-      ).map(({ credentialSourceId }) => credentialSourceId),
+      withdrawals.map(({ credentialSourceId }) => credentialSourceId),
     );
     const sources: ResourceRef[] = revisionCredentialSourceIds(revision)
       .filter((id) => !withdrawnSourceIds.has(id))
@@ -5702,6 +5887,7 @@ export class ControllerWorker {
 
   private async resolveRevisionBackend(
     revision: Readonly<AgentRevision>,
+    view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     if (
       revision.backendId !== null &&
@@ -5713,13 +5899,15 @@ export class ControllerWorker {
     if (!isServiceAccountHarnessAuth(auth)) {
       return undefined;
     }
-    const { account, binding } = await this.state.read(async (view) => ({
-      account: await view.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
-      binding: await view.serviceAccounts.findServiceAccountBackendBinding(
+    const loadAccount = async (state: PlatformReadView) => ({
+      account: await state.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
+      binding: await state.serviceAccounts.findServiceAccountBackendBinding(
         revision.namespaceId,
         auth.source.id,
       ),
-    }));
+    });
+    const { account, binding } =
+      view === undefined ? await this.state.read(loadAccount) : await loadAccount(view);
     if (
       account === undefined ||
       account.namespaceId !== revision.namespaceId ||

@@ -28,6 +28,7 @@ import type { createKubernetesClientConfiguration } from "../../apps/controller/
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
+  digest,
   labelSelectorLabels,
   options,
   routedOptions,
@@ -35,6 +36,10 @@ import {
   tenant,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
+import {
+  readyServiceEndpointSliceList,
+  singleReplicaReadyDeploymentStatus,
+} from "./kubernetes-gateway-readiness-fixture.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type CoreV1Api = InstanceType<KubernetesSdk["CoreV1Api"]>;
@@ -42,7 +47,8 @@ type PodRole = "agent" | "gateway";
 type PodStatus = {
   phase?: string;
   podIP?: string;
-  containerStatuses: { name: PodRole; containerID: string }[];
+  conditions?: { type: string; status: string }[];
+  containerStatuses: { name: PodRole; containerID: string; ready?: boolean }[];
 };
 type PrivateRuntimePodFields = {
   name: string;
@@ -89,6 +95,230 @@ function privateRuntimePod(
 
 function privateRuntimePodList(items: ReturnType<typeof privateRuntimePod>[]) {
   return { apiVersion: "v1", kind: "PodList", items };
+}
+
+export async function checkPreparedNativeRuntimeReadback(context: TestContext) {
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const address = { name: namespace, plane: "execution" } as const;
+  const device = "a".repeat(64);
+  for (const fault of [
+    "none",
+    "initially unready",
+    "disconnected node",
+    "replaced container",
+    "Gateway replacement during Harness status",
+    "changed Gateway node",
+    "held Gateway failure",
+    "held Harness failure",
+    "newly unready",
+    "foreign status",
+  ] as const) {
+    await context.test(fault, async (t) => {
+      let connectionChecked = false;
+      let gatewayReplaced = false;
+      let podLists = 0;
+      let proxyReads = 0;
+      let gatewayDeploymentReads = 0;
+      const driver = new KubernetesComputeDriver(
+        routedOptions({
+          runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+          network: {
+            repositoryCredentials: {
+              namespace: "credential-service",
+              podLabels: { "app.kubernetes.io/component": "worker" },
+              port: 8443,
+            },
+          },
+        }),
+        {
+          preparedRepositoryIngress: true,
+          nodeEnrollment: {
+            createSetup: async () => assert.fail("withdrawal may not create a node"),
+            observeSetup: async () => assert.fail("withdrawal may not enroll a node"),
+            async isConnected(_url, nodeId) {
+              assert.equal(nodeId, device);
+              assert.equal(podLists, 2);
+              connectionChecked = true;
+              return fault !== "disconnected node";
+            },
+          },
+        },
+      );
+      const revision = routedRevision(driver, {
+        repositoryCredentials: {
+          driver: { id: "repository", implementation: "github" },
+          bindings: [
+            {
+              repositoryRef: "project",
+              profile: "git-write",
+              backendId: "backend",
+              grant: { providerInstanceId: "provider", repositoryId: "123", grantId: "write" },
+            },
+          ],
+          deadlineWallMs: Date.now() + 300_000,
+        },
+      });
+      const owner = { namespaceId: tenant.id, agentId: revision.agentId };
+      const harnessOwner = {
+        ...owner,
+        revisionId: revision.id,
+        servicePrincipalId: revision.servicePrincipalId,
+      };
+      const agentDigest = digest(revision.agentId);
+      const gateway = `gateway-${agentDigest}`;
+      const harness = `agent-${agentDigest}-rev-${digest(revision.id)}`;
+      const node = `workspace-node-${agentDigest}-${digest("harness:codex")}`;
+      const namespaceObject = {
+        ...driver["manifest"]("v1", "Namespace", namespace, { namespaceId: tenant.id }),
+        status: { phase: "Active" },
+      };
+      const pod = (role: PodRole) => {
+        const ready =
+          fault !== "initially unready" && !(connectionChecked && fault === "newly unready");
+        const replaced =
+          (connectionChecked && fault === "replaced container") ||
+          (role === "gateway" && gatewayReplaced);
+        const generation = replaced ? 2 : 1;
+        return privateRuntimePod(revision, role, {
+          name: `${role}-native-pod`,
+          namespace,
+          uid: `${role}-uid`,
+          status: {
+            phase: "Running",
+            podIP: "10.42.0.10",
+            conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+            containerStatuses: [
+              { name: role, containerID: `${role}-container-${generation}`, ready },
+            ],
+          },
+        });
+      };
+      // The fixture serves the real runtime status response shape. Readiness
+      // comes from the kubelet, not a diagnostics array in the status response.
+      const core: DiagnosticCore & {
+        readNamespacedService(request: { name: string }): Promise<unknown>;
+        readNamespacedSecret(request: { name: string }): Promise<unknown>;
+      } = {
+        async listNamespace() {
+          return { items: [namespaceObject] };
+        },
+        async readNamespace() {
+          return namespaceObject;
+        },
+        async readNamespacedService({ name }: { name: string }) {
+          assert.equal(name, gateway);
+          const service = driver["manifest"]("v1", "Service", name, owner, address);
+          return { ...service, metadata: { ...service.metadata, uid: `${name}-uid` } };
+        },
+        async readNamespacedSecret({ name }: { name: string }) {
+          assert.equal(name, node);
+          return {
+            ...driver["manifest"]("v1", "Secret", name, owner, address),
+            data: {
+              deviceId: Buffer.from(device).toString("base64"),
+              enrolledRevisionId: Buffer.from(revision.id).toString("base64"),
+            },
+          };
+        },
+        async listNamespacedPod({ labelSelector }) {
+          podLists++;
+          return privateRuntimePodList([
+            pod(labelSelector?.includes("workload-role=agent") ? "agent" : "gateway"),
+          ]);
+        },
+        async connectGetNamespacedPodProxyWithPath({ name, path }) {
+          proxyReads++;
+          assert.equal(connectionChecked, true, "status is sampled after connectivity");
+          assert.equal(path, "openclaw/runtime/status");
+          const role = name.startsWith("agent") ? "agent" : "gateway";
+          if (role === "agent" && fault === "Gateway replacement during Harness status") {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            gatewayReplaced = true;
+          }
+          const failed =
+            connectionChecked &&
+            fault === (role === "agent" ? "held Harness failure" : "held Gateway failure");
+          return {
+            revisionId: revision.id,
+            container: role,
+            podUid: fault === "foreign status" ? "foreign-uid" : pod(role).metadata.uid,
+            ...(role === "gateway" && {
+              workspaceNodeId:
+                connectionChecked && fault === "changed Gateway node" ? "b".repeat(64) : device,
+            }),
+            ...(failed && {
+              runtimeFailure: {
+                component: role,
+                check: "model-probe",
+                checkedAt: tenant.createdAt,
+                code: "AUTHENTICATION_FAILED",
+              },
+            }),
+          };
+        },
+      };
+      Object.defineProperty(driver, "clients", {
+        value: async () => ({
+          core,
+          apps: {
+            async readNamespacedDeployment({ name }: { name: string }) {
+              assert.ok(name === gateway || name === harness);
+              const isGateway = name === gateway;
+              gatewayDeploymentReads += Number(isGateway);
+              const deployment = driver["manifest"](
+                "apps/v1",
+                "Deployment",
+                name,
+                isGateway ? owner : harnessOwner,
+                address,
+              );
+              return {
+                ...deployment,
+                metadata: {
+                  ...deployment.metadata,
+                  generation: 2,
+                  annotations: {
+                    ...deployment.metadata.annotations,
+                    ...(isGateway && {
+                      "openclaw.dev/agent-revision": String(revision.revision),
+                      "openclaw.dev/agent-revision-id": revision.id,
+                    }),
+                  },
+                },
+                spec: {
+                  replicas: 1,
+                  template: {
+                    metadata: { labels: { "openclaw.dev/network-profile": "broad-egress-v1" } },
+                  },
+                },
+                status: singleReplicaReadyDeploymentStatus(2),
+              };
+            },
+          },
+          discovery: {
+            async listNamespacedEndpointSlice() {
+              return readyServiceEndpointSliceList(gateway);
+            },
+          },
+        }),
+      });
+      if (fault === "foreign status") {
+        await assert.rejects(
+          driver.observeRevision(revision, t.signal),
+          /Runtime failure status returned invalid data/,
+        );
+      } else {
+        assert.deepEqual(await driver.observeRevision(revision, t.signal), {
+          state: fault === "none" ? "running" : "unknown",
+        });
+      }
+      const reachedStatus = fault !== "initially unready" && fault !== "disconnected node";
+      assert.equal(connectionChecked, fault !== "initially unready");
+      assert.equal(gatewayDeploymentReads, 1);
+      assert.equal(proxyReads, reachedStatus ? 2 : 0);
+      assert.equal(podLists, reachedStatus ? 4 : 2);
+    });
+  }
 }
 
 export async function checkPrivateRuntimeDiagnostics(context: TestContext) {

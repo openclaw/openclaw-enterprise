@@ -58,8 +58,8 @@ import {
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
+  AGENT_CREATE_ACCESS_CHECK,
   ACCESS_TAB_UNAVAILABLE,
-  AGENT_CREATE_RESTRICTED,
   AGENT_DELETE_DENIED,
   AGENT_STOP_AND_DELETE_DENIED,
   AGENT_STOP_DENIED,
@@ -1113,19 +1113,18 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
   await page.getByRole("heading", { name: "Restricted Agent" }).waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).waitFor();
-  // The Agents list and Create Agent name the Restriction and who lifts it, not an administrator
-  // to ask: she is one (finding D759).
+  // The advisory permission result tells the administrator which access to check.
   await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   const create = page.getByRole("button", {
     name: "Create Agent",
     exact: true,
-    description: AGENT_CREATE_RESTRICTED,
+    description: AGENT_CREATE_ACCESS_CHECK,
   });
   await create.waitFor();
   assert.equal(await create.isDisabled(), true);
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  await page.getByRole("status").getByText(AGENT_CREATE_RESTRICTED, { exact: true }).waitFor();
+  await page.getByRole("status").getByText(AGENT_CREATE_ACCESS_CHECK, { exact: true }).waitFor();
   assert.deepEqual(
     authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends|iam)\./),
     [],
