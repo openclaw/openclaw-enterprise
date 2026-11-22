@@ -1651,7 +1651,7 @@ Example response
         ],
         "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
         "tokenUrl": "https://accounts.example.com/token",
-        "version": 1
+        "version": 2
       },
       "displayName": "Example account",
       "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -1732,16 +1732,22 @@ Create an Installation-wide or Namespace-scoped connection template
 Example request
 ```json
 {
+  "authorizationUrl": "https://accounts.example.com/authorize",
   "destinations": [
     {
-      "host": "inference.example.com",
-      "method": "POST",
-      "path": "/v1/responses",
+      "host": "api.example.com",
+      "path": "/profile",
       "port": 443
     }
   ],
-  "displayName": "Research inference",
-  "mode": "static_bearer"
+  "displayName": "Example account",
+  "issuer": "https://accounts.example.com",
+  "mode": "manual",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "scopes": [
+    "profile.read"
+  ],
+  "tokenUrl": "https://accounts.example.com/token"
 }
 ```
 
@@ -1822,21 +1828,28 @@ Example response
   "data": {
     "createdAt": "2026-10-01T12:00:00.000Z",
     "current": {
+      "authorizationParameters": {},
+      "authorizationUrl": "https://accounts.example.com/authorize",
       "createdAt": "2026-10-01T12:00:00.000Z",
       "destinations": [
         {
-          "host": "inference.example.com",
-          "method": "POST",
-          "path": "/v1/responses",
+          "host": "api.example.com",
+          "path": "/profile",
           "port": 443
         }
       ],
-      "mode": "static_bearer",
-      "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+      "issuer": "https://accounts.example.com",
+      "mode": "manual",
+      "scopes": [
+        "profile.read"
+      ],
+      "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "tokenUrl": "https://accounts.example.com/token",
       "version": 1
     },
-    "displayName": "Research inference",
-    "id": "ctp_223e4567-e89b-42d3-a456-426614174000"
+    "displayName": "Example account",
+    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2085,7 +2098,7 @@ Example response
       ],
       "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
-      "version": 1
+      "version": 2
     },
     "displayName": "Example account",
     "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2273,7 +2286,7 @@ Example response
       ],
       "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
-      "version": 1
+      "version": 2
     },
     "displayName": "Engineering account",
     "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2407,7 +2420,7 @@ Example response
         ],
         "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
         "tokenUrl": "https://accounts.example.com/token",
-        "version": 1
+        "version": 2
       },
       "displayName": "Example account",
       "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2496,7 +2509,7 @@ Example response
     {
       "clientId": "example-client",
       "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-      "connectionTemplateVersion": 1,
+      "connectionTemplateVersion": 2,
       "createdAt": "2026-10-01T12:00:00.000Z",
       "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
       "destinations": [
@@ -2702,6 +2715,7 @@ Example response
       "displayName": "Example provider client",
       "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "issuer": "https://accounts.example.com",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
       "tokenEndpointAuthMethod": "client_secret_basic",
       "tokenUrl": "https://accounts.example.com/token"
     }
@@ -2795,6 +2809,7 @@ Example response
     "displayName": "Example provider client",
     "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
     "issuer": "https://accounts.example.com",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
     "tokenEndpointAuthMethod": "client_secret_basic",
     "tokenUrl": "https://accounts.example.com/token"
   },
@@ -2916,6 +2931,7 @@ Example response
     "displayName": "Example provider client",
     "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
     "issuer": "https://accounts.example.com",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
     "tokenEndpointAuthMethod": "client_secret_basic",
     "tokenUrl": "https://accounts.example.com/token"
   },
@@ -4697,7 +4713,7 @@ Create a Namespace-owned Agent
 | --- | --- | --- | --- |
 | `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `expectedConfigurationGeneration` | `integer` | No | minimum: 1; maximum: 9007199254740991 |
@@ -4759,7 +4775,7 @@ Example request
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -5989,7 +6005,7 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -6158,7 +6174,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | --- | --- | --- | --- |
 | `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | No | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
@@ -6216,7 +6232,7 @@ Example request
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -6585,7 +6601,7 @@ Example request
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.configurationKind` | `"agent"` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.gatewayManagedMode` | `boolean` | Yes | Gateway managed mode requested for this Agent version. It does not report Gateway runtime state. |
 | `data.harness` | `object` | Yes | — |
@@ -8878,7 +8894,7 @@ Example request
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -9061,7 +9077,7 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |

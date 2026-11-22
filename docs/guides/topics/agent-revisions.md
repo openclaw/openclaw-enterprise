@@ -50,6 +50,12 @@ The commands below also use `jq`.
    If the Agent uses a provider override, using current Installation defaults
    can change its model endpoint.
 
+   When replacing an active revision, if either revision uses managed credential
+   delivery, [complete Stop](../../reference/agents/deployment.md#stop-and-resume)
+   first. Stop requires `operate` on the Agent. Replacing the Source credential
+   after Stop can leave the retained Provider using its previous value; see
+   [credential implementation status](../../reference/credential-sources.md#implementation-status).
+
    ```bash
    occ agent deploy "$AGENT_ID" --output json
    ```
