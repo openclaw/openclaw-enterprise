@@ -39,6 +39,8 @@ Set repository eligibility in the GitHub Backend registry at
 `repository.preparedGitHub` for prepared credentials. Connect the selected Driver
 with `repository.openShell` and Helm `openshellGit`. Omit `controlSocket`,
 `publicCaPath`, and `repository.nativeSender`.
+`repository.openShell` reaches only `github.com` and `api.github.com`: with another
+`repository.preparedGitHub.apiOrigin` the Installation starts, but deploy refuses repository Git.
 Remove Compute's `network.repositoryCredentials`: startup refuses it without
 `repository.nativeSender`.
 

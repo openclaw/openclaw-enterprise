@@ -23,6 +23,23 @@ export function openShellGitNetworkDefaults(target: OpenShellGitNetworkTarget) {
   };
 }
 
+/**
+ * The OpenShell Git rules bind only the github.com origins above. Why another prepared GitHub
+ * origin (or none) is refused, and what to do; undefined only for api.github.com. Names host and
+ * port only, never user info, a path or a query, in text the worker log keeps (no commas).
+ */
+export function openShellGitOriginRefusal(apiOrigin: string): string | undefined {
+  if (apiOrigin === "https://api.github.com") {
+    return undefined;
+  }
+  let selected = "not an https origin";
+  if (typeof apiOrigin === "string" && URL.canParse(apiOrigin)) {
+    const url = new URL(apiOrigin);
+    selected = `${url.hostname}:${url.port || (url.protocol === "http:" ? "80" : "443")}`;
+  }
+  return `repository.openShell reaches only https://github.com and https://api.github.com but repository.preparedGitHub.apiOrigin is ${selected}. Remove apiOrigin to use github.com: repository.openShell supports no other GitHub origin.`;
+}
+
 /** OpenShell imports these endpoints into the Sandbox policy when attaching the Git Provider. */
 export function openShellGitEndpoints(
   git: URL,
