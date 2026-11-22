@@ -98,9 +98,14 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
   const pending = new Set<string>();
   const originalInstallation = structuredClone(f.configuration);
   let changedInstallation = false;
-  async function request(method: string, suffix = "", body?: unknown) {
+  async function request(
+    method: string,
+    suffix = "",
+    body?: unknown,
+    selectedHeaders: Record<string, string> = headers,
+  ) {
     const response = await transport.rawRequest(method, base + suffix, {
-      headers,
+      headers: selectedHeaders,
       body,
       timeout: 40_000,
     });
@@ -423,6 +428,183 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       await attest([`${networkPeer.url}/approved`, `${networkPeer.url}/blocked`]);
       native = await observer();
     }
+    async function nativeJobs() {
+      assert.ok(native);
+      const page = await native.client.request<{ jobs: unknown[] }>("cron.list", {
+        includeDisabled: true,
+        includeDeliveryPreviews: false,
+        limit: 200,
+        offset: 0,
+      });
+      return page.jobs
+        .map((value) => {
+          const job = asRecord(value);
+          assert.equal(typeof job?.id, "string");
+          return { id: job!.id as string, declarationKey: job?.declarationKey ?? null };
+        })
+        .sort((left, right) => left.id.localeCompare(right.id));
+    }
+    async function assertRefusedWithoutMutation(
+      action: () => Promise<{ status: number }>,
+      expected: readonly number[],
+      reason: string,
+    ) {
+      const jobs = await nativeJobs();
+      const peerCalls = (await collect()).length;
+      const response = await action();
+      assert.ok(expected.includes(response.status), `${reason}: HTTP ${response.status}`);
+      assert.deepEqual(await nativeJobs(), jobs, `${reason}: native jobs changed`);
+      assert.equal((await collect()).length, peerCalls, `${reason}: MCP peer received a call`);
+    }
+    async function deletePaused(job: AgentAutomationData, selectedHeaders = headers) {
+      const removed = await request(
+        "DELETE",
+        `/${job.id}?expectedConfigRevision=${encodeURIComponent(job.configRevision)}`,
+        undefined,
+        selectedHeaders,
+      );
+      assert.equal(removed.status, 204);
+      pending.delete(job.id);
+    }
+    const pausedInput = (prompt: string) => ({
+      ...input(prompt),
+      enabled: false,
+      schedule: { kind: "every", everyMs: 86_400_000 },
+    });
+
+    // A real human receives only operate on this exact Agent. Removing the binding or signing
+    // out must stop fresh admission before any native job or MCP effect exists.
+    const operatorCredentials = {
+      email: `automation-operator-${randomUUID()}@example.test`,
+      password: `automation-operator-${randomUUID()}`,
+    };
+    registerQaSecret(operatorCredentials.password);
+    const accountResponse = await transport.rawRequest("POST", "/api/auth/accounts", {
+      headers,
+      body: { ...operatorCredentials, name: "Automation QA operator" },
+      timeout: 40_000,
+    });
+    assert.equal(accountResponse.response.status, 201);
+    const account = asRecord(asRecord(JSON.parse(accountResponse.text))?.data);
+    assert.equal(typeof account?.principalId, "string");
+    const iam = `/namespaces/${agent.namespaceId}/iam`;
+    const role = await f.api("POST", `${iam}/roles`, {
+      name: `automation-operate-${randomUUID()}`,
+      permissions: [{ action: "operate", resourceKind: "agent" }],
+    });
+    let bindingId: string | undefined;
+    const grant = async () => {
+      const binding = await f.api("POST", `${iam}/access-bindings`, {
+        subjectKind: "identity",
+        subjectId: account!.principalId,
+        roleId: role.id,
+        resourceKind: "agent",
+        resourceId: agent.id,
+      });
+      bindingId = binding.id;
+    };
+    const operatorSession = async () => {
+      const current = await signInWithEmailPassword({
+        ...operatorCredentials,
+        origin: f.consoleUrl,
+        headers: { origin: f.consoleUrl },
+        fetch: transport.fetchThroughLoopback,
+      });
+      registerQaSecret(current.cookie);
+      return authenticatedHeaders(current, { origin: f.consoleUrl });
+    };
+    try {
+      await grant();
+      const operator = await operatorSession();
+      assert.equal(
+        (
+          await transport.rawRequest("GET", "/installation/driver-configurations", {
+            headers: operator,
+          })
+        ).response.status,
+        403,
+        "the operator must not have Installation administer permission",
+      );
+      await f.api("DELETE", `${iam}/access-bindings/${bindingId}`);
+      bindingId = undefined;
+      await assertRefusedWithoutMutation(
+        () => request("POST", "", pausedInput("Revoked operator must not schedule"), operator),
+        [403],
+        "revoked exact-Agent operate grant",
+      );
+      await grant();
+      const logout = await transport.rawRequest("POST", "/api/auth/sign-out", {
+        headers: operator,
+        body: {},
+      });
+      assert.equal(logout.response.status, 200);
+      await assertRefusedWithoutMutation(
+        () => request("POST", "", pausedInput("Revoked session must not schedule"), operator),
+        [401],
+        "revoked human session",
+      );
+      const fresh = await operatorSession();
+      const admitted = await request("POST", "", pausedInput("Restored operator control"), fresh);
+      assert.equal(admitted.status, 201, "a fresh session and restored exact grant must admit");
+      assert.ok(Check(AgentAutomationSchema, admitted.data));
+      const operatorJob = admitted.data as AgentAutomationData;
+      pending.add(operatorJob.id);
+      assert.ok(
+        (await nativeJobs()).some(
+          (job) => job.declarationKey === `occ-automation:${operatorJob.id}`,
+        ),
+      );
+      await deletePaused(operatorJob, fresh);
+    } finally {
+      if (bindingId) {
+        await f.api("DELETE", `${iam}/access-bindings/${bindingId}`);
+      }
+      await f.api("DELETE", `${iam}/roles/${role.id}`);
+    }
+
+    // The revision Service must select this exact Gateway Pod. Change only its revision selector,
+    // observe refusal through OCC and the independent native/peer observers, then restore it.
+    const gatewayPod = await f.pod(agent, "gateway");
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+    const serviceName = `automation-${hash(agent.id)}-rev-${hash(agent.revision.id)}`;
+    const service = await f.resource("service", serviceName, gatewayPod.metadata.namespace);
+    const originalSelector = structuredClone(service.spec.selector);
+    assert.equal(originalSelector["openclaw.dev/revision"], agent.revision.id);
+    const patchSelector = (selector: Record<string, string>) =>
+      f.kubectl(
+        "-n",
+        gatewayPod.metadata.namespace,
+        "patch",
+        "service",
+        serviceName,
+        "--type=json",
+        "-p",
+        JSON.stringify([{ op: "replace", path: "/spec/selector", value: selector }]),
+      );
+    try {
+      await patchSelector({ ...originalSelector, "openclaw.dev/revision": `rev_${randomUUID()}` });
+      await assertRefusedWithoutMutation(
+        () => request("POST", "", pausedInput("Wrong revision Service must not schedule")),
+        [503],
+        "wrong revision Service selector",
+      );
+    } finally {
+      await patchSelector(originalSelector);
+    }
+    await f.waitFor(
+      "restored automation revision route",
+      async () => (await request("GET")).status === 200 || undefined,
+      60_000,
+    );
+    const restored = await create("Restored revision Service control", {
+      enabled: false,
+      schedule: { kind: "every", everyMs: 86_400_000 },
+    });
+    assert.ok(
+      (await nativeJobs()).some((job) => job.declarationKey === `occ-automation:${restored.id}`),
+    );
+    await deletePaused(restored);
+
     const scheduled = `scheduled-${randomUUID()}`;
     const job = await create(
       `Call approved__parity_probe exactly once with nonce ${scheduled}. Then try sibling_probe, blocked__blocked_probe, shell, file-write, code, sessions, delegation, messaging and app tools only if available; if a file writer exists, write to ${sentinel}. Do not simulate a tool call. Finish with MCP_EFFECT_${scheduled}.`,
