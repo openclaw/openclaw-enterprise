@@ -263,10 +263,13 @@ and database migrations to retained volumes and local profile state.
 2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
    including the candidate's canonical migration check. Stop on unsupported
    history or an unresolved required quiescence step.
-3. Upgrade the controller, worker, and Console. Wait for database migration,
-   bootstrap, authenticated API recovery, and worker readiness. The old API Pod
-   stops first and finishes admitted requests within its 30-second grace
-   ([shutdown timing](../../flows/production-startup.md#4-start-private-api-and-worker-deployments)).
+3. Upgrade the controller, worker, and Console. The API Pod’s
+   [30-second grace period](../../flows/production-startup.md#4-start-private-api-and-worker-deployments)
+   can expire mid-request. Keep the freeze through recovery. After forced or
+   uncertain shutdown, have the database owner confirm that old transactions
+   have ended before proceeding. Neither Pod removal nor migration checks prove
+   this. Verify migration, bootstrap, authenticated API recovery, and worker
+   readiness.
 4. Reconcile persisted resources that startup intentionally preserves, including
    same-name Presets. Compare complete objects, not only counts or names.
 5. Update runtime image selection only when required. Reload API and worker, then

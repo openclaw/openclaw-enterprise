@@ -45,8 +45,8 @@ as the reason Dedicated OpenClaw is disabled.
    OpenClaw uses provider API keys. Get an
    [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
-   Choose a model Secret or **Create new Secret...** unless a Preset binds one
-   or you use ChatGPT OAuth.
+   Unless a Preset binds one or you use ChatGPT OAuth, choose or create a Secret.
+   Wait for the access check. Changing provider or method clears your choice.
    No model is preselected. Choose a starter model or **Enter model ID manually**.
    **Choose a model from the list** keeps listed models and other settings.
    Reselect unlisted IDs when you return.

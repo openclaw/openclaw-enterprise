@@ -274,6 +274,7 @@ export let peer: {
     reconciliations: number;
     loseReply: boolean;
     hideObservation: boolean;
+    beforeRouteAssignment?: (hasRoute: boolean) => Promise<void>;
     reportedVersion?: RepositoryGitMaterialVersion;
     confirmations: RepositoryGitMaterialVersion[];
     rejectedConfirmations: number;
@@ -956,7 +957,11 @@ export function createDriver(options: {
           }
         }
         delivery.stage = "resolve-recipient";
-        route = await host.recipients.observe(seen.installation);
+        const observedRoute = await host.recipients.observe(seen.installation);
+        if (delivery.beforeRouteAssignment) {
+          await delivery.beforeRouteAssignment(observedRoute !== undefined);
+        }
+        route = observedRoute;
         if (!route) {
           return;
         }

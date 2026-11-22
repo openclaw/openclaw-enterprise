@@ -10,7 +10,7 @@ import type {
   V1Job,
   V1PodTemplateSpec,
 } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
-import { ProductionTuiRequestError } from "./production-tui-request.ts";
+import { ProductionTuiRequestError, type ProductionTuiResponse } from "./production-tui-request.ts";
 import {
   assertProtectedEqual,
   protectedJSON,
@@ -355,7 +355,7 @@ type ExternalRequest = (
   path: string,
   body: undefined,
   options: { authenticated: boolean; signal?: AbortSignal },
-) => Promise<{ status: number | undefined; requestId?: string; body: unknown }>;
+) => Promise<ProductionTuiResponse>;
 
 // These observations describe the fixture's authenticated HTTPS route. They do
 // not establish continuous availability between requests or gate the upgrade.
@@ -383,6 +383,7 @@ export async function measureUpgradeAvailability<T>(
       "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
     status: number | undefined;
     requestId?: string;
+    upstreamSocketReused?: boolean;
   }[] = [];
   const origin = performance.now();
   const nominalIntervalMs = 1_000;
@@ -436,6 +437,7 @@ export async function measureUpgradeAvailability<T>(
     let outcome: (typeof samples)[number]["outcome"];
     let status: number | undefined;
     let requestId: string | undefined;
+    let upstreamSocketReused: boolean | undefined;
     try {
       const response = await request("GET", "/installation", undefined, {
         authenticated: true,
@@ -454,6 +456,9 @@ export async function measureUpgradeAvailability<T>(
       } else {
         outcome = "ok";
         requestId = response.requestId;
+        if (requestId !== undefined) {
+          upstreamSocketReused = response.upstreamSocketReused;
+        }
       }
     } catch (error) {
       // Keep received status even when strict response parsing rejects the body.
@@ -482,6 +487,7 @@ export async function measureUpgradeAvailability<T>(
       outcome,
       status,
       ...(requestId === undefined ? {} : { requestId }),
+      ...(upstreamSocketReused === undefined ? {} : { upstreamSocketReused }),
     });
     previousStart = start;
     previousFinish = finish;

@@ -59,11 +59,7 @@ OpenClaw gateway multi-tenant.
 The platform supports global Namespace settings. Resource references follow the
 scope and authorization rules of each resource type.
 
-OCC owns platform resources. At deployment, it records the selected configuration
-and execution settings in an Agent revision. Later edits leave that revision unchanged.
-External systems retain ownership of infrastructure, provider accounts, credentials, and model
-sources. Drivers operate those systems through interfaces with defined responsibilities; they cannot
-grant themselves authorization or change platform-resource ownership.
+OCC governs platform resource authorization and composition. The selected TokenService owns [CredentialSource lifecycle](reference/credential-sources/managed-static.md); OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
 
 <a id="non-goals"></a>
 

@@ -170,20 +170,20 @@ export function checkGatewayConfigurationMounts(
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" } as const;
   for (const [label, driver, input, source] of cases) {
     const name = `gateway-${digest(input.agentId)}`;
-    const deployment = driver["deployment"](
+    const deployment = driver["deployment"]({
       name,
-      { namespaceId: tenant.id, agentId: input.agentId },
+      ownership: { namespaceId: tenant.id, agentId: input.agentId },
       namespace,
-      {
+      images: {
         runtime: "openclaw-enterprise/gateway-fixture:local",
         workspaceSetup: driver["options"].images.gateway,
       },
-      name,
-      "gateway",
-      {},
-      "info",
-      driver["gatewayConfiguration"](input, undefined, namespace),
-    );
+      serviceAccountName: name,
+      role: "gateway",
+      environment: {},
+      loggingLevel: "info",
+      configuration: driver["gatewayConfiguration"](input, undefined, namespace),
+    });
     const pod = resourceRecord(podTemplate(deployment).spec, "gateway Pod spec");
     const [container] = resourceRecords(pod.containers, "gateway containers");
     const [init] = resourceRecords(pod.initContainers, "gateway init containers");

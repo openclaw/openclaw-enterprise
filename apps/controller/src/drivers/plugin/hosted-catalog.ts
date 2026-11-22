@@ -240,8 +240,16 @@ export async function discoverHostedPlugins(
     if (nextCursor !== null && nextCursor === input.cursor) {
       invalid();
     }
+    const plugins = array(response.plugins, PAGE_SIZE).map(catalogEntry);
+    const seenIds = new Set<string>();
+    for (const plugin of plugins) {
+      if (seenIds.has(plugin.id)) {
+        invalid();
+      }
+      seenIds.add(plugin.id);
+    }
     return {
-      plugins: array(response.plugins, PAGE_SIZE).map(catalogEntry),
+      plugins,
       nextCursor,
       setup: {
         message:

@@ -167,18 +167,20 @@ type PrivateMethods = {
     target: NamespaceTarget,
   ];
   deployment: [
-    name: string,
-    ownership: Ownership,
-    target: NamespaceTarget,
-    images: Readonly<{ runtime: string; workspaceSetup: string }>,
-    serviceAccount: string,
-    role: "gateway",
-    environment: Readonly<Record<string, string>>,
-    loggingLevel: LoggingLevel,
-    snapshot: unknown,
-    embedded: true,
-    servicePrincipalId: string,
-    auth: unknown,
+    input: {
+      name: string;
+      ownership: Ownership;
+      namespace: NamespaceTarget;
+      images: Readonly<{ runtime: string; workspaceSetup: string }>;
+      serviceAccountName: string;
+      role: "gateway";
+      environment: Readonly<Record<string, string>>;
+      loggingLevel: LoggingLevel;
+      configuration: unknown;
+      embedded: true;
+      workloadServicePrincipalId: string;
+      harnessAuth: unknown;
+    },
   ];
 };
 
