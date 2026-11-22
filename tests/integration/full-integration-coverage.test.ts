@@ -279,6 +279,7 @@ test("full coverage receipts require real case evidence and retain approved same
   }
   await writeFile(policyReceipt, passingPolicy);
   // Incomplete or focused evidence remains publishable, but never proves full coverage.
+  const checkedReceipts = new Set<string>();
   for (const damage of [
     (value: Record<string, unknown>) => {
       delete value.scope;
@@ -323,8 +324,11 @@ test("full coverage receipts require real case evidence and retain approved same
     const damaged = structuredClone(privateSkipper);
     damage(damaged);
     const projected = projectSkipperRunnerReceipt(damaged);
-    assert.doesNotMatch(JSON.stringify(projected), /private-output-canary/);
-    await json(skipperPath, { ...projected, lane: skipperLane });
+    const receipt = JSON.stringify({ ...projected, lane: skipperLane });
+    assert.doesNotMatch(receipt, /private-output-canary/);
+    if (checkedReceipts.has(receipt)) continue;
+    checkedReceipts.add(receipt);
+    await writeFile(skipperPath, receipt);
     assert.equal(clean(skipperLane).status, 0);
     await verify(projected.scope === "focused" ? 1 : 0, false);
   }
