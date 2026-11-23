@@ -2547,6 +2547,74 @@ if (savedAgentAcl === "source") {
         provider: savedGitAclIdentity(narrowedProvider),
       });
       const target = narrowed.target;
+      // The Source is native Git only: the GitHub REST and GraphQL APIs stay unreachable from the
+      // Sandbox (through gh and through curl, an admitted Git transport binary) and reach no origin;
+      // the Provider carries no endpoint and is attached to this one Sandbox.
+      const assertGitOnlyBoundary = async (stage: string) => {
+        // Each probe prints "denied" for an HTTP 403 or no HTTP response at all, else "answered".
+        const viaGh =
+          'out=$("$@" 2>&1) && { echo answered; exit 0; }; case "$out" in "HTTP/"*" 403"*) echo denied ;; *"HTTP/"*) echo answered ;; *) echo denied ;; esac';
+        const viaCurl =
+          'code=$("$@" -o /dev/null -w "%{http_code}" 2>/dev/null) || true; case "$code" in 403|000) echo denied ;; *) echo answered ;; esac';
+        const query = "{ viewer { login } }";
+        const apiProbes: [string, string, readonly string[]][] = [
+          ["rest-gh", viaGh, ghApi("repos/fixture/a/issues", undefined, true)],
+          ["graphql-gh", viaGh, ghApi("graphql", { query }, true)],
+          ["rest-curl", viaCurl, [...curl, "https://api.github.com/repos/fixture/a/issues"]],
+          [
+            "graphql-curl",
+            viaCurl,
+            [
+              ...curl,
+              "-X",
+              "POST",
+              "--data",
+              JSON.stringify({ query }),
+              "https://api.github.com/graphql",
+            ],
+          ],
+        ];
+        const outcomes: Record<string, string> = {};
+        for (const [name, script, command] of apiProbes) {
+          const before = origin.snapshot().requests;
+          const result = await guest(target, { kind: "success" }, [
+            "sh",
+            "-cu",
+            script,
+            "--",
+            ...command,
+          ]);
+          outcomes[name] = result.stdout.toString("utf8").trim();
+          assert.equal(origin.snapshot().requests, before, `SOURCE_API_ORIGIN_${stage}_${name}`);
+        }
+        evidence("api-boundary", { stage, outcomes });
+        for (const [name, outcome] of Object.entries(outcomes)) {
+          assert.equal(outcome, "denied", `SOURCE_API_DENIED_${stage}_${name}`);
+        }
+        assert.equal(await sourceProvider(target), narrowedProvider);
+        const profile = await gatewayClient.getProviderProfile(
+          workspace,
+          narrowedProvider,
+          t.signal,
+        );
+        assert.ok(profile?.definition, `SOURCE_PROVIDER_PROFILE_${stage}`);
+        assert.deepEqual(
+          profile.definition.endpoints ?? [],
+          [],
+          `SOURCE_PROVIDER_NO_ENDPOINT_${stage}`,
+        );
+        assert.equal(
+          await gatewayClient.readExclusivePreviewWorkspace(
+            workspace,
+            target.sandboxId,
+            t.signal,
+            narrowedProvider,
+          ),
+          true,
+          `SOURCE_PROVIDER_ONE_SANDBOX_${stage}`,
+        );
+      };
+      await assertGitOnlyBoundary("narrowed");
 
       // AC-3: replace the value by PATCH; delivery reaches the origin without a redeploy.
       const replacement = source.fake();
@@ -2594,6 +2662,7 @@ if (savedAgentAcl === "source") {
         "SOURCE_REPLACEMENT_NO_REDEPLOY",
       );
       await assertTokensAbsentFromWorkload(t, exec, target, values, "replacement");
+      await assertGitOnlyBoundary("replacement");
 
       // A classic-class value is refused at PATCH and the delivered value keeps working.
       const classic = ["ghp", randomBytes(18).toString("hex")].join("_");
