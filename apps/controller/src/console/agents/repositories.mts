@@ -16,12 +16,13 @@ import {
 import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
+  githubAccessLabel,
   repositoryProfiles,
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
 
-type RepositoryOption = CatalogOption & { githubRepository?: string };
+type RepositoryOption = CatalogOption & { githubAccess?: RepositoryNetworkGrant };
 
 type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
@@ -271,12 +272,13 @@ export function createRepositoryFields(
   const mode = element(
     "select",
     { id: "repository-mode", "aria-describedby": "repository-mode-help" },
-    element("option", { value: "profiles" }, "Access profiles"),
+    element("option", { value: "", disabled: true }, "Choose access mode"),
     element("option", { value: "scoped" }, "GitHub network policy"),
+    element("option", { value: "profiles" }, "Access profiles"),
   );
-  const scoped = () => mode.value !== "profiles";
+  const scoped = () => mode.value === "scoped";
   const grants = new Map(initial.scopedGrants);
-  mode.value = initial.scopedGrants ? "scoped" : "profiles";
+  mode.value = initial.scopedGrants ? "scoped" : "";
   const scopeHint = element("p", { className: "hint", id: "repository-mode-help" });
   const modeField = element(
     "div",
@@ -286,10 +288,9 @@ export function createRepositoryFields(
     scopeHint,
   );
   mode.addEventListener("change", () => {
-    grants.clear();
     if (scoped()) {
       for (const ref of state.selected.keys()) {
-        selectRead(ref);
+        selectDefault(ref);
       }
     }
     changed();
@@ -337,19 +338,23 @@ export function createRepositoryFields(
   // Only new selections may derive the collaborator profile from the Contributor default.
   // Keep this intent through remove/undo; saved inheritance is never inferred from discovery.
   const newCollaborators = new Set<string>();
-  const githubName = (ref: string) => {
-    const entry = option(ref);
-    return entry?.allowedProfiles.includes("github-repository") &&
-      typeof entry.githubRepository === "string"
-      ? entry.githubRepository
+  const githubLimit = (entry: RepositoryOption | undefined) =>
+    entry?.allowedProfiles.includes("github-repository") &&
+    typeof entry.githubAccess?.repository === "string" &&
+    Object.keys(entry.githubAccess).length === 2 &&
+    ["read", "write"].includes(entry.githubAccess.access)
+      ? entry.githubAccess
       : undefined;
-  };
-  function selectRead(ref: string) {
-    const repository = githubName(ref);
-    if (repository) {
-      grants.set(ref, { repository, access: "read" });
+  const githubName = (ref: string) => githubLimit(option(ref))?.repository;
+  // Never derive a grant from a refreshed ceiling. Default only when the
+  // creator selects a repository or opts into policy for selected repositories.
+  function selectDefault(ref: string) {
+    const limit = githubLimit(option(ref));
+    if (limit && !grants.has(ref)) {
+      grants.set(ref, limit);
     }
   }
+  const needsMode = () => !modeField.hidden && mode.value === "";
   const effective = (ref: string) =>
     scoped()
       ? "github-repository"
@@ -360,7 +365,9 @@ export function createRepositoryFields(
   const initialAccess = JSON.stringify(accessIntent());
   const invalid = (ref: string) =>
     scoped()
-      ? !githubName(ref) || githubName(ref) !== grants.get(ref)?.repository
+      ? !githubName(ref) ||
+        githubName(ref) !== grants.get(ref)?.repository ||
+        (grants.get(ref)?.access === "write" && githubLimit(option(ref))?.access !== "write")
       : !option(ref)?.allowedProfiles.includes(effective(ref));
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
@@ -532,19 +539,17 @@ export function createRepositoryFields(
       !scoped() &&
       (Boolean(initial.agentId) ||
         context.installationAdmin === false ||
-        !state.options.some(
-          (entry) => entry.githubRepository && entry.allowedProfiles.includes("github-repository"),
-        ));
+        !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Read allows clone and fetch. Write adds push. API access depends on Namespace permissions. Save the draft to review your choices before deployment."
-      : "Choose GitHub network policy to set Read or Write for each repository.";
+      ? "Read-only allows clone and fetch. Contributor adds push. PRs and issues also depend on deployment support, GitHub permissions and API policy."
+      : "GitHub network policy is recommended. Choose Read-only or Contributor per repository. After deploying with access profiles, you need a new Agent to use GitHub network policy.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
-      help.hidden = scoped();
+      help.hidden = scoped() || needsMode();
     }
-    access.hidden = scoped() || (!state.options.length && !state.selected.size);
-    if (scoped()) {
+    access.hidden = scoped() || needsMode() || (!state.options.length && !state.selected.size);
+    if (scoped() || needsMode()) {
       access.replaceChildren();
       return;
     }
@@ -604,7 +609,10 @@ export function createRepositoryFields(
       state.selected.set(ref, null);
     }
     if (scoped()) {
-      selectRead(ref);
+      if (grants.get(ref)?.repository !== githubName(ref)) {
+        grants.delete(ref);
+      }
+      selectDefault(ref);
     }
     state.undo = undefined;
     announcements.textContent = `${option(ref)?.displayName ?? ref} added.`;
@@ -627,6 +635,9 @@ export function createRepositoryFields(
     }
     entries.splice(undo.index, 0, [undo.ref, undo.override]);
     state.selected = new Map(entries);
+    if (scoped()) {
+      selectDefault(undo.ref);
+    }
   }
   search.addEventListener("focus", () => {
     searchState.dismissed = false;
@@ -848,7 +859,7 @@ export function createRepositoryFields(
         element("h3", {}, `Selected repositories (${state.selected.size})`),
         element(
           "span",
-          { className: "hint", hidden: scoped() },
+          { className: "hint", hidden: scoped() || needsMode() },
           `${state.selected.size - custom} inherited · ${custom} custom`,
         ),
       ),
@@ -877,18 +888,45 @@ export function createRepositoryFields(
           disabled: state.disabled,
         },
       );
+      if (needsMode()) {
+        card.append(
+          element(
+            "div",
+            { className: "repository-grant" },
+            element("strong", { className: "repository-identity" }, label),
+            remove,
+          ),
+        );
+        cards.append(card);
+        return;
+      }
       if (scoped()) {
+        const limit = githubLimit(entry);
+        const available = limit && grant?.repository === limit.repository;
         const level = element(
           "select",
-          { "aria-label": `GitHub access for ${label}`, disabled: !editable() || invalid(ref) },
-          element("option", { value: "read" }, "Read"),
-          element("option", { value: "write" }, "Write"),
+          { "aria-label": `GitHub access for ${label}`, disabled: !editable() || !available },
+          element("option", { value: "read" }, githubAccessLabel("read")),
+          limit?.access === "write"
+            ? element("option", { value: "write" }, githubAccessLabel("write"))
+            : grant?.access === "write"
+              ? element("option", { value: "write", disabled: true }, "Unavailable")
+              : null,
         );
         level.value = grant?.access ?? "read";
         level.addEventListener("change", () => {
           if (grant) {
             grants.set(ref, { ...grant, access: level.value === "write" ? "write" : "read" });
-            onChange(true);
+            if (limit?.access === "read" && grant.access === "write") {
+              changed();
+              cards
+                .querySelector<HTMLSelectElement>(
+                  `select[aria-label="${CSS.escape(level.ariaLabel!)}"]`,
+                )
+                ?.focus();
+            } else {
+              onChange(true);
+            }
           }
         });
         card.append(
@@ -896,7 +934,7 @@ export function createRepositoryFields(
             "div",
             { className: "repository-grant" },
             element("strong", { className: "repository-identity" }, label),
-            invalid(ref)
+            !available
               ? element(
                   "p",
                   { className: "hint" },
@@ -906,6 +944,13 @@ export function createRepositoryFields(
                 )
               : element("div", { className: "field" }, level),
             remove,
+            available && invalid(ref)
+              ? element(
+                  "p",
+                  { className: "hint" },
+                  "Contributor is no longer available. Choose Read-only or remove this repository.",
+                )
+              : null,
           ),
         );
         cards.append(card);
@@ -1115,6 +1160,12 @@ export function createRepositoryFields(
     }
     if (state.selected.size === 0 && !required && !scoped()) {
       return true;
+    }
+    if (needsMode()) {
+      validation.textContent = "Choose GitHub network policy or access profiles before continuing.";
+      validation.hidden = false;
+      mode.focus();
+      return false;
     }
     if (!state.selected.size || [...state.selected.keys()].some(invalid)) {
       validation.textContent = scoped()
@@ -1354,7 +1405,9 @@ export function createRepositoryFields(
     validate,
     hasValidSelection,
     setDisabled,
-    reload: () => load(true),
+    // Keep scoped intent for comparison with the refreshed catalog. Clearing it
+    // here could turn an explicit Read-only selection back into Contributor.
+    reload: () => load(!scoped()),
     /** Reads the choices a held form has not read yet; once read, retries go through Retry. */
     start: () => {
       if (state.discovery === "held") {

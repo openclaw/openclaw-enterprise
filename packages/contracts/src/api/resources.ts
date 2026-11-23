@@ -1091,7 +1091,13 @@ export const BackendSummarySchema = Type.Object(
 
 export const RepositoryOptionSchema = Type.Object(
   {
-    githubRepository: Type.Optional(RepositoryNetworkGrantSchema.properties.repository),
+    githubAccess: Type.Optional(
+      Type.Object(RepositoryNetworkGrantSchema.properties, {
+        additionalProperties: false,
+        description:
+          "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+      }),
+    ),
     repositoryRef: RepositoryBindingSelectionSchema.properties.repositoryRef,
     displayName: Name,
     description: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),

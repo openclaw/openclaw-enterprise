@@ -31,3 +31,7 @@ export const repositoryWriteAccessHelp =
 export function repositoryProfile(id: unknown) {
   return repositoryProfiles.find((profile) => profile.id === id);
 }
+
+export function githubAccessLabel(access: "read" | "write") {
+  return access === "read" ? "Read-only" : "Contributor";
+}

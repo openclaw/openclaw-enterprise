@@ -1703,11 +1703,14 @@ export const createAgentProvisioningScenarios = {
   },
   createGitHubRepositoryGrants: {
     group: "Pages/Create Agent",
-    name: "GitHub access per repository",
+    name: "GitHub repository access",
     path: create,
     repositoryOptions: ["application", "tooling"].map((name) => ({
       repositoryRef: name,
-      githubRepository: `example/${name}`,
+      githubAccess: {
+        repository: `example/${name}`,
+        access: name === "tooling" ? "write" : "read",
+      },
       displayName: `example/${name}`,
       allowedProfiles: ["github-repository"],
     })),
@@ -1716,10 +1719,9 @@ export const createAgentProvisioningScenarios = {
       { selector: "#repository-mode", value: "scoped" },
       { selector: 'input[data-repository-ref="application"]', click: true },
       { selector: 'input[data-repository-ref="tooling"]', click: true },
-      { selector: 'select[aria-label="GitHub access for example/tooling"]', value: "write" },
     ],
     description:
-      "In Repository access, switch between profiles and GitHub access per repository. Each new selection starts at Read. Change tooling to Write and review the draft action. Saving and deployment require a supporting Installation.",
+      "With GitHub network policy, application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

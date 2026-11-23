@@ -1088,6 +1088,8 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
   const app = { repository: "example/application", access: "read" } as const;
   const tooling = { repository: "example/tooling", access: "write" } as const;
   const grants = [app, tooling];
+  const limited = { repository: "example/limited", access: "write" } as const;
+  const registryGrants = native ? [...grants, limited, { repository: "example/outside" }] : grants;
   const repositoryRefs = ["application", "tooling"];
   const registry = {
     version: 1,
@@ -1096,8 +1098,8 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
     appId: "123",
     githubInstallationId: "456",
     maximumDurationSeconds: 3600,
-    repositories: grants.map(({ repository }, index) => ({
-      repositoryRef: repositoryRefs[index],
+    repositories: registryGrants.map(({ repository }, index) => ({
+      repositoryRef: repository.split("/")[1],
       repositoryId: String(789 + index),
       repository,
       namespaces: [
@@ -1105,7 +1107,10 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
           namespaceId,
           profiles: ["github-repository"],
           ...(native ? { nativeGit: "v1" } : {}),
-          permissions: { contents: "write", metadata: "read" },
+          permissions: {
+            contents: repository === limited.repository ? "read" : "write",
+            metadata: "read",
+          },
         },
       ],
     })),
@@ -1162,7 +1167,7 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
       backendId: repositoryAdmission.backendId,
       policy: repositoryAdmission.policy,
     },
-    repositoryNetworkPolicyCeiling: grants,
+    repositoryNetworkPolicyCeiling: native ? [...grants, limited] : grants,
     repositoryCredentials: true,
     agentProvisioning: native,
     ...(native ? { provisionedPeople: [] } : {}),
@@ -1281,18 +1286,53 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await model.fill("gpt-5.1");
   await model.press("Tab");
   const mode = page.getByLabel("Repository access mode");
-  assert.equal(await mode.inputValue(), "profiles");
+  await mode.waitFor();
+  assert.equal(await mode.inputValue(), "");
+  await repositoryCheckbox(page, app.repository).check();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText(/Choose GitHub network policy or access profiles before continuing/)
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", agents).length, 0);
+  await mode.selectOption("profiles");
+  await page.getByText(/After deploying with access profiles, you need a new Agent/).waitFor();
   await mode.selectOption("scoped");
-  for (const { repository } of grants) {
-    await repositoryCheckbox(page, repository).check();
-    assert.equal(await page.getByLabel(`GitHub access for ${repository}`).inputValue(), "read");
+  // Application is capped by the Installation, limited by its Namespace registration.
+  // Outside has no delegated grant. An eligible but unselected repository gets nothing.
+  await repositoryCheckbox(page, "example/limited").check();
+  for (const name of [app.repository, "example/limited"]) {
+    const select = page.getByLabel(`GitHub access for ${name}`);
+    assert.equal(await select.inputValue(), "read");
+    assert.deepEqual(await select.locator("option").allTextContents(), ["Read-only"]);
   }
+  await repositoryCheckbox(page, "example/limited").uncheck();
+  assert.equal(await repositoryCheckbox(page, "example/outside").isDisabled(), true);
+  await repositoryCheckbox(page, tooling.repository).check();
   const access = page.getByLabel(`GitHub access for ${tooling.repository}`);
-  await access.selectOption("write");
+  assert.deepEqual(await access.locator("option").allTextContents(), ["Read-only", "Contributor"]);
+  assert.equal(await access.inputValue(), "write");
   await access.selectOption("read");
+  await repositoryCheckbox(page, tooling.repository).uncheck();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await mode.selectOption("profiles");
+  await mode.selectOption("scoped");
+  assert.equal(await access.inputValue(), "read");
   const initial = [app, { ...tooling, access: "read" }];
   const save = page.getByRole("button", { name: "Save Agent draft" });
   await waitForEnabled(save);
+  // Agent create alone must never leave a broader draft when policy administration
+  // fails. Reloading the catalog to retry must preserve the narrower selection.
+  const denied = restrict(fixture.policy, "administer", "agent", { namespaceId });
+  const unauthorized = responseTo(page, "POST", fixture.origin + agents);
+  await save.click();
+  assert.equal((await unauthorized).status(), 403);
+  assert.deepEqual((await fixture.request("GET", agents)).data, []);
+  liftRestriction(fixture.policy, denied);
+  const reload = page.getByRole("button", { name: "Reload repository choices" });
+  await reload.click();
+  await waitForEnabled(save);
+  assert.equal(await mode.inputValue(), "scoped");
+  assert.equal(await access.inputValue(), "read");
   // An older reader can omit grants. Keep this exact draft and withhold credentials
   // until a fresh read confirms them. The create, policy save and retry remain real.
   await page.route(
@@ -1329,14 +1369,14 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await page
     .locator(".agent-draft-actions")
     .getByText(
-      "GitHub access saved at creation: example/application (Read), example/tooling (Read)",
+      "GitHub access saved at creation: example/application (Read-only), example/tooling (Read-only)",
     )
     .waitFor();
   assert.equal(await hasFocus(deploy), true);
   const revisions = () =>
     controller.transact((unit) => unit.revisions.listRevisions(namespaceId, agent.id));
   assert.deepEqual(await revisions(), []);
-  assert.equal(pathRequests(requests, "POST", agents).length, 1);
+  assert.equal(pathRequests(requests, "POST", agents).length, 2);
   assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);
   // A second editor widens only the policy after the Console's final Agent reread.
   // The bindings and the editing setting seen by the first editor stay identical.
@@ -1378,8 +1418,34 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(await deploy.isDisabled(), true);
   await review.click();
   await page
-    .getByText("Saved GitHub access: example/application (Read), example/tooling (Write)")
+    .getByText(
+      "Saved GitHub access: example/application (Read-only), example/tooling (Contributor)",
+    )
     .waitFor();
+  await waitForEnabled(deploy);
+  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await review.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  // An older Console must not summarize a newer grant shape as if the extra
+  // operation rules were absent, then use that incomplete review to deploy.
+  await page.route(
+    fixture.origin + base,
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const json = record(await response.json());
+      const policy = record(record(json.data).policy);
+      assert.deepEqual(policy.repositoryNetworkPolicy, grants);
+      policy.repositoryNetworkPolicy = [app, { ...tooling, futureRule: true }];
+      await route.fulfill({ response, json });
+    },
+    { times: 1 },
+  );
+  await review.click();
+  await page.getByText(/The saved GitHub access could not be confirmed/).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  await review.click();
   await waitForEnabled(deploy);
   const deployed = responseTo(page, "POST", fixture.origin + path + "/deploy");
   await deploy.click();
@@ -1392,15 +1458,15 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   );
   assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
 
-  const original = record(response.request().postDataJSON());
-  // Agent create alone must never leave a broader draft when policy administration fails.
-  const denied = restrict(fixture.policy, "administer", "agent", { namespaceId });
-  const unauthorized = await fixture.request("POST", agents, {
-    body: { ...original, name: "Denied assistant" },
-  });
-  assert.equal(unauthorized.status, 403, JSON.stringify(unauthorized.body));
-  liftRestriction(fixture.policy, denied);
+  // Create authority alone permits profile discovery, never policy limit disclosure.
+  const noRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
+  const options = await fixture.request("GET", `${agents}/repository-options`);
+  assert.equal(options.status, 200);
+  assert.ok(Array.isArray(options.data) && options.data.length === 4);
+  assert.ok(options.data.every((option) => !Object.hasOwn(record(option), "githubAccess")));
+  liftRestriction(fixture.policy, noRead);
 
+  const original = record(response.request().postDataJSON());
   // The same authorized create exceeds only the application repository ceiling.
   const refused = await fixture.request("POST", agents, {
     body: {

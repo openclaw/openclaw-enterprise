@@ -82,7 +82,11 @@ import {
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
 import { readableRepositoryGrants } from "./sandbox-policy.mjs";
-import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
+import {
+  githubAccessLabel,
+  repositoryProfile,
+  repositoryWriteAccessHelp,
+} from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
@@ -4198,6 +4202,7 @@ export async function renderAgentDetail(
       ...checklistSteps.map((step) => step.item),
     );
     const confirmation = element("p", { className: "hint", role: "status" });
+    const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
     const reviewAccess = button("Review saved GitHub access", async () => {
       reviewAccess.disabled = true;
       try {
@@ -4251,6 +4256,7 @@ export async function renderAgentDetail(
       // (finding 2421); Deploy says why it is disabled.
       const reader = draftReadOnly() && callerPermissions?.deploy === false;
       checklist.hidden = reader;
+      adjustRepositories.hidden = selectedTab === "repositories";
       const canReview = reviewRepositories && callerPermissions?.sandboxPolicyRead === true;
       confirmation.hidden = !canReview || !repositoryReview;
       reviewAccess.hidden = !canReview || Boolean(repositoryReview);
@@ -4260,9 +4266,7 @@ export async function renderAgentDetail(
             ? "GitHub access saved at creation"
             : "Saved GitHub access";
         const grants = repositoryReview.grants
-          .map(
-            ({ repository, access }) => `${repository} (${access === "read" ? "Read" : "Write"})`,
-          )
+          .map(({ repository, access }) => `${repository} (${githubAccessLabel(access)})`)
           .join(", ");
         setText(confirmation, `${label}: ${grants || "No repositories allowed"}`);
       } else {
@@ -4692,6 +4696,7 @@ export async function renderAgentDetail(
       checklist,
       reviewRepositories ? confirmation : null,
       reviewRepositories ? reviewAccess : null,
+      reviewRepositories ? adjustRepositories : null,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -6242,7 +6247,7 @@ export async function renderAgentDetail(
         ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
-          "Repository access",
+          draft && reviewRepositories ? "Repository credential profiles" : "Repository access",
           repositoryBindings
             ?.map(
               (binding) =>
@@ -7200,6 +7205,12 @@ export async function renderAgentDetail(
       return false;
     }
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
+    if (
+      reviewRepositories &&
+      [selectedTab, nextTab].some((tab) => tab === "repositories" || tab === "policy")
+    ) {
+      repositoryReview = undefined;
+    }
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.

@@ -2400,8 +2400,9 @@ function renderAgentForm(
         case "success":
           rejectedAgentAttempt = { kind: "repository-scoped", repositoryPolicy: "current" };
           recovery.hidden = false;
-          recoveryMessage.textContent =
-            "Select at least one current repository and an authorization level to retry this Agent. To continue without repository access, start a new draft; the saved Configuration will remain available.";
+          recoveryMessage.textContent = repositories.scoped()
+            ? "Review the retained GitHub selections against the current limits before retrying."
+            : "Select at least one current repository and an authorization level to retry this Agent. To continue without repository access, start a new draft; the saved Configuration will remain available.";
           savedStatus.textContent = `Repository choices reloaded. Configuration ${savedConfiguration.id} remains saved and will be reused if you retry Agent creation.`;
           return;
         case "denied":

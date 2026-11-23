@@ -4812,7 +4812,7 @@ html:has(#create-agent-form) {
   flex: 1 0 min(16rem, 100%);
 }
 .repository-grant > .field {
-  flex: 0 1 8rem;
+  flex: 0 0 min(12rem, 100%);
 }
 .repository-grant > .repository-remove {
   margin-left: auto;

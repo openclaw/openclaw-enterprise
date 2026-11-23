@@ -164,10 +164,8 @@ async function listRepositoryOptions({
   reply.send({
     data: result.options.map(
       ({ repositoryRef, displayName, allowedProfiles, description, ...catalog }) => ({
-        ...("githubRepository" in catalog &&
-        allowedProfiles.includes("github-repository") &&
-        isCanonicalRepositoryGrantList([{ repository: catalog.githubRepository, access: "read" }])
-          ? { githubRepository: catalog.githubRepository }
+        ...("githubAccess" in catalog && isCanonicalRepositoryGrantList([catalog.githubAccess])
+          ? { githubAccess: catalog.githubAccess }
           : {}),
         repositoryRef,
         displayName,
