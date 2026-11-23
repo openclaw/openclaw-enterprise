@@ -13,7 +13,9 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     return false;
   }
 
-  const firstMatches = new Set<string | undefined>();
+  // Per thread, retain the sole known first identity. Null means an unknown identity or
+  // more than one distinct identity, so a later completion can always pair with one of them.
+  const firstMatches = new Map<string | undefined, string | null>();
   // The rollout writer may still be flushing its final record.
   for (const line of content.split("\n").slice(0, -1).filter(Boolean)) {
     let record: unknown;
@@ -65,16 +67,19 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     }
 
     const { thread_id: threadId, turn_id: turnId } = payload;
+    const thread = typeof threadId === "string" ? threadId : undefined;
     const identity =
-      typeof threadId === "string" && typeof turnId === "string" && typeof id === "string"
-        ? JSON.stringify([threadId, turnId, id])
-        : undefined;
+      typeof turnId === "string" && typeof id === "string" ? JSON.stringify([turnId, id]) : null;
+    const firstIdentity = firstMatches.get(thread);
     if (nonce === first) {
-      firstMatches.add(identity);
+      firstMatches.set(
+        thread,
+        firstIdentity === undefined || firstIdentity === identity ? identity : null,
+      );
     } else if (
-      firstMatches.size > 0 &&
-      // Only two complete, equal identities can establish that the witnesses are the same item.
-      (identity === undefined || !firstMatches.has(identity) || firstMatches.size > 1)
+      (thread === undefined && firstMatches.size > 0) ||
+      firstMatches.has(undefined) ||
+      (firstIdentity !== undefined && (identity === null || firstIdentity !== identity))
     ) {
       return true;
     }

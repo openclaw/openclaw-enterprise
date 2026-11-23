@@ -153,7 +153,7 @@ const otherRolloutThread = "10000000-0000-4000-8000-000000000002";
 
 function stockRolloutCommand(
   nonce: string,
-  id: string,
+  id: string | undefined,
   { threadId = rolloutThread, turnId = "turn-a", status = "completed", exitCode = 0 } = {},
 ): string {
   return (
@@ -203,13 +203,6 @@ test("OpenShell durable proof rejects two nonce witnesses from one completed com
     "same item ID in distinct turns",
   );
   assert.equal(
-    provesCommands(
-      first + stockRolloutCommand(secondNonce, "call-a", { threadId: otherRolloutThread }),
-    ),
-    true,
-    "same turn and item IDs in distinct threads",
-  );
-  assert.equal(
     provesCommands(first + completedRolloutCommand(secondNonce)),
     true,
     "legacy second has no identity",
@@ -226,6 +219,58 @@ test("OpenShell durable proof rejects two nonce witnesses from one completed com
     true,
     "successful retry of the first command",
   );
+});
+
+test("OpenShell durable proof requires matching known thread IDs", () => {
+  const [firstNonce, secondNonce] = gatewayCommandNonces;
+  const first = stockRolloutCommand(firstNonce, "call-a");
+  const second = stockRolloutCommand(secondNonce, "call-b");
+  const otherFirst = stockRolloutCommand(firstNonce, "call-b", { threadId: otherRolloutThread });
+  const otherSecond = stockRolloutCommand(secondNonce, "call-b", { threadId: otherRolloutThread });
+  const conflictingSecond = stockRolloutCommand(secondNonce, "call-a");
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+
+  assert.equal(provesCommands(first + otherSecond), false, "different threads in one rollout");
+  assert.equal(
+    provesCommands(
+      first + stockRolloutCommand(secondNonce, "call-a", { threadId: otherRolloutThread }),
+    ),
+    false,
+    "same turn and item ID in different threads",
+  );
+  assert.equal(
+    provesCommands(first + otherFirst + conflictingSecond),
+    false,
+    "a first witness from another thread cannot rescue a same-item pair",
+  );
+  assert.equal(provesCommands(first + otherSecond + second), true, "later compatible second");
+  assert.equal(provesCommands(otherFirst + first + second), true, "later compatible first");
+});
+
+test("OpenShell durable proof compares known threads even with partial item identity", () => {
+  const [firstNonce, secondNonce] = gatewayCommandNonces;
+  const first = stockRolloutCommand(firstNonce, "call-a");
+  const partialFirst = stockRolloutCommand(firstNonce, undefined);
+  const partialSecond = stockRolloutCommand(secondNonce, undefined);
+  const otherSecond = stockRolloutCommand(secondNonce, "call-b", { threadId: otherRolloutThread });
+  const otherPartialSecond = stockRolloutCommand(secondNonce, undefined, {
+    threadId: otherRolloutThread,
+  });
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+
+  assert.equal(
+    provesCommands(partialFirst + otherSecond),
+    false,
+    "partial first in another thread",
+  );
+  assert.equal(
+    provesCommands(first + otherPartialSecond),
+    false,
+    "partial second in another thread",
+  );
+  assert.equal(provesCommands(partialFirst + partialSecond), true, "two partial identities");
 });
 
 test("OpenShell durable proof credits only successful command completions", () => {
