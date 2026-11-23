@@ -2738,7 +2738,8 @@ if (savedAgentAcl === "source") {
         await fixture.signalWorker("STOP", workerPid);
       }
       const pausedAt = Date.now();
-      let paused: Record<string, unknown>;
+      let paused: Record<string, unknown> | undefined;
+      let resumeFailed: boolean;
       try {
         const heldAtPause = await rowHeld();
         // The first writer meets the hold; OCC_TEST_SOURCE_PAUSE_ORDER=delete-first makes that
@@ -2754,6 +2755,11 @@ if (savedAgentAcl === "source") {
           request("PATCH", source.path, { secret: { token: third } }, undefined, 150_000);
         const retire = () => request("DELETE", source.path, undefined, undefined, 150_000);
         const firstWrite = await timed(deleteFirst ? retire : replace);
+        evidence("paused-first-write", {
+          writer: deleteFirst ? "DELETE" : "PATCH",
+          ...firstWrite,
+          restarts: await workerRestarts(),
+        });
         const heldAfterFirst = await rowHeld();
         const secondWrite = await timed(deleteFirst ? replace : retire);
         const [patch, del] = deleteFirst ? [secondWrite, firstWrite] : [firstWrite, secondWrite];
@@ -2771,16 +2777,21 @@ if (savedAgentAcl === "source") {
           pausedSeconds: (deleteEnd - pausedAt) / 1000,
         };
       } finally {
-        await fixture.signalWorker("CONT", workerPid);
+        // The kubelet may have replaced the paused Worker; then its pid is gone.
+        resumeFailed = await fixture.signalWorker("CONT", workerPid).then(
+          () => false,
+          () => true,
+        );
       }
       const resumedAt = Date.now();
       evidence("paused-worker", {
         ...paused,
+        resumeFailed,
         resumedAt: new Date(resumedAt).toISOString(),
         restartsBefore,
         restartsAfter: await workerRestarts(),
       });
-      if (paused.patchStatus !== 200) {
+      if (paused?.patchStatus !== 200) {
         // Recorded above; replace once more so the remaining criteria still run.
         evidence("paused-worker-retry", {
           status: await statusOf(request("PATCH", source.path, { secret: { token: third } })),
