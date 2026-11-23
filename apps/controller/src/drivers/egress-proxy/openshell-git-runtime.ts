@@ -49,10 +49,14 @@ import {
   type OpenShellGitRouteSnapshot,
   type OpenShellGitRouteStore,
   type OpenShellGitRouteWithdrawal,
+  type OpenShellGitSourceCopy,
+  type OpenShellGitSourceCopyRetained,
   PostgresOpenShellGitRouteStore,
 } from "./openshell-git-route-store.ts";
 import {
   deleteOpenShellPreparedGitProvider,
+  deleteRetiredGitProviders,
+  preparedGitProviderForRevision,
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitBinding,
@@ -447,6 +451,7 @@ export class OpenShellGitRuntime {
   private readonly instance = randomUUID();
   private stopped = new AbortController();
   private running: Promise<void> = Promise.resolve();
+  private sweeping: Promise<void> = Promise.resolve();
   private timer?: ReturnType<typeof setTimeout>;
   private server?: ReturnType<typeof createOpenShellOnlineGitAuthority>;
   readonly configuration: OpenShellGitRuntimeConfiguration;
@@ -1592,6 +1597,140 @@ export class OpenShellGitRuntime {
         await deleteOpenShellPreparedGitProvider(client, workspace, provider, signal);
       }
     }
+    await this.retireSourceCopy(revision.id, client, workspace, signal);
+  }
+
+  /** The Provider name and Source version a write installed, for the copy deployment recorded. */
+  private async recordSourceCopyInstalled(
+    entry: Entry,
+    provider: string,
+    sourceVersion: string,
+  ): Promise<void> {
+    let recorded: boolean | undefined;
+    try {
+      recorded = await this.routes?.recordSourceCopyInstalled?.(
+        entry.revision.id,
+        provider,
+        sourceVersion,
+      );
+    } catch {
+      recorded = false;
+    }
+    if (recorded === false) {
+      // Deployment recorded the copy, so Source deletion already waits for it; only the
+      // Provider name and version are missing from the record.
+      this.emit?.({
+        event: "worker.error",
+        code: "OPENSHELL_GIT_SOURCE_COPY_UNRECORDED",
+        ...this.identity(entry),
+      });
+    }
+  }
+
+  /**
+   * Retires the revision's recorded repository Source copy: deletes every prepared Git Provider
+   * labelled for the revision and records the retirement only once a fresh listing of the
+   * Workspace finds none. OpenShell refuses to delete a Provider that a Sandbox still attaches,
+   * so a copy is retired only after its Sandbox is gone. A copy that cannot be read back stays
+   * unretired with the reason, and Source deletion keeps waiting for it. Never throws for the
+   * copy's sake: the caller's own cleanup outcome stays its own.
+   */
+  async retireSourceCopy(
+    revisionId: string,
+    client: Pick<
+      OpenShellGatewayClient,
+      | "listProviders"
+      | "deleteProvider"
+      | "getProviderProfile"
+      | "listProviderProfiles"
+      | "deleteProviderProfile"
+    >,
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<"retired" | OpenShellGitSourceCopyRetained | undefined> {
+    const routes = this.routes;
+    if (!routes?.sourceCopy || !routes.retireSourceCopy || !routes.retainSourceCopy) {
+      return undefined;
+    }
+    let copy: OpenShellGitSourceCopy | undefined;
+    try {
+      copy = await routes.sourceCopy(revisionId);
+    } catch {
+      return undefined; // the next cleanup pass or Worker start reads the record again
+    }
+    if (copy === undefined || copy.retired) {
+      return undefined;
+    }
+    try {
+      await deleteRetiredGitProviders(client, workspace, revisionId, signal);
+    } catch {
+      // A refusal (still attached) or an unanswered call: the read-back below decides.
+    }
+    let outcome: "retired" | OpenShellGitSourceCopyRetained;
+    try {
+      const providers = await client.listProviders(workspace, signal);
+      outcome = providers.some((provider) => preparedGitProviderForRevision(provider, revisionId))
+        ? "provider_present"
+        : "retired";
+    } catch {
+      outcome = "gateway_unavailable";
+    }
+    try {
+      if (outcome === "retired") {
+        await routes.retireSourceCopy(revisionId);
+      } else {
+        await routes.retainSourceCopy(revisionId, outcome);
+      }
+    } catch {
+      return undefined; // unrecorded: the copy stays unretired and is read back again later
+    }
+    this.emit?.({
+      event: "worker.openshell-git-copy",
+      status: outcome === "retired" ? "retired" : "retained",
+      ...(outcome === "retired" ? {} : { reason: outcome }),
+      namespaceId: copy.namespaceId,
+      agentId: copy.agentId,
+      revisionId,
+      credentialSourceId: copy.credentialSourceId,
+    });
+    return outcome;
+  }
+
+  /**
+   * Worker start: the record, not the registry, names the copies to retire. Each idle copy (no
+   * pending work for its revision, which is not the running Agent's active revision) is read
+   * back and retired; a copy whose Sandbox still attaches its Provider stays recorded.
+   */
+  retireSourceCopiesAtStart(
+    clientForNamespace: (namespaceName: string) => OpenShellGatewayClient,
+  ): void {
+    this.sweeping = this.retireIdleSourceCopies(clientForNamespace, this.stopped.signal).catch(
+      (error: unknown) => {
+        if (!this.stopped.signal.aborted) {
+          this.emit?.({
+            event: "worker.error",
+            code: "OPENSHELL_GIT_SOURCE_COPY_SWEEP_FAILED",
+            cause: error instanceof Error ? error.name : "unknown",
+          });
+        }
+      },
+    );
+  }
+
+  async retireIdleSourceCopies(
+    clientForNamespace: (namespaceName: string) => OpenShellGatewayClient,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const copies = await this.routes?.idleSourceCopies?.();
+    for (const copy of copies ?? []) {
+      signal.throwIfAborted();
+      await this.retireSourceCopy(
+        copy.revisionId,
+        clientForNamespace(copy.namespaceName),
+        copy.namespaceName,
+        AbortSignal.any([signal, AbortSignal.timeout(this.observeTimeoutMs)]),
+      );
+    }
   }
 
   withdraw(revisionId: string): void {
@@ -2235,6 +2374,10 @@ export class OpenShellGitRuntime {
           }
           entry.binding = rotated;
           entry.preview.verifyInstallBy = performance.now() + 30_000;
+          const lent = material as { credentialSource?: string; credentialSourceVersion?: string };
+          if (lent.credentialSourceVersion !== undefined && lent.credentialSource !== undefined) {
+            await this.recordSourceCopyInstalled(entry, rotated.provider, lent.credentialSourceVersion);
+          }
         } catch (error) {
           if (
             error instanceof OpenShellGitObservationError ||
@@ -2680,6 +2823,7 @@ export class OpenShellGitRuntime {
     clearTimeout(this.timer);
     this.server?.forceShutdown();
     await this.running;
+    await this.sweeping;
     this.owner = undefined;
     this.entries.clear();
     this.states.clear();

@@ -130,6 +130,23 @@ export interface OpenShellGitRouteStore {
   ): Promise<"confirmed" | "superseded">;
   /** Tombstones every open route of a withdrawn revision or Namespace, whoever holds it. */
   withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void>;
+  /**
+   * Repository token Source copies (0093). Deployment records each one; the Worker adds the
+   * Provider name and the Source version it wrote, and retires it only after reading back that
+   * the revision's Provider is gone. A store without them records nothing.
+   */
+  sourceCopy?(revisionId: string): Promise<OpenShellGitSourceCopy | undefined>;
+  /** False when the revision has no unretired copy. */
+  recordSourceCopyInstalled?(
+    revisionId: string,
+    provider: string,
+    sourceVersion: string,
+  ): Promise<boolean>;
+  /** Copies not retired whose revision has no pending work and is not running. */
+  idleSourceCopies?(): Promise<readonly OpenShellGitIdleSourceCopy[]>;
+  retireSourceCopy?(revisionId: string): Promise<boolean>;
+  /** Keeps the copy unretired and records why the last attempt could not retire it. */
+  retainSourceCopy?(revisionId: string, reason: OpenShellGitSourceCopyRetained): Promise<boolean>;
   /** Fences a witnessed installation at authorized expiry or exact committed withdrawal. */
   expire(
     revision: Readonly<AgentRevision>,
@@ -218,6 +235,35 @@ function record(row: Row): OpenShellGitRouteRecord {
     writePending: row.write_pending ?? undefined,
     blocked: row.blocked ?? undefined,
   };
+}
+
+export interface OpenShellGitSourceCopy {
+  readonly revisionId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly credentialSourceId: string;
+  readonly retired: boolean;
+}
+
+export interface OpenShellGitIdleSourceCopy extends OpenShellGitSourceCopy {
+  /** The Kubernetes namespace name, which also names the OpenShell Workspace. */
+  readonly namespaceName: string;
+}
+
+/** Why a copy stays unretired: a Provider still read back, or a Gateway that did not answer. */
+export type OpenShellGitSourceCopyRetained = "provider_present" | "gateway_unavailable";
+
+const sourceCopyColumns = `c.revision_id,c.namespace_id,c.agent_id,c.credential_source_id,
+  c.retired_at IS NOT NULL AS retired`;
+
+function sourceCopy(row: Record<string, unknown>): OpenShellGitSourceCopy {
+  return Object.freeze({
+    revisionId: String(row.revision_id),
+    namespaceId: String(row.namespace_id),
+    agentId: String(row.agent_id),
+    credentialSourceId: String(row.credential_source_id),
+    retired: row.retired === true,
+  });
 }
 
 export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
@@ -761,6 +807,91 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
         epoch,
       );
     });
+  }
+
+  async sourceCopy(revisionId: string): Promise<OpenShellGitSourceCopy | undefined> {
+    return this.query(async (c) => {
+      const { rows } = await c.query(
+        `SELECT ${sourceCopyColumns} FROM occ.repository_source_copies c WHERE c.revision_id=$1`,
+        [revisionId],
+      );
+      return rows.length === 1 ? sourceCopy(rows[0] as Record<string, unknown>) : undefined;
+    });
+  }
+
+  async recordSourceCopyInstalled(
+    revisionId: string,
+    provider: string,
+    sourceVersion: string,
+  ): Promise<boolean> {
+    return this.query(
+      async (c) =>
+        (
+          await c.query(
+            `UPDATE occ.repository_source_copies
+             SET provider_name=$2,source_version=$3,installed_at=clock_timestamp()
+             WHERE revision_id=$1 AND retired_at IS NULL`,
+            [revisionId, provider, sourceVersion],
+          )
+        ).rowCount === 1,
+    );
+  }
+
+  async idleSourceCopies(): Promise<readonly OpenShellGitIdleSourceCopy[]> {
+    return this.query(async (c) => {
+      // Idle: no deployment, Stop or cleanup is queued or running for the revision, and it is
+      // not the running Agent's active revision. Such a revision's Sandbox is gone or going, and
+      // OpenShell refuses to delete a Provider that a Sandbox still attaches.
+      const { rows } = await c.query(
+        `SELECT ${sourceCopyColumns},n.name AS namespace_name
+         FROM occ.repository_source_copies c
+         JOIN occ.namespaces n ON n.id=c.namespace_id
+         LEFT JOIN occ.agents a ON a.namespace_id=c.namespace_id AND a.id=c.agent_id
+         WHERE c.retired_at IS NULL
+           AND NOT EXISTS (SELECT FROM occ.controller_work w
+             WHERE w.namespace_id=c.namespace_id AND w.revision_id=c.revision_id
+               AND w.state IN ('queued','claimed'))
+           AND (a.id IS NULL OR a.active_revision_id IS DISTINCT FROM c.revision_id
+             OR a.desired_runtime_state='stopped')
+         ORDER BY c.recorded_at,c.revision_id`,
+      );
+      return rows.map((row) => {
+        const record = row as Record<string, unknown>;
+        return Object.freeze({ ...sourceCopy(record), namespaceName: String(record.namespace_name) });
+      });
+    });
+  }
+
+  async retireSourceCopy(revisionId: string): Promise<boolean> {
+    return this.query(
+      async (c) =>
+        (
+          await c.query(
+            `UPDATE occ.repository_source_copies
+             SET retired_at=clock_timestamp(),retirement_blocked=NULL,
+               retirement_attempted_at=clock_timestamp()
+             WHERE revision_id=$1 AND retired_at IS NULL`,
+            [revisionId],
+          )
+        ).rowCount === 1,
+    );
+  }
+
+  async retainSourceCopy(
+    revisionId: string,
+    reason: OpenShellGitSourceCopyRetained,
+  ): Promise<boolean> {
+    return this.query(
+      async (c) =>
+        (
+          await c.query(
+            `UPDATE occ.repository_source_copies
+             SET retirement_blocked=$2,retirement_attempted_at=clock_timestamp()
+             WHERE revision_id=$1 AND retired_at IS NULL`,
+            [revisionId, reason],
+          )
+        ).rowCount === 1,
+    );
   }
 
   async withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void> {
