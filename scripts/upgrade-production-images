@@ -3168,6 +3168,17 @@ if ((helm_complete == 0)); then
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
   done
   }
+  preview_worker_stop() {
+    local worker_preview
+    quiescence_remaining
+    worker_preview=$(
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch deployment/openclaw-enterprise-worker \
+        --type json --patch-file "$evidence_dir/quiescence-worker-patch.json" \
+        --dry-run=server --output 'jsonpath={.spec.replicas}' 2>>"$evidence_dir/quiescence-worker-preview.err"
+    ) || die "Server-side dry-run of the Worker stop failed for $namespace/openclaw-enterprise-worker. No OCC writer was stopped by this attempt. Inspect quiescence-worker-preview.err in the evidence directory." "$?"
+    [[ "$worker_preview" == 0 ]] ||
+      die "Server-side dry-run did not confirm zero replicas for $namespace/openclaw-enterprise-worker. No OCC writer was stopped by this attempt."
+  }
   observe_quiescence_writers
   if [[ "$channel_egress_enabled" == true ]]; then
     if jq -e '.spec.replicas == 0' "$evidence_dir/current-api-deployment.json" >/dev/null; then
@@ -3177,6 +3188,11 @@ if ((helm_complete == 0)); then
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "The quiesced upgrade lacks confirmed Agent Stop evidence; inspect the original journal and inventory."
     else
+      # Check Worker admission before Agent Stop, then preview again on the refreshed writer observations.
+      if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+        preview_worker_stop
+      fi
+      quiescence_remaining
       python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
@@ -3209,14 +3225,7 @@ if ((helm_complete == 0)); then
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-api-deployment.json" >/dev/null &&
     jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
     # Check admission for the exact Worker stop before stopping the API.
-    quiescence_remaining
-    worker_preview=$(
-      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch deployment/openclaw-enterprise-worker \
-        --type json --patch-file "$evidence_dir/quiescence-worker-patch.json" \
-        --dry-run=server --output 'jsonpath={.spec.replicas}' 2>>"$evidence_dir/quiescence-worker-preview.err"
-    ) || die "Server-side dry-run of the Worker stop failed for $namespace/openclaw-enterprise-worker. No OCC writer was stopped by this attempt. Inspect quiescence-worker-preview.err in the evidence directory." "$?"
-    [[ "$worker_preview" == 0 ]] ||
-      die "Server-side dry-run did not confirm zero replicas for $namespace/openclaw-enterprise-worker. No OCC writer was stopped by this attempt."
+    preview_worker_stop
   fi
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do

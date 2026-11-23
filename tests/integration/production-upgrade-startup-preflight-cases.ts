@@ -2609,6 +2609,10 @@ exec "$0.fixture" "$@"
       "collision",
       "the channel one-off preserves an Installation key matching the channel input filename",
     ],
+    [
+      "worker-admission-denied",
+      "the channel one-off refuses a Worker admission denial before Agent Stop",
+    ],
   ] as const) {
     const conservative = scenario === "conservative";
     const unspecified = scenario === "unspecified-destinations";
@@ -2973,6 +2977,12 @@ exec "$0.fixture" "$@"
             await installationFile.close();
           }
         }
+        if (scenario === "worker-admission-denied") {
+          // Patch access is allowed, but admission refuses changing the Worker to zero replicas.
+          const state = await f.state();
+          state.denyWorkerAdmission = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
         const failure = await runForFailure(
           f.run,
           "--candidate-values",
@@ -2991,7 +3001,20 @@ exec "$0.fixture" "$@"
             [],
           );
         }
-        if (foreignExecution) {
+        if (scenario === "worker-admission-denied") {
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.match(
+            failure.stderr,
+            /Server-side dry-run of the Worker stop failed for system\/openclaw-enterprise-worker\./,
+          );
+          assert.match(
+            await f.readEvidence("quiescence-worker-preview.err"),
+            /admission webhook "writer-policy\.test" denied the Worker stop/,
+          );
+          await assertStoppedBeforeWriters(f);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+        } else if (foreignExecution) {
           assert.deepEqual(f.stopRequests, []);
           assert.match(
             failure.stderr,
