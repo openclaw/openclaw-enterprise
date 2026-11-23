@@ -2187,6 +2187,68 @@ if (savedAgentAcl === "source") {
             versionLogged: event.credentialSourceVersion !== undefined,
             at: eventTime(event),
           }));
+      // Checks whose failure must not stop the later criteria; asserted together at the end.
+      const late: string[] = [];
+      const check = (condition: unknown, code: string) => {
+        if (!condition) {
+          late.push(code);
+        }
+      };
+      // The App path's preparation and every worker.error in the Worker log: fixed names only.
+      const preparationDiagnostics = async () => {
+        const logs: string = await fixture.kube(
+          [
+            "logs",
+            "-n",
+            fixture.platform,
+            "-l",
+            workerSelector,
+            "--container=worker",
+            "--tail=-1",
+            "--max-log-requests=10",
+          ],
+          { timeout: 60_000 },
+        );
+        const counts: Record<string, number> = {};
+        for (const line of logs.split("\n")) {
+          if (!line.includes("PREPARED_GITHUB") && !line.includes("worker.error")) {
+            continue;
+          }
+          let event: Record<string, unknown> | undefined;
+          try {
+            event = asRecord(JSON.parse(line.slice(line.indexOf("{"))));
+          } catch {
+            continue;
+          }
+          if (!event) {
+            continue;
+          }
+          const record = event;
+          const key = [
+            "event",
+            "code",
+            "reason",
+            "stage",
+            "firstFailureStage",
+            "errorClass",
+            "validationKind",
+            "validationCode",
+            "httpStatus",
+            "outcome",
+            "publication",
+          ]
+            .flatMap((name) => {
+              const value = record[name];
+              return typeof value === "number" ||
+                (typeof value === "string" && /^[A-Za-z0-9_.:-]{1,64}$/u.test(value))
+                ? [`${name}=${value}`]
+                : [];
+            })
+            .join(" ");
+          counts[key] = (counts[key] ?? 0) + 1;
+        }
+        return counts;
+      };
 
       const callbackBaseline = await callbacks.disable();
       assert.equal(callbackBaseline, 0);
@@ -2277,6 +2339,122 @@ if (savedAgentAcl === "source") {
         assert.ok(git[0]!.startsWith("oce-github-token-"), "SOURCE_PROVIDER_NAME");
         return git[0]!;
       };
+
+      // A peer Agent on the App path in the other Namespace: own credential, no Source value.
+      // It starts while the Source criteria run, and its failure is reported on its own.
+      const independent = fixture.independent;
+      assert.ok(independent?.modelSource);
+      const peerFixture = {
+        ...fixture,
+        ...independent,
+        verifySupervisorImage: (peerTarget: GitTarget) =>
+          fixture.verifySupervisorImage(peerTarget, independent.workspace),
+      };
+      const peerManaged = createManagedWorkloadExec(t, {
+        backend: fixture.gatewayBackend,
+        gatewayClient,
+        workspace: independent.workspace,
+        checkpoint: fixture.checkpoint,
+      });
+      const peerExec: GitExec = async (peerTarget, command) => {
+        const result = await peerManaged(peerTarget, command);
+        for (const output of [result.stdout, result.stderr]) {
+          assert.ok(!network.containsIssuedCredential(output), "SOURCE_CREDENTIAL_IN_OUTPUT");
+        }
+        return result;
+      };
+      // The App issues for the Agent's bound repositories, and the fixture origin issues only
+      // for the registry's full repository set, so the peer binds all three and saves A read.
+      const allRefs = network.scopes.map(({ repositoryRef }) => repositoryRef);
+      const preparePeer = async (refs: readonly string[]) => {
+        const peer = await prepareFiniteGitAgent(t, peerFixture, refs);
+        const peerPolicyPath = `${peer.path}/sandbox-policy/networking`;
+        await request("PATCH", `${peerPolicyPath}/editing`, { enabled: true });
+        const peerView: SandboxPolicyViewWire = await request("GET", peerPolicyPath);
+        await request("PUT", peerPolicyPath, {
+          expectedVersion: peerView.policy.version,
+          additions: peerView.policy.additions,
+          repositoryNetworkPolicy: [{ repository: "fixture/a", access: "read" }],
+        });
+        return peer;
+      };
+      let peerDeployed: IssuedDeployment | undefined;
+      let peerFailure: string | undefined;
+      const startPeer = async (refs: readonly string[], stage: string) => {
+        const startedAt = Date.now();
+        try {
+          const peer = await preparePeer(refs);
+          peerDeployed = await deployWithIssuance(origin, peer.deploy);
+          assert.ok(!sourceIndices.has(peerDeployed.credentialIndex));
+        } catch (error) {
+          peerFailure = (error instanceof Error ? error.message : String(error)).slice(0, 160);
+        }
+        evidence("peer-start", {
+          stage,
+          refs: refs.length,
+          started: peerDeployed !== undefined,
+          seconds: (Date.now() - startedAt) / 1000,
+          ...(peerFailure && { failure: peerFailure }),
+          diagnostics: await preparationDiagnostics(),
+        });
+      };
+      const peerRead = async (stage: string) => {
+        if (!peerDeployed) {
+          evidence("peer", { stage, skipped: "peer did not start" });
+          return;
+        }
+        const before = network.requests().length;
+        const result = await peerExec(peerDeployed.target, [
+          "sh",
+          "-c",
+          "export LC_ALL=C GIT_TERMINAL_PROMPT=0; timeout 30 git ls-remote https://github.com/fixture/a.git refs/heads/main >/dev/null 2>&1; echo $?",
+        ]);
+        const indices = new Set(
+          network
+            .requests()
+            .slice(before)
+            .filter(({ authenticated }) => authenticated)
+            .map(({ credentialIndex }) => credentialIndex),
+        );
+        const code = Number(result.stdout.toString("utf8").trim());
+        evidence("peer", { stage, code, indices: [...indices] });
+        check(code === 0 && indices.size >= 1, `SOURCE_PEER_READS_${stage}`);
+        check(
+          [...indices].every((index) => !sourceIndices.has(index)),
+          `SOURCE_PEER_OWN_CREDENTIAL_${stage}`,
+        );
+      };
+
+      if (process.env.OCC_TEST_SOURCE_PEER_PROBE === "1") {
+        // The peer start question alone, after the Source upgrade and before any Source loan:
+        // the earlier form (one bound repository) first, then the peer bound to all three.
+        const single = await preparePeer(allRefs.slice(0, 1));
+        const issuedBefore = origin.snapshot().tokens.length;
+        const revision = await request("POST", `${single.path}/deploy`);
+        let status: unknown;
+        await observeUntil(
+          "single-repository peer outcome",
+          t.signal,
+          async () => {
+            await delay(10_000, undefined, { signal: t.signal });
+            const deployment = await request("GET", `${single.path}/deployments/${revision.id}`);
+            status = deployment.status;
+            return status === "succeeded" || status === "failed" ? true : undefined;
+          },
+          4 * 60_000,
+        ).catch(() => undefined);
+        evidence("peer-probe-single", {
+          status,
+          issuedTokens: origin.snapshot().tokens.length - issuedBefore,
+          diagnostics: await preparationDiagnostics(),
+        });
+        await startPeer(allRefs, "probe-all");
+        await peerRead("probe");
+        check(peerFailure === undefined, "SOURCE_PEER_STARTS");
+        evidence("done", { late });
+        assert.deepEqual(late, [], "SOURCE_LATE_CHECKS");
+        return;
+      }
 
       // AC-6 save table: the Agent principal needs operate on the Source before save.
       const prepared = await prepareFiniteGitAgent(
@@ -2403,6 +2581,10 @@ if (savedAgentAcl === "source") {
         })),
       });
       assert.ok(confirmed.length > 0, "SOURCE_DELIVERY_CONFIRMED_LOGGED");
+      check(
+        confirmed.some(({ sourceNamed, version }) => sourceNamed && typeof version === "string"),
+        "SOURCE_DELIVERY_NAMES_SOURCE_AND_VERSION",
+      );
       assert.equal(
         await sourceProvider(target),
         narrowedProvider,
@@ -2426,93 +2608,165 @@ if (savedAgentAcl === "source") {
       evidence("delete-while-named", { status: deleteStatus });
       assert.equal(deleteStatus, 409, "SOURCE_DELETE_WHILE_NAMED");
 
-      // A peer Agent on the App path in the other Namespace: own credential, no Source value.
-      const independent = fixture.independent;
-      assert.ok(independent?.modelSource);
-      const peerFixture = {
-        ...fixture,
-        ...independent,
-        verifySupervisorImage: (peerTarget: GitTarget) =>
-          fixture.verifySupervisorImage(peerTarget, independent.workspace),
-      };
-      const peer = await prepareFiniteGitAgent(t, peerFixture, [network.scopes[0]!.repositoryRef]);
-      const peerPolicyPath = `${peer.path}/sandbox-policy/networking`;
-      await request("PATCH", `${peerPolicyPath}/editing`, { enabled: true });
-      const peerView: SandboxPolicyViewWire = await request("GET", peerPolicyPath);
-      await request("PUT", peerPolicyPath, {
-        expectedVersion: peerView.policy.version,
-        additions: peerView.policy.additions,
-        repositoryNetworkPolicy: [{ repository: "fixture/a", access: "read" }],
-      });
-      const peerDeployed = await deployWithIssuance(origin, peer.deploy);
-      assert.ok(!sourceIndices.has(peerDeployed.credentialIndex));
-      const peerManaged = createManagedWorkloadExec(t, {
-        backend: fixture.gatewayBackend,
-        gatewayClient,
-        workspace: independent.workspace,
-        checkpoint: fixture.checkpoint,
-      });
-      const peerExec: GitExec = async (peerTarget, command) => {
-        const result = await peerManaged(peerTarget, command);
-        for (const output of [result.stdout, result.stderr]) {
-          assert.ok(!network.containsIssuedCredential(output), "SOURCE_CREDENTIAL_IN_OUTPUT");
-        }
-        return result;
-      };
-      const peerRead = async (stage: string) => {
-        const before = network.requests().length;
-        const result = await peerExec(peerDeployed.target, [
-          "sh",
-          "-c",
-          "export LC_ALL=C GIT_TERMINAL_PROMPT=0; timeout 30 git ls-remote https://github.com/fixture/a.git refs/heads/main >/dev/null 2>&1; echo $?",
-        ]);
-        const indices = new Set(
-          network
-            .requests()
-            .slice(before)
-            .filter(({ authenticated }) => authenticated)
-            .map(({ credentialIndex }) => credentialIndex),
-        );
-        const code = Number(result.stdout.toString("utf8").trim());
-        evidence("peer", { stage, code, indices: [...indices] });
-        assert.ok(code === 0 && indices.size >= 1, "SOURCE_PEER_READS");
-        assert.ok(
-          [...indices].every((index) => !sourceIndices.has(index)),
-          "SOURCE_PEER_OWN_CREDENTIAL",
-        );
-      };
-      await peerRead("start");
-      await assertTokensAbsentFromWorkload(t, peerExec, peerDeployed.target, values, "peer");
-
       // AC-4: pause the Worker, replace and try to retire the Source, resume; the delivered value
       // only moves forward.
       const third = source.fake();
       const thirdIndex = network.acceptStaticToken(third);
       values.push(third);
       sourceIndices.add(thirdIndex);
+      // Pause the Worker while its lock session holds the Source row FOR SHARE. A loop on the
+      // k3d node watches the PostgreSQL backends' process titles and stops the Worker as soon
+      // as one is "in transaction"; the database then confirms the hold or the Worker resumes.
+      const kubeJson = async (args: string[]) => JSON.parse(await fixture.kube(args));
+      const workerPods = await kubeJson([
+        "get",
+        "pods",
+        "-n",
+        fixture.platform,
+        "-l",
+        workerSelector,
+        "-o",
+        "json",
+      ]);
+      assert.equal(workerPods.items.length, 1, "expected one Worker Pod");
+      const workerIp: string = workerPods.items[0].status.podIP;
+      assert.match(workerIp, /^\d+\.\d+\.\d+\.\d+$/u);
+      const workerRestarts = async () => {
+        const pods = await kubeJson([
+          "get",
+          "pods",
+          "-n",
+          fixture.platform,
+          "-l",
+          workerSelector,
+          "-o",
+          "json",
+        ]);
+        type Status = { name: string; restartCount: number };
+        type WorkerPod = {
+          status: { initContainerStatuses?: Status[]; containerStatuses?: Status[] };
+        };
+        return (pods.items as WorkerPod[]).flatMap((pod) =>
+          [...(pod.status.initContainerStatuses ?? []), ...(pod.status.containerStatuses ?? [])]
+            .filter(({ name }) => name === "worker")
+            .map(({ restartCount }) => restartCount),
+        );
+      };
+      const postgresPod = (
+        await fixture.kube([
+          "get",
+          "pods",
+          "-n",
+          fixture.platform,
+          "-l",
+          "app=postgres",
+          "-o",
+          "jsonpath={.items[0].metadata.name}",
+        ])
+      ).trim();
+      assert.ok(postgresPod);
+      const psql = async (sql: string) =>
+        (
+          await fixture.kube(
+            [
+              "exec",
+              "-n",
+              fixture.platform,
+              postgresPod,
+              "--",
+              "sh",
+              "-c",
+              `psql -U postgres -d "$POSTGRES_DB" -XAtc "${sql}"`,
+            ],
+            { timeout: 30_000 },
+          )
+        ).trim();
+      const heldSql = `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.relation = 'occ.credential_sources'::regclass AND l.mode = 'RowShareLock' AND l.granted AND a.state LIKE 'idle in transaction%'`;
+      const rowHeld = async () => Number(await psql(heldSql));
+      const restartsBefore = await workerRestarts();
+      const workerPid = await fixture.signalWorker("CONT");
+      const watch = [
+        `W=${workerPid}; IP='${workerIp}('; end=$(( $(date +%s) + 15 ));`,
+        `P=$(grep -l -F "$IP" /proc/[0-9]*/cmdline 2>/dev/null | xargs grep -l "^postgres: " 2>/dev/null);`,
+        `[ -n "$P" ] || P=$(grep -l "^postgres: " /proc/[0-9]*/cmdline 2>/dev/null);`,
+        `while [ "$(date +%s)" -lt "$end" ]; do for f in $P; do`,
+        `if grep -q "in transaction" "$f" 2>/dev/null; then kill -STOP "$W"; echo "stopped $(echo $P | wc -w)"; exit 0; fi;`,
+        `done; done; echo "none $(echo $P | wc -w)"`,
+      ].join(" ");
+      const hunt = { method: "node-title", rounds: 0, triggers: 0, caught: false, backends: "" };
+      let stoppedNow = false;
+      try {
+        const huntEnds = Date.now() + 5 * 60_000;
+        while (!hunt.caught && Date.now() < huntEnds) {
+          hunt.rounds += 1;
+          if (hunt.method === "node-title") {
+            try {
+              const out = (await fixture.nodeShell(watch, 40_000)).trim();
+              hunt.backends = out.split(" ")[1] ?? "";
+              stoppedNow = out.startsWith("stopped");
+            } catch {
+              hunt.method = "stop-and-check";
+            }
+          }
+          if (hunt.method === "stop-and-check") {
+            await delay(200 + Math.floor(Math.random() * 2000), undefined, { signal: t.signal });
+            await fixture.signalWorker("STOP", workerPid);
+            stoppedNow = true;
+          }
+          if (!stoppedNow) {
+            continue;
+          }
+          hunt.triggers += 1;
+          if ((await rowHeld()) > 0) {
+            hunt.caught = true;
+            break;
+          }
+          await fixture.signalWorker("CONT", workerPid);
+          stoppedNow = false;
+        }
+      } catch (error) {
+        await fixture.signalWorker("CONT", workerPid);
+        throw error;
+      }
+      evidence("hold-hunt", hunt);
+      if (!stoppedNow) {
+        // Not caught inside a hold: the run still records a pause outside one.
+        await fixture.signalWorker("STOP", workerPid);
+      }
       const pausedAt = Date.now();
-      await fixture.signalWorker("STOP");
       let paused: Record<string, unknown>;
       try {
+        const heldAtPause = await rowHeld();
         const patchStart = Date.now();
         const patchStatus = await statusOf(
           request("PATCH", source.path, { secret: { token: third } }),
         );
         const patchEnd = Date.now();
+        const heldAfterPatch = await rowHeld();
+        const deleteStart = Date.now();
         const deleteWhilePaused = await statusOf(request("DELETE", source.path));
         const deleteEnd = Date.now();
         paused = {
+          caughtInHold: hunt.caught,
+          heldAtPause,
+          heldAfterPatch,
           pausedAt: new Date(pausedAt).toISOString(),
           patchStatus,
           patchSeconds: (patchEnd - patchStart) / 1000,
           deleteStatus: deleteWhilePaused,
-          deleteSeconds: (deleteEnd - patchEnd) / 1000,
+          deleteSeconds: (deleteEnd - deleteStart) / 1000,
+          pausedSeconds: (deleteEnd - pausedAt) / 1000,
         };
       } finally {
-        await fixture.signalWorker("CONT");
+        await fixture.signalWorker("CONT", workerPid);
       }
       const resumedAt = Date.now();
-      evidence("paused-worker", { ...paused, resumedAt: new Date(resumedAt).toISOString() });
+      evidence("paused-worker", {
+        ...paused,
+        resumedAt: new Date(resumedAt).toISOString(),
+        restartsBefore,
+        restartsAfter: await workerRestarts(),
+      });
       if (paused.patchStatus !== 200) {
         // Recorded above; replace once more so the remaining criteria still run.
         evidence("paused-worker-retry", {
@@ -2560,6 +2814,10 @@ if (savedAgentAcl === "source") {
       const lastDelivery = (await confirmations()).at(-1);
       await request("DELETE", `${nsPath}/iam/access-bindings/${binding.id}`, undefined);
       const revokedAt = Date.now();
+      const peerStarted = startPeer(
+        process.env.OCC_TEST_SOURCE_PEER_REFS === "first" ? allRefs.slice(0, 1) : allRefs,
+        "during-expiry",
+      );
       const refusal = await observeUntil(
         "Source loan refusal after operate is revoked",
         t.signal,
@@ -2579,6 +2837,7 @@ if (savedAgentAcl === "source") {
             ? new Date(lastDelivery.at).toISOString()
             : "untimed",
       });
+      check(refusal.sourceNamed, "SOURCE_REFUSAL_NAMES_SOURCE");
       let lastSuccess = Date.now();
       const failed = await observeUntil(
         "Git failure at the end of the last Source loan",
@@ -2604,7 +2863,17 @@ if (savedAgentAcl === "source") {
             ? (failed.at - lastDelivery.at) / 1000
             : undefined,
         sinceRevokeSeconds: (failed.at - revokedAt) / 1000,
+        // A loan lasts until the end of the 7.5-minute window after the one it was made in;
+        // the last loan was made at or before the first refusal.
+        sinceRefusalSeconds: Number.isNaN(refusal.at) ? undefined : (failed.at - refusal.at) / 1000,
+        lastLoanBoundAt: new Date((Math.floor(revokedAt / 450_000) + 2) * 450_000).toISOString(),
+        lastSuccessToFailureSeconds: (failed.at - lastSuccess) / 1000,
       });
+      check(
+        failed.at <= (Math.floor(revokedAt / 450_000) + 2) * 450_000 + 30_000,
+        "SOURCE_EXPIRY_WITHIN_LAST_LOAN",
+      );
+      await peerStarted;
       assert.ok(
         failed.indices.every((index) => !sourceIndices.has(index)),
         "SOURCE_NO_VALUE_AFTER_EXPIRY",
@@ -2634,8 +2903,30 @@ if (savedAgentAcl === "source") {
           .every(({ credentialIndex }) => !sourceIndices.has(credentialIndex)),
         "SOURCE_NO_REQUEST_AFTER_STOP",
       );
-      await workerEvents();
-      evidence("done", { sourceIndices: [...sourceIndices] });
+      const finalEvents = await workerEvents();
+      const perVersion: Record<string, number> = {};
+      const refusalReasons: Record<string, number> = {};
+      for (const event of finalEvents) {
+        if (event.event === "worker.openshell-git-delivery-confirmed") {
+          const key = `${String(event.revisionId)} ${String(event.credentialSourceVersion)}`;
+          perVersion[key] = (perVersion[key] ?? 0) + 1;
+        } else if (event.code === "REPOSITORY_SOURCE_LOAN_REFUSED") {
+          const key = String(event.reason);
+          refusalReasons[key] = (refusalReasons[key] ?? 0) + 1;
+        }
+      }
+      evidence("event-counts", {
+        confirmationsPerRevisionVersion: Object.values(perVersion),
+        refusalReasons,
+      });
+      check(
+        Object.values(perVersion).every((count) => count === 1),
+        "SOURCE_DELIVERY_ONCE_PER_VERSION",
+      );
+      check(refusalReasons.operate_denied === 1, "SOURCE_REFUSAL_LOGGED_ONCE");
+      check(peerFailure === undefined, "SOURCE_PEER_STARTS");
+      evidence("done", { sourceIndices: [...sourceIndices], late });
+      assert.deepEqual(late, [], "SOURCE_LATE_CHECKS");
     }),
   );
 }

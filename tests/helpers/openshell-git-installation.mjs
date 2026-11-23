@@ -1846,23 +1846,32 @@ async function installOpenShellGit(
       throw error;
     }
   };
+  const k3dNode = `k3d-${state.cluster}-server-0`;
+  // One shell command on the k3d node (its own pids, not a Pod's), bounded by `timeout`.
+  const nodeShell = (script, timeout = 30_000) =>
+    command("docker", ["exec", k3dNode, "sh", "-c", script], { timeout });
   // Pause or resume the Worker's process on the k3d node; returns the node pid it signalled.
-  const signalWorker = async (signal) => {
+  // A known pid skips the container lookup, so a pause can follow an observation closely.
+  const signalWorker = async (signal, knownPid) => {
     assert.ok(signal === "STOP" || signal === "CONT");
-    const node = `k3d-${state.cluster}-server-0`;
+    if (knownPid !== undefined) {
+      assert.ok(Number.isSafeInteger(knownPid) && knownPid > 1);
+      await command("docker", ["exec", k3dNode, "kill", `-${signal}`, String(knownPid)]);
+      return knownPid;
+    }
     const ids = (
-      await command("docker", ["exec", node, "crictl", "ps", "--name", "^worker$", "-q"])
+      await command("docker", ["exec", k3dNode, "crictl", "ps", "--name", "^worker$", "-q"])
     )
       .trim()
       .split(/\s+/u)
       .filter(Boolean);
     assert.equal(ids.length, 1, "expected one running Worker container");
     const inspected = JSON.parse(
-      await command("docker", ["exec", node, "crictl", "inspect", ids[0]]),
+      await command("docker", ["exec", k3dNode, "crictl", "inspect", ids[0]]),
     );
     const pid = inspected.info?.pid;
     assert.ok(Number.isSafeInteger(pid) && pid > 1, "Worker container pid");
-    await command("docker", ["exec", node, "kill", `-${signal}`, String(pid)]);
+    await command("docker", ["exec", k3dNode, "kill", `-${signal}`, String(pid)]);
     return pid;
   };
   return {
@@ -1871,6 +1880,7 @@ async function installOpenShellGit(
     sessionDurationSeconds,
     ...(repositorySourceState && { repositorySource: repositorySourceState }),
     signalWorker,
+    nodeShell,
     ...(callbacks && { callbacks }),
     namespace,
     modelSource,
