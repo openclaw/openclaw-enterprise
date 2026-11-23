@@ -29,7 +29,10 @@ graph TD
   Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
   Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
   Traffic --> Deny["<b>OCC</b><br/>Record withdrawal and deny use"]
-  Deny --> Policy["<b>Sandbox Driver</b><br/>Apply and verify reduced policy"]
+  Deny --> Target{"Sandbox exists?"}
+  Target -->|Present| Policy["<b>Sandbox Driver</b><br/>Apply and verify reduced policy"]
+  Target -->|Confirmed absent| Complete
+  Target -->|Unconfirmed| Pending
   Policy --> Detach["<b>Credential Proxy</b><br/>Detach exact binding"]
   Detach --> Receipt{"Detach receipt REVOKED?"}
   Receipt -->|No| Pending["<b>Worker</b><br/>Keep pending and retry"]
@@ -78,7 +81,7 @@ On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absen
 
 `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
 
-OCC checks `agent:operate` on the exact Agent, saves a pending withdrawal for each affected Agent revision, and queues Worker reconciliation in the same transaction. That record denies further admitted or routed use of the Source before native reconciliation begins. Worker checks each withdrawal requester’s current authority. Compute asks the selected native Credential Proxy to remove the admitted binding from the recorded target. The paired Sandbox Driver derives the reduced policy from the Agent revision, applies it, and checks that the loaded and effective policies no longer permit the credential destination. Proxy then detaches the Provider and checks the corresponding receipt. Only `REVOKED` confirms native revocation; an unconfirmed policy or receipt leaves the withdrawal pending with `DEPENDENCY_UNAVAILABLE` for retry or operator replay.
+OCC checks `agent:operate` on the exact Agent, saves a pending withdrawal for each affected Agent revision, and queues Worker reconciliation in the same transaction. That record denies further admitted or routed use of the Source before native reconciliation begins. Worker checks each withdrawal requester’s current authority. Compute asks the selected native Credential Proxy to remove the admitted binding from the recorded target. The paired Sandbox Driver derives the reduced policy from the Agent revision, applies it, and checks that the loaded and effective policies no longer permit the credential destination. Proxy then detaches the Provider and checks the corresponding receipt. For a present Sandbox, `REVOKED` confirms native revocation. Proxy can also complete removal when it independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves the withdrawal pending with `DEPENDENCY_UNAVAILABLE` for retry or operator replay.
 
 After confirmed detachment, Proxy attempts to retire its owned delivery Provider and profile. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
 

@@ -24,7 +24,7 @@ For a staged TokenService Source, the Worker rechecks the requester's exact `age
 authority. Compute asks the selected native Credential Proxy to remove the binding from the saved
 Sandbox target. The paired Sandbox Driver applies the reduced policy and verifies that the loaded
 and effective policies no longer permit the credential destination. Proxy detaches the Provider and checks its native receipt. The Worker
-records `revoked` only after that receipt reaches `REVOKED`. An unconfirmed policy or receipt leaves
+records `revoked` after that receipt reaches `REVOKED`, or after Proxy independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves
 the withdrawal `pending` with `DEPENDENCY_UNAVAILABLE` for retry. Proxy retains an OpenShell Provider
 still attached to another Agent and retires its owned Provider and profile after the last binding is
 removed. TokenService keeps the Source and its credential; other Agents using that Source retain their
