@@ -5,6 +5,7 @@ import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { stagedCreateTimeout } from "../../scripts/ci/k3d-preparation-diagnostics.ts";
 import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -778,6 +779,27 @@ export function registerClusterCreateCases() {
     for (const pid of await hungK3dProcesses(commands)) {
       assert.equal(processRunning(pid), false, `local child ${pid} must have settled`);
     }
+    // The nested failure must survive truncation without including node output.
+    const reportPath = commands.statePath + ".diagnostics.json";
+    const report = await readDiagnostics(commands);
+    const hint = () => stagedCreateTimeout(commands.statePath);
+    const failure = "k3d create timed out; unconfirmed creation requires reconciliation. ";
+    assert.equal(await hint(), failure + "server-start-line=yes uncordon-observed=yes");
+    await writeFile(
+      reportPath,
+      JSON.stringify({ ...report, containers: [], k3dCreateOutput: null }),
+    );
+    assert.equal(await hint(), failure + "server-start-line=unknown uncordon-observed=unknown");
+    const stale = commands.statePath + ".copy";
+    await writeFile(stale, JSON.stringify(state));
+    await writeFile(stale + ".diagnostics.json", JSON.stringify(report));
+    assert.equal(await stagedCreateTimeout(stale), undefined);
+    await writeFile(reportPath, JSON.stringify({ ...report, preparationId: "stale" }));
+    assert.equal(await hint(), undefined);
+    await writeFile(reportPath, "{");
+    assert.equal(await hint(), undefined);
+    await rename(reportPath, reportPath + ".invalid");
+    assert.equal(await hint(), undefined);
     // The fixture directory is removed by its own hook; no modeled resource
     // deletion is invoked and this test does not establish daemon settlement.
   });
