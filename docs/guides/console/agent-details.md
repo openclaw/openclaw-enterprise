@@ -229,7 +229,7 @@ work but preserves version history, credentials, gateway state, and workspace
 files. A chat that was mid-reply can keep showing the reply as in progress;
 reload it after the Agent is deployed again. If the reply is missing,
 [check for resumed work and completed actions](../../reference/agents/interrupted-turns.md)
-before repeating the task. **Cancel** closes the confirmation without a
+before repeating the task. **Go back** closes the confirmation without a
 write. Confirming requires `operate` permission on this Agent, regardless of the
 viewed version or tab.
 

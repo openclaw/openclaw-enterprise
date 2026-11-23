@@ -97,7 +97,11 @@ export function stopConfirmation(
       : statusBlock(
           "info",
           null,
-          ["To cancel a reply, select ", element("strong", {}, "Stop"), " in chat first."],
+          [
+            "To cancel a reply, select ",
+            element("strong", {}, "Stop"),
+            " in chat first. Otherwise an open chat can keep showing the reply as in progress.",
+          ],
           [],
           { role: null },
         ),

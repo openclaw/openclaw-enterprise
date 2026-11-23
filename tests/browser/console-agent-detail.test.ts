@@ -1524,6 +1524,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.ok(description.includes(STOP_CONFIRMATION));
   assert.ok(description.includes("It starts and may resume unfinished work."));
   assert.ok(description.includes("To cancel a reply, select Stop in chat first."));
+  assert.ok(description.includes("an open chat can keep showing the reply as in progress"));
   const goBack = dialog.getByRole("button", { name: "Go back" });
   assert.equal(await goBack.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await goBack.click();
