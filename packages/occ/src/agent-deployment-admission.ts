@@ -973,7 +973,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           : undefined;
       const egressPlan = proxyAdmission?.plan;
       if (
-        admittedRepository?.requiresNetworkPolicy &&
+        (admittedRepository?.requiresNetworkPolicy ||
+          policy?.repositoryNetworkPolicy?.some((grant) => grant.apiActions)) &&
         (!policy?.repositoryNetworkPolicy ||
           egressPlan?.repositoryGitAuthorization !== "network-policy")
       ) {
@@ -1013,7 +1014,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           ? bindProtectedRepositoryPolicySandbox(compute, sandbox)
           : undefined;
       if (protectedSandbox) {
-        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.selectedGrants);
+        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.resolution);
       }
       const sandboxSnapshot = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
         policy,
@@ -1096,7 +1097,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         }
         if (protectedSandbox && admittedRepository) {
           const current = admitRepository();
-          assertSelectedRepositoryGrants(repositoryGrants, current?.selectedGrants);
+          assertSelectedRepositoryGrants(repositoryGrants, current?.resolution);
           if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
             throw new ResourceStateConflictError(
               "The selected repository credentials changed during deployment.",

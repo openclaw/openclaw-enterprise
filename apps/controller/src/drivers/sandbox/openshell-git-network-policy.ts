@@ -1,4 +1,8 @@
 import {
+  parseRepositoryApiActions,
+  type RepositoryNetworkGrant,
+} from "@openclaw-enterprise/contracts";
+import {
   repositoryGitRestOperations,
   type RepositoryGitRestAuthority,
 } from "../repo/access/delivery.ts";
@@ -95,11 +99,6 @@ export function openShellGitEndpoints(
       ];
 }
 
-interface RepositoryNetworkGrant {
-  readonly repository: string;
-  readonly access: "read" | "write";
-}
-
 function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryNetworkGrant[] {
   if (!Array.isArray(grants) || grants.length === 0 || grants.length > 32) {
     throw new Error("Expected between 1 and 32 repository grants.");
@@ -113,7 +112,7 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
       !grant ||
       typeof grant !== "object" ||
       Array.isArray(grant) ||
-      Reflect.ownKeys(grant).length !== 2 ||
+      Reflect.ownKeys(grant).length !== (Object.hasOwn(grant, "apiActions") ? 3 : 2) ||
       !Object.hasOwn(grant, "repository") ||
       !Object.hasOwn(grant, "access")
     ) {
@@ -130,7 +129,10 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
       throw new Error("Invalid repository network grant.");
     }
     seen.add(repository);
-    policy.push({ repository, access });
+    const apiActions = Object.hasOwn(grant, "apiActions")
+      ? parseRepositoryApiActions(grant.apiActions)
+      : undefined;
+    policy.push({ repository, access, ...(apiActions && { apiActions }) });
   }
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
@@ -164,23 +166,17 @@ function scopedApiEndpoints(
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
 ): readonly OpenShellProviderProfileEndpoint[] {
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
-  for (const {
-    repository,
-    createIssues,
-    createPullRequests,
-    readIssues,
-    readPullRequests,
-  } of repositoryGitRestOperations(policy, permissions)) {
+  for (const { repository, available } of repositoryGitRestOperations(policy, permissions)) {
     const rules = [];
-    if (createPullRequests) {
+    if (available.includes("pull_requests:create")) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
     }
-    if (createIssues) {
+    if (available.includes("issues:create")) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });
     }
     for (const [resource, enabled] of [
-      ["issues", readIssues],
-      ["pulls", readPullRequests],
+      ["issues", available.includes("issues:read")],
+      ["pulls", available.includes("pull_requests:read")],
     ] as const) {
       if (!enabled) {
         continue;

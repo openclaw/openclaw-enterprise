@@ -1376,7 +1376,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
   });
 
-  test("A repository API action filter requires a saved network policy before deployment", async (t) => {
+  test("A repository API action filter requires native policy and Agent edits narrow the next revision", async (t) => {
     selectFixtureRelease(t);
     const { f, writeGrant, fixtureCompute, createSelectedAgent } = await scopedFixture(t, {
       nativeGit: "v1",
@@ -1432,6 +1432,28 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       SandboxPolicyViewResponse,
       200,
     );
+    const options = [
+      {
+        repository: writeGrant.repository,
+        available: ["issues:read", "pull_requests:read", "pull_requests:create"],
+      },
+    ];
+    assert.deepEqual(editable.repositoryApiActionFilters, options);
+    for (const apiActions of [
+      { deny: ["issues:create", "issues:create"] },
+      { allow: ["*"] },
+      { allow: [], deny: [] },
+    ]) {
+      checkedEnvelope(
+        await f.request("PUT", policyPath, {
+          expectedVersion: editable.policy.version,
+          additions: [],
+          repositoryNetworkPolicy: [{ ...writeGrant, apiActions }],
+        }),
+        ErrorResponse,
+        400,
+      );
+    }
     const { data: saved } = checkedEnvelope(
       await f.request("PUT", policyPath, {
         expectedVersion: editable.policy.version,
@@ -1461,6 +1483,44 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     assert.ok(routes.includes("GET /repos/example/selected/issues"));
     assert.ok(routes.includes("POST /repos/example/selected/pulls"));
     assert.ok(!routes.includes("POST /repos/example/selected/issues"));
+
+    const restricted = { ...writeGrant, apiActions: { deny: ["pull_requests:create"] } };
+    const { data: updated } = checkedEnvelope(
+      await f.request("PUT", policyPath, {
+        expectedVersion: saved.version,
+        additions: [],
+        repositoryNetworkPolicy: [restricted],
+      }),
+      SandboxPolicyResponse,
+      200,
+    );
+    assert.deepEqual(updated.repositoryNetworkPolicy, [restricted]);
+    const { data: reloaded } = checkedEnvelope(
+      await f.request("GET", policyPath),
+      SandboxPolicyViewResponse,
+      200,
+    );
+    assert.deepEqual(reloaded.repositoryApiActionFilters, options);
+    assert.deepEqual(reloaded.policy.repositoryNetworkPolicy, [restricted]);
+    const { data: redeployed } = checkedEnvelope(await deploy(), AgentRevisionResponse, 202);
+    const next = await f.state.read((view) =>
+      view.revisions.findRevision(f.namespace.id, agent.id, redeployed.id),
+    );
+    assert.ok(next?.sandboxPolicy?.repositoryNetworkPolicy);
+    assert.notEqual(
+      next.sandboxPolicy.repositoryNetworkPolicy.identity,
+      revision.sandboxPolicy.repositoryNetworkPolicy.identity,
+    );
+    assert.deepEqual(revision.sandboxPolicy.repositoryNetworkPolicy.grants, [writeGrant]);
+    const nextDelivery = createGitHubRepositoryDeliveryResolver(registry)(next).delivery;
+    assert.ok("scope" in nextDelivery && nextDelivery.scope === "github-repository");
+    const nextRoutes = compiledRepositoryApiRoutes(
+      next.sandboxPolicy.repositoryNetworkPolicy.grants,
+      nextDelivery.scopedRest,
+    );
+    assert.ok(nextRoutes.includes("GET /repos/example/selected/pulls"));
+    assert.ok(!nextRoutes.includes("POST /repos/example/selected/pulls"));
+    assert.ok(!nextRoutes.includes("POST /repos/example/selected/issues"));
   });
 
   function stubAdmissionCompute(
@@ -1728,6 +1788,8 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     ).data;
     assert.deepEqual(available.repositoryNetworkPolicyCeiling, [writeGrant, unselected]);
     assert.equal(available.repositoryNetworkPolicySaveSupported, true);
+    assert.equal(available.repositoryApiActionFilters, undefined);
+    checkedEnvelope(await put([{ ...selected, apiActions: { allow: [] } }]), ErrorResponse, 409);
     checkedEnvelope(
       await f.request("PUT", policyPath, {
         expectedVersion: before.policy.version,

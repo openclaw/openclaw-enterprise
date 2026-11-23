@@ -1632,13 +1632,22 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
         }),
       );
 
-      const desired = await save(
-        initial,
-        network.repositories.map((repository) => ({
-          repository,
-          access: "write" as const,
-        })),
-      );
+      // Only the Agent denies B's issue POST. C's Namespace allowlist remains empty
+      // even if the Agent explicitly lists issue creation on its Write grant.
+      const grantB: RepositoryNetworkGrant = {
+        repository: "fixture/b",
+        access: "write",
+        ...(issueControls && { apiActions: { deny: ["issues:create"] as const } }),
+      };
+      const desired = await save(initial, [
+        { repository: "fixture/a", access: "write" },
+        grantB,
+        {
+          repository: "fixture/c",
+          access: "write",
+          ...(issueControls && { apiActions: { allow: ["issues:create"] as const } }),
+        },
+      ]);
       assert.deepEqual(await request("GET", `${path}/revisions`), []);
       const deployed = await deployPolicy();
       deadlines.set(deployed.target.sandboxId, deployed.deadlineWallMs);
@@ -1697,7 +1706,7 @@ git -C "$work/checkout" rev-parse HEAD`,
 
       const write = await save(await readPolicy(), [
         { repository: "fixture/a", access: "read" },
-        { repository: "fixture/b", access: "write" },
+        grantB,
       ]);
       // Count all parsed origin HTTP, including anonymous and rejected Git.
       // Successful App token issuance is the only expected origin HTTP during startup.

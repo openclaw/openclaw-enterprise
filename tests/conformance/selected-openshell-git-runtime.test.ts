@@ -49,6 +49,7 @@ import {
   type EgressInstallation,
   type Namespace,
   type ProxyPlan,
+  type RepositoryApiActions,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -97,6 +98,7 @@ const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 // example/outside is bound without a saved grant unless `outside` says otherwise.
 type ScopedRest = {
   filters?: Record<string, { allow: string[] } | { deny: string[] }>;
+  agentFilters?: Record<string, RepositoryApiActions>;
   permissions: Record<string, string>;
   outside?: "read" | "unbound";
 };
@@ -230,11 +232,15 @@ async function selectedV5(
     bindings,
     ...(deadlineWallMs !== undefined && { deadlineWallMs }),
   };
-  const grants = [
+  const ceiling = [
     { repository: repositories[0]!.repository, access: "read" },
     { repository: repositories[1]!.repository, access: "write" },
     ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
+  const grants = ceiling.map((grant) => {
+    const apiActions = rest?.agentFilters?.[grant.repository];
+    return apiActions ? { ...grant, apiActions } : grant;
+  });
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
       assert.equal(scope, native ? "network-policy" : "github-repository");
@@ -261,7 +267,7 @@ async function selectedV5(
         version: 1,
         defaults: {},
         additions: [],
-        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, ceiling),
       },
     }),
     executionAdmission: { version: native ? 9 : 5, mode: "protected" },
@@ -3723,6 +3729,18 @@ test("native scoped REST intersects the selected permissions, operation denials 
     both.filter(({ method }) => method !== "GET"),
     [...create, createIssue],
   );
+  // A's empty API allowlist does not veto B's PR creation. B's Agent allowlist
+  // cannot re-enable issue creation denied by its Namespace or enable reads implicitly.
+  const filtered: ScopedRest = {
+    permissions,
+    filters: { "example/delivery": { deny: ["issues:create"] } },
+    agentFilters: {
+      "example/application": { allow: [] },
+      "example/delivery": { allow: ["issues:create", "pull_requests:create"] },
+    },
+  };
+  assert.deepEqual(await apiRules({ ...filtered, outside: "unbound" }, true), create);
+  assert.deepEqual(await apiRules(filtered), [], "an ungranted head still withholds PR creation");
   const only = (allow: string[]) => ({
     "example/application": { allow },
     "example/delivery": { allow },
@@ -4626,6 +4644,45 @@ test("API filters require native delivery at first issuance and renewal even wit
       assert.equal(held.activity.updates, updates + 1);
       assert.equal(held.activity.probes, 0);
     }
+  }
+});
+
+test("Agent API restrictions block issuance and renewal if a forbidden route is loaded", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    permissions: { issues: "write" },
+    agentFilters: {
+      "example/application": { allow: ["issues:create"] },
+      "example/delivery": { deny: ["issues:create"] },
+    },
+  });
+  // A's Read grant cannot create issues. B remains writable over Git but cannot POST.
+  const endpoints = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.equal(endpoints.length, 1);
+  const [endpoint] = endpoints;
+  assert.ok(endpoint && "rules" in endpoint && endpoint.path === "/repos/example/delivery/**");
+  const { rules } = endpoint;
+  assert.ok(rules.some(({ allow }) => allow.path === "/repos/example/delivery/issues"));
+  assert.ok(rules.every(({ allow }) => allow.method === "GET"));
+  for (const updates of [0, 1]) {
+    held.f.owner.material = {
+      ...held.f.owner.material,
+      materialVersion: randomUUID(),
+      preparationAttemptId: randomUUID(),
+      value: `controlled-version-${updates}`,
+    };
+    // A stale supervisor policy with the Namespace's broader authority must
+    // never receive material, including a new token for the same execution.
+    const reads = held.f.calls.material;
+    Object.assign(endpoint, {
+      rules: [...rules, { allow: { method: "POST", path: "/repos/example/delivery/issues" } }],
+    });
+    await held.reconcile();
+    assert.equal(held.f.calls.material, reads);
+    assert.equal(held.activity.updates, updates);
+    Object.assign(endpoint, { rules });
+    await held.reconcile();
+    assert.equal(held.activity.updates, updates + 1);
+    assert.equal(held.activity.probes, 0);
   }
 });
 

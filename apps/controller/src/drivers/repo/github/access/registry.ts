@@ -4,13 +4,17 @@ import {
   parseGitHubNumericId,
   type GitHubRepositoryGrant,
 } from "./repository-grant.ts";
-import type {
-  RepositoryGitDeliveryResolver,
-  RepositoryGitRestAuthority,
+import {
+  permitsRepositoryApiAction,
+  type RepositoryGitDeliveryResolver,
+  type RepositoryGitRestAuthority,
 } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
+import { parseRepositoryApiActions } from "@openclaw-enterprise/contracts";
 import type {
+  RepositoryApiAction,
+  RepositoryApiActions,
   AdmittedRepositoryBinding,
   githubInstallationProfile as installationProfile,
   RepositoryApprovalScope,
@@ -45,7 +49,7 @@ export interface GitHubRepositoryRegistration {
     /** Select deployment-scoped native Git for this repository registration. */
     nativeGit?: "v1";
     /** Subtract operations from the routes authorized by this native registration. */
-    apiActions?: ApiActions;
+    apiActions?: RepositoryApiActions;
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -229,11 +233,16 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      const apiActions = Object.hasOwn(policy, "apiActions")
-        ? parseApiActions(policy.apiActions)
-        : undefined;
-      if (Object.hasOwn(policy, "apiActions") && policy.nativeGit !== "v1") {
-        return invalid();
+      let apiActions: RepositoryApiActions | undefined;
+      if (Object.hasOwn(policy, "apiActions")) {
+        if (policy.nativeGit !== "v1") {
+          return invalid();
+        }
+        try {
+          apiActions = parseRepositoryApiActions(policy.apiActions);
+        } catch {
+          return invalid();
+        }
       }
       if (
         Object.hasOwn(policy, "nativeGit") &&
@@ -381,6 +390,9 @@ export function allowsGitHubRepositoryNetworkGrant(
     return false;
   }
   const { policy } = resolved;
+  if (grant.apiActions !== undefined && policy.nativeGit !== "v1") {
+    return false;
+  }
   return policy.profiles.some((profile) => {
     const contents = repositoryTransportPermissions(policy, profile)?.contents;
     // The network policy cannot preserve an existing push-ref restriction.
@@ -398,44 +410,13 @@ const installationGrantPolicy = Object.freeze({
   deliveryPolicy: "github-installation-git-basic-api-bearer-online-authorization-v1",
 } as const);
 
-const apiActions = [
-  "issues:read",
-  "issues:create",
-  "pull_requests:read",
-  "pull_requests:create",
-] as const;
-type ApiAction = (typeof apiActions)[number];
-type ApiActions = Readonly<{ allow: readonly ApiAction[] } | { deny: readonly ApiAction[] }>;
-
-function parseApiActions(input: unknown): ApiActions | undefined {
-  const filter = object(input, ["allow", "deny"]);
-  if (Object.keys(filter).length !== 1) {
-    return invalid();
-  }
-  const allow = Object.hasOwn(filter, "allow");
-  const raw = allow ? filter.allow : filter.deny;
-  if (!Array.isArray(raw) || raw.length > apiActions.length) {
-    return invalid();
-  }
-  // Filtering the literal list gives a stable order. Unknowns and duplicates shorten it.
-  const actions = Object.freeze(apiActions.filter((action) => raw.includes(action)));
-  if (actions.length !== raw.length) {
-    return invalid();
-  }
-  if (allow) {
-    return Object.freeze({ allow: actions });
-  }
-  return actions.length ? Object.freeze({ deny: actions }) : undefined;
-}
-
 function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
   const { issues, pull_requests: pullRequests } = policy.permissions ?? {};
   if (policy.nativeGit !== "v1" || (!issues && !pullRequests)) {
     return undefined;
   }
-  const filter = policy.apiActions;
-  const permitted = (action: ApiAction) =>
-    !filter || ("allow" in filter ? filter.allow.includes(action) : !filter.deny.includes(action));
+  const permitted = (action: RepositoryApiAction) =>
+    permitsRepositoryApiAction(policy.apiActions, action);
   return {
     readIssues: (issues === "read" || issues === "write") && permitted("issues:read"),
     ...(issues === "write" && permitted("issues:create") && { createIssues: true as const }),
@@ -654,15 +635,16 @@ export function createGitHubRepositoryDeliveryResolver(
     ) {
       throw new Error("Standing repository policy is unavailable.");
     }
+    const savedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+    const agentFiltered = savedPolicy?.grants.some((grant) => grant.apiActions !== undefined);
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
-      const savedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (savedPolicy !== undefined && scope.mixedNativeGit) {
         throw new Error("selected-repository-native-git-differs");
       }
       const nativeGit = savedPolicy !== undefined && scope.nativeGit === "v1";
       if (
-        scope.requiresNetworkPolicy &&
+        (scope.requiresNetworkPolicy || agentFiltered) &&
         (!nativeGit || revision.egressPlan?.repositoryGitAuthorization !== "network-policy")
       ) {
         throw new Error("API action restrictions require a native repository network policy.");
@@ -689,6 +671,9 @@ export function createGitHubRepositoryDeliveryResolver(
           ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
         }),
       });
+    }
+    if (agentFiltered) {
+      throw new Error("API action restrictions require a native repository network policy.");
     }
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");

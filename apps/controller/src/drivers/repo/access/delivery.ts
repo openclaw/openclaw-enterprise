@@ -1,6 +1,9 @@
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
+  RepositoryApiAction,
+  RepositoryApiActions,
+  RepositoryApiActionFilterOption,
   RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 
@@ -12,25 +15,45 @@ export type RepositoryGitRestAuthority = readonly Readonly<{
   createPullRequests?: true;
 }>[];
 
-/**
- * Intersect the frozen Git grants with the repository owner's scoped REST authority.
- * Creating an issue or pull request also requires the saved Write grant.
- */
+export function permitsRepositoryApiAction(
+  filter: RepositoryApiActions | undefined,
+  action: RepositoryApiAction,
+): boolean {
+  return (
+    !filter || ("allow" in filter ? filter.allow.includes(action) : !filter.deny.includes(action))
+  );
+}
+
+/** Apply per-grant restrictions to the owner's scoped REST authority. */
 export function repositoryGitRestOperations(
   grants: readonly RepositoryNetworkGrant[],
   authority: RepositoryGitRestAuthority | undefined,
-) {
-  return grants.map(({ repository, access }) => {
-    const rest = authority?.find((entry) => entry.repository === repository);
-    const write = access === "write";
-    return {
-      repository,
-      readIssues: rest?.readIssues === true,
-      createIssues: write && rest?.createIssues === true,
-      readPullRequests: rest?.readPullRequests === true,
-      createPullRequests: write && rest?.createPullRequests === true,
-    };
-  });
+): readonly RepositoryApiActionFilterOption[] {
+  return Object.freeze(
+    grants.map(({ repository, access, apiActions }) => {
+      const rest = authority?.find((entry) => entry.repository === repository);
+      const write = access === "write";
+      const available: RepositoryApiAction[] = [];
+      if (rest?.readIssues === true) {
+        available.push("issues:read");
+      }
+      if (write && rest?.createIssues === true) {
+        available.push("issues:create");
+      }
+      if (rest?.readPullRequests === true) {
+        available.push("pull_requests:read");
+      }
+      if (write && rest?.createPullRequests === true) {
+        available.push("pull_requests:create");
+      }
+      return Object.freeze({
+        repository,
+        available: Object.freeze(
+          available.filter((action) => permitsRepositoryApiAction(apiActions, action)),
+        ),
+      });
+    }),
+  );
 }
 
 /** Nonsecret delivery scope resolved by Repo, independently of token issuance or transport. */
