@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-23
-last_updated_session: 01a1f7eb-2091-7c21-9b03-27f01f958b69
+last_updated_session: authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a
 ---
 
 # Credential source lifecycle flow
@@ -23,7 +23,7 @@ An operator registers a credential with TokenService and selects its Source for 
 ```mermaid
 graph TD
   Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
-  Register --> Associate["<b>OCC</b><br/>Save immutable association, creator grant, and audit"]
+  Register --> Associate["<b>OCC</b><br/>Grant creator access and audit"]
   Associate --> Kind{"Template-associated Source?"}
   Kind -->|Yes| Discover["<b>OCC</b><br/>Expose associated Template ID; Plugin admission remains pending"]
   Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize model Source and save policies"]
@@ -42,9 +42,9 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC then saves the immutable static Template association, grants the creator access, and records completion in one transaction. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
+OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the canonical Source, saves its optional Template ID, and stores the write-only credential in its private custody. OCC then grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
 
-Source responses return the associated Template ID, without a version. For an active OAuth Source, OCC derives the ID from `SavedConnection`; that record retains the original consent version. A Template update does not change the Source ID association or the OAuth consent record. Pending and revoking OAuth connections omit the ID. Resolving the current Template version during Plugin credential admission remains pending.
+OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the returned authorization code, and calls the same selected TokenService registration boundary with the grant and original consent metadata. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. Both Source types return their Template ID. The OAuth subtype also retains the original consent version and selected client. Resolving the current Template version during Plugin credential admission remains pending.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -92,7 +92,7 @@ If delivery fails, the replacement remains in TokenService custody. OCC audits t
 
 #### Retire the Source
 
-DELETE refuses blocking references and records retirement intent. OCC asks the selected Proxy to retire its delivery copy before TokenService removes the Source and credential from custody. Proxy retirement failure returns `503` and retains the Source and credential for retry. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for ordering and failure handling.
+Static Source DELETE refuses blocking references and records retirement intent. OCC asks the selected Proxy to retire its delivery copy before TokenService removes the Source and credential from custody. Proxy retirement failure returns `503` and retains the Source and credential for retry. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for ordering and failure handling. OAuth disconnect instead retires the private grant through TokenService; the current pushed delivery path supports static credentials only.
 
 ## Debugging and Verification
 
@@ -109,6 +109,8 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 13:30: Trace canonical static and OAuth Source creation through the selected TokenService and remove the separate association and saved connection. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
 
 - 2026-11-23 01:53: Change Source associations and metadata to use a Template ID while preserving the OAuth consent version. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - cd806684a)
 

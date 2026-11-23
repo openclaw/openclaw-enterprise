@@ -480,8 +480,8 @@ test(
       assert.equal(projected?.connectionTemplateId, templateId);
       assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
     }
-    // The Template cannot be removed while a Source references it. Source retirement
-    // still belongs to TokenService; its ordinary deletion cascades the association.
+    // The Template cannot be removed while a Source references it. Deleting the Source
+    // through the TokenService releases its immutable Template reference.
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 409);
     assert.equal(
       (await inject("DELETE", `${base}/credential-sources/${selectedId}`)).statusCode,
@@ -504,11 +504,11 @@ test(
     const sourceId = source.id;
     // Nor can the application role attach a Template to an existing model-preset Source.
     await assert.rejects(
-      pool.query(
-        "INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id) VALUES ($1,$2,$3)",
-        [namespaceId, sourceId, templateId],
-      ),
-      { code: "23514" },
+      pool.query("UPDATE occ.credential_sources SET connection_template_id=$2 WHERE id=$1", [
+        sourceId,
+        templateId,
+      ]),
+      { code: "42501" },
     );
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 204);
     const sourceRef: CredentialSourceReference = {
@@ -519,13 +519,17 @@ test(
     const sourcePath = `${base}/credential-sources/${sourceId}`;
     const assertPublicSource = (value: Record<string, unknown>) => {
       assert.equal(value.id, sourceId);
-      assert.equal(value.ownerCapability, "token_service");
       assert.equal(value.type, "static");
       assert.deepEqual(value.config, { provider_preset: "openai" });
-      assert.deepEqual(value.secrets, {});
       assert.equal(Object.hasOwn(value, "connectionTemplateId"), false);
       assert.equal(Object.hasOwn(value, "connectionTemplateVersion"), false);
-      for (const privateField of ["secret", "driverId", "tokenServiceInstanceId"]) {
+      for (const privateField of [
+        "secret",
+        "secrets",
+        "ownerCapability",
+        "driverId",
+        "tokenServiceInstanceId",
+      ]) {
         assert.equal(Object.hasOwn(value, privateField), false, privateField);
       }
     };
@@ -542,7 +546,6 @@ test(
       view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
     assert.ok(recorded?.ownerCapability === "token_service");
-    assert.deepEqual(recorded.secrets, {});
     assert.equal(JSON.stringify(recorded).includes(enrollmentMaterial), false);
     assert.equal(
       (

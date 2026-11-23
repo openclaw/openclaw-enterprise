@@ -23,7 +23,7 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { tenant, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type {
   ComputeRevisionContext,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceSnapshot,
   OpenShellBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
@@ -80,7 +80,7 @@ test("startup composes both OpenShell members from one Backend for static source
   };
   // This already initialized Agent exercises attachment lifecycle, not file delivery.
   delete context.workspaceSetup;
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: "cs_00000000-0000-4000-8000-000000000001",
     namespaceId: tenant.id,
     name: "Static OpenAI",
@@ -92,7 +92,7 @@ test("startup composes both OpenShell members from one Backend for static source
     state: "ready",
     createdAt: tenant.createdAt,
   };
-  const otherSource: CredentialSource = {
+  const otherSource: LegacyCredentialSource = {
     ...source,
     id: "cs_00000000-0000-4000-8000-000000000002",
     name: "Other model",
@@ -581,7 +581,7 @@ test("startup composes both OpenShell members from one Backend for static source
     ["source ID", { id: otherSource.id }],
     ["source type", { type: "bearer-token" }],
     ["source owner", { driverId: "other-gateway" }],
-  ] satisfies [string, Partial<CredentialSource>][]) {
+  ] satisfies [string, Partial<LegacyCredentialSource>][]) {
     await t.test(`changed live ${name} refuses without public fallback`, async () => {
       assert.equal(revision.harnessAuth.method, "credential_source");
       if (

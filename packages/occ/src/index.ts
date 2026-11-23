@@ -9,7 +9,7 @@ export { recognizedRuntimeFailureValues, runtimeFailureCause } from "./runtime-f
 export type {
   CompleteNamespaceConnectionInput,
   StartNamespaceConnectionInput,
-} from "./saved-oauth-connections.ts";
+} from "./oauth-consent.ts";
 export type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
@@ -258,7 +258,7 @@ export { InMemoryPlatformState } from "./state/platform-state.ts";
 export type { PredecessorReplacement, AgentRevisionReadRepository } from "./ports/agent-reads.ts";
 export type { InMemoryPlatformStateOptions, PlatformAuditSink } from "./state/platform-state.ts";
 export type { PlatformOperation } from "./ports/platform-operations.ts";
-export type { ConnectionTokenCustody } from "./ports/saved-connections.ts";
+export type { OAuthTokenCustody } from "./ports/oauth-credentials.ts";
 export type { PlatformReadView } from "./ports/platform-read-view.ts";
 export type { PlatformStateStore } from "./ports/platform-state-store.ts";
 export type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";

@@ -585,7 +585,11 @@ test(
         const saved = await platform.state.read((unit) =>
           unit.credentialSources.findCredentialSource(namespace.id, created.data.id),
         );
-        assert(saved?.egress?.adoption === "prepared" && saved.egress.schemaVersion === 2);
+        assert(
+          saved?.ownerCapability === "credential_proxy" &&
+            saved.egress?.adoption === "prepared" &&
+            saved.egress.schemaVersion === 2,
+        );
         source = saved.egress as PreparedGitHubEgressSource;
         return bindRuntimeSource(platform, namespace, agent, created.data);
       },

@@ -1,6 +1,6 @@
 import type { CredentialPolicyReductionState } from "./credential-policy-reduction.ts";
 import type {
-  CredentialSource,
+  StoredCredentialSource as CredentialSource,
   CredentialWithdrawal,
   EgressInstallation,
   EgressMaterialEvidence,
@@ -10,20 +10,7 @@ import type {
 
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
 
-export interface StaticCredentialSourceTemplate {
-  readonly namespaceId: string;
-  readonly credentialSourceId: string;
-  readonly connectionTemplateId: string;
-}
-
 export interface CredentialSourceReadRepository {
-  findStaticConnectionTemplate(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<StaticCredentialSourceTemplate> | undefined>;
-  listStaticConnectionTemplates(
-    namespaceId: string,
-  ): Promise<readonly Readonly<StaticCredentialSourceTemplate>[]>;
   listCredentialPolicyReductions(
     namespaceId: string,
     revisionId: string,
@@ -58,7 +45,8 @@ export interface CredentialSourceReadRepository {
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
-  associateStaticConnectionTemplate(association: StaticCredentialSourceTemplate): Promise<void>;
+  requestOAuthRevocation(namespaceId: string, sourceId: string, principalId: string): Promise<void>;
+  confirmOAuthRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
   rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
   recordEgressInstallation(installation: EgressInstallation): Promise<void>;
   retireEgressInstallation(namespaceId: string, revisionId: string): Promise<void>;

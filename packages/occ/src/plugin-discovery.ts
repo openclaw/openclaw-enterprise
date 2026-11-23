@@ -6,7 +6,7 @@ import {
   type Agent,
   type Configuration,
   type CredentialGatewayDriver,
-  type CredentialSource,
+  type StoredCredentialSource,
   type CredentialSourceContext,
   type CredentialSourceReference,
   type HarnessExecutionMode,
@@ -401,7 +401,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       namespaceId,
       agentId,
       async ({ state, agent, driver }) => {
-        const sources: CredentialSource[] = [];
+        const sources: StoredCredentialSource[] = [];
         if (driver.credentials && agent.executionMode === "dedicated") {
           for (const { sourceId } of agent.credentialSources ?? []) {
             const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
@@ -630,7 +630,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
               ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
               : undefined;
-          const secretRef = source?.secrets.token;
+          const secretRef =
+            source?.ownerCapability === "token_service" ? undefined : source?.secrets.token;
           if (!target || !secretRef) {
             throw new ResourceStateConflictError(
               "Choose a ready, compatible credential source from this Agent's saved credentials.",

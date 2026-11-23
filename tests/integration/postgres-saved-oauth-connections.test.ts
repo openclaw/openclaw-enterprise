@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   DependencyUnavailableError,
   PostgresHumanAuthentication,
+  ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
@@ -68,7 +69,7 @@ async function accountSession(
 }
 
 test(
-  "OAuth consent saves the account for its owner and refreshes it through the Token Service",
+  "OAuth consent creates an owner-bound Source and refreshes it through the TokenService",
   {
     skip:
       requiresPostgres.skip ||
@@ -108,8 +109,11 @@ test(
 
     // The API and Token Service use the fixture Secret store. Keycloak authenticates the
     // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
-    const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
-    const preparedTokens = new TokenService();
+    const secretOptions: { createError?: unknown } = {};
+    const secretDriver = {
+      ...createTestSecretDriver(secretOptions),
+      capability: "secret" as const,
+    };
     const serverUrl = "https://api.connections.test/mcp";
     let discoveredResource = serverUrl;
     const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
@@ -119,7 +123,6 @@ test(
         poolOptions: { max: 1, connectionTimeoutMillis: 5000 },
         authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
         secretDriver,
-        controllerOptions: { preparedTokens },
         appOptions: {
           // Discovery metadata is controlled; authorization, consent and token exchange reach Keycloak.
           discoverMcpAuthorization: async (discoveredUrl: string) => ({
@@ -139,15 +142,26 @@ test(
         },
       });
     const resolveClient = controller.resolveConnectionClient.bind(controller);
-    preparedTokens.registerIssuer(new OAuthAccountTokens(state, secretDriver, resolveClient));
-    // A second issuer must not take custody of grants assigned to the installed one.
-    assert.throws(
-      () =>
-        preparedTokens.registerIssuer(
-          new OAuthAccountTokens(state, createTestSecretDriver(), resolveClient),
-        ),
-      /already owns this registration/,
+    const storeIdentity = randomUUID();
+    await secretDriver.installationSecrets.create(
+      {
+        installationId: controller.installation.id,
+        id: `token-service-store-identity:${secretDriver.id}`,
+      },
+      storeIdentity,
     );
+    const instanceId = await controller.activateTokenServiceInstance("oauth-owner", storeIdentity);
+    const tokenOwner = new OCCTokenServiceDriver(
+      "oauth-owner",
+      controller.installation.id,
+      secretDriver.installationSecrets,
+      instanceId,
+      state,
+      undefined,
+      new OAuthAccountTokens(state, secretDriver, resolveClient),
+    );
+    controller.registerDriver(tokenOwner);
+    controller.selectDriver("token_service", tokenOwner.id);
     const auth = new PostgresHumanAuthentication(
       state,
       controller.installation.id,
@@ -177,6 +191,19 @@ test(
     const otherId = await makeNamespace();
     const base = `/namespaces/${namespaceId}`;
     const connections = `${base}/connections`;
+    const sources = `${base}/credential-sources`;
+    async function oauthSource(templateId: string) {
+      const result = await inject("GET", sources);
+      assert.equal(result.statusCode, 200, result.body);
+      const matches = result
+        .json()
+        .data.filter(
+          (entry: { type: string; connectionTemplateId?: string }) =>
+            entry.type === "oauth2-refresh-token" && entry.connectionTemplateId === templateId,
+        );
+      assert.equal(matches.length, 1, "completed consent creates one canonical OAuth Source");
+      return matches[0];
+    }
     const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
     const manualDestinations = [
       recipient,
@@ -223,20 +250,41 @@ test(
     assert.equal(await listsManualTemplate(`${base}/connection-templates`), true);
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
-    // A cancelled browser attempt has no outstanding gateway write. An admin can retire it immediately.
-    const pendingId = manualStart.json().data.credentialSourceId;
-    const pendingSource = await inject("GET", `${base}/credential-sources/${pendingId}`);
-    assert.equal(pendingSource.statusCode, 200, pendingSource.body);
-    assert.equal(Object.hasOwn(pendingSource.json().data, "connectionTemplateId"), false);
-    assert.equal(Object.hasOwn(pendingSource.json().data, "connectionTemplateVersion"), false);
-    assert.deepEqual(pendingSource.json().data.config, {});
-    const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
-    assert.equal(removed.statusCode, 204, removed.body);
-    const pendingSession = await pool.query(
-      "SELECT 1 FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1",
-      [pendingId],
+    // Starting consent creates only a browser-bound attempt; there is no Source to expose or retire.
+    assert.deepEqual(Object.keys(manualStart.json().data).sort(), [
+      "authorizationUrl",
+      "expiresAt",
+    ]);
+    assert.deepEqual((await inject("GET", sources)).json().data, []);
+    const manualState = new URL(manualStart.json().data.authorizationUrl).searchParams.get("state");
+    assert.ok(manualState);
+    const deniedManual = await inject(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: manualState, error: "access_denied" })}`,
     );
-    assert.equal(pendingSession.rowCount, 0);
+    assert.match(String(deniedManual.headers.location), /reason=consent_denied/);
+    assert.deepEqual((await inject("GET", sources)).json().data, []);
+    // A provider-authenticated callback must not publish a ready Source if private custody fails.
+    const custodyFailure = await inject("POST", connections, manual);
+    assert.equal(custodyFailure.statusCode, 201, custodyFailure.body);
+    const failedCallbackPath = await consentRedirect(
+      custodyFailure.json().data.authorizationUrl,
+      secrets.users.alice.password,
+    );
+    secretOptions.createError = new DependencyUnavailableError("Secret store unavailable");
+    try {
+      const failedCallback = await inject("GET", failedCallbackPath);
+      assert.match(String(failedCallback.headers.location), /connection=failed/);
+      const failedSources = await inject("GET", sources);
+      assert.equal(failedSources.statusCode, 200, failedSources.body);
+      assert.equal(
+        failedSources.json().data.some((entry: { state: string }) => entry.state === "ready"),
+        false,
+        "failed custody cannot produce a ready Source",
+      );
+    } finally {
+      delete secretOptions.createError;
+    }
     const mcpConfig = {
       displayName: "Scope selection",
       mode: "mcp_discovery",
@@ -306,6 +354,23 @@ test(
     const ownerId = principal.id;
     const owner = await accountSession(app, adminAccount.email, adminAccount.password);
     const secondSession = await accountSession(app, adminAccount.email, adminAccount.password);
+    const peer = await createPostgresAgentApp(t, {
+      label: "saved-account",
+      authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
+    });
+    // Consent cannot start on an API replica without its selected TokenService owner.
+    const countAttempts = async () =>
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.authentication_states WHERE namespace_id=$1 AND kind='oauth_connection'",
+          [namespaceId],
+        )
+      ).rows[0].count;
+    const attemptsBefore = await countAttempts();
+    const noOwner = await owner("POST", connections, input, peer.app);
+    assert.equal(noOwner.statusCode, 503, noOwner.body);
+    assert.equal(noOwner.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(await countAttempts(), attemptsBefore);
     const visible = await owner("GET", `${base}/connection-templates`);
     assert.equal(visible.statusCode, 200, visible.body);
     assert.ok(
@@ -345,24 +410,20 @@ test(
       await consentRedirect(defaultsUrl, secrets.users.alice.password),
     );
     assert.match(String(defaultCallback.headers.location), /connection=connected/);
-    const defaultsId = defaults.json().data.credentialSourceId;
-    const defaultAccounts = await owner("GET", connections);
-    const defaultAccount = defaultAccounts
-      .json()
-      .data.find(
-        (account: { credentialSourceId: string }) => account.credentialSourceId === defaultsId,
-      );
-    assert.deepEqual(defaultAccount.requestedScopes, []);
-    assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
-    assert.deepEqual(defaultAccount.destinations, manualDestinations);
-    // Administrators change delivery for existing accounts without rewriting the consent receipt.
+    const defaultSource = await oauthSource(unrestrictedManual.json().data.id);
+    const defaultsId = defaultSource.id;
+    const defaultConsent = defaultSource.consent;
+    assert.deepEqual(defaultConsent.requestedScopes, []);
+    assert.deepEqual(defaultConsent.grantedScopes, ["profile"]);
+    assert.deepEqual(defaultConsent.destinations, manualDestinations);
+    // Template changes do not rewrite the original consent recorded on the Source.
     const widened = [
       ...manualDestinations,
       { host: "other.connections.test", port: 443, path: "/**" },
     ];
     const updated = await inject(
       "PATCH",
-      "/connection-templates/" + defaultAccount.connectionTemplateId,
+      "/connection-templates/" + defaultSource.connectionTemplateId,
       {
         ...manualConfig,
         oauthClientId,
@@ -372,67 +433,34 @@ test(
     );
     assert.equal(updated.statusCode, 200, updated.body);
     assert.deepEqual(updated.json().data.current.destinations, widened);
-    const savedAgain = await owner("GET", connections);
-    assert.equal(savedAgain.statusCode, 200, savedAgain.body);
-    const approved = savedAgain
-      .json()
-      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
-    assert.deepEqual(approved.destinations, widened);
-    assert.ok(approved.connectionTemplateVersion < updated.json().data.current.version);
-    await assert.rejects(
-      pool.query(
-        `INSERT INTO occ.saved_connections
-         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
-           to_jsonb(s) || jsonb_build_object('destinations', $2::jsonb))).*
-         FROM occ.saved_connections s WHERE credential_source_id = $1`,
-        [defaultsId, JSON.stringify(widened)],
-      ),
-      { code: "23514", message: /approved template version/ },
-    );
-    // Replacing and removing rows take effect through the same public account response.
-    const changedDestinations = [{ host: recipient.host, port: 8443, path: "/reports/**" }];
-    const templatePath = "/connection-templates/" + defaultAccount.connectionTemplateId;
-    const changed = await inject("PATCH", templatePath, {
-      ...manualConfig,
-      scopes: [],
-      oauthClientId,
-      destinations: changedDestinations,
-    });
-    assert.equal(changed.statusCode, 200, changed.body);
-    const effectiveDefault = async () => {
-      const result = await owner("GET", connections);
-      assert.equal(result.statusCode, 200, result.body);
-      return result
-        .json()
-        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
-    };
-    assert.deepEqual((await effectiveDefault()).destinations, changedDestinations);
-    // Delivery stops on an issuer or mode change, while the provider grant remains usable.
+    const approved = (await owner("GET", `${sources}/${defaultsId}`)).json().data;
+    assert.deepEqual(approved.consent, defaultConsent);
+    assert.ok(approved.consent.version < updated.json().data.current.version);
+    const templatePath = "/connection-templates/" + defaultSource.connectionTemplateId;
+    // The provider grant remains refreshable through its original consent even if the current issuer changes.
     const incompatible = await inject("PATCH", templatePath, {
       ...manualConfig,
       issuer: issuer + "/different",
       scopes: [],
     });
     assert.equal(incompatible.statusCode, 200, incompatible.body);
-    assert.deepEqual((await effectiveDefault()).destinations, []);
-    const modeChanged = await inject("PATCH", templatePath, mcpConfig);
-    assert.equal(modeChanged.statusCode, 200, modeChanged.body);
-    assert.deepEqual((await effectiveDefault()).destinations, []);
+    assert.deepEqual(
+      (await owner("GET", `${sources}/${defaultsId}`)).json().data.consent,
+      defaultConsent,
+    );
     const originalReceipt = await pool.query(
-      `SELECT destinations, oauth_client_id, client_id, issuer, token_url,
-              connection_template_version, requested_scopes, granted_scopes
-       FROM occ.saved_connections WHERE credential_source_id=$1`,
+      `SELECT connection_template_id, oauth_consent_version, oauth_client_id,
+              oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes
+       FROM occ.credential_sources WHERE id=$1`,
       [defaultsId],
     );
     assert.deepEqual(originalReceipt.rows[0], {
-      destinations: manualDestinations,
+      connection_template_id: defaultSource.connectionTemplateId,
+      oauth_consent_version: defaultConsent.version,
       oauth_client_id: oauthClientId,
-      client_id: clientId,
-      issuer,
-      token_url: tokenUrl,
-      connection_template_version: defaultAccount.connectionTemplateVersion,
-      requested_scopes: [],
-      granted_scopes: ["profile"],
+      oauth_owner_principal_id: ownerId,
+      oauth_requested_scopes: [],
+      oauth_granted_scopes: ["profile"],
     });
     const refreshIncompatible = await owner(
       "POST",
@@ -440,7 +468,7 @@ test(
     );
     assert.equal(refreshIncompatible.statusCode, 200, refreshIncompatible.body);
     await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
-    const disconnected = await owner("DELETE", connections + "/" + defaultsId);
+    const disconnected = await owner("DELETE", `${sources}/${defaultsId}`);
     assert.equal(disconnected.statusCode, 204, disconnected.body);
     async function begin() {
       const response = await owner("POST", connections, input);
@@ -450,7 +478,9 @@ test(
         "openid",
       );
       return {
-        id: response.json().data.credentialSourceId as string,
+        stateId: createHash("sha256")
+          .update(new URL(response.json().data.authorizationUrl).searchParams.get("state")!)
+          .digest("hex"),
         callback: await consentRedirect(
           response.json().data.authorizationUrl,
           secrets.users.alice.password,
@@ -458,39 +488,7 @@ test(
       };
     }
     // The same user in a second browser cannot spend the first browser's state or code.
-    const { id, callback } = await begin();
-    // Both templates select this client in the same Namespace, but the person approved the MCP
-    // resource. A substituted manual template must be rejected before a private Secret is created.
-    const manualTemplate = await inject(
-      "GET",
-      `/connection-templates/${manual.connectionTemplateId}`,
-    );
-    assert.equal(manualTemplate.statusCode, 200, manualTemplate.body);
-    const beforeSubstitution = secretDriver.calls.length;
-    await assert.rejects(
-      preparedTokens.register(
-        {
-          kind: "oauth_refresh_token",
-          namespaceId,
-          sourceId: id,
-          approval: {
-            ...manual,
-            connectionTemplateVersion: manualTemplate.json().data.current.version,
-            oauthClientId,
-          },
-          grant: {
-            accessToken: randomUUID(),
-            refreshToken: randomUUID(),
-            expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            requestedScopes: ["openid"],
-            grantedScopes: ["openid"],
-          },
-        },
-        t.signal,
-      ),
-      { code: "client_registration_mismatch" },
-    );
-    assert.equal(secretDriver.calls.length, beforeSubstitution);
+    const { callback } = await begin();
 
     // Only Keycloak can start a flow. The built-in Google template still has no OAuth client.
     assert.equal(new URL(callback, publicOrigin).searchParams.has("iss"), false);
@@ -509,56 +507,12 @@ test(
       clientSecret: callbackSecret,
     });
     assert.equal(beforeCallback.statusCode, 200, beforeCallback.body);
-    const grantHandoff = t.mock.method(preparedTokens, "register");
     const completed = await owner("GET", callback);
     assert.equal(completed.statusCode, 303, completed.body);
     assert.match(String(completed.headers.location), /connection=connected/);
     assert.match(String((await owner("GET", callback)).headers.location), /reason=unknown_session/);
-    const accountRef = { kind: "oauth_refresh_token", namespaceId, sourceId: id } as const;
-    const [recorded] = grantHandoff.mock.calls;
-    assert.ok(recorded);
-    const issuedRef: unknown = await recorded.result;
-    assert.deepEqual(issuedRef, accountRef);
-    grantHandoff.mock.restore();
-    // A reference or registration from the saved account cannot become a GitHub input by changing kind.
-    const issuerLookup = t.mock.method(preparedTokens, "issuer");
-    try {
-      assert.equal(
-        await preparedTokens.resolve(
-          // @ts-expect-error A relabeled OAuth reference lacks the required prepared source key.
-          { ...issuedRef, kind: "github_app_installation" },
-          {
-            signal: t.signal,
-            deadlineAt: new Date(Date.now() + 10_000).toISOString(),
-            minimumValidityMs: 0,
-          },
-        ),
-        undefined,
-      );
-      await assert.rejects(
-        preparedTokens.register(
-          { ...recorded.arguments[0], kind: "github_app_installation" },
-          t.signal,
-        ),
-        {
-          message: /requires a source and issuer Secret/,
-        },
-      );
-      assert.equal(issuerLookup.mock.callCount(), 0);
-    } finally {
-      issuerLookup.mock.restore();
-    }
-    const accounts = await owner("GET", connections);
-    assert.equal(accounts.statusCode, 200, accounts.body);
-    assert.deepEqual(
-      accounts
-        .json()
-        .data.map((value: { credentialSourceId: string; ownerPrincipalId: string }) => [
-          value.credentialSourceId,
-          value.ownerPrincipalId,
-        ]),
-      [[id, ownerId]],
-    );
+    const savedSource = await oauthSource(input.connectionTemplateId);
+    const id = savedSource.id;
     const policy = await state.loadNativeIAMState(controller.installation.id);
     const exactOwnerGrant = policy.bindings.find(
       (grant) =>
@@ -578,18 +532,21 @@ test(
     const source = `${base}/credential-sources/${id}`;
     const sourceDetails = await owner("GET", source);
     assert.equal(sourceDetails.statusCode, 200, sourceDetails.body);
-    assert.equal(sourceDetails.json().data.ownerCapability, "token_service");
-    // Source discovery derives the approved Template identity from the saved account.
-    const savedAccount = accounts.json().data[0];
-    assert.equal(sourceDetails.json().data.connectionTemplateId, savedAccount.connectionTemplateId);
+    assert.equal(Object.hasOwn(sourceDetails.json().data, "ownerCapability"), false);
+    assert.equal(Object.hasOwn(sourceDetails.json().data, "secrets"), false);
+    // Exact Source reads expose the original non-secret consent, while the Source itself owns identity.
+    const savedConsent = sourceDetails.json().data.consent;
+    assert.equal(sourceDetails.json().data.type, "oauth2-refresh-token");
+    assert.equal(sourceDetails.json().data.connectionTemplateId, input.connectionTemplateId);
     assert.equal(Object.hasOwn(sourceDetails.json().data, "connectionTemplateVersion"), false);
-    assert.deepEqual(sourceDetails.json().data.config, {});
+    assert.equal(Object.hasOwn(sourceDetails.json().data, "config"), false);
     const sourceList = await owner("GET", `${base}/credential-sources`);
     assert.equal(sourceList.statusCode, 200, sourceList.body);
     const listedSource = sourceList.json().data.find((entry: { id: string }) => entry.id === id);
-    assert.equal(listedSource?.connectionTemplateId, savedAccount.connectionTemplateId);
+    assert.equal(listedSource?.connectionTemplateId, input.connectionTemplateId);
+    assert.deepEqual(listedSource?.consent, savedConsent);
     assert.equal(Object.hasOwn(listedSource, "connectionTemplateVersion"), false);
-    assert.deepEqual(listedSource.config, {});
+    assert.equal(Object.hasOwn(listedSource, "config"), false);
     // The saved source and its authorization must retain the Namespace consumed by the callback.
     const completedEvents = (await state.transact((unit) => unit.audit.list())).filter(
       (event) =>
@@ -611,9 +568,8 @@ test(
       action: "create",
       resource: { kind: "credential_source", id: namespaceId, namespaceId },
     });
-    const readerAccounts = await reader("GET", connections);
-    assert.equal(readerAccounts.statusCode, 200, readerAccounts.body);
-    assert.deepEqual(readerAccounts.json().data, []);
+    assert.equal((await owner("GET", connections)).statusCode, 405);
+    assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 404);
     assert.equal((await reader("GET", source)).statusCode, 403);
     const hiddenSources = await reader("GET", `${base}/credential-sources`);
     assert.equal(hiddenSources.statusCode, 200, hiddenSources.body);
@@ -621,42 +577,77 @@ test(
       hiddenSources.json().data.some((entry: { id: string }) => entry.id === id),
       false,
     );
-    assert.equal((await reader("DELETE", `${connections}/${id}`)).statusCode, 403);
+    assert.equal((await reader("DELETE", source)).statusCode, 403);
+    // Exact Source read grants expose non-secret consent without requiring broader Namespace visibility.
+    const sourceReaderRole = await inject("POST", `${base}/iam/roles`, {
+      name: "Exact OAuth Source reader",
+      permissions: [{ action: "read", resourceKind: "credential_source" }],
+    });
+    assert.equal(sourceReaderRole.statusCode, 201, sourceReaderRole.body);
+    const sourceReaderBinding = await inject("POST", `${base}/iam/access-bindings`, {
+      roleId: sourceReaderRole.json().data.id,
+      subjectKind: "identity",
+      subjectId: human.json().data.principalId,
+      resourceKind: "credential_source",
+      resourceId: id,
+    });
+    assert.equal(sourceReaderBinding.statusCode, 201, sourceReaderBinding.body);
+    const removeNamespaceRead = await inject(
+      "DELETE",
+      `${base}/iam/access-bindings/${binding.json().data.id}`,
+    );
+    assert.equal(removeNamespaceRead.statusCode, 204, removeNamespaceRead.body);
+    const exactReaderSource = await reader("GET", source);
+    assert.equal(exactReaderSource.statusCode, 200, exactReaderSource.body);
+    assert.deepEqual(exactReaderSource.json().data.consent, savedConsent);
+    assert.equal((await reader("GET", base)).statusCode, 403);
+    assert.equal((await reader("GET", sources)).statusCode, 403);
+    assert.equal((await reader("DELETE", source)).statusCode, 403);
     const custody = await pool.query(
-      `SELECT custody.secret_ref, source.driver_id FROM occ.connection_token_custody custody
+      `SELECT custody.secret_ref, source.driver_id, source.token_service_instance_id FROM occ.connection_token_custody custody
        JOIN occ.credential_sources source ON source.namespace_id = custody.namespace_id AND source.id = custody.credential_source_id
        WHERE custody.namespace_id=$1 AND custody.credential_source_id=$2`,
       [namespaceId, id],
     );
     assert.equal(custody.rowCount, 1);
     assert.equal(custody.rows[0].driver_id, null);
+    assert.equal(custody.rows[0].token_service_instance_id, instanceId);
     const privateRef = custody.rows[0].secret_ref;
     assert.ok(secretDriver.has(privateRef));
-    const account = accounts.json().data[0];
     assert.deepEqual(
       [
-        account.oauthClientId,
-        account.clientId,
-        account.issuer,
-        account.tokenUrl,
-        account.destinations,
-        account.requestedScopes,
-        account.grantedScopes,
+        savedConsent.oauthClientId,
+        savedConsent.clientId,
+        savedConsent.issuer,
+        savedConsent.tokenUrl,
+        savedConsent.destinations,
+        savedConsent.resource,
+        savedConsent.mcpServerUrl,
+        savedConsent.ownerPrincipalId,
+        savedConsent.requestedScopes,
+        savedConsent.grantedScopes,
       ],
-      [oauthClientId, clientId, issuer, tokenUrl, [recipient], ["openid"], ["openid"]],
+      [
+        oauthClientId,
+        clientId,
+        issuer,
+        tokenUrl,
+        [recipient],
+        serverUrl,
+        serverUrl,
+        ownerId,
+        ["openid"],
+        ["openid"],
+      ],
     );
     // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
-    async function prepared(minimumValidityMs = 0) {
-      const token = await preparedTokens.resolve(
-        { kind: "oauth_refresh_token", namespaceId, sourceId: id },
-        {
-          signal: t.signal,
-          deadlineAt: new Date(Date.now() + 10_000).toISOString(),
-          minimumValidityMs,
-        },
-      );
-      assert.ok(token);
-      return token.accessToken;
+    const sourceInstance = {
+      sourceRef: { kind: "credential_source", namespaceId, id } as const,
+      tokenServiceInstanceId: instanceId,
+    };
+    async function prepared() {
+      const token = await tokenOwner.resolveCredential(sourceInstance, t.signal);
+      return token.credential;
     }
     const subject = async (bearer: string) => {
       const result = await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
@@ -684,10 +675,15 @@ test(
         attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
       });
     }
-    // Only a newly issued token can satisfy this request's minimum remaining lifetime.
+    assert.equal(
+      sourceDetails.body.includes(original),
+      false,
+      "Source reads never return token material",
+    );
+    // An explicit Source rotation publishes a newly issued access token through the selected owner.
     await setIssuedLifetime(300);
-    const [resolved, joined] = await Promise.all([prepared(120_000), prepared(120_000)]);
-    assert.equal(joined, resolved);
+    assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
+    const resolved = await prepared();
     assert.notEqual(resolved, original);
     assert.equal(await subject(resolved), alice);
 
@@ -697,6 +693,17 @@ test(
       throw new Error("registration store unavailable");
     });
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
+    // Source metadata remains readable when TokenService cannot inspect its private custody.
+    const unavailableCustody = t.mock.method(secretDriver, "withValue", async () => {
+      throw new DependencyUnavailableError("Secret store unavailable");
+    });
+    try {
+      const metadataDuringOutage = await owner("GET", source);
+      assert.equal(metadataDuringOutage.statusCode, 200, metadataDuringOutage.body);
+      assert.deepEqual(metadataDuringOutage.json().data.consent, savedConsent);
+    } finally {
+      unavailableCustody.mock.restore();
+    }
     unavailable.mock.restore();
     const unavailableStatus = (await owner("GET", source)).json().data.status.refresh;
     assert.deepEqual(
@@ -726,11 +733,8 @@ test(
       { ...mcpConfig, oauthClientId: futureRegistration.json().data.id },
     );
     assert.equal(switchRegistration.statusCode, 200, switchRegistration.body);
-    // The saved account remains pinned to its consent version when the Template advances.
-    assert.notEqual(
-      savedAccount.connectionTemplateVersion,
-      switchRegistration.json().data.current.version,
-    );
+    // Consent stays pinned to the original version and client when the Template advances.
+    assert.notEqual(savedConsent.version, switchRegistration.json().data.current.version);
     const pinnedSource = await owner("GET", source);
     const pinnedList = await owner("GET", `${base}/credential-sources`);
     assert.equal(pinnedSource.statusCode, 200, pinnedSource.body);
@@ -739,29 +743,25 @@ test(
       .json()
       .data.find((entry: { id: string }) => entry.id === id);
     for (const projected of [pinnedSource.json().data, pinnedListedSource]) {
-      assert.equal(projected?.connectionTemplateId, savedAccount.connectionTemplateId);
+      assert.equal(projected?.connectionTemplateId, input.connectionTemplateId);
+      assert.deepEqual(projected?.consent, savedConsent);
       assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
     }
     const currentMcp = async () => {
-      const result = await owner("GET", connections);
+      const result = await owner("GET", source);
       assert.equal(result.statusCode, 200, result.body);
-      return result
-        .json()
-        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === id);
+      return result.json().data.consent;
     };
     assert.deepEqual((await currentMcp()).destinations, [recipient]);
     assert.equal((await currentMcp()).oauthClientId, oauthClientId);
-    assert.equal(
-      (await currentMcp()).connectionTemplateVersion,
-      savedAccount.connectionTemplateVersion,
-    );
+    assert.equal((await currentMcp()).version, savedConsent.version);
     const futureConsent = await owner("POST", connections, input);
     assert.equal(futureConsent.statusCode, 201, futureConsent.body);
     assert.equal(
       new URL(futureConsent.json().data.authorizationUrl).searchParams.get("client_id"),
       clientId + "-future",
     );
-    // An MCP transport/resource change stops delivery rather than retargeting the saved grant.
+    // Current MCP transport/resource changes cannot retarget the historical consent.
     discoveredResource = "https://resource.connections.test";
     const otherResource = await inject(
       "PATCH",
@@ -769,14 +769,14 @@ test(
       mcpConfig,
     );
     assert.equal(otherResource.statusCode, 200, otherResource.body);
-    assert.deepEqual((await currentMcp()).destinations, []);
+    assert.deepEqual(await currentMcp(), savedConsent);
     discoveredResource = serverUrl;
     const otherMcp = await inject("PATCH", "/connection-templates/" + mcp.json().data.id, {
       ...mcpConfig,
       serverUrl: "https://other.connections.test/mcp",
     });
     assert.equal(otherMcp.statusCode, 200, otherMcp.body);
-    assert.deepEqual((await currentMcp()).destinations, []);
+    assert.deepEqual(await currentMcp(), savedConsent);
     // The original grant must refresh after the provider and the OCE administrator rotate the client.
     const replacement = await rotateKeycloakClientSecret(
       issuer,
@@ -803,21 +803,16 @@ test(
     await setIssuedLifetime(10);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
-    assert.equal(rotated.json().data.connectionTemplateId, savedAccount.connectionTemplateId);
+    assert.equal(rotated.json().data.connectionTemplateId, input.connectionTemplateId);
     assert.equal(Object.hasOwn(rotated.json().data, "connectionTemplateVersion"), false);
-    assert.deepEqual(rotated.json().data.config, {});
+    assert.equal(Object.hasOwn(rotated.json().data, "config"), false);
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
     // Let this short-lived token actually expire before any worker starts. A normal resolve
     // must obtain its replacement with the current client secret and the original user's grant.
     await setIssuedLifetime(300);
-    const oauth = preparedTokens.issuer("oauth_refresh_token");
-    assert.ok(oauth);
-    const expiring = await oauth.status(
-      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
-      t.signal,
-    );
+    const expiring = rotated.json().data.status.refresh;
     await waitFor(
       "Keycloak's access token to expire",
       async () => (Date.now() >= Date.parse(expiring.expiresAt!) ? true : undefined),
@@ -826,12 +821,13 @@ test(
     const afterExpiry = await prepared();
     assert.notEqual(afterExpiry, renewed);
     assert.equal(await subject(afterExpiry), alice);
-    const afterRotation = await owner("GET", connections);
+    const afterRotation = await owner("GET", sources);
     assert.equal(afterRotation.statusCode, 200, afterRotation.body);
     assert.deepEqual(
       afterRotation
         .json()
-        .data.map((saved: { credentialSourceId: string }) => saved.credentialSourceId),
+        .data.filter((saved: { state: string }) => saved.state === "ready")
+        .map((saved: { id: string }) => saved.id),
       [id],
     );
     const restoreMcp = await inject(
@@ -843,17 +839,17 @@ test(
     // Publish the due schedule used for rotation but make no resolve request. A separate worker
     // must use the saved account's refresh grant and publish a new version before it is read.
     const prior = await state.read((view) =>
-      view.savedConnections.findTokenCustody(namespaceId, id),
+      view.oauthCredentials.findTokenCustody(namespaceId, id),
     );
     await state.transact((unit) =>
-      unit.savedConnections.recordTokenSchedule(namespaceId, id, "due"),
+      unit.oauthCredentials.recordTokenSchedule(namespaceId, id, "due"),
     );
     async function startAccountWorker() {
       const fixture = await createBackendFixture(t);
       const { worker } = fixture.startWorker({
         backends: [],
         secretDriver,
-        tokenService: new TokenService(),
+        tokenServiceDriverId: tokenOwner.id,
       });
       await worker.start();
       return worker;
@@ -861,7 +857,7 @@ test(
     const worker = await startAccountWorker();
     await waitFor("background renewal to publish a new scheduled version", async () => {
       const current = await state.read((view) =>
-        view.savedConnections.findTokenCustody(namespaceId, id),
+        view.oauthCredentials.findTokenCustody(namespaceId, id),
       );
       return current?.scheduledVersion && current.scheduledVersion !== prior?.scheduledVersion
         ? true
@@ -885,21 +881,18 @@ test(
       },
       { times: 1 },
     );
-    const resolving = preparedTokens.resolve(
-      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
-      {
-        signal: t.signal,
-        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
-        minimumValidityMs: 0,
-      },
-    );
+    const resolving = tokenOwner.resolveCredential(sourceInstance, t.signal);
     await observed.promise;
     // The SQL revocation survives a transient custody failure. A worker with the same
     // Secret store and Token Service finishes it after the API request has returned.
     const unavailableDelete = t.mock.method(secretDriver, "delete", async () => {
       throw new DependencyUnavailableError("Secret store unavailable");
     });
-    const interrupted = await owner("DELETE", `${connections}/${id}`);
+    const bindingsBeforeRetirement = await pool.query<{ id: string }>(
+      "SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1 AND resource_kind='credential_source' AND resource_id=$2 ORDER BY id",
+      [namespaceId, id],
+    );
+    const interrupted = await owner("DELETE", source);
     assert.equal(interrupted.statusCode, 503, interrupted.body);
     const revokingList = await owner("GET", `${base}/credential-sources`);
     assert.equal(revokingList.statusCode, 200, revokingList.body);
@@ -907,28 +900,40 @@ test(
       .json()
       .data.find((entry: { id: string }) => entry.id === id);
     assert.equal(revokingSource?.state, "deleting");
-    assert.equal(Object.hasOwn(revokingSource, "connectionTemplateId"), false);
+    assert.equal(revokingSource.connectionTemplateId, input.connectionTemplateId);
+    assert.equal(revokingSource.consent.revocationRequestedBy, ownerId);
     assert.equal(Object.hasOwn(revokingSource, "connectionTemplateVersion"), false);
-    assert.deepEqual(revokingSource.config, {});
+    assert.equal(Object.hasOwn(revokingSource, "config"), false);
     const revokingExact = await owner("GET", source);
     assert.equal(revokingExact.statusCode, 200, revokingExact.body);
-    assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateId"), false);
+    assert.equal(revokingExact.json().data.connectionTemplateId, input.connectionTemplateId);
     assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateVersion"), false);
-    assert.deepEqual(revokingExact.json().data.config, {});
+    assert.equal(Object.hasOwn(revokingExact.json().data, "config"), false);
     assert.ok(secretDriver.has(privateRef));
     // Releasing a read after OCC committed revocation must withhold the already-read bearer.
     release.resolve();
-    assert.equal(await resolving, undefined);
+    await assert.rejects(resolving, ResourceStateConflictError);
     slowRead.mock.restore();
     unavailableDelete.mock.restore();
     await startAccountWorker();
 
     await waitFor("the worker to retire the disconnected account", async () => {
       const remaining = await state.read((view) =>
-        view.savedConnections.findSavedConnection(namespaceId, id),
+        view.credentialSources.findCredentialSource(namespaceId, id),
       );
       return remaining === undefined ? true : undefined;
     });
+    const workerCompletion = await pool.query(
+      `SELECT actor_id, details->'removedAccessBindings' AS removed FROM occ.audit_events
+       WHERE action='openclaw.credential_sources.delete' AND resource_id=$1 AND outcome='success'`,
+      [id],
+    );
+    assert.equal(workerCompletion.rowCount, 1);
+    assert.equal(workerCompletion.rows[0].actor_id, ownerId);
+    assert.deepEqual(
+      workerCompletion.rows[0].removed.map((binding: { id: string }) => binding.id).sort(),
+      bindingsBeforeRetirement.rows.map((binding) => binding.id),
+    );
     assert.equal(
       (
         await pool.query(
@@ -977,10 +982,6 @@ test(
       204,
     );
     // A peer can revoke a browser session after its callback has already passed admission.
-    const peer = await createPostgresAgentApp(t, {
-      label: "saved-account",
-      authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
-    });
     const waiting = await begin();
     const lock = await peer.pool.connect();
     let blocked;
@@ -988,8 +989,8 @@ test(
     try {
       await lock.query("BEGIN");
       const held = await lock.query(
-        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1 RETURNING pg_backend_pid() AS pid, binding->>'pkceVerifier' AS pkce_verifier",
-        [waiting.id],
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND id=$1 RETURNING pg_backend_pid() AS pid, binding->>'pkceVerifier' AS pkce_verifier",
+        [waiting.stateId],
       );
       verifier = held.rows[0].pkce_verifier;
       blocked = owner("GET", waiting.callback);

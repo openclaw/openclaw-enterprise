@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AccessBinding,
   AgentRevision,
-  CredentialSource,
+  LegacyCredentialSource,
   Namespace,
   Preset,
   ResourceKind,
@@ -92,7 +92,7 @@ export async function verifyDeletedResourceAccessBindingContract(
       configuration: { values: {} },
     },
   };
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: identifier("cs"),
     namespaceId: namespace.id,
     name: "Bound source " + randomUUID(),

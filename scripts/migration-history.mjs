@@ -145,7 +145,7 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preStaticConnectionTemplates";
   }
   if (count === 89 && completedCount > 89) {
-    return "preStaticSourceTemplateAssociation";
+    return "preTokenServiceCredentialSources";
   }
   if (count === completedCount) {
     return "completed";

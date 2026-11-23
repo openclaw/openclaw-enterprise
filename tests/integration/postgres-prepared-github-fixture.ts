@@ -13,7 +13,6 @@ import type {
   SecretReference,
 } from "../../packages/contracts/src/index.ts";
 import type { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
@@ -79,7 +78,7 @@ export async function findPreparedSource(
   const stored = await state.read((view) =>
     view.credentialSources.findCredentialSource(namespaceId, id),
   );
-  const egress = stored?.egress;
+  const egress = stored?.ownerCapability === "credential_proxy" ? stored.egress : undefined;
   assert.ok(egress?.schemaVersion === 2 && egress.grant.kind === "github_repository_metadata");
   return { ...egress, schemaVersion: egress.schemaVersion, grant: egress.grant };
 }
@@ -169,20 +168,12 @@ export async function preparedLifecycleFixture(
     },
     async appFactory(t: TestContext, opts: unknown): Promise<PostgresApp> {
       assert.ok(owner && record(opts));
-      const { tokens, lifecycle, secretDriver } = owner;
+      const { lifecycle } = owner;
       const app: PostgresApp = await openPostgresApp(t, {
         ...opts,
         poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
       });
       postgres = app;
-      // Production can register saved OAuth accounts and the GitHub issuer on the same Token Service.
-      tokens.registerIssuer(
-        new OAuthAccountTokens(
-          app.state,
-          secretDriver,
-          app.controller.resolveConnectionClient.bind(app.controller),
-        ),
-      );
       await lifecycle.connect(app.pool);
       t.after(() => lifecycle.close());
       return app;

@@ -718,9 +718,9 @@
       "idx": 90,
       "version": "7",
       "when": 1787000000090,
-      "tag": "0090_static_source_template_association",
+      "tag": "0090_token_service_credential_sources",
       "breakpoints": true,
-      "sha256": "6364d2c7437cd0cb6622265b8ae78feda3df9cbc322f2d23e9814178f6c12820"
+      "sha256": "f998fff10b2ff688aa7cb98f50fb0e98e783d9325919714ebfb94741914e1a09"
     }
   ],
   "initialSchemaStates": {
@@ -910,18 +910,18 @@
       "f4aa4444a108362f733c0e85a17b11d5921dc25ffebc56327c8ab02dcf4a5bb4",
       "f8b940796c0c1542509523c5291417c985b55a37fcd5d35f8758def36260a549"
     ],
-    "b42d52759ecc9d0f0bc2b0073e2c5da82dc9663bfb7e38b2cca571bc00f67222": [
-      "2c60cb443d21b7534c9ae77160c8f75deb38bca0ce24c560eae862be60edbe55",
-      "7282c12dc5dd8c7cacc64524e5d7e8b8a893ad862ead831193520dc8cd21391e",
-      "83692ca7212ec95f43ca532e73760c1a69e671bba35c6e35a92f111f442d4c03",
-      "91a9b22d75138f993f21e43e250517ede0274e43e7046cf2f978d833ce4c761c",
-      "a367d28c58cb2b1c554e2cdb3de0e614763000fa7b61ff0e4d889a534145553c",
-      "e8c53e895a01d8566a776d137ce13e122e7cf7697eac72d50c337d9064f9b42d",
-      "f060bb495723fb8339fa38a616231de414607f807a923a65c717b2c47e66b8da"
+    "1feaa1cfa7326ae4a9bb840b57ed5155c0d6dc35253efa7ed719634e2772f67b": [
+      "02653f3e88e61aea11002c6d9a68af90ce199b8f3d27ef8500acee4725db16f4",
+      "096a7ae54e7a0aaae781966c0a26a54261fbd225ecaca29363ac1ebcd2157c4d",
+      "2a09a14b44e446139c4b16ea6822d5c222721ff704e2a3c468ed79c2ae9a7f39",
+      "58c9515e4cefe7d3d53a0dc2356700773dac32c1d08f6e5767b1504b4c663333",
+      "683cbd3550e2b1708d9d1538e7ef83d2ab570ece5bdf2faa486e1c89dfbc991f",
+      "864680149e4e3d5305b091688d836c1ddecda6b0529eb35316717e0e060cbb26",
+      "afc8fc900aa6d4e3adcf38373c6e725b66b2ebef0a8b681cd1b00683d31b40d7"
     ]
   },
   "catalogs": {
-    "completed": "b42d52759ecc9d0f0bc2b0073e2c5da82dc9663bfb7e38b2cca571bc00f67222",
+    "completed": "1feaa1cfa7326ae4a9bb840b57ed5155c0d6dc35253efa7ed719634e2772f67b",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -986,7 +986,7 @@
     "preRepositoryNetworkPolicy": "fba152519ec5acd43443a58546f900db80e483ba5b41d9f4af293abaae4212fd",
     "preStandaloneCredentialDeployment": "4c974fa824c55127bc3af850db325edf37d7e2bc91fe2872b5474c6b237da438",
     "preStaticConnectionTemplates": "602e4fbe38884d045da8334ae658d22890d2eb7b87c7eefc21ebe9a691d887bf",
-    "preStaticSourceTemplateAssociation": "d7d57933e74466375e7f243cfbe72c411ac7f33571f5f26bc3094074a06ad8f6"
+    "preTokenServiceCredentialSources": "d7d57933e74466375e7f243cfbe72c411ac7f33571f5f26bc3094074a06ad8f6"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

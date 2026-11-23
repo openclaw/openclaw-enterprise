@@ -279,6 +279,7 @@ test(
 
     // Static custody accepts no settings. Successful registration proves OCC did not forward the approval.
     const approved = await createSource("Approved provider", randomUUID(), "openai");
+    assert.equal(approved.type, "static");
     assert.deepEqual(approved.config, { provider_preset: "openai" });
     assert.deepEqual(
       (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [approved.id]))
@@ -306,6 +307,7 @@ test(
 
     const key = randomUUID();
     const source = await createSource("Private credential", key);
+    assert.equal(source.type, "static");
     assert.deepEqual(source.config, {});
     const sourceId = source.id;
     const ref = source.ref;
@@ -379,6 +381,7 @@ test(
     });
     assert.deepEqual(await sourceConfig(), {});
     const presetUpdate = await updateSource(principal.id, { providerPreset: "openai" });
+    assert.equal(presetUpdate.type, "static");
     assert.deepEqual(presetUpdate.config, { provider_preset: "openai" });
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     assert.equal(core.calls.replaceNamespacedSecret, replacementsBeforePreset);

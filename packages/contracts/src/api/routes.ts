@@ -24,7 +24,6 @@ import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
   ConnectionStartResponse,
-  SavedConnectionListResponse,
   StartNamespaceConnectionBody,
   UsableConnectionTemplatesResponse,
 } from "./connections.ts";
@@ -73,9 +72,7 @@ import {
   ValidateAgentCreateBody,
   CreateSecretBody,
   AgentCredentialSourceParams,
-  CreateCredentialSourceBody,
   CredentialSourceParams,
-  UpdateCredentialSourceBody,
   CreateServiceAccountBody,
   CreateServiceAccountCredentialBody,
   AgentRuntimeLogsQuery,
@@ -1244,38 +1241,6 @@ export const occApiRoutes = [
     },
   },
   {
-    operationId: "listNamespaceConnections",
-    method: "GET",
-    path: "/namespaces/:namespaceId/connections",
-    action: "openclaw.namespaces.connections.list",
-    iamAction: "read",
-    resourceKind: "namespace",
-    authorizationTarget: "namespace",
-    summary: "List completed connections the caller can read in this Namespace",
-    tags: ["Connections"],
-    schema: {
-      querystring: EmptyQuery,
-      params: NamespaceParams,
-      response: { 200: SavedConnectionListResponse, ...readErrors },
-    },
-  },
-  {
-    operationId: "disconnectNamespaceConnection",
-    method: "DELETE",
-    path: "/namespaces/:namespaceId/connections/:credentialSourceId",
-    action: "openclaw.namespaces.connections.disconnect",
-    iamAction: "delete",
-    resourceKind: "credential_source",
-    authorizationTarget: "credential_source",
-    summary: "Disconnect a saved account and retire its OAuth grant",
-    tags: ["Connections"],
-    schema: {
-      querystring: EmptyQuery,
-      params: CredentialSourceParams,
-      response: { 204: Type.Null(), ...mutationErrors },
-    },
-  },
-  {
     operationId: "createCredentialSource",
     method: "POST",
     path: "/namespaces/:namespaceId/credential-sources",
@@ -1288,7 +1253,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      body: Type.Union([CreateCredentialSourceBody, Type.Ref("RegisterTokenServiceSourceBody")]),
+      body: Type.Ref("RegisterTokenServiceSourceBody"),
       response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
@@ -1337,7 +1302,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
+      body: Type.Ref("UpdateTokenServiceSourceBody"),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
@@ -1349,7 +1314,7 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Force the Credential Refresh Driver to mint a new token for a refresh-type source",
+    summary: "Ask the selected TokenService to refresh an OAuth Source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,

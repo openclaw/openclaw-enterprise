@@ -29,7 +29,7 @@ import {
   type Configuration,
   type ConfigurationDriver,
   type CredentialProxyDriver,
-  type CredentialSource,
+  type StaticCredentialSource,
   type DeploymentCredentialBinding,
   type DeploymentPolicy,
   type DeploymentRequestMatch,
@@ -137,9 +137,7 @@ export interface ModelCredentialPreset {
 }
 
 interface PreparedModelCredentialDeployment {
-  readonly source: Readonly<
-    CredentialSource & { ownerCapability: "token_service"; tokenServiceInstanceId: string }
-  >;
+  readonly source: Readonly<StaticCredentialSource>;
   readonly preset: ModelCredentialPreset;
   readonly owner: InstalledDriver;
   readonly proxy: CredentialProxyDriver;
@@ -246,6 +244,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (
       !isManagedTokenServiceSource(source) ||
       source.state !== "ready" ||
+      source.type !== "static" ||
+      source.connectionTemplateId !== undefined ||
       source.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
       source.type !== auth.sourceType
     ) {

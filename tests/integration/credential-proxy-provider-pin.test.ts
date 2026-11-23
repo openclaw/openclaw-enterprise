@@ -6,7 +6,8 @@ import type {
   CredentialProviderDefinition,
   ComputeDriver,
   CredentialGatewayDriver,
-  CredentialSource,
+  LegacyCredentialSource,
+  StoredCredentialSource,
   EgressInstallation,
 } from "../../packages/contracts/src/index.ts";
 import type {
@@ -202,11 +203,12 @@ test("fresh static source keeps catalog order for distinct provider identities",
       },
     });
     assert.equal(result.status, 201);
-    const source: Readonly<CredentialSource> | undefined = await f.controller.transact(
+    const source: Readonly<StoredCredentialSource> | undefined = await f.controller.transact(
       (unit: PlatformUnitOfWork) =>
         unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
     );
-    assert.deepEqual(source?.egress?.key.provider, entries[0]!.ref);
+    assert.ok(source && source.ownerCapability !== "token_service");
+    assert.deepEqual(source.egress?.key.provider, entries[0]!.ref);
     assert.equal(f.secretReads, reads + 1);
   }
   assert.deepEqual(injections, [a.ref.id, a.ref.id, b.ref.id]);
@@ -793,10 +795,13 @@ test("an unbound source update keeps its admitted provider when same-type provid
   assert.equal(created.status, 201);
   const { id } = created.data;
   const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
-  const savedSource = () =>
-    f.controller.transact((unit: PlatformUnitOfWork) =>
+  const savedSource = async () => {
+    const source = await f.controller.transact((unit: PlatformUnitOfWork) =>
       unit.credentialSources.findCredentialSource(f.namespace.id, id),
     );
+    assert.ok(source && source.ownerCapability !== "token_service");
+    return source;
+  };
   assert.deepEqual((await savedSource())?.egress?.key.provider, a.ref);
   providers.reverse();
   const reads = f.secretReads;
@@ -884,10 +889,13 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(created.status, 201);
   const { id } = created.data;
   const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
-  const savedSource = () =>
-    f.controller.transact((unit: PlatformUnitOfWork) =>
+  const savedSource = async () => {
+    const source = await f.controller.transact((unit: PlatformUnitOfWork) =>
       unit.credentialSources.findCredentialSource(f.namespace.id, id),
     );
+    assert.ok(source && source.ownerCapability !== "token_service");
+    return source;
+  };
   const before = await savedSource();
   assert.deepEqual(before?.egress?.key.provider, a.ref);
   assert.equal(originalCalls, 1);
@@ -1038,6 +1046,7 @@ test("live static registration does not require Compute placement", async (t) =>
   const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
     unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
   );
+  assert.ok(stored && stored.ownerCapability !== "token_service");
   assert.equal(stored?.state, "ready");
   assert.deepEqual(stored?.config, { authorized_base_url: f.modelProvider.baseUrl });
   assert.equal(stored?.ownerCapability, "credential_gateway");
@@ -1116,12 +1125,12 @@ test("live static source validation does not consult backend Gateway placement",
   const listed = await f.request("GET", f.path);
   assert.equal(listed.status, 200);
   assert.ok(
-    !listed.data.some((source: CredentialSource) => source.name === "invalid-static-endpoint"),
+    !listed.data.some((source: { name: string }) => source.name === "invalid-static-endpoint"),
   );
 });
 
 test("live static registration losing to DELETE preserves its deleting row without Gateway cleanup", async (t) => {
-  const committed = Promise.withResolvers<Readonly<CredentialSource>>();
+  const committed = Promise.withResolvers<Readonly<LegacyCredentialSource>>();
   const resume = Promise.withResolvers<void>();
   t.after(() => resume.resolve());
   let pauseRegistration = false;
@@ -1133,7 +1142,7 @@ test("live static registration losing to DELETE preserves its deleting row witho
         wrapState: (state: PlatformStateStore): PlatformStateStore => ({
           read: (work) => state.read(work),
           async transact(work) {
-            let created: Readonly<CredentialSource> | undefined;
+            let created: Readonly<LegacyCredentialSource> | undefined;
             const result = await state.transact((unit) =>
               work({
                 ...unit,
@@ -1141,7 +1150,7 @@ test("live static registration losing to DELETE preserves its deleting row witho
                   ...unit.credentialSources,
                   async createCredentialSource(input) {
                     const source = await unit.credentialSources.createCredentialSource(input);
-                    if (pauseRegistration) {
+                    if (pauseRegistration && source.ownerCapability !== "token_service") {
                       created = source;
                     }
                     return source;
@@ -1209,6 +1218,7 @@ test("live static registration losing to DELETE preserves its deleting row witho
   const retained = await f.controller.transact((unit: PlatformUnitOfWork) =>
     unit.credentialSources.findCredentialSource(f.namespace.id, source.id),
   );
+  assert.ok(retained && retained.ownerCapability !== "token_service");
   assert.equal(retained?.state, "deleting");
   assert.equal(retained?.ownerCapability, source.ownerCapability);
   assert.equal(retained?.driverId, source.driverId);
@@ -1412,6 +1422,7 @@ test("live adoption keeps catalog order for distinct provider identities", async
     const source = await f.controller.transact((unit: PlatformUnitOfWork) =>
       unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
     );
+    assert.ok(source && source.ownerCapability !== "token_service");
     assert.deepEqual(source?.egress?.key.provider, entries[0]!.ref);
     assert.equal(source?.driverId, before?.driverId);
     assert.equal(f.secretReads, reads + 1);

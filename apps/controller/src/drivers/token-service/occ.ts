@@ -6,6 +6,7 @@ import type {
   CredentialRefreshStatus,
   CredentialProxyDriver,
   CredentialSource,
+  StoredCredentialSource,
   CredentialSourceReference,
   ErrorDetail,
   InstallationSecretRef,
@@ -28,6 +29,8 @@ import {
 import type { PlatformStateStore } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import type { OAuthAccountTokens } from "../../backends/token-service/oauth-connection.ts";
+
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
 
@@ -39,7 +42,7 @@ function checkLifecycle(config: SourceLifecycleConfig): void {
   }
 }
 
-function encodeCredential(secret: SourceRegistrationInput["secret"]): {
+function encodeCredential(secret: Extract<SourceRegistrationInput, { kind: "static" }>["secret"]): {
   stored: string;
   version: string;
 } {
@@ -96,6 +99,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   private readonly store: InstallationSecretStore;
   private readonly tokenServiceInstanceId: string;
   private readonly state: PlatformStateStore;
+  private readonly oauth: OAuthAccountTokens | undefined;
   private readonly credentialProxy:
     Pick<CredentialProxyDriver, "notifyCredentialUpdated"> | undefined;
 
@@ -106,6 +110,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     tokenServiceInstanceId: string,
     state: PlatformStateStore,
     credentialProxy?: Pick<CredentialProxyDriver, "notifyCredentialUpdated">,
+    oauth?: OAuthAccountTokens,
   ) {
     if (!isNonEmptyString(tokenServiceInstanceId)) {
       throw new ResourceStateConflictError("The TokenService instance identity is unavailable.");
@@ -116,6 +121,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     this.tokenServiceInstanceId = tokenServiceInstanceId;
     this.state = state;
     this.credentialProxy = credentialProxy;
+    this.oauth = oauth;
   }
 
   private ownedRef(source: TokenServiceSourceInstance): CredentialSourceReference {
@@ -133,7 +139,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return ref;
   }
 
-  private ownedSource(found: CredentialSource | undefined): CredentialSource | undefined {
+  private ownedSource(found: StoredCredentialSource | undefined): CredentialSource | undefined {
     if (
       found !== undefined &&
       (found.ownerCapability !== "token_service" ||
@@ -141,7 +147,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     ) {
       throw new ResourceStateConflictError("This source belongs to another TokenService instance.");
     }
-    return found;
+    return found?.ownerCapability === "token_service" ? found : undefined;
   }
 
   private storageRef(ref: CredentialSourceReference): InstallationSecretRef {
@@ -165,37 +171,60 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     if (!isNonEmptyString(input.namespaceId) || !isName(input.name)) {
       throw new ScopeViolationError("The credential source identity is invalid.");
     }
-    checkLifecycle(input.lifecycleConfig);
-    const stored = encodeCredential(input.secret);
     const id = `cs_${randomUUID()}`;
     const ref: CredentialSourceReference = {
       kind: "credential_source",
       namespaceId: input.namespaceId,
       id,
     };
-    return this.state.transact(async ({ namespaces, credentialSources }) => {
-      const namespace = await namespaces.lockNamespace(input.namespaceId);
-      if (namespace?.status !== "ready") {
-        throw new ResourceStateConflictError("The credential source Namespace is not ready.");
-      }
-      const source = await credentialSources.createCredentialSource({
-        id,
-        namespaceId: input.namespaceId,
-        name: input.name,
-        type: input.lifecycleConfig.type,
-        ownerCapability: "token_service",
-        tokenServiceInstanceId: this.tokenServiceInstanceId,
-        state: "ready",
-        config: input.config,
-        secrets: {},
-        createdAt: new Date().toISOString(),
+    if (input.kind === "static") {
+      checkLifecycle(input.lifecycleConfig);
+      const stored = encodeCredential(input.secret);
+      return this.state.transact(async ({ namespaces, credentialSources }) => {
+        const namespace = await namespaces.lockNamespace(input.namespaceId);
+        if (namespace?.status !== "ready") {
+          throw new ResourceStateConflictError("The credential source Namespace is not ready.");
+        }
+        const source: CredentialSource = {
+          id,
+          namespaceId: input.namespaceId,
+          name: input.name,
+          type: "static",
+          ownerCapability: "token_service",
+          tokenServiceInstanceId: this.tokenServiceInstanceId,
+          state: "ready",
+          config: input.config,
+          createdAt: new Date().toISOString(),
+          ...(input.connectionTemplateId === undefined
+            ? {}
+            : { connectionTemplateId: input.connectionTemplateId }),
+        };
+        await credentialSources.createCredentialSource(source);
+        await withComputeAbortSignal(signal, () =>
+          this.store.create(this.storageRef(ref), stored.stored),
+        );
+        signal.throwIfAborted();
+        return source;
       });
-      await withComputeAbortSignal(signal, () =>
-        this.store.create(this.storageRef(ref), stored.stored),
-      );
-      signal.throwIfAborted();
-      return source;
-    });
+    }
+    const oauth = this.oauth;
+    if (!oauth) {
+      throw new ResourceStateConflictError("OAuth custody is unavailable for this TokenService.");
+    }
+    const source: CredentialSource = {
+      id,
+      namespaceId: input.namespaceId,
+      name: input.name,
+      type: "oauth2-refresh-token",
+      ownerCapability: "token_service",
+      tokenServiceInstanceId: this.tokenServiceInstanceId,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+      connectionTemplateId: input.connectionTemplateId,
+      consent: input.consent,
+    };
+    await oauth.registerSource(source, input.grant, signal);
+    return source;
   }
 
   async updateSource(
@@ -217,8 +246,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       const found = this.ownedSource(
         await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
       );
-      if (found?.state !== "ready") {
-        throw new ResourceStateConflictError("The credential source is unavailable.");
+      if (found?.state !== "ready" || found.type !== "static") {
+        throw new ResourceStateConflictError("Only a ready static Source can be updated.");
       }
       if (update.secret) {
         const stored = encodeCredential(update.secret);
@@ -265,6 +294,16 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     if (found?.state !== "ready") {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }
+    if (found.type === "oauth2-refresh-token") {
+      const token = await this.oauth?.resolve(
+        { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
+        { signal, deadlineAt: new Date(Date.now() + 30_000).toISOString(), minimumValidityMs: 0 },
+      );
+      if (!token) {
+        throw new ResourceStateConflictError("The OAuth credential is unavailable.");
+      }
+      return { credential: token.accessToken, version: token.version, expiresAt: token.expiresAt };
+    }
     const resolved = await withComputeAbortSignal(signal, () =>
       this.store.withValue(this.storageRef(ref), async (value) => decodeCredential(value)),
     );
@@ -286,6 +325,19 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     if (found?.state !== "ready") {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }
+    if (found.type === "oauth2-refresh-token") {
+      if (!this.oauth) {
+        throw new ResourceStateConflictError("OAuth custody is unavailable.");
+      }
+      await this.state.transact((unit) =>
+        unit.oauthCredentials.recordTokenSchedule(ref.namespaceId, ref.id, "due"),
+      );
+      await this.oauth.maintain(
+        { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
+        signal,
+      );
+      return { ...source, operationId: randomUUID() };
+    }
     throw new ResourceStateConflictError(
       "A static credential cannot be refreshed; update the source.",
     );
@@ -305,6 +357,17 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     if (found?.state !== "ready") {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }
+    if (found.type === "oauth2-refresh-token") {
+      const status = await this.oauth?.status(
+        { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
+        signal,
+      );
+      if (!status) {
+        throw new ResourceStateConflictError("OAuth custody is unavailable.");
+      }
+      const { schedule: _schedule, ...refresh } = status;
+      return refresh;
+    }
     throw new ResourceStateConflictError("A static credential has no refresh operation.");
   }
 
@@ -314,6 +377,41 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   ): Promise<readonly AccessBinding[]> {
     signal.throwIfAborted();
     const ref = this.ownedRef(source);
+    const found = await this.state.read((view) =>
+      view.credentialSources.findCredentialSource(ref.namespaceId, ref.id),
+    );
+    if (found?.ownerCapability === "token_service" && found.type === "oauth2-refresh-token") {
+      this.ownedSource(found);
+      if (found.state !== "deleting" || !found.consent.revocationRequestedBy) {
+        throw new ResourceStateConflictError("The OAuth Source is not retiring.");
+      }
+      if (!found.consent.revokedAt) {
+        if (!this.oauth) {
+          throw new ResourceStateConflictError("OAuth custody is unavailable.");
+        }
+        await this.oauth.retire(
+          { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
+          signal,
+        );
+        await this.state.transact((unit) =>
+          unit.credentialSources.confirmOAuthRevocation(
+            ref.namespaceId,
+            ref.id,
+            new Date().toISOString(),
+          ),
+        );
+      }
+      return this.state.transact(async ({ credentialSources, iamPolicy }) => {
+        if (await credentialSources.hasReferences(ref.namespaceId, ref.id)) {
+          return [];
+        }
+        const removed = (await iamPolicy.listAccessBindings(ref.namespaceId)).filter(
+          (b) => b.resourceKind === "credential_source" && b.resourceId === ref.id,
+        );
+        await credentialSources.deleteCredentialSource(ref.namespaceId, ref.id);
+        return Object.freeze(removed);
+      });
+    }
     return this.state.transact(async ({ namespaces, credentialSources, iamPolicy }) => {
       if (!(await namespaces.lockNamespace(ref.namespaceId))) {
         throw new ResourceStateConflictError("The credential source Namespace is unavailable.");

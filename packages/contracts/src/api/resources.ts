@@ -1,6 +1,7 @@
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
+import { ConnectionDestinationsSchema, OAuthScope } from "./connection-templates.ts";
 
 import {
   AgentId,
@@ -15,7 +16,6 @@ import {
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
-  CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
@@ -693,53 +693,63 @@ export const CredentialSourceStatusSchema = Type.Object(
   },
 );
 
-export const CredentialSourceSchema = Type.Object(
+const CredentialSourceCommon = {
+  id: CredentialSourceId,
+  namespaceId: NamespaceId,
+  name: Name,
+  state: Type.Union([Type.Literal("ready"), Type.Literal("deleting")]),
+  createdAt: Type.String({ format: "date-time" }),
+  ref: CredentialSourceReference,
+  status: Type.Optional(CredentialSourceStatusSchema),
+};
+
+export const OAuthSourceConsentSchema = Type.Object(
   {
-    id: CredentialSourceId,
-    namespaceId: NamespaceId,
-    name: Name,
-    type: CredentialSourceType,
+    version: Type.Integer({ minimum: 1 }),
+    oauthClientId: Type.String(),
+    ownerPrincipalId: Type.String(),
+    requestedScopes: Type.Array(OAuthScope),
+    grantedScopes: Type.Array(OAuthScope),
+    issuer: Type.String(),
+    tokenUrl: Type.String(),
+    clientId: Type.String(),
+    destinations: Type.Array(ConnectionDestinationsSchema.items),
+    resource: Type.Optional(Type.String()),
+    mcpServerUrl: Type.Optional(Type.String()),
+    revocationRequestedBy: Type.Optional(Type.String()),
+    revokedAt: Type.Optional(Type.String({ format: "date-time" })),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
+  },
+);
+
+export const StaticCredentialSourceSchema = Type.Object(
+  {
+    ...CredentialSourceCommon,
+    type: Type.Literal("static"),
     connectionTemplateId: Type.Optional(ConnectionTemplateId),
-    ownerCapability: Type.Union(
-      [
-        Type.Literal("credential_gateway"),
-        Type.Literal("credential_proxy"),
-        Type.Literal("token_service"),
-      ],
-      {
-        description:
-          "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them.",
-      },
-    ),
     config: CredentialSourceConfig,
-    egress: Type.Optional(
-      Type.Object(
-        {
-          adoption: Type.Union([
-            Type.Literal("live"),
-            Type.Literal("prepared"),
-            Type.Literal("credential_free"),
-          ]),
-          retention: Type.Literal("none"),
-        },
-        {
-          additionalProperties: false,
-          description:
-            "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
-        },
-      ),
-    ),
-    secrets: CredentialSourceSecrets,
-    state: Type.Union([
-      Type.Literal("registering"),
-      Type.Literal("ready"),
-      Type.Literal("deleting"),
-    ]),
-    ref: CredentialSourceReference,
-    status: Type.Optional(CredentialSourceStatusSchema),
   },
   { additionalProperties: false },
 );
+
+export const OAuthCredentialSourceSchema = Type.Object(
+  {
+    ...CredentialSourceCommon,
+    type: Type.Literal("oauth2-refresh-token"),
+    connectionTemplateId: ConnectionTemplateId,
+    consent: OAuthSourceConsentSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const CredentialSourceSchema = Type.Union([
+  StaticCredentialSourceSchema,
+  OAuthCredentialSourceSchema,
+]);
 
 export const AgentRuntimeCredentialStatusSchema = Type.Object(
   {

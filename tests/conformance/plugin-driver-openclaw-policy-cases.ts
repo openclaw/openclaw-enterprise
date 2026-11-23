@@ -15,7 +15,7 @@ import {
   validatePolicies,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import type {
-  CredentialSource,
+  LegacyCredentialSource,
   PluginApprover,
   PluginApprovers,
   PluginDriver,
@@ -161,7 +161,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       /Select distinct literal Slack tool names/,
     );
   }
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: "cs_slack",
     name: "Slack test account",
     namespaceId: "ns_test",

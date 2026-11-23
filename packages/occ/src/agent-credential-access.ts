@@ -8,7 +8,7 @@ import {
   type Agent,
   type AgentCredentialSourceBinding,
   type ComputeDriver,
-  type CredentialSource,
+  type StoredCredentialSource,
   type CredentialSourceReference,
   type CredentialSourceSnapshot,
   type HarnessAuthBinding,
@@ -155,8 +155,8 @@ export function createAgentCredentialAccess({
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
-  ): Promise<readonly CredentialSource[]> {
-    const sources: CredentialSource[] = [];
+  ): Promise<readonly StoredCredentialSource[]> {
+    const sources: StoredCredentialSource[] = [];
     for (const { sourceId } of bindings) {
       await authorizeSourceOperate(principalId, namespaceId, sourceId);
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
@@ -177,16 +177,17 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
+        if (source.type !== "static" || source.connectionTemplateId !== undefined) {
+          throw new ResourceStateConflictError(
+            "Template-associated Source admission is not implemented.",
+          );
+        }
         if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
           throw new ResourceStateConflictError(
             "This TokenService source must authenticate the selected Agent Harness.",
           );
         }
       } else {
-        // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-        if (source.ownerCapability === "token_service") {
-          throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
-        }
         sourceDrivers.credentialSourceOwner(source);
       }
       sources.push(source);

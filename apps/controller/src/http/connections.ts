@@ -51,33 +51,12 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
           redirectUri,
           sessionId: context.sessionId,
         },
-        (id) => mutationEvent({ kind: "credential_source", namespaceId, id }),
+        () => mutationEvent({ kind: "credential_source", namespaceId, id: namespaceId }),
       );
       reply
         .header("cache-control", "no-store")
         .status(201)
         .send({ data, meta: { requestId: request.id } });
-    },
-    async listNamespaceConnections({ controller, context, request, reply, namespaceId }) {
-      const data = await controller.listNamespaceConnections(context.actorId, namespaceId);
-      reply.send({ data, meta: { requestId: request.id } });
-    },
-    async disconnectNamespaceConnection({
-      controller,
-      context,
-      reply,
-      params,
-      namespaceId,
-      mutationEvent,
-    }) {
-      const id = params.credentialSourceId!;
-      await controller.disconnectNamespaceConnection(
-        context.actorId,
-        namespaceId,
-        id,
-        mutationEvent({ kind: "credential_source", namespaceId, id }),
-      );
-      reply.status(204).send();
     },
   };
 }
@@ -179,7 +158,7 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
             dependencies.auditEvent(request, context, {
               kind: "credential_source",
               namespaceId: result.namespaceId,
-              id: result.credentialSourceId,
+              id: result.id,
             }),
           holdSession,
         ),

@@ -157,7 +157,7 @@ import type {
   CredentialGatewayDriver,
   CredentialDeploymentContext,
   CredentialProxyDriver,
-  CredentialSource,
+  StoredCredentialSource as CredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
   WorkspaceSetup,
@@ -7957,7 +7957,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ];
         const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, boundSources);
         const sources =
-          staged === undefined ? boundSources.filter((source) => source.egress === undefined) : [];
+          staged === undefined
+            ? boundSources.filter(
+                (
+                  source,
+                ): source is Readonly<
+                  import("@openclaw-enterprise/contracts").LegacyCredentialSource
+                > => source.ownerCapability !== "token_service" && source.egress === undefined,
+              )
+            : [];
         const credentialContext =
           sources.length === 0
             ? undefined
@@ -9486,6 +9494,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new Error(
         "Refusing to withdraw from an AgentRevision pinned to another Compute Driver.",
       );
+    }
+    if (source.ownerCapability === "token_service") {
+      throw new OwnershipFailure("TokenService Source withdrawal is not supported by this path.");
     }
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     const owner =
@@ -12604,7 +12615,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harnessAuth.method !== "credential_source") {
       return [];
     }
-    if (source?.type === "openai") {
+    if (source?.ownerCapability !== "token_service" && source?.type === "openai") {
       requireModelSourceDestination(
         source.config,
         savedModelProvider(revision.harness.configuration),
@@ -12613,7 +12624,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
     // Protected sources belong to the Credential Proxy, never the legacy Gateway.
-    if (source?.egress !== undefined) {
+    if (source?.ownerCapability !== "token_service" && source?.egress !== undefined) {
       if (
         source.id !== sourceId ||
         revision.executionAdmission.mode !== "protected" ||
@@ -15841,7 +15852,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   ): void {
     const provider = savedModelProvider(harness.configuration);
     for (const source of sources) {
-      if (source.type === "openai") {
+      if (source.ownerCapability !== "token_service" && source.type === "openai") {
         requireModelSourceDestination(source.config, provider);
       }
     }

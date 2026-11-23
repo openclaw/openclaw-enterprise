@@ -28,7 +28,6 @@ async function readySource(
     name: `Standalone model source ${randomUUID()}`,
     type: "static",
     config: { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: "openai" },
-    secrets: {},
     ownerCapability: "token_service",
     tokenServiceInstanceId,
     state: "ready",

@@ -8,7 +8,7 @@ Saving a template does not associate it with a Credential Source or deliver a Mo
 
 ## Register a client
 
-OCC owns OAuth client registrations. It stores confidential client secrets through the Installation’s selected Secret Driver. The Helm chart gives OCC a private Kubernetes namespace for these secrets. A public client needs only its provider-issued client ID. You can register either kind before configuring a Credential Gateway or Token Service.
+OCC owns OAuth client registrations. It stores confidential client secrets through the Installation’s selected Secret Driver. The Helm chart gives OCC a private Kubernetes namespace for these secrets. A public client needs only its provider-issued client ID. OAuth client registration is independent of credential delivery.
 
 Use `POST /oauth-clients` with the selected `connectionTemplateId` and `connectionTemplateVersion`, a name, the provider-issued client ID and the authentication method registered for that client ID. For an MCP template, OCE offers the methods it implements that the authorization server advertises. If the server omits the list, use `client_secret_basic`. A public client uses `none`. Confidential clients use `client_secret_basic` or `client_secret_post` and require a write-only client secret. The API rejects `private_key_jwt`; this integration supports client secrets and public clients. Register the callback URI returned in the response metadata with the provider.
 
@@ -38,7 +38,7 @@ Use `GET /connection-templates` to list templates and `GET /connection-templates
 
 To remove a template in Console, select its trash icon, check the name and availability, then choose **Delete connection template**. An OAuth template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Deleting an OAuth template leaves its OAuth client registered.
 
-The connections list reports the current manual destinations for the account’s template and issuer. Updating destinations does not deliver the account to an Agent. To use a different issuer or switch between manual and MCP setup, connect the account again. An MCP account also retains its exact server and protected resource.
+An OAuth Source keeps the Template version and client selected at consent. Updating a Template does not change that grant or deliver it to an Agent. To use a different issuer or switch between manual and MCP setup, connect again. An MCP grant remains tied to its consented server and protected resource.
 
 Changing the template’s default OAuth client applies to future connections. Existing grants continue to refresh with their original registration and its current secret.
 
@@ -46,7 +46,7 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
-OCC handles browser consent and the callback. Its internal Token Service registrar and issuer store and renew the grant using the original client registration. OCC returns a stable account reference. Agent attachment and delivery of a saved OAuth account are not yet supported; configuring a Credential Gateway does not enable them.
+OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Agent attachment and delivery of OAuth Sources remain pending.
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
@@ -56,15 +56,10 @@ OCC handles browser consent and the callback. Its internal Token Service registr
    version has an OAuth client.
 2. Send the chosen `connectionTemplateId` to
    `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
-   `authorizationUrl` in the same browser and approve the request.
+   `authorizationUrl` in the same browser and approve the request. The response does not contain a Source ID: no Source exists until the callback completes.
    Register the public OCC callback URL ending in `/oauth/callback` with the provider.
-3. After the redirect, look up the saved account with
-   `GET /namespaces/{namespaceId}/connections`. Other users see it only if
-   they have permission to read the source. Keep the credential source ID to
-   refer to the account. The response names the selected OAuth client, issuer,
-   effective destinations, and requested and granted scopes. An empty destination list means the current template is unavailable or incompatible. MCP accounts also record the
-   selected server URL and protected resource. The Token Service keeps the tokens
-   and uses the pinned client method and protected resource when it renews them.
+3. After the redirect, find the OAuth Source with
+   `GET /namespaces/{namespaceId}/credential-sources`. The list requires Namespace read and includes only Sources the caller can read. Use its ID with `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to inspect all nonsecret OAuth metadata with exact Source read. The Source records the original consent version, client, principal, and requested and granted scopes. TokenService keeps the tokens private and uses the original consent settings for renewal.
 
 The native Namespace role API currently rejects `create` permissions. Installation
 administrators can connect with the built-in administrator role. See
@@ -76,6 +71,4 @@ code once. If the provider rejects the client secret, an administrator can corre
 the Token Service retries the same grant. If the provider rejects the user’s
 refresh grant, the user reconnects.
 
-Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
-disconnect the account. OCC records the request before retiring the credential
-and the worker can finish an interrupted disconnect.
+Use `DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to disconnect the OAuth Source. Its owner needs exact Source read and operate permission; another caller needs Source delete permission. OCC records the request before TokenService retires the grant, and the worker can finish a pending revocation.

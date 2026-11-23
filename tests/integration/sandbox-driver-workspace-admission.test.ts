@@ -19,7 +19,7 @@ import {
   type AgentRevision,
   type ComputeRevisionContext,
   type CredentialGatewayDriver,
-  type CredentialSource,
+  type LegacyCredentialSource,
   type CredentialSourceLoginMode,
 } from "../../packages/contracts/src/index.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
@@ -224,7 +224,7 @@ test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount"
   const catalog = await catalogDriver.listSourceTypes({ signal: t.signal });
   const sourceType = catalog.find((entry) => entry.type === "openai");
   assert.ok(sourceType);
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: "cs_00000000-0000-4000-8000-000000000001",
     namespaceId: revision.namespaceId,
     type: sourceType.type,
@@ -384,7 +384,7 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
       const { driver: compute, sandbox } = fixture;
       const revision: ComputeFixtureRevision = fixture.revision;
       const capture: HarnessCapture = captureOpenShellHarness(fixture, sandbox);
-      const source: CredentialSource = {
+      const source: LegacyCredentialSource = {
         id: "cs_324fc26c-59b3-43e0-b057-53fce26a2f19",
         namespaceId: revision.namespaceId,
         type: loginMode === "codex_pat" ? "codex-pat" : "codex-oauth",

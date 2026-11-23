@@ -9,7 +9,7 @@ import {
   type AgentRevision,
   type AgentRevisionRead,
   type Configuration,
-  type CredentialSource,
+  type StoredCredentialSource,
   type ComputeDriver,
   type HarnessDescriptor,
   type IAMDriver,
@@ -148,7 +148,7 @@ export async function readRepositoryEditTopology(
   read: {
     configurationOwnership(id: string): Promise<ConfigurationOwnership | undefined>;
     configuration(metadata: ConfigurationOwnership): Promise<Readonly<Configuration>>;
-    credentialSource(id: string): Promise<Readonly<CredentialSource> | undefined>;
+    credentialSource(id: string): Promise<Readonly<StoredCredentialSource> | undefined>;
   },
 ) {
   const { namespaceId, configurationId } = agent;

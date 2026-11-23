@@ -110,11 +110,10 @@ const source = {
   id: id("cs"),
   namespaceId,
   name: "Model credentials",
-  type: "openai",
-  config: {},
-  secrets: { api_key: secretRef },
-  ownerCapability: "credential_gateway",
+  type: "static",
+  config: { provider_preset: "openai" },
   state: "ready",
+  createdAt: time,
   ref: { kind: "credential_source", namespaceId, id: id("cs") },
 };
 const account = { id: id("sa"), namespaceId, name: "Model service account" };
@@ -285,20 +284,27 @@ const discovered = {
   tokenEndpointAuthMethods: ["client_secret_basic"],
 };
 
-const savedAccount = {
-  issuer: oauthClient.issuer,
-  tokenUrl: oauthClient.tokenUrl,
-  oauthClientId,
-  clientId: oauthClient.clientId,
-  destinations: connectionTemplateInput.destinations,
-  requestedScopes: connectionTemplateInput.scopes,
-  grantedScopes: connectionTemplateInput.scopes,
+const oauthSourceId = "cs_123e4567-e89b-42d3-a456-426614174001";
+const oauthSource = {
+  id: oauthSourceId,
   namespaceId,
-  credentialSourceId: source.id,
-  ownerPrincipalId: userId,
+  name: "Example account",
+  type: "oauth2-refresh-token",
+  state: "ready",
   connectionTemplateId,
-  connectionTemplateVersion: 2,
   createdAt: time,
+  ref: { kind: "credential_source", namespaceId, id: oauthSourceId },
+  consent: {
+    version: 2,
+    oauthClientId,
+    ownerPrincipalId: userId,
+    requestedScopes: connectionTemplateInput.scopes,
+    grantedScopes: connectionTemplateInput.scopes,
+    issuer: oauthClient.issuer,
+    tokenUrl: oauthClient.tokenUrl,
+    clientId: oauthClient.clientId,
+    destinations: connectionTemplateInput.destinations,
+  },
 };
 
 export const parameterExamples = {
@@ -413,10 +419,10 @@ export const requestExamples = {
   createCredentialSource: {
     name: source.name,
     type: source.type,
-    config: {},
-    secrets: source.secrets,
+    config: source.config,
+    secret: { value: "replace-with-your-authorized-model-key" },
   },
-  updateCredentialSource: { adoption: "live", secrets: source.secrets },
+  updateCredentialSource: { secret: { value: "replace-with-your-rotated-model-key" } },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
   updateServiceAccountCredential: {
@@ -499,9 +505,7 @@ export const responseExamples = {
     ],
   },
   listUsableConnectionTemplates: [connectionTemplate],
-  listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {
-    credentialSourceId: source.id,
     authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
     expiresAt: time,
   },
@@ -766,11 +770,11 @@ export const responseExamples = {
     },
     callerPermissions: { update: true, delete: true },
   },
-  listCredentialSources: [source],
+  listCredentialSources: [source, oauthSource],
   createCredentialSource: source,
-  getCredentialSource: source,
+  getCredentialSource: oauthSource,
   updateCredentialSource: source,
-  rotateCredentialSource: source,
+  rotateCredentialSource: oauthSource,
   deleteServiceAccount: { id: account.id, namespaceId, revocation: "skipped" },
   listServiceAccounts: [account],
   createServiceAccount: account,

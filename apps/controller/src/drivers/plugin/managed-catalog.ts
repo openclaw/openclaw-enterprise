@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
-  type CredentialSource,
+  type StoredCredentialSource as CredentialSource,
   type PluginCatalogEntry,
   type PluginDesiredState,
   type PluginDeploymentContract,
@@ -441,7 +441,7 @@ export function managedMcpCredentialBindings(
 }
 
 export function managedMcpInstallForSourceConfig(
-  config: CredentialSource["config"],
+  config: Readonly<Record<string, string>>,
 ): ManagedMcpInstall | undefined {
   if (config.protocol !== "mcp") {
     return undefined;
@@ -460,8 +460,8 @@ export function managedMcpSlotAcceptsSource(
   source: CredentialSource,
 ): boolean {
   return (
-    source.state === "ready" &&
     source.ownerCapability === "credential_gateway" &&
+    source.state === "ready" &&
     source.egress === undefined &&
     source.type === "bearer-token" &&
     source.secrets.token?.namespaceId === source.namespaceId &&

@@ -1,4 +1,10 @@
-import type { AccessBinding, CredentialSource, CredentialSourceReference } from "../../index.ts";
+import type {
+  AccessBinding,
+  CredentialSource,
+  CredentialSourceReference,
+  OAuthConnectionGrant,
+  OAuthSourceConsent,
+} from "../../index.ts";
 import type { Driver } from "../index.ts";
 
 export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
@@ -27,13 +33,24 @@ export interface SourceLifecycleConfig {
 type SecretFields = Readonly<Record<string, string>>;
 type SourceConfig = Readonly<Record<string, string>>;
 
-export interface SourceRegistrationInput {
-  readonly namespaceId: string;
-  readonly name: string;
-  readonly secret: SecretFields;
-  readonly lifecycleConfig: SourceLifecycleConfig;
-  readonly config: SourceConfig;
-}
+export type SourceRegistrationInput =
+  | {
+      readonly kind: "static";
+      readonly namespaceId: string;
+      readonly name: string;
+      readonly secret: SecretFields;
+      readonly lifecycleConfig: SourceLifecycleConfig;
+      readonly config: SourceConfig;
+      readonly connectionTemplateId?: string;
+    }
+  | {
+      readonly kind: "oauth_refresh_token";
+      readonly namespaceId: string;
+      readonly name: string;
+      readonly connectionTemplateId: string;
+      readonly consent: Omit<OAuthSourceConsent, "revocationRequestedBy" | "revokedAt">;
+      readonly grant: OAuthConnectionGrant;
+    };
 
 export type SourceUpdate =
   | {

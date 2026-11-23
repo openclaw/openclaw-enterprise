@@ -87,7 +87,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 23 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 15 operations |
+| [Connections](#connections) | 13 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 54 operations |
@@ -1525,9 +1525,7 @@ Example response
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template or create a version with updated settings |
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates available in this Namespace |
-| [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
-| [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect a saved account and retire its OAuth grant |
 | [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
 | [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
 | [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
@@ -2433,111 +2431,6 @@ Example response
 }
 ```
 
-#### `GET /namespaces/{namespaceId}/connections`
-
-<span id="get-namespacesnamespaceidconnections"></span>
-
-List completed connections the caller can read in this Namespace
-
-**Operation ID:** `listNamespaceConnections`
-
-**Permissions:** Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `read` | `namespace` | `requested` |
-| `read` | `credential_source` | `each_returned` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].clientId` | `string` | Yes | — |
-| `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data[].createdAt` | `string` | Yes | — |
-| `data[].credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].destinations` | `array<object>` | Yes | Effective credential delivery destinations; empty when the current template is unavailable or incompatible. |
-| `data[].destinations[].host` | `string` | Yes | — |
-| `data[].destinations[].path` | `string` | Yes | — |
-| `data[].destinations[].port` | `integer` | Yes | — |
-| `data[].grantedScopes` | `array<string>` | Yes | — |
-| `data[].issuer` | `string` | Yes | — |
-| `data[].mcpServerUrl` | `string` | No | — |
-| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].oauthClientId` | `string` | Yes | — |
-| `data[].ownerPrincipalId` | `string` | Yes | — |
-| `data[].requestedScopes` | `array<string>` | Yes | — |
-| `data[].resource` | `string` | No | — |
-| `data[].tokenUrl` | `string` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-No readable resources
-```json
-{
-  "data": [],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-Example response
-```json
-{
-  "data": [
-    {
-      "clientId": "example-client",
-      "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-      "connectionTemplateVersion": 2,
-      "createdAt": "2026-10-01T12:00:00.000Z",
-      "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
-      "destinations": [
-        {
-          "host": "api.example.com",
-          "path": "/profile",
-          "port": 443
-        }
-      ],
-      "grantedScopes": [
-        "profile.read"
-      ],
-      "issuer": "https://accounts.example.com",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-      "ownerPrincipalId": "user-docs-admin",
-      "requestedScopes": [
-        "profile.read"
-      ],
-      "tokenUrl": "https://accounts.example.com/token"
-    }
-  ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
 #### `POST /namespaces/{namespaceId}/connections`
 
 <span id="post-namespacesnamespaceidconnections"></span>
@@ -2598,7 +2491,6 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.authorizationUrl` | `string` | Yes | — |
-| `data.credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.expiresAt` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2608,7 +2500,6 @@ Example response
 {
   "data": {
     "authorizationUrl": "https://accounts.example.com/authorize?state=example-state",
-    "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
     "expiresAt": "2026-10-01T12:00:00.000Z"
   },
   "meta": {
@@ -2616,40 +2507,6 @@ Example response
   }
 }
 ```
-
-#### `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`
-
-<span id="delete-namespacesnamespaceidconnectionscredentialsourceid"></span>
-
-Disconnect a saved account and retire its OAuth grant
-
-**Operation ID:** `disconnectNamespaceConnection`
-
-**Permissions:** Requires delete permission on this CredentialSource unless the caller owns the saved connection.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `delete` | `credential_source` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
 
 #### `GET /oauth-clients`
 
@@ -10701,7 +10558,7 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
-| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Force the Credential Refresh Driver to mint a new token for a refresh-type source |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Ask the selected TokenService to refresh an OAuth Source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
 
@@ -10740,33 +10597,7 @@ List readable credential sources without revealing credential values
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data[].connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data[].egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data[].egress.retention` | `"none"` | Yes | — |
-| `data[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data[].ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data[].ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].ref.kind` | `"credential_source"` | Yes | — |
-| `data[].ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data[].state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data[].status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data[].status.reason` | `string` | No | max length: 512 |
-| `data[].status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data[].status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data[].status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data[].status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data[].status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data[].status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data[].status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data[].status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `array<object or object>` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -10785,25 +10616,55 @@ Example response
 {
   "data": [
     {
-      "config": {},
+      "config": {
+        "provider_preset": "openai"
+      },
+      "createdAt": "2026-10-01T12:00:00.000Z",
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
       "name": "Model credentials",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "ownerCapability": "credential_gateway",
       "ref": {
         "id": "cs_123e4567-e89b-42d3-a456-426614174000",
         "kind": "credential_source",
         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
       },
-      "secrets": {
-        "api_key": {
-          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-          "kind": "secret",
-          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-        }
+      "state": "ready",
+      "type": "static"
+    },
+    {
+      "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "consent": {
+        "clientId": "example-client",
+        "destinations": [
+          {
+            "host": "api.example.com",
+            "path": "/profile",
+            "port": 443
+          }
+        ],
+        "grantedScopes": [
+          "profile.read"
+        ],
+        "issuer": "https://accounts.example.com",
+        "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+        "ownerPrincipalId": "user-docs-admin",
+        "requestedScopes": [
+          "profile.read"
+        ],
+        "tokenUrl": "https://accounts.example.com/token",
+        "version": 2
+      },
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+      "name": "Example account",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "ref": {
+        "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+        "kind": "credential_source",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
       },
       "state": "ready",
-      "type": "openai"
+      "type": "oauth2-refresh-token"
     }
   ],
   "meta": {
@@ -10839,19 +10700,6 @@ Register a credential source
 
 **Content type:** `application/json`
 
-**Required fields: `name`, `type`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
-
-**RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
-
-Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.
-
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
@@ -10863,16 +10711,14 @@ Register a managed static Source. Optionally supply connectionTemplateId. OCC va
 Example request
 ```json
 {
-  "config": {},
-  "name": "Model credentials",
-  "secrets": {
-    "api_key": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    }
+  "config": {
+    "provider_preset": "openai"
   },
-  "type": "openai"
+  "name": "Model credentials",
+  "secret": {
+    "value": "replace-with-your-authorized-model-key"
+  },
+  "type": "static"
 }
 ```
 
@@ -10896,33 +10742,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -10930,25 +10750,20 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
+    "config": {
+      "provider_preset": "openai"
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
     "id": "cs_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model credentials",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "static"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -11027,33 +10842,7 @@ Get one readable credential source and its available status
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11061,25 +10850,39 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
-    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-    "name": "Model credentials",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "consent": {
+      "clientId": "example-client",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
+      "grantedScopes": [
+        "profile.read"
+      ],
+      "issuer": "https://accounts.example.com",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "ownerPrincipalId": "user-docs-admin",
+      "requestedScopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 2
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+    "name": "Example account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
-      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "id": "cs_123e4567-e89b-42d3-a456-426614174001",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "oauth2-refresh-token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -11115,18 +10918,6 @@ Update a Source through its recorded owner
 
 **Content type:** `application/json`
 
-**Optional fields: `adoption`, `authorityScope`, `secrets`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `adoption` | `"live"` | No | Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission. |
-| `authorityScope` | `"execution"` | No | Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change. |
-| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-
-**UpdateTokenServiceSourceBody**
-
-Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
-
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
@@ -11135,13 +10926,8 @@ Update a managed static Source through its persisted owner. Supply at least one 
 Example request
 ```json
 {
-  "adoption": "live",
-  "secrets": {
-    "api_key": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    }
+  "secret": {
+    "value": "replace-with-your-rotated-model-key"
   }
 }
 ```
@@ -11165,33 +10951,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11199,25 +10959,20 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
+    "config": {
+      "provider_preset": "openai"
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
     "id": "cs_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model credentials",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "static"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -11229,7 +10984,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate"></span>
 
-Force the Credential Refresh Driver to mint a new token for a refresh-type source
+Ask the selected TokenService to refresh an OAuth Source
 
 **Operation ID:** `rotateCredentialSource`
 
@@ -11263,33 +11018,7 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11297,25 +11026,39 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
-    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-    "name": "Model credentials",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "consent": {
+      "clientId": "example-client",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
+      "grantedScopes": [
+        "profile.read"
+      ],
+      "issuer": "https://accounts.example.com",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "ownerPrincipalId": "user-docs-admin",
+      "requestedScopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 2
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+    "name": "Example account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
-      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "id": "cs_123e4567-e89b-42d3-a456-426614174001",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "oauth2-refresh-token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

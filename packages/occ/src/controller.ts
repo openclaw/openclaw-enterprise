@@ -1,9 +1,10 @@
+import type { LegacyCredentialSourceMetadata } from "./credential-source-metadata.ts";
+import { ScopeViolationError } from "./errors.ts";
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
   createControllerComposition,
   type ControllerComposition,
   type ControllerOptions,
-  type PENDING_CONNECTION,
   type ReconciliationOperation,
 } from "./controller-composition.ts";
 import { type NamespaceLifecycleEvidence } from "./namespace-lifecycle.ts";
@@ -17,7 +18,8 @@ import {
 import {
   type CompleteNamespaceConnectionInput,
   type StartNamespaceConnectionInput,
-} from "./saved-oauth-connections.ts";
+  type OAuthApproval,
+} from "./oauth-consent.ts";
 import {
   type CreateIAMAccessBindingInput,
   type CreateIAMRoleInput,
@@ -81,8 +83,8 @@ import type {
   AccessBinding,
   AgentChatCompletionsResolution,
   Configuration,
-  SavedConnection,
-  OAuthRefreshTokenRegistration,
+  OAuthCredentialSource,
+  CredentialRefreshStatus,
   OAuthAccountRef,
   OAuthConnectionClient,
   OAuthClient,
@@ -137,6 +139,7 @@ import { type HarnessResolver } from "./agent-harness-topology.ts";
 import type { RuntimeLogPage, RuntimeLogQuery } from "./runtime-logs/index.ts";
 import {
   type CreateManagedCredentialSourceInput,
+  type ManagedCredentialSources,
   type UpdateManagedCredentialSourceInput,
 } from "./managed-credential-sources.ts";
 
@@ -633,7 +636,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
-    return this.composition.credentials.savedConnections.listUsableConnectionTemplates(
+    return this.composition.credentials.oauthConsent.listUsableConnectionTemplates(
       principalId,
       namespaceId,
     );
@@ -642,84 +645,67 @@ export class OpenClawController {
   async startNamespaceConnection(
     principalId: string,
     input: StartNamespaceConnectionInput,
-    audit?: (credentialSourceId: string) => AuditEvent,
-  ): Promise<{
-    readonly credentialSourceId: string;
-    readonly authorizationUrl: string;
-    readonly expiresAt: string;
-  }> {
-    return this.composition.credentials.savedConnections.startNamespaceConnection(
+    audit?: () => AuditEvent,
+  ): Promise<{ readonly authorizationUrl: string; readonly expiresAt: string }> {
+    return this.composition.credentials.oauthConsent.startNamespaceConnection(
       principalId,
       input,
       audit,
     );
   }
-
   async expireAuthenticationStates(limit: number): Promise<void> {
-    return this.composition.credentials.savedConnections.expireAuthenticationStates(limit);
+    return this.composition.credentials.oauthConsent.expireAuthenticationStates(limit);
   }
-
   async completeNamespaceConnection(
     principalId: string,
     input: CompleteNamespaceConnectionInput,
-    audit?: (connection: Readonly<SavedConnection>) => AuditEvent,
+    audit?: (source: Readonly<OAuthCredentialSource>) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
-  ): Promise<Readonly<SavedConnection>> {
-    return this.composition.credentials.savedConnections.completeNamespaceConnection(
+  ): Promise<Readonly<OAuthCredentialSource>> {
+    return this.composition.credentials.oauthConsent.completeNamespaceConnection(
       principalId,
       input,
       audit,
       holdSession,
     );
   }
-
-  async listNamespaceConnections(
-    principalId: string,
-    namespaceId: string,
-  ): Promise<readonly Readonly<SavedConnection>[]> {
-    return this.composition.credentials.savedConnections.listNamespaceConnections(
-      principalId,
-      namespaceId,
-    );
-  }
-
-  async disconnectNamespaceConnection(
-    principalId: string,
+  async finishConnectionRevocation(
     namespaceId: string,
     sourceId: string,
-    audit?: AuditEvent,
-  ): Promise<void> {
-    return this.composition.credentials.savedConnections.disconnectNamespaceConnection(
-      principalId,
-      namespaceId,
-      sourceId,
-      audit,
-    );
-  }
-
-  async finishConnectionRevocation(namespaceId: string, sourceId: string): Promise<void> {
-    return this.composition.credentials.savedConnections.finishConnectionRevocation(
+  ): ReturnType<ManagedCredentialSources["finishOAuthRevocation"]> {
+    return this.composition.credentials.managedCredentialSources.finishOAuthRevocation(
       namespaceId,
       sourceId,
     );
   }
-
-  /** Used by the installed Token Service to authenticate the original client on each renewal. */
   async resolveConnectionClient(
     reference: OAuthAccountRef,
-    approval?: OAuthRefreshTokenRegistration["approval"],
+    approval?: OAuthApproval,
   ): Promise<OAuthConnectionClient> {
-    return this.composition.credentials.savedConnections.resolveConnectionClient(
-      reference,
-      approval,
-    );
+    return this.composition.credentials.oauthConsent.resolveConnectionClient(reference, approval);
   }
-
-  maintainConnectionToken(namespaceId: string, sourceId: string) {
-    return this.composition.credentials.savedConnections.maintainConnectionToken(
-      namespaceId,
-      sourceId,
+  async maintainConnectionToken(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<CredentialRefreshStatus> {
+    const source = await this.composition.transactions.read((state) =>
+      state.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
+    if (source?.ownerCapability !== "token_service" || source.type !== "oauth2-refresh-token") {
+      throw new ScopeViolationError("The OAuth Source is unavailable.");
+    }
+    const driver = this.composition.credentials.managedCredentialSources.ownedTokenServiceDriver(
+      source.tokenServiceInstanceId,
+    );
+    const signal = AbortSignal.timeout(30_000);
+    const operation = await driver.forceRefresh(
+      {
+        sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
+        tokenServiceInstanceId: source.tokenServiceInstanceId,
+      },
+      signal,
+    );
+    return driver.getRefreshStatus(operation, signal);
   }
 
   async listConnectionTemplates(
@@ -1182,9 +1168,9 @@ export class OpenClawController {
   async createCredentialSource(
     principalId: string,
     input: CreateCredentialSourceInput,
-    audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
-    registrationAudit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
-  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+    audit?: (source: Readonly<LegacyCredentialSourceMetadata>) => AuditEvent,
+    registrationAudit?: (source: Readonly<LegacyCredentialSourceMetadata>) => AuditEvent,
+  ): Promise<Readonly<LegacyCredentialSourceMetadata>> {
     return this.composition.credentials.credentialSourceOperations.createCredentialSource(
       principalId,
       input,
@@ -1197,7 +1183,7 @@ export class OpenClawController {
     principalId: string,
     input: UpdateCredentialSourceInput,
     failureAudit?: (reasonCode: string) => AuditEvent,
-  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+  ): Promise<Readonly<LegacyCredentialSourceMetadata>> {
     return this.composition.credentials.credentialSourceOperations.updateCredentialSource(
       principalId,
       input,
@@ -1214,8 +1200,8 @@ export class OpenClawController {
     return this.composition.credentials.credentialSourceOperations.rotateCredentialSource(
       principalId,
       input,
-      failureAudit,
       audit,
+      failureAudit,
     );
   }
 
@@ -1261,14 +1247,12 @@ export class OpenClawController {
       removedAccessBindings: readonly RemovedAccessBinding[],
       phase?: "retirement_started",
     ) => AuditEvent,
-    connection?: typeof PENDING_CONNECTION,
   ): Promise<void> {
     return this.composition.credentials.managedCredentialSources.deleteCredentialSource(
       principalId,
       namespaceId,
       credentialSourceId,
       audit,
-      connection,
     );
   }
 

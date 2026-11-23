@@ -1,3 +1,4 @@
+import { driverOperation } from "./driver-operation.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
   type RepositoryNetworkPolicyCeiling,
@@ -9,10 +10,7 @@ import {
 } from "./namespace-lifecycle.ts";
 import { createNamespaceOperations, type NamespaceOperations } from "./namespace-operations.ts";
 import { createConnectionAdministration } from "./connection-administration.ts";
-import {
-  CONNECTION_OPERATION_TIMEOUT_MS,
-  createSavedConnections,
-} from "./saved-oauth-connections.ts";
+import { CONNECTION_OPERATION_TIMEOUT_MS, createOAuthConsent } from "./oauth-consent.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import {
   createIAMPolicyOperations,
@@ -105,7 +103,6 @@ import {
   DependencyUnavailableError,
   ConfigurationHarnessError,
   configurationSettingMessage,
-  NotImplementedError,
   ResourceStateConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -228,9 +225,6 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
   "occ/kubernetes",
   "kubernetes-local",
 ]);
-/** Only a claimed server-side consent attempt may operate on its still-pending source. */
-const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
-export type { PENDING_CONNECTION };
 /** Public methods that workflows call after the controller has been constructed. */
 interface ControllerDispatch
   extends
@@ -239,14 +233,14 @@ interface ControllerDispatch
     Pick<NamespaceOperations, "getNamespace">,
     Pick<ReturnType<typeof createAgentQueries>, "getRevision">,
     Pick<ReturnType<typeof createSandboxPolicyOperations>, "getAgentSandboxPolicy">,
-    Pick<
-      ReturnType<typeof createSavedConnections>,
-      "finishConnectionRevocation" | "maintainConnectionToken"
-    >,
     Pick<ReturnType<typeof createConnectionAdministration>, "withOAuthClientSecret">,
     Pick<CredentialSourceOperations, "createCredentialSource">,
-    Pick<ManagedCredentialSources<typeof PENDING_CONNECTION>, "deleteCredentialSource">,
+    Pick<ManagedCredentialSources, "deleteCredentialSource">,
     Pick<ReturnType<typeof createConfigurationOperations>, "updateConfiguration"> {
+  maintainConnectionToken(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<import("@openclaw-enterprise/contracts").CredentialRefreshStatus>;
   getAgent(principalId: string, namespaceId: string, agentId: string): Promise<Readonly<Agent>>;
   getReadableActiveAgentRevision(
     principalId: string,
@@ -303,18 +297,7 @@ function createPreparedTokenAccess(preparedTokens: TokenService | undefined) {
     }
     return lifecycle;
   }
-  function connectionTokenIssuer() {
-    const issuer = preparedTokens?.issuer("oauth_refresh_token");
-    if (!issuer) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "This Installation has no Token Service for browser connections.",
-      );
-    }
-    return issuer;
-  }
-
-  return { tokenService, preparedIssuer, connectionTokenIssuer };
+  return { tokenService, preparedIssuer };
 }
 
 function createComputeConfigurationPolicy(
@@ -508,7 +491,6 @@ function createCredentialServices({
     | "deleteCredentialSource"
     | "withOAuthClientSecret"
     | "maintainConnectionToken"
-    | "finishConnectionRevocation"
   >;
   preparedTokens: TokenService | undefined;
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
@@ -516,8 +498,7 @@ function createCredentialServices({
   canUseNativeAuthorization: boolean;
 }) {
   const nextSourceId = () => resourceValues.nextIdentifier("credential_source");
-  const { tokenService, preparedIssuer, connectionTokenIssuer } =
-    createPreparedTokenAccess(preparedTokens);
+  const { tokenService, preparedIssuer } = createPreparedTokenAccess(preparedTokens);
   const credentialSourceDrivers = createCredentialSourceDrivers({
     selectedDriver: (capability) => publicController.selectedDriver(capability),
     hasSelection: (capability) => drivers.hasSelection(capability),
@@ -549,11 +530,26 @@ function createCredentialServices({
     timestamp: resourceValues.timestamp,
     tokenService,
     preparedIssuer,
-    readConnectionStatus: (namespaceId, sourceId) =>
-      connectionTokenIssuer().status(
-        { kind: "oauth_refresh_token", namespaceId, sourceId },
-        AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
-      ),
+    readConnectionStatus: async (namespaceId, sourceId) => {
+      const source = await transactions.read((state) =>
+        state.credentialSources.findCredentialSource(namespaceId, sourceId),
+      );
+      if (source?.ownerCapability !== "token_service" || source.type !== "oauth2-refresh-token") {
+        throw new ScopeViolationError("The OAuth Source is unavailable.");
+      }
+      return driverOperation(
+        () =>
+          publicController.selectedDriver("token_service").getRefreshStatus(
+            {
+              sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
+              tokenServiceInstanceId: source.tokenServiceInstanceId,
+              operationId: crypto.randomUUID(),
+            },
+            AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+          ),
+        "TokenService",
+      );
+    },
     maintainConnectionToken: (namespaceId, sourceId) =>
       publicController.maintainConnectionToken(namespaceId, sourceId),
   });
@@ -572,38 +568,29 @@ function createCredentialServices({
     createSource: (principalId, input, audit, registrationAudit) =>
       publicController.createCredentialSource(principalId, input, audit, registrationAudit),
   });
-  const managedCredentialSources: ManagedCredentialSources<typeof PENDING_CONNECTION> =
-    createManagedCredentialSources(
-      {
-        transactions,
-        authority,
-        sourceDrivers: credentialSourceDrivers,
-        iamPolicy,
-        selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
-        retireDelivery: async (namespace, source, signal) => {
-          if (!drivers.hasSelection("credential_proxy_delivery")) {
-            return;
-          }
-          if (!credentialSourceDelivery) {
-            throw new DependencyUnavailableError(
-              "The selected credential delivery Proxy cannot retire this Source.",
-            );
-          }
-          await credentialSourceDelivery(
-            publicController.selectedDriver("credential_proxy_delivery"),
-            namespace,
-            source,
-            signal,
-          );
-        },
-        clock: resourceValues.now,
-        timestamp: resourceValues.timestamp,
-        tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
-        connectionTokenIssuer,
-        preparedIssuer,
-      },
-      PENDING_CONNECTION,
-    );
+  const managedCredentialSources: ManagedCredentialSources = createManagedCredentialSources({
+    transactions,
+    authority,
+    iamPolicy,
+    selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+    retireDelivery: async (namespace, source, signal) => {
+      if (!drivers.hasSelection("credential_proxy_delivery")) {
+        return;
+      }
+      if (!credentialSourceDelivery) {
+        throw new DependencyUnavailableError(
+          "The selected credential delivery Proxy cannot retire this Source.",
+        );
+      }
+      await credentialSourceDelivery(
+        publicController.selectedDriver("credential_proxy_delivery"),
+        namespace,
+        source,
+        signal,
+      );
+    },
+    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+  });
   const agentCredentialAccess: AgentCredentialAccess = createAgentCredentialAccess({
     authority,
     iamPolicy,
@@ -625,30 +612,14 @@ function createCredentialServices({
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
   });
-  const savedConnections = createSavedConnections({
+  const oauthConsent = createOAuthConsent({
     read: transactions.read,
     transact: transactions.transact,
     authorize: authority.authorize,
-    canRead: authority.canRead,
-    holdAuthority: authority.holdAuthority,
     iamPolicyDriver: iamPolicy.iamPolicyDriver,
-    connectionTokenIssuer,
-    tokenService,
-    secretDriver,
+    selectedTokenServiceDriver: () => managedCredentialSources.ownedTokenServiceDriver(),
+    currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
     withOAuthClientSecret: (client, use) => publicController.withOAuthClientSecret(client, use),
-    retireCredentialSourceMaterial: (namespace, source) =>
-      managedCredentialSources.retireCredentialSourceMaterial(namespace, source, undefined),
-    discardPendingConnection: (principalId, namespaceId, sourceId) =>
-      publicController.deleteCredentialSource(
-        principalId,
-        namespaceId,
-        sourceId,
-        undefined,
-        PENDING_CONNECTION,
-      ),
-    finishConnectionRevocation: (namespaceId, sourceId) =>
-      publicController.finishConnectionRevocation(namespaceId, sourceId),
-    nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
   });
   function createProxyAuthority(exchangeOwner: EgressExchangeOwner) {
@@ -690,7 +661,7 @@ function createCredentialServices({
     deviceAuthorization,
     egressAdmission,
     managedCredentialSources,
-    savedConnections,
+    oauthConsent,
   };
 }
 

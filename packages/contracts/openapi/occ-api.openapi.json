@@ -826,166 +826,280 @@
         "additionalProperties": false,
         "properties": {
           "data": {
-            "additionalProperties": false,
-            "properties": {
-              "config": {
-                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                "description": "Non-secret source configuration keyed by catalog field name.",
-                "maxProperties": 32,
-                "type": "object"
-              },
-              "connectionTemplateId": {
-                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "egress": {
+            "anyOf": [
+              {
                 "additionalProperties": false,
-                "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
                 "properties": {
-                  "adoption": {
-                    "anyOf": [
-                      { "const": "live", "type": "string" },
-                      { "const": "prepared", "type": "string" },
-                      { "const": "credential_free", "type": "string" }
-                    ]
+                  "config": {
+                    "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                    "description": "Non-secret source configuration keyed by catalog field name.",
+                    "maxProperties": 32,
+                    "type": "object"
                   },
-                  "retention": { "const": "none", "type": "string" }
-                },
-                "required": ["adoption", "retention"],
-                "type": "object"
-              },
-              "id": {
-                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "name": {
-                "maxLength": 200,
-                "minLength": 1,
-                "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                "type": "string"
-              },
-              "namespaceId": {
-                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "ownerCapability": {
-                "anyOf": [
-                  { "const": "credential_gateway", "type": "string" },
-                  { "const": "credential_proxy", "type": "string" },
-                  { "const": "token_service", "type": "string" }
-                ],
-                "description": "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them."
-              },
-              "ref": {
-                "additionalProperties": false,
-                "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                "properties": {
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "createdAt": { "format": "date-time", "type": "string" },
                   "id": {
                     "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
-                  "kind": { "const": "credential_source", "type": "string" },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
                   "namespaceId": {
                     "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
-                  }
-                },
-                "required": ["kind", "namespaceId", "id"],
-                "type": "object"
-              },
-              "secrets": {
-                "additionalProperties": {
-                  "additionalProperties": false,
-                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                  "properties": {
-                    "id": {
-                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                      "type": "string"
-                    },
-                    "kind": { "const": "secret", "type": "string" },
-                    "namespaceId": {
-                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                      "type": "string"
-                    }
                   },
-                  "required": ["kind", "namespaceId", "id"],
-                  "type": "object"
-                },
-                "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                "maxProperties": 16,
-                "type": "object"
-              },
-              "state": {
-                "anyOf": [
-                  { "const": "registering", "type": "string" },
-                  { "const": "ready", "type": "string" },
-                  { "const": "deleting", "type": "string" }
-                ]
-              },
-              "status": {
-                "additionalProperties": false,
-                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                "properties": {
-                  "reason": { "maxLength": 512, "type": "string" },
-                  "refresh": {
+                  "ref": {
                     "additionalProperties": false,
-                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                     "properties": {
-                      "expiresAt": { "format": "date-time", "type": "string" },
-                      "failureCode": { "maxLength": 128, "type": "string" },
-                      "lastRefreshAt": { "format": "date-time", "type": "string" },
-                      "nextRefreshAt": { "format": "date-time", "type": "string" },
-                      "recoveryAction": {
-                        "anyOf": [
-                          { "const": "retry", "type": "string" },
-                          { "const": "reauthorize", "type": "string" },
-                          { "const": "fix_configuration", "type": "string" },
-                          { "const": "investigate", "type": "string" }
-                        ]
+                      "id": {
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "kind": { "const": "credential_source", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "namespaceId", "id"],
+                    "type": "object"
+                  },
+                  "state": {
+                    "anyOf": [
+                      { "const": "ready", "type": "string" },
+                      { "const": "deleting", "type": "string" }
+                    ]
+                  },
+                  "status": {
+                    "additionalProperties": false,
+                    "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                    "properties": {
+                      "reason": { "maxLength": 512, "type": "string" },
+                      "refresh": {
+                        "additionalProperties": false,
+                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                        "properties": {
+                          "expiresAt": { "format": "date-time", "type": "string" },
+                          "failureCode": { "maxLength": 128, "type": "string" },
+                          "lastRefreshAt": { "format": "date-time", "type": "string" },
+                          "nextRefreshAt": { "format": "date-time", "type": "string" },
+                          "recoveryAction": {
+                            "anyOf": [
+                              { "const": "retry", "type": "string" },
+                              { "const": "reauthorize", "type": "string" },
+                              { "const": "fix_configuration", "type": "string" },
+                              { "const": "investigate", "type": "string" }
+                            ]
+                          },
+                          "state": {
+                            "anyOf": [
+                              { "const": "pending", "type": "string" },
+                              { "const": "ready", "type": "string" },
+                              { "const": "failed", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": ["state"],
+                        "type": "object"
                       },
                       "state": {
                         "anyOf": [
-                          { "const": "pending", "type": "string" },
                           { "const": "ready", "type": "string" },
-                          { "const": "failed", "type": "string" }
+                          { "const": "pending", "type": "string" },
+                          { "const": "failed", "type": "string" },
+                          { "const": "absent", "type": "string" }
                         ]
                       }
                     },
                     "required": ["state"],
                     "type": "object"
                   },
+                  "type": { "const": "static", "type": "string" }
+                },
+                "required": [
+                  "id",
+                  "namespaceId",
+                  "name",
+                  "state",
+                  "createdAt",
+                  "ref",
+                  "type",
+                  "config"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "consent": {
+                    "additionalProperties": false,
+                    "description": "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
+                    "properties": {
+                      "clientId": { "type": "string" },
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "type": "string" },
+                            "path": { "type": "string" },
+                            "port": { "type": "integer" }
+                          },
+                          "required": ["host", "port", "path"],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "grantedScopes": {
+                        "items": {
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "issuer": { "type": "string" },
+                      "mcpServerUrl": { "type": "string" },
+                      "oauthClientId": { "type": "string" },
+                      "ownerPrincipalId": { "type": "string" },
+                      "requestedScopes": {
+                        "items": {
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "resource": { "type": "string" },
+                      "revocationRequestedBy": { "type": "string" },
+                      "revokedAt": { "format": "date-time", "type": "string" },
+                      "tokenUrl": { "type": "string" },
+                      "version": { "minimum": 1, "type": "integer" }
+                    },
+                    "required": [
+                      "version",
+                      "oauthClientId",
+                      "ownerPrincipalId",
+                      "requestedScopes",
+                      "grantedScopes",
+                      "issuer",
+                      "tokenUrl",
+                      "clientId",
+                      "destinations"
+                    ],
+                    "type": "object"
+                  },
+                  "createdAt": { "format": "date-time", "type": "string" },
+                  "id": {
+                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
+                  "namespaceId": {
+                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "ref": {
+                    "additionalProperties": false,
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                    "properties": {
+                      "id": {
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "kind": { "const": "credential_source", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "namespaceId", "id"],
+                    "type": "object"
+                  },
                   "state": {
                     "anyOf": [
                       { "const": "ready", "type": "string" },
-                      { "const": "pending", "type": "string" },
-                      { "const": "failed", "type": "string" },
-                      { "const": "absent", "type": "string" }
+                      { "const": "deleting", "type": "string" }
                     ]
-                  }
+                  },
+                  "status": {
+                    "additionalProperties": false,
+                    "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                    "properties": {
+                      "reason": { "maxLength": 512, "type": "string" },
+                      "refresh": {
+                        "additionalProperties": false,
+                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                        "properties": {
+                          "expiresAt": { "format": "date-time", "type": "string" },
+                          "failureCode": { "maxLength": 128, "type": "string" },
+                          "lastRefreshAt": { "format": "date-time", "type": "string" },
+                          "nextRefreshAt": { "format": "date-time", "type": "string" },
+                          "recoveryAction": {
+                            "anyOf": [
+                              { "const": "retry", "type": "string" },
+                              { "const": "reauthorize", "type": "string" },
+                              { "const": "fix_configuration", "type": "string" },
+                              { "const": "investigate", "type": "string" }
+                            ]
+                          },
+                          "state": {
+                            "anyOf": [
+                              { "const": "pending", "type": "string" },
+                              { "const": "ready", "type": "string" },
+                              { "const": "failed", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": ["state"],
+                        "type": "object"
+                      },
+                      "state": {
+                        "anyOf": [
+                          { "const": "ready", "type": "string" },
+                          { "const": "pending", "type": "string" },
+                          { "const": "failed", "type": "string" },
+                          { "const": "absent", "type": "string" }
+                        ]
+                      }
+                    },
+                    "required": ["state"],
+                    "type": "object"
+                  },
+                  "type": { "const": "oauth2-refresh-token", "type": "string" }
                 },
-                "required": ["state"],
+                "required": [
+                  "id",
+                  "namespaceId",
+                  "name",
+                  "state",
+                  "createdAt",
+                  "ref",
+                  "type",
+                  "connectionTemplateId",
+                  "consent"
+                ],
                 "type": "object"
-              },
-              "type": {
-                "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                "maxLength": 64,
-                "minLength": 1,
-                "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                "type": "string"
               }
-            },
-            "required": [
-              "id",
-              "namespaceId",
-              "name",
-              "type",
-              "ownerCapability",
-              "config",
-              "secrets",
-              "state",
-              "ref"
-            ],
-            "type": "object"
+            ]
           },
           "meta": {
             "additionalProperties": false,
@@ -36925,211 +37039,6 @@
       }
     },
     "/namespaces/{namespaceId}/connections": {
-      "get": {
-        "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.",
-        "operationId": "listNamespaceConnections",
-        "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "namespaceId",
-            "required": true,
-            "schema": {
-              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "empty": {
-                    "summary": "No readable resources",
-                    "value": {
-                      "data": [],
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  },
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": [
-                        {
-                          "clientId": "example-client",
-                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                          "connectionTemplateVersion": 2,
-                          "createdAt": "2026-10-01T12:00:00.000Z",
-                          "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
-                          "destinations": [
-                            { "host": "api.example.com", "path": "/profile", "port": 443 }
-                          ],
-                          "grantedScopes": ["profile.read"],
-                          "issuer": "https://accounts.example.com",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                          "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "ownerPrincipalId": "user-docs-admin",
-                          "requestedScopes": ["profile.read"],
-                          "tokenUrl": "https://accounts.example.com/token"
-                        }
-                      ],
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "clientId": { "type": "string" },
-                          "connectionTemplateId": {
-                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                          "createdAt": { "type": "string" },
-                          "credentialSourceId": {
-                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "destinations": {
-                            "description": "Effective credential delivery destinations; empty when the current template is unavailable or incompatible.",
-                            "items": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "host": { "type": "string" },
-                                "path": { "type": "string" },
-                                "port": { "type": "integer" }
-                              },
-                              "required": ["host", "port", "path"],
-                              "type": "object"
-                            },
-                            "type": "array"
-                          },
-                          "grantedScopes": { "items": { "type": "string" }, "type": "array" },
-                          "issuer": { "type": "string" },
-                          "mcpServerUrl": { "type": "string" },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "oauthClientId": { "type": "string" },
-                          "ownerPrincipalId": { "type": "string" },
-                          "requestedScopes": { "items": { "type": "string" }, "type": "array" },
-                          "resource": { "type": "string" },
-                          "tokenUrl": { "type": "string" }
-                        },
-                        "required": [
-                          "namespaceId",
-                          "credentialSourceId",
-                          "ownerPrincipalId",
-                          "tokenUrl",
-                          "oauthClientId",
-                          "clientId",
-                          "issuer",
-                          "destinations",
-                          "requestedScopes",
-                          "grantedScopes",
-                          "connectionTemplateId",
-                          "connectionTemplateVersion",
-                          "createdAt"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "requestId": {
-                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "List completed connections the caller can read in this Namespace",
-        "tags": ["Connections"],
-        "x-openclaw-permissions": [
-          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
-          { "action": "read", "resourceKind": "credential_source", "scope": "each_returned" }
-        ]
-      },
       "post": {
         "description": "Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startNamespaceConnection",
@@ -37194,7 +37103,6 @@
                     "value": {
                       "data": {
                         "authorizationUrl": "https://accounts.example.com/authorize?state=example-state",
-                        "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
                         "expiresAt": "2026-10-01T12:00:00.000Z"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -37208,13 +37116,9 @@
                       "additionalProperties": false,
                       "properties": {
                         "authorizationUrl": { "type": "string" },
-                        "credentialSourceId": {
-                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
                         "expiresAt": { "type": "string" }
                       },
-                      "required": ["credentialSourceId", "authorizationUrl", "expiresAt"],
+                      "required": ["authorizationUrl", "expiresAt"],
                       "type": "object"
                     },
                     "meta": {
@@ -37338,122 +37242,6 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/connections/{credentialSourceId}": {
-      "delete": {
-        "description": "Requires delete permission on this CredentialSource unless the caller owns the saved connection.",
-        "operationId": "disconnectNamespaceConnection",
-        "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "namespaceId",
-            "required": true,
-            "schema": {
-              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          },
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "cs_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "credentialSourceId",
-            "required": true,
-            "schema": {
-              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": { "description": "No Content" },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested operation conflicts with the current resource state."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "Disconnect a saved account and retire its OAuth grant",
-        "tags": ["Connections"],
-        "x-openclaw-permissions": [
-          {
-            "action": "delete",
-            "condition": "unless_consent_owner",
-            "resourceKind": "credential_source",
-            "scope": "requested"
-          }
-        ]
-      }
-    },
     "/namespaces/{namespaceId}/credential-sources": {
       "get": {
         "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.",
@@ -37492,25 +37280,45 @@
                     "value": {
                       "data": [
                         {
-                          "config": {},
+                          "config": { "provider_preset": "openai" },
+                          "createdAt": "2026-10-01T12:00:00.000Z",
                           "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "name": "Model credentials",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                          "ownerCapability": "credential_gateway",
                           "ref": {
                             "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                             "kind": "credential_source",
                             "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                           },
-                          "secrets": {
-                            "api_key": {
-                              "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                              "kind": "secret",
-                              "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                            }
+                          "state": "ready",
+                          "type": "static"
+                        },
+                        {
+                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "consent": {
+                            "clientId": "example-client",
+                            "destinations": [
+                              { "host": "api.example.com", "path": "/profile", "port": 443 }
+                            ],
+                            "grantedScopes": ["profile.read"],
+                            "issuer": "https://accounts.example.com",
+                            "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+                            "ownerPrincipalId": "user-docs-admin",
+                            "requestedScopes": ["profile.read"],
+                            "tokenUrl": "https://accounts.example.com/token",
+                            "version": 2
+                          },
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+                          "name": "Example account",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                          "ref": {
+                            "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+                            "kind": "credential_source",
+                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                           },
                           "state": "ready",
-                          "type": "openai"
+                          "type": "oauth2-refresh-token"
                         }
                       ],
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -37522,170 +37330,284 @@
                   "properties": {
                     "data": {
                       "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "config": {
-                            "additionalProperties": {
-                              "maxLength": 2048,
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "description": "Non-secret source configuration keyed by catalog field name.",
-                            "maxProperties": 32,
-                            "type": "object"
-                          },
-                          "connectionTemplateId": {
-                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "egress": {
+                        "anyOf": [
+                          {
                             "additionalProperties": false,
-                            "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
                             "properties": {
-                              "adoption": {
-                                "anyOf": [
-                                  { "const": "live", "type": "string" },
-                                  { "const": "prepared", "type": "string" },
-                                  { "const": "credential_free", "type": "string" }
-                                ]
+                              "config": {
+                                "additionalProperties": {
+                                  "maxLength": 2048,
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "description": "Non-secret source configuration keyed by catalog field name.",
+                                "maxProperties": 32,
+                                "type": "object"
                               },
-                              "retention": { "const": "none", "type": "string" }
-                            },
-                            "required": ["adoption", "retention"],
-                            "type": "object"
-                          },
-                          "id": {
-                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "name": {
-                            "maxLength": 200,
-                            "minLength": 1,
-                            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                            "type": "string"
-                          },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "ownerCapability": {
-                            "anyOf": [
-                              { "const": "credential_gateway", "type": "string" },
-                              { "const": "credential_proxy", "type": "string" },
-                              { "const": "token_service", "type": "string" }
-                            ],
-                            "description": "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them."
-                          },
-                          "ref": {
-                            "additionalProperties": false,
-                            "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                            "properties": {
+                              "connectionTemplateId": {
+                                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "createdAt": { "format": "date-time", "type": "string" },
                               "id": {
                                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
-                              "kind": { "const": "credential_source", "type": "string" },
+                              "name": {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                                "type": "string"
+                              },
                               "namespaceId": {
                                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
-                              }
-                            },
-                            "required": ["kind", "namespaceId", "id"],
-                            "type": "object"
-                          },
-                          "secrets": {
-                            "additionalProperties": {
-                              "additionalProperties": false,
-                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                              "properties": {
-                                "id": {
-                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
-                                },
-                                "kind": { "const": "secret", "type": "string" },
-                                "namespaceId": {
-                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
-                                }
                               },
-                              "required": ["kind", "namespaceId", "id"],
-                              "type": "object"
-                            },
-                            "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                            "maxProperties": 16,
-                            "type": "object"
-                          },
-                          "state": {
-                            "anyOf": [
-                              { "const": "registering", "type": "string" },
-                              { "const": "ready", "type": "string" },
-                              { "const": "deleting", "type": "string" }
-                            ]
-                          },
-                          "status": {
-                            "additionalProperties": false,
-                            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                            "properties": {
-                              "reason": { "maxLength": 512, "type": "string" },
-                              "refresh": {
+                              "ref": {
                                 "additionalProperties": false,
-                                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                                "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                                 "properties": {
-                                  "expiresAt": { "format": "date-time", "type": "string" },
-                                  "failureCode": { "maxLength": 128, "type": "string" },
-                                  "lastRefreshAt": { "format": "date-time", "type": "string" },
-                                  "nextRefreshAt": { "format": "date-time", "type": "string" },
-                                  "recoveryAction": {
-                                    "anyOf": [
-                                      { "const": "retry", "type": "string" },
-                                      { "const": "reauthorize", "type": "string" },
-                                      { "const": "fix_configuration", "type": "string" },
-                                      { "const": "investigate", "type": "string" }
-                                    ]
+                                  "id": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "kind": { "const": "credential_source", "type": "string" },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["kind", "namespaceId", "id"],
+                                "type": "object"
+                              },
+                              "state": {
+                                "anyOf": [
+                                  { "const": "ready", "type": "string" },
+                                  { "const": "deleting", "type": "string" }
+                                ]
+                              },
+                              "status": {
+                                "additionalProperties": false,
+                                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                                "properties": {
+                                  "reason": { "maxLength": 512, "type": "string" },
+                                  "refresh": {
+                                    "additionalProperties": false,
+                                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                                    "properties": {
+                                      "expiresAt": { "format": "date-time", "type": "string" },
+                                      "failureCode": { "maxLength": 128, "type": "string" },
+                                      "lastRefreshAt": { "format": "date-time", "type": "string" },
+                                      "nextRefreshAt": { "format": "date-time", "type": "string" },
+                                      "recoveryAction": {
+                                        "anyOf": [
+                                          { "const": "retry", "type": "string" },
+                                          { "const": "reauthorize", "type": "string" },
+                                          { "const": "fix_configuration", "type": "string" },
+                                          { "const": "investigate", "type": "string" }
+                                        ]
+                                      },
+                                      "state": {
+                                        "anyOf": [
+                                          { "const": "pending", "type": "string" },
+                                          { "const": "ready", "type": "string" },
+                                          { "const": "failed", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["state"],
+                                    "type": "object"
                                   },
                                   "state": {
                                     "anyOf": [
-                                      { "const": "pending", "type": "string" },
                                       { "const": "ready", "type": "string" },
-                                      { "const": "failed", "type": "string" }
+                                      { "const": "pending", "type": "string" },
+                                      { "const": "failed", "type": "string" },
+                                      { "const": "absent", "type": "string" }
                                     ]
                                   }
                                 },
                                 "required": ["state"],
                                 "type": "object"
                               },
+                              "type": { "const": "static", "type": "string" }
+                            },
+                            "required": [
+                              "id",
+                              "namespaceId",
+                              "name",
+                              "state",
+                              "createdAt",
+                              "ref",
+                              "type",
+                              "config"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "connectionTemplateId": {
+                                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "consent": {
+                                "additionalProperties": false,
+                                "description": "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
+                                "properties": {
+                                  "clientId": { "type": "string" },
+                                  "destinations": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "host": { "type": "string" },
+                                        "path": { "type": "string" },
+                                        "port": { "type": "integer" }
+                                      },
+                                      "required": ["host", "port", "path"],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "grantedScopes": {
+                                    "items": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "issuer": { "type": "string" },
+                                  "mcpServerUrl": { "type": "string" },
+                                  "oauthClientId": { "type": "string" },
+                                  "ownerPrincipalId": { "type": "string" },
+                                  "requestedScopes": {
+                                    "items": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "resource": { "type": "string" },
+                                  "revocationRequestedBy": { "type": "string" },
+                                  "revokedAt": { "format": "date-time", "type": "string" },
+                                  "tokenUrl": { "type": "string" },
+                                  "version": { "minimum": 1, "type": "integer" }
+                                },
+                                "required": [
+                                  "version",
+                                  "oauthClientId",
+                                  "ownerPrincipalId",
+                                  "requestedScopes",
+                                  "grantedScopes",
+                                  "issuer",
+                                  "tokenUrl",
+                                  "clientId",
+                                  "destinations"
+                                ],
+                                "type": "object"
+                              },
+                              "createdAt": { "format": "date-time", "type": "string" },
+                              "id": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "name": {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                                "type": "string"
+                              },
+                              "namespaceId": {
+                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "ref": {
+                                "additionalProperties": false,
+                                "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                "properties": {
+                                  "id": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "kind": { "const": "credential_source", "type": "string" },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["kind", "namespaceId", "id"],
+                                "type": "object"
+                              },
                               "state": {
                                 "anyOf": [
                                   { "const": "ready", "type": "string" },
-                                  { "const": "pending", "type": "string" },
-                                  { "const": "failed", "type": "string" },
-                                  { "const": "absent", "type": "string" }
+                                  { "const": "deleting", "type": "string" }
                                 ]
-                              }
+                              },
+                              "status": {
+                                "additionalProperties": false,
+                                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                                "properties": {
+                                  "reason": { "maxLength": 512, "type": "string" },
+                                  "refresh": {
+                                    "additionalProperties": false,
+                                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                                    "properties": {
+                                      "expiresAt": { "format": "date-time", "type": "string" },
+                                      "failureCode": { "maxLength": 128, "type": "string" },
+                                      "lastRefreshAt": { "format": "date-time", "type": "string" },
+                                      "nextRefreshAt": { "format": "date-time", "type": "string" },
+                                      "recoveryAction": {
+                                        "anyOf": [
+                                          { "const": "retry", "type": "string" },
+                                          { "const": "reauthorize", "type": "string" },
+                                          { "const": "fix_configuration", "type": "string" },
+                                          { "const": "investigate", "type": "string" }
+                                        ]
+                                      },
+                                      "state": {
+                                        "anyOf": [
+                                          { "const": "pending", "type": "string" },
+                                          { "const": "ready", "type": "string" },
+                                          { "const": "failed", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["state"],
+                                    "type": "object"
+                                  },
+                                  "state": {
+                                    "anyOf": [
+                                      { "const": "ready", "type": "string" },
+                                      { "const": "pending", "type": "string" },
+                                      { "const": "failed", "type": "string" },
+                                      { "const": "absent", "type": "string" }
+                                    ]
+                                  }
+                                },
+                                "required": ["state"],
+                                "type": "object"
+                              },
+                              "type": { "const": "oauth2-refresh-token", "type": "string" }
                             },
-                            "required": ["state"],
+                            "required": [
+                              "id",
+                              "namespaceId",
+                              "name",
+                              "state",
+                              "createdAt",
+                              "ref",
+                              "type",
+                              "connectionTemplateId",
+                              "consent"
+                            ],
                             "type": "object"
-                          },
-                          "type": {
-                            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                            "maxLength": 64,
-                            "minLength": 1,
-                            "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                            "type": "string"
                           }
-                        },
-                        "required": [
-                          "id",
-                          "namespaceId",
-                          "name",
-                          "type",
-                          "ownerCapability",
-                          "config",
-                          "secrets",
-                          "state",
-                          "ref"
-                        ],
-                        "type": "object"
+                        ]
                       },
                       "type": "array"
                     },
@@ -37799,76 +37721,14 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "config": {},
+                    "config": { "provider_preset": "openai" },
                     "name": "Model credentials",
-                    "secrets": {
-                      "api_key": {
-                        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                        "kind": "secret",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                      }
-                    },
-                    "type": "openai"
+                    "secret": { "value": "replace-with-your-authorized-model-key" },
+                    "type": "static"
                   }
                 }
               },
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "config": {
-                        "additionalProperties": {
-                          "maxLength": 2048,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "description": "Non-secret source configuration keyed by catalog field name.",
-                        "maxProperties": 32,
-                        "type": "object"
-                      },
-                      "name": {
-                        "maxLength": 200,
-                        "minLength": 1,
-                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                        "type": "string"
-                      },
-                      "secrets": {
-                        "additionalProperties": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                        "maxProperties": 16,
-                        "type": "object"
-                      },
-                      "type": {
-                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                        "maxLength": 64,
-                        "minLength": 1,
-                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                        "type": "string"
-                      }
-                    },
-                    "required": ["name", "type"],
-                    "type": "object"
-                  },
-                  { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" }
-                ]
-              }
+              "schema": { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" }
             }
           },
           "required": true
@@ -37882,25 +37742,18 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "config": {},
+                        "config": { "provider_preset": "openai" },
+                        "createdAt": "2026-10-01T12:00:00.000Z",
                         "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                         "name": "Model credentials",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "ownerCapability": "credential_gateway",
                         "ref": {
                           "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "kind": "credential_source",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
-                        "secrets": {
-                          "api_key": {
-                            "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                            "kind": "secret",
-                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                          }
-                        },
                         "state": "ready",
-                        "type": "openai"
+                        "type": "static"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -38179,25 +38032,31 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "config": {},
-                        "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Model credentials",
+                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "consent": {
+                          "clientId": "example-client",
+                          "destinations": [
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                          ],
+                          "grantedScopes": ["profile.read"],
+                          "issuer": "https://accounts.example.com",
+                          "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+                          "ownerPrincipalId": "user-docs-admin",
+                          "requestedScopes": ["profile.read"],
+                          "tokenUrl": "https://accounts.example.com/token",
+                          "version": 2
+                        },
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+                        "name": "Example account",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "ownerCapability": "credential_gateway",
                         "ref": {
-                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "id": "cs_123e4567-e89b-42d3-a456-426614174001",
                           "kind": "credential_source",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
-                        "secrets": {
-                          "api_key": {
-                            "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                            "kind": "secret",
-                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                          }
-                        },
                         "state": "ready",
-                        "type": "openai"
+                        "type": "oauth2-refresh-token"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -38312,62 +38171,10 @@
               "examples": {
                 "example": {
                   "summary": "Example request",
-                  "value": {
-                    "adoption": "live",
-                    "secrets": {
-                      "api_key": {
-                        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                        "kind": "secret",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                      }
-                    }
-                  }
+                  "value": { "secret": { "value": "replace-with-your-rotated-model-key" } }
                 }
               },
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
-                    "properties": {
-                      "adoption": {
-                        "const": "live",
-                        "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-                        "type": "string"
-                      },
-                      "authorityScope": {
-                        "const": "execution",
-                        "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-                        "type": "string"
-                      },
-                      "secrets": {
-                        "additionalProperties": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                        "maxProperties": 16,
-                        "type": "object"
-                      }
-                    },
-                    "type": "object"
-                  },
-                  { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
-                ]
-              }
+              "schema": { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
             }
           },
           "required": true
@@ -38381,25 +38188,18 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "config": {},
+                        "config": { "provider_preset": "openai" },
+                        "createdAt": "2026-10-01T12:00:00.000Z",
                         "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                         "name": "Model credentials",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "ownerCapability": "credential_gateway",
                         "ref": {
                           "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "kind": "credential_source",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
-                        "secrets": {
-                          "api_key": {
-                            "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                            "kind": "secret",
-                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                          }
-                        },
                         "state": "ready",
-                        "type": "openai"
+                        "type": "static"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -38554,25 +38354,31 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "config": {},
-                        "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Model credentials",
+                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "consent": {
+                          "clientId": "example-client",
+                          "destinations": [
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                          ],
+                          "grantedScopes": ["profile.read"],
+                          "issuer": "https://accounts.example.com",
+                          "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+                          "ownerPrincipalId": "user-docs-admin",
+                          "requestedScopes": ["profile.read"],
+                          "tokenUrl": "https://accounts.example.com/token",
+                          "version": 2
+                        },
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+                        "name": "Example account",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "ownerCapability": "credential_gateway",
                         "ref": {
-                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "id": "cs_123e4567-e89b-42d3-a456-426614174001",
                           "kind": "credential_source",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
-                        "secrets": {
-                          "api_key": {
-                            "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                            "kind": "secret",
-                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                          }
-                        },
                         "state": "ready",
-                        "type": "openai"
+                        "type": "oauth2-refresh-token"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -38649,7 +38455,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Force the Credential Refresh Driver to mint a new token for a refresh-type source",
+        "summary": "Ask the selected TokenService to refresh an OAuth Source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
