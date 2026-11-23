@@ -1,22 +1,66 @@
-import {
-  cancelledDeviceAuthorization,
-  type DeviceAuthorizationSession,
-} from "../device-authorization.ts";
+import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
+import type {
+  WorkspaceSetupRepository,
+  SandboxPolicyRepository,
+  AgentRepository,
+  AgentRevisionRepository,
+} from "../ports/agents.ts";
+import type {
+  OAuthAuthenticationState,
+  AuthenticationState,
+  OAuthSourceRef,
+  AuthenticationStateRepository,
+} from "../ports/authentication-states.ts";
+import type {
+  ConfigurationOwnership,
+  ConfigurationReadRepository,
+  ConfigurationRepository,
+} from "../ports/configurations.ts";
+import type {
+  ConnectionTemplateReadRepository,
+  ConnectionTemplateRepository,
+} from "../ports/connection-templates.ts";
+import type {
+  StoredCredentialWithdrawal,
+  CredentialSourceReadRepository,
+  CredentialSourceRepository,
+} from "../ports/credential-sources.ts";
+import type { InstallationRepository } from "../ports/installations.ts";
+import type { PersistedNamespace, NamespaceRepository } from "../ports/namespaces.ts";
+import type { PlatformOperation } from "../ports/platform-operations.ts";
+import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type {
+  ConnectionTokenCustody,
+  SavedConnectionRepository,
+} from "../ports/saved-connections.ts";
+import type {
+  SecretReferenceKind,
+  SecretReferenceEntry,
+  SecretReadRepository,
+  SecretRepository,
+} from "../ports/secrets.ts";
+import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
+import type { PlatformReadView } from "../ports/platform-read-view.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import type { PresetReadRepository, PresetRepository } from "../ports/presets.ts";
+import { cancelledDeviceAuthorization } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  isCanonicalRepositoryGrantList,
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
-import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
+import type { StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
   ProtectedEgressSource,
   EgressInstallation,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
 import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
@@ -27,62 +71,43 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
-  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositoryStandingApproval,
-  RepositorySessionReadRepository,
-  RepositorySessionRepository,
 } from "../ports/repository-sessions.ts";
 import { memoryRepositorySessions } from "./memory-repository-sessions.ts";
 import {
   normalizedRepositoryBindings,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   ConnectionTemplate,
-  OAuthConnectionTemplateVersion,
-  ConnectionSession,
+  ConnectionTemplateVersion,
   SavedConnection,
   AccessBinding,
   Agent,
-  AgentRead,
-  AgentRevisionMetadata,
-  AgentRevisionSummaryPage,
-  AgentRevisionRead,
   WorkspaceSetup,
-  AgentDesiredRuntimeState,
-  AgentStatus,
   AgentRevision,
-  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
-  TokenServiceRegistration,
   CredentialSourceSnapshot,
   CredentialWithdrawal,
   SecretReference,
-  HarnessExecutionMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
   HarnessAuthSnapshot,
   Identity,
   Installation,
-  Namespace,
-  NamespaceStatus,
   PluginDesiredState,
   PluginDriverIdentity,
   PluginApprovers,
   Preset,
-  PresetSummary,
-  RepositoryBindingSelection,
-  RepositoryAccess,
   Secret,
   SecretBindings,
   ServiceAccount,
   ServiceAccountCredential,
   ServicePrincipal,
   Role,
-  IAMPolicyReadRepository,
   IAMPolicyRepository,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -118,661 +143,8 @@ import {
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
 } from "../errors.ts";
-import {
-  CREDENTIAL_WITHDRAWAL_TARGET,
-  credentialWithdrawalWorkKey,
-  type ControllerWork,
-  type ControllerWorkAttempt,
-  type ControllerWorkLookup,
-} from "./controller-work.ts";
-import type {
-  AgentProvisioningReadRepository,
-  AgentProvisioningRepository,
-} from "./agent-provisioning.ts";
-
-export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
-
-export interface InstallationReadRepository {
-  findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
-  getInstallation(): Promise<Readonly<Installation> | undefined>;
-}
-
-export interface InstallationRepository extends InstallationReadRepository {
-  createInstallation(installation: Installation): Promise<Readonly<Installation>>;
-  selectTokenServiceInstance(
-    candidate: TokenServiceInstance,
-  ): Promise<Readonly<TokenServiceInstance>>;
-  /**
-   * Holds a human Principal's account until COMMIT so a disable cannot commit first.
-   * False when the account is disabled; true when it is enabled or the Principal has
-   * no human account (its IAM bindings alone decide).
-   */
-  holdPrincipalAccount(principalId: string): Promise<boolean>;
-  /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
-  holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
-  /**
-   * Holds the Installation's IAM configuration lock until COMMIT: shared before a write of
-   * durable authority (an Owner binding, a deploy-time grant, or a Group membership), exclusive
-   * while OCC applies the `iam` configuration, so the two commit one after the other.
-   */
-  holdIAMConfiguration(mode: "shared" | "exclusive"): Promise<void>;
-}
-
-export interface NamespaceReadRepository {
-  findNamespace(namespaceId: string): Promise<Readonly<Namespace> | undefined>;
-  listNamespaces(): Promise<readonly Readonly<Namespace>[]>;
-}
-
-export interface PersistedNamespace extends Namespace {
-  readonly deletedAt?: string;
-}
-
-export interface NamespaceRepository extends NamespaceReadRepository {
-  createNamespace(namespace: Namespace): Promise<Readonly<Namespace>>;
-  lockNamespace(
-    namespaceId: string,
-    options?: { readonly includeDeleted?: boolean },
-  ): Promise<Readonly<PersistedNamespace> | undefined>;
-  hasAgents(namespaceId: string): Promise<boolean>;
-  hasConfigurations(namespaceId: string): Promise<boolean>;
-  /** IDs of the Namespace's Configurations, oldest first; nothing else lists them. */
-  listConfigurationIds(namespaceId: string): Promise<readonly string[]>;
-  hasPresets(namespaceId: string): Promise<boolean>;
-  hasServiceAccounts(namespaceId: string): Promise<boolean>;
-  hasSecrets(namespaceId: string): Promise<boolean>;
-  hasCredentialSources(namespaceId: string): Promise<boolean>;
-  transitionNamespaceStatus(
-    namespaceId: string,
-    expected: NamespaceStatus | readonly NamespaceStatus[],
-    next: NamespaceStatus,
-  ): Promise<Readonly<PersistedNamespace> | undefined>;
-  markNamespaceDeleted(
-    namespaceId: string,
-    deletedAt: string,
-  ): Promise<Readonly<PersistedNamespace> | undefined>;
-}
-
-export interface WorkspaceSetupReadRepository {
-  find(namespaceId: string, agentId: string): Promise<Readonly<WorkspaceSetup> | undefined>;
-}
-
-export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
-  create(setup: WorkspaceSetup): Promise<Readonly<WorkspaceSetup>>;
-  complete(
-    namespaceId: string,
-    agentId: string,
-    id: string,
-  ): Promise<Readonly<WorkspaceSetup> | undefined>;
-  delete(namespaceId: string, agentId: string): Promise<boolean>;
-}
-
-export interface SandboxPolicyReadRepository {
-  find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
-}
-export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
-  save(
-    policy: SandboxPolicy,
-    expectedVersion: number,
-  ): Promise<Readonly<SandboxPolicy> | undefined>;
-}
-
-export interface AgentReadRepository {
-  findPredecessorReplacement(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<PredecessorReplacement> | undefined>;
-  findAgentForBrowsing(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<AgentRead> | undefined>;
-  listAgentsForBrowsing(namespaceId: string): Promise<readonly Readonly<AgentRead>[]>;
-  findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
-  listAgents(namespaceId: string): Promise<readonly Readonly<Agent>[]>;
-  /**
-   * Whether an Agent in the Namespace has exactly this name: the names the unique name
-   * constraint covers, Agents being deleted included. Reads no Agent settings.
-   */
-  hasAgentNamed(namespaceId: string, name: string): Promise<boolean>;
-  /**
-   * The identity of every Agent in every live Namespace, in one read that decodes no saved
-   * settings, for callers that resolve an opaque Agent address before authorizing it.
-   */
-  listAgentReferences(): Promise<readonly Readonly<Pick<Agent, "id" | "namespaceId">>[]>;
-}
-
-export interface AgentRepository extends AgentReadRepository {
-  /** Caller holds the Namespace and Agent locks. Never reopens a committed stop. */
-  recordPredecessorReplacement(
-    namespaceId: string,
-    agentId: string,
-    input: {
-      readonly predecessorRevisionId: string;
-      readonly candidateRevisionId: string;
-      readonly phase: "pre-stop" | "stopping";
-    },
-  ): Promise<Readonly<PredecessorReplacement> | undefined>;
-  createAgent(
-    agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
-  ): Promise<Readonly<Agent>>;
-  setSandboxPolicyEditing(
-    namespaceId: string,
-    agentId: string,
-    enabled: boolean,
-  ): Promise<Readonly<Agent> | undefined>;
-  lockAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
-  updateConfiguration(
-    namespaceId: string,
-    agentId: string,
-    configurationId: string,
-    executionMode?: HarnessExecutionMode,
-    harnessAuth?: HarnessAuthBinding | null,
-    backendId?: string | null,
-    plugins?: PluginDesiredState,
-    repositoryBindings?: readonly RepositoryBindingSelection[],
-    pluginApprovers?: PluginApprovers | null,
-    repositoryAccess?: RepositoryAccess | null,
-    credentialSources?: readonly AgentCredentialSourceBinding[],
-    gatewayManagedMode?: boolean,
-    pluginDriver?: PluginDriverIdentity | null,
-  ): Promise<Readonly<Agent> | undefined>;
-  compareAndSetActiveRevision(
-    namespaceId: string,
-    agentId: string,
-    expectedRevisionId: string | undefined,
-    candidateRevisionId: string,
-  ): Promise<Readonly<Agent> | undefined>;
-  compareAndClearActiveRevision(
-    namespaceId: string,
-    agentId: string,
-    expectedRevisionId: string,
-  ): Promise<Readonly<Agent> | undefined>;
-  transitionAgentDesiredRuntimeState(
-    namespaceId: string,
-    agentId: string,
-    expected: AgentDesiredRuntimeState | readonly AgentDesiredRuntimeState[],
-    next: AgentDesiredRuntimeState,
-  ): Promise<Readonly<Agent> | undefined>;
-  /**
-   * Moves the Agent between lifecycle states, returning undefined when the
-   * Agent is absent or does not currently hold one of `expected`. Deletion is
-   * asynchronous, so the transition is the boundary that stops concurrent
-   * mutations from admitting work the teardown has already enumerated. Callers
-   * that treat an already-deleting Agent as success check its status first,
-   * as `deleteNamespace` does for a Namespace.
-   */
-  transitionAgentStatus(
-    namespaceId: string,
-    agentId: string,
-    expected: AgentStatus | readonly AgentStatus[],
-    next: AgentStatus,
-  ): Promise<Readonly<Agent> | undefined>;
-}
-
-/** One Agent lifecycle fact, superseded when a different predecessor is replaced. */
-export interface PredecessorReplacement {
-  readonly predecessorRevisionId: string;
-  readonly candidateRevisionId: string;
-  readonly phase: "pre-stop" | "stopping";
-  readonly startedAt: string;
-  readonly stoppingAt?: string;
-}
-
-export interface AgentRevisionReadRepository {
-  findFirstDeploymentReceipt(
-    namespaceId: string,
-    agentId: string,
-    digest: string,
-  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
-  findRevisionForBrowsing(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<Readonly<AgentRevisionRead> | undefined>;
-  listRevisionsForBrowsing(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionRead>[]>;
-  findRevision(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<Readonly<AgentRevision> | undefined>;
-  listRevisions(namespaceId: string, agentId: string): Promise<readonly Readonly<AgentRevision>[]>;
-  /**
-   * The Agent's revisions in revision order, as listRevisions returns them but without their
-   * saved settings, so a caller that counts or picks revisions decodes only the one it uses.
-   */
-  listRevisionMetadata(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionMetadata>[]>;
-  /**
-   * One page of the Agent's revision summaries, newest first: at most `limit` revisions numbered
-   * below `before` (from the newest when omitted). It decodes no saved settings, so a list route
-   * costs about the same whatever the admitted snapshots weigh (finding 1323).
-   */
-  pageRevisionSummaries(
-    namespaceId: string,
-    agentId: string,
-    page: { readonly before?: number; readonly limit: number },
-  ): Promise<Readonly<AgentRevisionSummaryPage>>;
-}
-
-export interface AgentRevisionRepository extends AgentRevisionReadRepository {
-  /**
-   * Returns the stored revision. A store with a database clock stamps `createdAt` on that
-   * clock, the one that stamps controller work, so the worker can order a revision against a
-   * stop or deletion without controller clock skew (finding 1195); use the returned value.
-   */
-  createRevision(
-    revision: AgentRevision,
-    firstDeploymentDigest?: string,
-  ): Promise<Readonly<AgentRevision>>;
-}
-
-export interface ConfigurationOwnership {
-  readonly id: string;
-  readonly namespaceId: string;
-  readonly kind: "agent";
-  readonly generation: number;
-  readonly secretBindings?: SecretBindings;
-  readonly createdAt: string;
-}
-
-export interface ConfigurationReadRepository {
-  findConfiguration(
-    namespaceId: string,
-    configurationId: string,
-  ): Promise<Readonly<ConfigurationOwnership> | undefined>;
-}
-
-export interface ConfigurationRepository extends ConfigurationReadRepository {
-  createConfiguration(
-    configuration: ConfigurationOwnership,
-  ): Promise<Readonly<ConfigurationOwnership>>;
-  lockConfiguration(
-    namespaceId: string,
-    configurationId: string,
-  ): Promise<Readonly<ConfigurationOwnership> | undefined>;
-  advanceConfigurationGeneration(
-    namespaceId: string,
-    configurationId: string,
-    expectedGeneration: number,
-    secretBindings?: SecretBindings,
-  ): Promise<Readonly<ConfigurationOwnership> | undefined>;
-  deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
-}
-
-export interface ConnectionTemplateReadRepository {
-  listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
-  findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
-  hasOtherConnectionIssuer(issuer: string): Promise<boolean>;
-  countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
-  listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
-  findOAuthConnectionTemplateVersion(
-    templateId: string,
-    version: number,
-  ): Promise<Readonly<OAuthConnectionTemplateVersion> | undefined>;
-  listOAuthClients(): Promise<readonly Readonly<StoredOAuthClient>[]>;
-  countNamespaceOAuthClients(namespaceId: string): Promise<number>;
-  findOAuthClient(registrationId: string): Promise<Readonly<StoredOAuthClient> | undefined>;
-}
-
-export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
-  lockOAuthClient(id: string): Promise<Readonly<StoredOAuthClient> | undefined>;
-  lockOAuthClientForCleanup(
-    id: string,
-    dueOnly: boolean,
-  ): Promise<Readonly<StoredOAuthClient> | undefined>;
-  setOAuthClientCleanup(id: string, cleanupAfter: string | null): Promise<void>;
-  lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
-  createOAuthClient(
-    registration: StoredOAuthClient,
-    cleanupAfter?: string,
-  ): Promise<Readonly<StoredOAuthClient>>;
-  /** False while a connection template version still names the registration. */
-  deleteOAuthClient(registrationId: string, retainForCleanup?: boolean): Promise<boolean>;
-  /** Inserts the template and its first version together. */
-  createConnectionTemplate(template: ConnectionTemplate): Promise<Readonly<ConnectionTemplate>>;
-  /** Renames, or appends `version` as the next version and makes it current. */
-  updateConnectionTemplate(
-    templateId: string,
-    changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
-  ): Promise<Readonly<ConnectionTemplate> | undefined>;
-  deleteConnectionTemplate(templateId: string): Promise<boolean>;
-}
-
-/** Private Secret identity used only by the Token Service. No credential material is stored here. */
-export interface ConnectionTokenCustody {
-  readonly namespaceId: string;
-  readonly sourceId: string;
-  readonly secret: Readonly<Secret>;
-  readonly scheduledVersion?: string;
-  readonly nextRefreshAt?: string;
-}
-
-export interface SavedConnectionReadRepository {
-  findTokenCustody(
-    namespaceId: string,
-    sourceId: string,
-  ): Promise<Readonly<ConnectionTokenCustody & { due: boolean }> | undefined>;
-  listDueConnectionTokens(
-    installationId: string,
-    limit: number,
-    afterSourceId?: string,
-  ): Promise<readonly Readonly<SavedConnection>[]>;
-  findSavedConnection(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<SavedConnection> | undefined>;
-  listRevokingConnections(
-    installationId: string,
-    limit: number,
-    afterSourceId?: string,
-  ): Promise<readonly Readonly<SavedConnection>[]>;
-  listNamespaceConnections(namespaceId: string): Promise<readonly Readonly<SavedConnection>[]>;
-}
-
-export interface SavedConnectionRepository extends SavedConnectionReadRepository {
-  createTokenCustody(custody: ConnectionTokenCustody): Promise<void>;
-  recordTokenSchedule(
-    namespaceId: string,
-    sourceId: string,
-    schedule:
-      | "due"
-      | "stopped"
-      | {
-          readonly scheduledVersion: string;
-          readonly nextRefreshAt: string;
-          readonly grantedScopes: readonly string[];
-        },
-  ): Promise<void>;
-  requestConnectionRevocation(
-    namespaceId: string,
-    sourceId: string,
-    principalId: string,
-  ): Promise<void>;
-  confirmConnectionRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
-  createSavedConnection(connection: SavedConnection): Promise<Readonly<SavedConnection>>;
-  deleteSavedConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-}
-
-export interface PresetReadRepository {
-  findPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
-  listPresets(namespaceId: string): Promise<readonly Readonly<Preset>[]>;
-  /** The Namespace's Presets in listPresets order, without their templates. */
-  listPresetSummaries(namespaceId: string): Promise<readonly Readonly<PresetSummary>[]>;
-}
-
-export interface PresetRepository extends PresetReadRepository {
-  createPreset(preset: Preset): Promise<Readonly<Preset>>;
-  lockPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
-  updatePreset(
-    namespaceId: string,
-    presetId: string,
-    changes: Partial<Pick<Preset, "name" | "template">>,
-  ): Promise<Readonly<Preset> | undefined>;
-  deletePreset(namespaceId: string, presetId: string): Promise<boolean>;
-}
-
-/**
- * The current platform state that keeps a Secret from deletion. An Agent appears once,
- * whether its draft, active revision, or a pending deployment holds the reference.
- */
-export type SecretReferenceKind =
-  "agent" | "configuration" | "credential_source" | "provisioning_request";
-
-export interface SecretReferenceEntry {
-  readonly kind: SecretReferenceKind;
-  readonly id: string;
-}
-
-/** At most `limit` references, ordered by kind then ID; `truncated` when more exist. */
-export interface SecretReferencePage {
-  readonly references: readonly Readonly<SecretReferenceEntry>[];
-  readonly truncated: boolean;
-}
-
-export type OAuthAuthenticationState = Omit<ConnectionSession, "stateHash"> & {
-  readonly kind: "oauth_connection";
-  readonly id: string;
-};
-
-export type DeviceAuthenticationState = DeviceAuthorizationSession & {
-  readonly kind: "device_authorization";
-  readonly id: string;
-  readonly version: number;
-};
-
-export type AuthenticationState = OAuthAuthenticationState | DeviceAuthenticationState;
-export type DeviceAuthenticationChanges = Pick<
-  DeviceAuthorizationSession,
-  "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
->;
-export type OAuthSourceRef = Pick<OAuthAuthenticationState, "namespaceId" | "credentialSourceId">;
-
-export interface AuthenticationStateReadRepository {
-  findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
-}
-
-export interface AuthenticationStateRepository extends AuthenticationStateReadRepository {
-  create(state: AuthenticationState): Promise<void>;
-  replaceDevice(
-    namespaceId: string,
-    id: string,
-    version: number,
-    changes: DeviceAuthenticationChanges,
-  ): Promise<boolean>;
-  consumeOAuth(
-    id: string,
-    actorId: string,
-    sessionId: string,
-    at: string,
-  ): Promise<OAuthAuthenticationState | undefined>;
-  expire(at: string, limit: number): Promise<readonly OAuthSourceRef[]>;
-}
-
-export interface SecretReadRepository {
-  findSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
-  listSecrets(namespaceId: string): Promise<readonly Readonly<Secret>[]>;
-  listReferences(
-    namespaceId: string,
-    secretId: string,
-    limit: number,
-  ): Promise<Readonly<SecretReferencePage>>;
-}
-
-export interface SecretRepository extends SecretReadRepository {
-  lockSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
-  createSecret(secret: Secret): Promise<Readonly<Secret>>;
-  deleteSecret(namespaceId: string, secretId: string): Promise<boolean>;
-  hasReferences(namespaceId: string, secretId: string): Promise<boolean>;
-}
-
-export type StoredCredentialWithdrawal = CredentialWithdrawal;
-
-export interface CredentialSourceReadRepository {
-  listCredentialPolicyReductions(
-    namespaceId: string,
-    revisionId: string,
-  ): Promise<readonly CredentialPolicyReductionState[]>;
-  isEgressMaterialRejected(evidence: EgressMaterialEvidence): Promise<boolean>;
-  findEgressInstallation(
-    senderId: string,
-    sandboxId: string,
-  ): Promise<Readonly<EgressInstallation> | undefined>;
-
-  findRevisionEgressInstallation(
-    namespaceId: string,
-    revisionId: string,
-  ): Promise<Readonly<EgressInstallation> | undefined>;
-
-  findCredentialSource(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
-  findCredentialWithdrawal(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<StoredCredentialWithdrawal> | undefined>;
-  listCredentialWithdrawals(
-    namespaceId: string,
-    revisionId: string,
-  ): Promise<readonly Readonly<StoredCredentialWithdrawal>[]>;
-}
-
-export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
-
-export interface CredentialSourceRepository extends CredentialSourceReadRepository {
-  rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
-  recordEgressInstallation(installation: EgressInstallation): Promise<void>;
-  retireEgressInstallation(namespaceId: string, revisionId: string): Promise<void>;
-  saveCredentialPolicyReduction(
-    namespaceId: string,
-    revisionId: string,
-    sourceId: string,
-    expected: CredentialPolicyReductionState | undefined,
-    next: CredentialPolicyReductionState,
-  ): Promise<boolean>;
-  admitEgressSource(
-    namespaceId: string,
-    sourceId: string,
-    expectedGeneration: number,
-    egress: ProtectedEgressSource,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-
-  lockCredentialSource(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
-  /**
-   * Points each existing Secret input field at a replacement same-Namespace Secret. The field
-   * set is fixed by the source type; only the referenced Secret IDs change.
-   */
-  replaceCredentialSourceSecrets(
-    namespaceId: string,
-    credentialSourceId: string,
-    secrets: Readonly<Record<string, SecretReference>>,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  /** Claims dispatch or clears it after independent cleanup of a deleting source. */
-  setCredentialSourceRegistrationDispatch(
-    namespaceId: string,
-    credentialSourceId: string,
-    dispatchedAt: string | undefined,
-  ): Promise<boolean>;
-  /** Moves a registering source to `ready` once its owner confirms its copy. */
-  markCredentialSourceReady(
-    namespaceId: string,
-    credentialSourceId: string,
-    registration?: TokenServiceRegistration,
-    config?: Readonly<Record<string, string>>,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  updateCredentialSourceConfig(
-    namespaceId: string,
-    credentialSourceId: string,
-    config: Readonly<Record<string, string>>,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  /** Moves a registering or ready source to `deleting`; the record stays until the gateway copy is gone. */
-  markCredentialSourceDeleting(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  deleteCredentialSource(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-  /** True while an Agent draft, revision, deployment, or queued/running provisioning references the source. */
-  hasReferences(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-  /**
-   * What keeps the source from being deleted: `reference` while an Agent draft, active
-   * revision, or pending deployment references it, which wins over `withdrawal_work`, a
-   * withdrawal attempt or retry series still queued or running for a revision that holds it.
-   */
-  findBlockingReference(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<CredentialSourceBlockingReference | undefined>;
-  /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
-  requestCredentialWithdrawal(
-    withdrawal: CredentialWithdrawal,
-  ): Promise<Readonly<CredentialWithdrawal>>;
-  /**
-   * Makes `requestedBy` the requester of a pending withdrawal: the principal whose
-   * `agent:operate` the worker rechecks. `requestedAt` keeps the first request's time, and a
-   * revoked withdrawal never changes.
-   */
-  reassignCredentialWithdrawal(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-    requestedBy: string,
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
-  /** Records the worker's latest outcome code on a pending withdrawal. */
-  recordCredentialWithdrawalAttempt(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-    attempt: { readonly reason: string; readonly at: string },
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
-  /** Moves a pending withdrawal to `revoked`; a revoked withdrawal never changes again. */
-  markCredentialWithdrawalRevoked(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-    completedAt: string,
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
-}
-
-export interface ServiceAccountReadRepository {
-  findServiceAccount(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<Readonly<ServiceAccount> | undefined>;
-  listServiceAccounts(namespaceId: string): Promise<readonly Readonly<ServiceAccount>[]>;
-  findServiceAccountBackendBinding(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<
-    | Readonly<{
-        readonly backendId: string;
-        readonly driverId: string;
-        readonly workspaceId: string;
-        readonly credentialIssued: boolean;
-      }>
-    | undefined
-  >;
-}
-
-export interface ServiceAccountRepository extends ServiceAccountReadRepository {
-  createServiceAccount(account: ServiceAccount): Promise<Readonly<ServiceAccount>>;
-  lockServiceAccount(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<Readonly<ServiceAccount> | undefined>;
-  updateCredential(
-    namespaceId: string,
-    serviceAccountId: string,
-    credential: ServiceAccountCredential,
-  ): Promise<Readonly<ServiceAccount> | undefined>;
-  deleteServiceAccount(namespaceId: string, serviceAccountId: string): Promise<boolean>;
-  hasReferences(namespaceId: string, serviceAccountId: string): Promise<boolean>;
-  /**
-   * The Backend binding of an issued provider credential, for the audit record of a forced
-   * deletion that cannot revoke it. Credential and upstream IDs otherwise stay private.
-   */
-  findIssuedCredentialBinding(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<
-    | Readonly<{
-        readonly backendId: string;
-        readonly workspaceId: string;
-        readonly externalAccountId: string;
-        readonly credentialId: string;
-      }>
-    | undefined
-  >;
-}
+import { CREDENTIAL_WITHDRAWAL_TARGET, credentialWithdrawalWorkKey } from "../controller-work.ts";
+import type { ControllerWork } from "../controller-work.ts";
 
 const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -842,11 +214,19 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
+      if (
+        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) === null ||
+        !isNonEmptyString(value.sourceType)
+      ) {
+        return false;
+      }
+      const keys = Object.keys(value).sort().join(",");
+      if (keys === "method,sourceId,sourceType,tokenServiceInstanceId") {
+        return isNonEmptyString(value.tokenServiceInstanceId);
+      }
       return (
-        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
+        keys === "credentialGatewayId,loginMode,method,sourceId,sourceType" &&
         isNonEmptyString(value.credentialGatewayId) &&
-        isNonEmptyString(value.sourceType) &&
         (value.loginMode === "api_key" ||
           value.loginMode === "codex_pat" ||
           value.loginMode === "chatgptAuthTokens")
@@ -984,10 +364,10 @@ export async function assertRevisionAuthAvailable(
   loadSources: (
     ids: readonly string[],
   ) => Promise<
-    readonly Pick<
+    readonly (Pick<
       CredentialSource,
       "id" | "namespaceId" | "type" | "state" | "ownerCapability" | "driverId"
-    >[]
+    > & { readonly tokenServiceInstanceId?: string })[]
   >,
 ): Promise<void> {
   const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
@@ -1023,11 +403,19 @@ export async function assertRevisionAuthAvailable(
     }
     const ownerMatches =
       (source.ownerCapability === "credential_gateway" &&
+        snapshot.tokenServiceInstanceId === undefined &&
         snapshot.credentialProxyId === undefined &&
         snapshot.credentialGatewayId === source.driverId) ||
       (source.ownerCapability === "credential_proxy" &&
+        snapshot.tokenServiceInstanceId === undefined &&
         snapshot.credentialGatewayId === undefined &&
-        snapshot.credentialProxyId === source.driverId);
+        snapshot.credentialProxyId === source.driverId) ||
+      (source.ownerCapability === "token_service" &&
+        source.driverId === undefined &&
+        isNonEmptyString(source.tokenServiceInstanceId) &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId);
     if (source.type !== snapshot.sourceType || !ownerMatches) {
       throw new ScopeViolationError(
         "The AgentRevision credential source snapshot does not match its current owner or type.",
@@ -1094,16 +482,64 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     const keys = Object.keys(entry).sort();
     const snapshot = entry as Record<string, unknown>;
     const valid =
-      ["credentialGatewayId,sourceId,sourceType", "credentialProxyId,sourceId,sourceType"].includes(
-        keys.join(","),
-      ) &&
+      [
+        "credentialGatewayId,sourceId,sourceType",
+        "credentialProxyId,sourceId,sourceType",
+        "sourceId,sourceType,tokenServiceInstanceId",
+      ].includes(keys.join(",")) &&
       isNonEmptyString(snapshot.sourceId) &&
-      isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
+      isNonEmptyString(
+        snapshot.credentialGatewayId ??
+          snapshot.credentialProxyId ??
+          snapshot.tokenServiceInstanceId,
+      ) &&
       isNonEmptyString(snapshot.sourceType) &&
       !seen.has(snapshot.sourceId);
     seen.add(snapshot.sourceId as string);
     return valid;
   });
+}
+
+/** Full-revision invariant; the execution fence also runs on partial Driver admission inputs. */
+export function validStandaloneCredentialDeployment(
+  revision: Pick<
+    AgentRevision,
+    | "namespaceId"
+    | "executionAdmission"
+    | "credentialDeployment"
+    | "harnessAuth"
+    | "credentialSources"
+  >,
+): boolean {
+  if (revision.executionAdmission.mode !== "standalone") {
+    return true;
+  }
+  const auth = revision.harnessAuth;
+  const policy = revision.credentialDeployment;
+  if (
+    auth.method !== "credential_source" ||
+    !isNonEmptyString(auth.tokenServiceInstanceId) ||
+    policy === undefined
+  ) {
+    return false;
+  }
+  const snapshot = revision.credentialSources?.find(({ sourceId }) => sourceId === auth.sourceId);
+  if (
+    snapshot === undefined ||
+    snapshot.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+    snapshot.sourceType !== auth.sourceType
+  ) {
+    return false;
+  }
+  const binding = policy.bindings[0];
+  return (
+    revision.credentialSources?.length === 1 &&
+    policy.bindings.length === 1 &&
+    binding?.consumer.kind === "model" &&
+    binding.sourceRef.kind === "credential_source" &&
+    binding.sourceRef.namespaceId === revision.namespaceId &&
+    binding.sourceRef.id === auth.sourceId
+  );
 }
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
@@ -1148,10 +584,14 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
       (typeof revision.compute.runtimeInputs !== "string" ||
         !/^[\x20-\x7e]{1,4096}$/.test(revision.compute.runtimeInputs))) ||
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
+    (revision.executionAdmission.mode === "standalone" && revision.sandboxDriverId === undefined) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
+    !validStandaloneCredentialDeployment(revision) ||
+    (revision.executionAdmission.mode === "standalone" &&
+      revision.repositoryCredentials !== undefined) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&
@@ -1161,143 +601,6 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
       "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
     );
   }
-}
-
-export interface PlatformAuditRepository {
-  append(event: AuditEvent): Promise<void>;
-  list(): Promise<readonly Readonly<AuditEvent>[]>;
-}
-
-interface PlatformOperationBase {
-  readonly action: "reconcile";
-  readonly namespaceId: string;
-  readonly resourceId: string;
-  readonly actorId: string;
-}
-
-export type PlatformOperation =
-  | (PlatformOperationBase & {
-      readonly kind: "namespace";
-      readonly target: "ready" | "deleted";
-    })
-  | (PlatformOperationBase & {
-      readonly kind: "agent_revision";
-      readonly target?: never;
-    })
-  | (PlatformOperationBase & {
-      /** Revokes pending credential withdrawals from an active revision; never deploys it. */
-      readonly kind: "agent_revision";
-      readonly target: typeof CREDENTIAL_WITHDRAWAL_TARGET;
-      readonly operationId: string;
-    })
-  | (PlatformOperationBase & {
-      readonly kind: "agent";
-      readonly target: "stopped" | "sandbox_policy";
-      readonly operationId: string;
-    })
-  | (PlatformOperationBase & {
-      /**
-       * Agent teardown is scoped to the Agent, not one revision: it retires
-       * every revision the Agent owns.
-       */
-      readonly kind: "agent";
-      readonly target: "deleted";
-      readonly operationId?: never;
-    });
-
-export interface PlatformOperationReadRepository {
-  list(): Promise<readonly Readonly<PlatformOperation>[]>;
-  findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
-  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
-  findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
-  /** Whether this revision completed maintenance requiring fresh repository execution. */
-  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
-  /** True while credential withdrawal work for the revision is queued or claimed. */
-  hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
-}
-
-export interface PlatformOperationRepository extends PlatformOperationReadRepository {
-  append(operation: PlatformOperation, requestId?: string): Promise<void>;
-  /**
-   * Requeue the exact deleting Agent's terminal teardown initiated by
-   * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain
-   * retry, another for a takeover).
-   */
-  retryFailedAgentDeletion(
-    namespaceId: string,
-    agentId: string,
-    initiatingActorId: string,
-    actorId: string,
-  ): Promise<boolean>;
-  /**
-   * Requeue the exact deleting Namespace's terminal teardown initiated by
-   * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain
-   * retry, another for a takeover).
-   */
-  retryFailedNamespaceDeletion(
-    namespaceId: string,
-    initiatingActorId: string,
-    actorId: string,
-  ): Promise<boolean>;
-  /**
-   * Makes the revision's queued credential withdrawal work claimable now instead of at its
-   * scheduled time. Claimed work is left alone. True when any queued work was waiting.
-   */
-  expediteCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
-}
-
-export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
-
-export type { IAMPolicyReadRepository, IAMPolicyRepository } from "@openclaw-enterprise/contracts";
-
-export interface PlatformReadView {
-  readonly sandboxPolicies: SandboxPolicyReadRepository;
-  readonly installations: InstallationReadRepository;
-  readonly namespaces: NamespaceReadRepository;
-  readonly configurations: ConfigurationReadRepository;
-  readonly connectionTemplates: ConnectionTemplateReadRepository;
-  readonly savedConnections: SavedConnectionReadRepository;
-  readonly presets: PresetReadRepository;
-  readonly authenticationStates: AuthenticationStateReadRepository;
-  readonly secrets: SecretReadRepository;
-  readonly credentialSources: CredentialSourceReadRepository;
-  readonly serviceAccounts: ServiceAccountReadRepository;
-  readonly agents: AgentReadRepository;
-  readonly workspaceSetups: WorkspaceSetupReadRepository;
-  readonly revisions: AgentRevisionReadRepository;
-  readonly iamPolicy: IAMPolicyReadRepository;
-  readonly repositorySessions: RepositorySessionReadRepository;
-  readonly provisioning: AgentProvisioningReadRepository;
-  readonly operations: PlatformOperationReadRepository;
-}
-
-export interface PlatformUnitOfWork extends PlatformReadView {
-  readonly preparedTokenProof: PreparedTokenCurrentProof;
-  readonly egressSendReceipts: EgressSendReceiptRepository;
-  readonly sandboxPolicies: SandboxPolicyRepository;
-  readonly installations: InstallationRepository;
-  readonly namespaces: NamespaceRepository;
-  readonly configurations: ConfigurationRepository;
-  readonly connectionTemplates: ConnectionTemplateRepository;
-  readonly savedConnections: SavedConnectionRepository;
-  readonly presets: PresetRepository;
-  readonly authenticationStates: AuthenticationStateRepository;
-  readonly secrets: SecretRepository;
-  readonly credentialSources: CredentialSourceRepository;
-  readonly serviceAccounts: ServiceAccountRepository;
-  readonly agents: AgentRepository;
-  readonly workspaceSetups: WorkspaceSetupRepository;
-  readonly revisions: AgentRevisionRepository;
-  readonly iamPolicy: IAMPolicyRepository;
-  readonly repositorySessions: RepositorySessionRepository;
-  readonly provisioning: AgentProvisioningRepository;
-  readonly audit: PlatformAuditRepository;
-  readonly operations: PlatformOperationRepository;
-}
-
-export interface PlatformStateStore {
-  read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
-  transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {
@@ -1341,7 +644,7 @@ interface PlatformSnapshot {
     string,
     Readonly<StoredOAuthClient> & { cleanupAfter?: string }
   >;
-  readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
+  readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly presets: Map<string, Readonly<Preset>>;
@@ -1505,7 +808,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
     clientRegistrations: new Map(snapshot.clientRegistrations),
-    oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
+    connectionTemplateVersions: new Map(snapshot.connectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     presets: copyStoredMap(snapshot.presets),
@@ -1827,16 +1130,6 @@ function assertProtectedEgressSource(
   }
 }
 
-function validTokenServiceRegistration(value: unknown): boolean {
-  return (
-    isPlainRecord(value) &&
-    Object.keys(value).every((key) => key === "backendRef") &&
-    (value.backendRef === undefined ||
-      (isPlainRecord(value.backendRef) &&
-        Object.values(value.backendRef).every((item) => typeof item === "string")))
-  );
-}
-
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
   if (source.egress !== undefined) {
@@ -1849,19 +1142,9 @@ function assertCredentialSource(source: CredentialSource): void {
       ? source.egress === undefined &&
         source.driverId === undefined &&
         (source.tokenServiceInstanceId === undefined
-          ? source.type === "oauth2-refresh-token" &&
-            source.registration === undefined &&
-            source.registrationDispatchedAt === undefined
+          ? source.type === "oauth2-refresh-token"
           : source.type !== "oauth2-refresh-token" &&
-            (source.registration === undefined ||
-              validTokenServiceRegistration(source.registration)) &&
-            (source.registrationDispatchedAt === undefined ||
-              (Number.isFinite(Date.parse(source.registrationDispatchedAt)) &&
-                Date.parse(source.registrationDispatchedAt) >= Date.parse(source.createdAt))) &&
-            (source.state !== "registering" || source.registration === undefined) &&
-            (source.state !== "ready" ||
-              (source.registration !== undefined &&
-                source.registrationDispatchedAt !== undefined)) &&
+            (source.state === "ready" || source.state === "deleting") &&
             Object.keys(source.secrets).length === 0)
       : (source.ownerCapability === "credential_gateway" ||
           (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
@@ -2166,10 +1449,18 @@ function repositories(
   };
   const assertTemplateVersion = (
     template: ConnectionTemplate,
-    version: OAuthConnectionTemplateVersion,
+    version: ConnectionTemplateVersion,
   ) => {
     validateConnectionTemplateDestinations(version);
-    if (!version.oauthClientId) {
+    if (
+      version.templateId !== template.id ||
+      (version.mode === "static_bearer") !== (template.current.mode === "static_bearer")
+    ) {
+      throw new ResourceStateConflictError(
+        "The version must match the template identity and authentication method.",
+      );
+    }
+    if (version.mode === "static_bearer" || !version.oauthClientId) {
       return;
     }
     const registration = snapshot.clientRegistrations.get(version.oauthClientId);
@@ -2180,9 +1471,7 @@ function repositories(
         registration.namespaceId !== template.namespaceId) ||
       registration.issuer !== version.issuer ||
       registration.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined &&
-        registration.revocationUrl !== version.revocationUrl) ||
-      version.templateId !== template.id
+      (version.revocationUrl !== undefined && registration.revocationUrl !== version.revocationUrl)
     ) {
       throw new ResourceStateConflictError(
         "The OAuth client registration must match the template scope and client.",
@@ -2196,8 +1485,11 @@ function repositories(
         (template) => template.namespaceId === namespaceId,
       ).length,
     hasOtherConnectionIssuer: async (issuer) =>
-      [...snapshot.oauthConnectionTemplateVersions.values()].some(
-        (version) => version.oauthClientId !== undefined && version.issuer !== issuer,
+      [...snapshot.connectionTemplateVersions.values()].some(
+        (version) =>
+          version.mode !== "static_bearer" &&
+          version.oauthClientId !== undefined &&
+          version.issuer !== issuer,
       ),
     listConnectionTemplates: async () =>
       Object.freeze(
@@ -2206,8 +1498,10 @@ function repositories(
           .map((template) => immutableCopy(template)),
       ),
     findOAuthConnectionTemplateVersion: async (templateId, version) => {
-      const found = snapshot.oauthConnectionTemplateVersions.get(versionKey(templateId, version));
-      return found === undefined ? undefined : immutableCopy(found);
+      const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
+      return found === undefined || found.mode === "static_bearer"
+        ? undefined
+        : immutableCopy(found);
     },
     listOAuthClients: async () =>
       Object.freeze(
@@ -2286,8 +1580,8 @@ function repositories(
     },
     deleteOAuthClient: async (registrationId, retainForCleanup) => {
       if (
-        Array.from(snapshot.oauthConnectionTemplateVersions.values()).some(
-          (version) => version.oauthClientId === registrationId,
+        Array.from(snapshot.connectionTemplateVersions.values()).some(
+          (version) => version.mode !== "static_bearer" && version.oauthClientId === registrationId,
         )
       ) {
         return false;
@@ -2308,7 +1602,7 @@ function repositories(
       assertTemplateVersion(template, template.current);
       const saved = immutableCopy(template);
       snapshot.connectionTemplates.set(saved.id, saved);
-      snapshot.oauthConnectionTemplateVersions.set(
+      snapshot.connectionTemplateVersions.set(
         versionKey(saved.id, saved.current.version),
         saved.current,
       );
@@ -2325,7 +1619,7 @@ function repositories(
         if (changes.version.version !== current.current.version + 1) {
           throw new ResourceStateConflictError("Connection template versions advance by one.");
         }
-        snapshot.oauthConnectionTemplateVersions.set(
+        snapshot.connectionTemplateVersions.set(
           versionKey(templateId, changes.version.version),
           immutableCopy(changes.version),
         );
@@ -2353,9 +1647,9 @@ function repositories(
         throw new ResourceStateConflictError("The connection template is in use.");
       }
       snapshot.connectionTemplates.delete(templateId);
-      for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
+      for (const key of Array.from(snapshot.connectionTemplateVersions.keys())) {
         if (key.startsWith(`${templateId}\u0000`)) {
-          snapshot.oauthConnectionTemplateVersions.delete(key);
+          snapshot.connectionTemplateVersions.delete(key);
         }
       }
       return true;
@@ -2366,13 +1660,15 @@ function repositories(
     const { namespaceId, credentialSourceId, connectionTemplateId, connectionTemplateVersion } =
       record;
     const template = snapshot.connectionTemplates.get(connectionTemplateId);
+    const version = snapshot.connectionTemplateVersions.get(
+      versionKey(connectionTemplateId, connectionTemplateVersion),
+    );
     if (
       !snapshot.credentialSources.has(agentKey(namespaceId, credentialSourceId)) ||
       !template ||
       (template.namespaceId !== undefined && template.namespaceId !== namespaceId) ||
-      !snapshot.oauthConnectionTemplateVersions.has(
-        versionKey(connectionTemplateId, connectionTemplateVersion),
-      )
+      !version ||
+      version.mode === "static_bearer"
     ) {
       throw new ResourceStateConflictError(
         "The connection must use a source and template in its scope.",
@@ -2493,12 +1789,13 @@ function repositories(
     createSavedConnection: async (connection) => {
       assertInitialized(snapshot);
       assertConnectionScope(connection);
-      const version = snapshot.oauthConnectionTemplateVersions.get(
+      const version = snapshot.connectionTemplateVersions.get(
         versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
       );
       const client = snapshot.clientRegistrations.get(connection.oauthClientId);
       if (
         !version ||
+        version.mode === "static_bearer" ||
         !isDeepStrictEqual(version.destinations, connection.destinations) ||
         version.issuer !== connection.issuer ||
         version.tokenUrl !== connection.tokenUrl ||
@@ -3276,29 +2573,6 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    setCredentialSourceRegistrationDispatch: async (
-      namespaceId,
-      credentialSourceId,
-      dispatchedAt,
-    ) => {
-      const current = await findCredentialSource(namespaceId, credentialSourceId);
-      if (
-        current?.ownerCapability !== "token_service" ||
-        current.tokenServiceInstanceId === undefined ||
-        current.registration !== undefined ||
-        current.state !== (dispatchedAt === undefined ? "deleting" : "registering") ||
-        (current.registrationDispatchedAt === undefined) === (dispatchedAt === undefined)
-      ) {
-        return false;
-      }
-      const { registrationDispatchedAt: _, ...rest } = current;
-      const saved = immutableCopy(
-        dispatchedAt === undefined ? rest : { ...rest, registrationDispatchedAt: dispatchedAt },
-      );
-      assertCredentialSource(saved);
-      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
-      return true;
-    },
     updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (
@@ -3313,24 +2587,12 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
+    markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (current === undefined || current.state !== "registering") {
         return undefined;
       }
-      if (
-        config !== undefined &&
-        (current.ownerCapability !== "token_service" ||
-          current.tokenServiceInstanceId === undefined)
-      ) {
-        return undefined;
-      }
-      const saved = immutableCopy({
-        ...current,
-        state: "ready" as const,
-        ...(registration === undefined ? {} : { registration }),
-        ...(config === undefined ? {} : { config }),
-      });
+      const saved = immutableCopy({ ...current, state: "ready" as const });
       assertCredentialSource(saved);
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
@@ -3541,6 +2803,7 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    supportsRepositoryNetworkPolicy: true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
@@ -3563,6 +2826,17 @@ function repositories(
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy ownership or version.");
       }
+      const grants = policy.repositoryNetworkPolicy;
+      if (grants !== undefined && !isCanonicalRepositoryGrantList(grants)) {
+        throw new ScopeViolationError("Repository network policy grants must be canonical.");
+      }
+      if (
+        (existing.repositoryNetworkPolicy !== undefined && grants === undefined) ||
+        (policy.version === existing.version &&
+          !isDeepStrictEqual(grants, existing.repositoryNetworkPolicy))
+      ) {
+        throw new ScopeViolationError("Invalid repository network policy transition.");
+      }
       const application = policy.application;
       const previousApplication = existing.application;
       if (
@@ -3578,6 +2852,13 @@ function repositories(
         const revision = (snapshot.revisions.get(key) ?? []).find(
           ({ id }) => id === application.revisionId,
         );
+        if (
+          grants !== undefined ||
+          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+          application.snapshot.repositoryNetworkPolicy !== undefined
+        ) {
+          throw new ScopeViolationError("Repository network policy requires a new deployment.");
+        }
         if (
           revision === undefined ||
           application.policyVersion !== policy.version ||
@@ -4183,6 +3464,17 @@ function repositories(
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
       await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
       const key = agentKey(revision.namespaceId, revision.agentId);
+      const policy = snapshot.sandboxPolicies.get(key);
+      const grants = policy?.repositoryNetworkPolicy;
+      const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      if (
+        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
+      ) {
+        throw new ScopeViolationError(
+          "Revision repository network policy must match the saved policy.",
+        );
+      }
       const previous = snapshot.revisions.get(key) ?? [];
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
@@ -4925,7 +4217,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     configurations: new Map(),
     connectionTemplates: new Map(),
     clientRegistrations: new Map(),
-    oauthConnectionTemplateVersions: new Map(),
+    connectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
     presets: new Map(),

@@ -3,12 +3,10 @@ import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Namespace } from "../../packages/contracts/src/index.ts";
 import { ScopeViolationError } from "../../packages/occ/src/errors.ts";
-import type {
-  ConfigurationOwnership,
-  PlatformReadView,
-  PlatformStateStore,
-  PlatformUnitOfWork,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { ConfigurationOwnership } from "../../packages/occ/src/ports/configurations.ts";
+import type { PlatformReadView } from "../../packages/occ/src/ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 const repositoryNamespace = (): Namespace => ({
   id: `ns_${randomUUID()}`,

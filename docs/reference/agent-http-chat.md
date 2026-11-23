@@ -67,19 +67,18 @@ connection rather than replacing it with an OCC error body.
 
 The deadline aborts the upstream connection. The pinned runtime then ends the
 turn within seconds; a command that is already running can finish in the
-background. To continue longer work, send a new request with the same `user`
-label and a message that tells the Agent to continue. Work that records its
-progress in the workspace can continue at the next step. A response carries no
-bytes while tools run. A proxy or load balancer in front of OCC whose idle
-timeout is shorter than such a silent interval closes the connection first: the
-caller gets a connection reset, not `504`.
+background. A response carries no bytes while tools run. A proxy or load
+balancer in front of OCC whose idle timeout is shorter than such a silent
+interval closes the connection first: the caller gets a connection reset,
+not `504`.
 
 OCC rechecks credential validity, principal status, permission and the selected
 revision every 25 seconds and before final delivery, with a 5-second deadline. Revocation, dependency
 failure, stop, deletion, replacement or client disconnect aborts the upstream
 connection. Aborting does not prove execution stopped or undo tool effects. A
-request that waits behind a turn when its Gateway ends is not kept; send it again
-([interrupted turns](agents/interrupted-turns.md#http-chat-callers)).
+request that waits behind a turn when its Gateway ends is not kept. Silence or
+a connection error does not tell you whether the turn started. Before you retry
+or continue, follow the [HTTP chat recovery steps](agents/interrupted-turns.md#http-chat-callers).
 
 ## Kubernetes configuration and audit
 

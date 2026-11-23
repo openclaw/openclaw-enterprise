@@ -138,6 +138,13 @@ follows `:focus-visible`. No part of any ring may be cut off.
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).
 
+## Search Agents with the keyboard
+
+In **Pages / Agents / No search matches**, press Escape and type `assistant`.
+Enter keeps the list open because two Agents match. Down Arrow visits each
+name. Escape returns to search without clearing it. Replace the query with
+`Research` and press Enter. Go back and check that the Agent name has focus.
+
 ## Agent collection access checks
 
 Open **Pages / Agents / Populated Namespace leaves the list** at desktop and
@@ -164,5 +171,7 @@ three save paths: keep focus on **Checking Configuration…**, select all
 text in the pending read-only JSON editor, then focus the **Agents** link.
 Only the first path moves focus to **Reload draft**. The other paths keep focus,
 selection, and scroll position while the conflict alert appears. Reload still
-merges the local draft. This story simulates a preflight conflict; the discovered
-Agent Detail browser test covers a real Controller PATCH returning `409`.
+merges the local draft. The story simulates a conflict before sending a write.
+The Agent detail browser test also returns to the tab while a save is pending.
+If the Controller returns `409` during the access check, focus should move from
+the save status to **Reload draft** once access is confirmed.

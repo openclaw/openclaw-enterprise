@@ -1,12 +1,28 @@
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
+import { imageReferenceProblem } from "@openclaw-enterprise/occ";
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 
 const PREFIX = "planned-runtime:v1:";
+const REPOSITORY_POLICY_PREFIX = "planned-runtime:v2:";
+const INSPECTED_WORKSPACE_PREFIX = "planned-runtime:v3:";
+
+export const IMMUTABLE_IMAGE_DIGEST = /@sha256:[a-f0-9]{64}$/;
+
+export function immutableRuntimeImages({
+  gateway,
+  agent,
+}: Pick<ReplacementRuntime, "gateway" | "agent">): boolean {
+  return [gateway, agent].every(
+    (image) => IMMUTABLE_IMAGE_DIGEST.test(image) && imageReferenceProblem(image) === undefined,
+  );
+}
 
 export interface ReplacementRuntime {
   readonly gateway: string;
   readonly agent: string;
   readonly compatibility: string;
+  readonly scope?: "repository-policy";
+  readonly workspace?: Readonly<{ url: string; mode: "service" | "legacy" }>;
 }
 
 /** An image update may not silently change any other admitted execution input. */
@@ -38,8 +54,14 @@ export function replacementCompatibility(
   );
 }
 
-export function encodeReplacementRuntime(runtime: ReplacementRuntime): string {
-  return PREFIX + JSON.stringify(runtime);
+export function encodeReplacementRuntime({ scope, ...runtime }: ReplacementRuntime): string {
+  const prefix =
+    scope === "repository-policy"
+      ? runtime.workspace
+        ? INSPECTED_WORKSPACE_PREFIX
+        : REPOSITORY_POLICY_PREFIX
+      : PREFIX;
+  return prefix + JSON.stringify(runtime);
 }
 
 /** Undefined means legacy; null means a malformed or unknown version, never legacy. */
@@ -49,18 +71,31 @@ export function decodeReplacementRuntime(
   if (admission === undefined) {
     return undefined;
   }
-  if (!admission.startsWith(PREFIX) || admission.length > 4_096) {
+  if (typeof admission !== "string" || admission.length > 4_096) {
+    return null;
+  }
+  const inspected = admission.startsWith(INSPECTED_WORKSPACE_PREFIX);
+  const scoped = inspected || admission.startsWith(REPOSITORY_POLICY_PREFIX);
+  const prefix = inspected
+    ? INSPECTED_WORKSPACE_PREFIX
+    : scoped
+      ? REPOSITORY_POLICY_PREFIX
+      : PREFIX;
+  if (!admission.startsWith(prefix)) {
     return null;
   }
   let value: Record<string, unknown> | undefined;
   try {
-    value = asRecord(JSON.parse(admission.slice(PREFIX.length)));
+    value = asRecord(JSON.parse(admission.slice(prefix.length)));
   } catch {
     return null;
   }
   if (
     !value ||
-    Object.keys(value).some((key) => !["gateway", "agent", "compatibility"].includes(key)) ||
+    Object.keys(value).some(
+      (key) =>
+        !(key === "workspace" && inspected) && !["gateway", "agent", "compatibility"].includes(key),
+    ) ||
     typeof value.gateway !== "string" ||
     !value.gateway.trim() ||
     typeof value.agent !== "string" ||
@@ -70,9 +105,30 @@ export function decodeReplacementRuntime(
   ) {
     return null;
   }
-  return Object.freeze({
+  const runtime = {
     gateway: value.gateway,
     agent: value.agent,
     compatibility: value.compatibility,
-  });
+  };
+  if (scoped && !immutableRuntimeImages(runtime)) {
+    return null;
+  }
+  if (inspected) {
+    const workspace = asRecord(value.workspace);
+    if (
+      !workspace ||
+      Object.keys(workspace).length !== 2 ||
+      typeof workspace.url !== "string" ||
+      !workspace.url.startsWith("wss://") ||
+      (workspace.mode !== "service" && workspace.mode !== "legacy")
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      ...runtime,
+      scope: "repository-policy",
+      workspace: Object.freeze({ url: workspace.url, mode: workspace.mode }),
+    });
+  }
+  return Object.freeze({ ...runtime, ...(scoped && { scope: "repository-policy" as const }) });
 }

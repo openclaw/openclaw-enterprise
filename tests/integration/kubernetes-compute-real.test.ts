@@ -1,14 +1,11 @@
 import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { Static } from "typebox";
-import type {
-  KubernetesComputeDriverOptions,
-  KubernetesWorkloadPeer,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import {
@@ -60,11 +57,13 @@ import {
   harnessWorkspaceClaimName,
   revisionName,
   fixtureComputeConfiguration as createComputeConfiguration,
-  workloadPod as findWorkloadPod,
-  assertExecDenied,
-  createDnsTrafficFixture as provisionDnsTrafficFixture,
   deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  workloadPod,
+  assertExecDenied,
+  createDnsTrafficFixture,
+} from "../helpers/kubernetes-compute-network.ts";
 import {
   assertReadyGateway,
   assertHarnessWorkspaceClaim,
@@ -120,27 +119,8 @@ type RequestPayload =
   | UpdateConfigurationBody
   | AgentRuntimeCredentialsBody;
 type WorkspaceFiles = Record<string, string>;
-type DnsProtocol = "udp" | "tcp";
 type DnsAnswer = { address: string };
-type DnsTrafficFixture = {
-  selected: Pod;
-  unselected: Pod;
-  control: Pod;
-  query(source: Pod, target: Pod, protocol: DnsProtocol, port: number): Promise<string>;
-  assertQueryDenied(
-    description: string,
-    source: Pod,
-    target: Pod,
-    protocol: DnsProtocol,
-    port: number,
-  ): ReturnType<Awaited<ReturnType<typeof provisionDnsTrafficFixture>>["assertQueryDenied"]>;
-};
-
 const kubectlRead: (...args: string[]) => Promise<string> = runKubectlRead;
-const createDnsTrafficFixture = provisionDnsTrafficFixture as (
-  context: TestContext,
-  peer: KubernetesWorkloadPeer,
-) => Promise<DnsTrafficFixture>;
 const fixtureComputeConfiguration = createComputeConfiguration as (
   overrides: Partial<KubernetesComputeDriverOptions>,
 ) => KubernetesComputeDriverOptions;
@@ -154,8 +134,6 @@ const resources: <K extends string>(
   namespace: string,
 ) => Promise<(K extends keyof ResourcesByKind ? ResourcesByKind[K] : ListedObject)[]> =
   listResources;
-const workloadPod: (namespace: string, selector: string) => Promise<Pod | undefined> =
-  findWorkloadPod;
 const waitFor: <T>(
   description: string,
   operation: () => T | false | undefined | Promise<T | false | undefined>,

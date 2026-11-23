@@ -75,7 +75,7 @@ History stages end at these migrations (stage, receipt count when specified):
 - `preOAuth`: 42, `0041_restriction_read_logs`; `preCredentialWithdrawals`: 43, `0042_oauth_harness_auth`; `preBrokerReceiptFence`: 44, `0043_credential_withdrawals`.
 - `preModelProbeFailureCause`: 45, `0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`: 46, `0046_model_probe_failure_cause`; `preAdministratorCredentialSourceGrants`: 47, `0047_provisioning_configuration_release`.
 - `preCodexPatSources`: 48, `0048_administrator_credential_source_grants`; `preAgentCredentialSources`: 49, `0049_codex_pat_sources`; `preCredentialWithdrawalRequester`: 50, `0050_agent_credential_sources`.
-- Later `pre*` stages add one receipt each: `preCredentialProxy` has 59; `prePreparedAttemptSettlement` has 62 through `0062_credential_delivery_custody`; `preGatewayManagedMode` has 63 after `0063_prepared_attempt_settlement`, with `0064_gateway_managed_mode` pending.
+- Later `pre*` stages add one receipt each, up to one receipt below `completed`; 60 and 61 have no stage. `catalogAtMigrationCount` in [`scripts/migration-history.mjs`](../../../scripts/migration-history.mjs) lists every stage with its receipt count.
 
 Rerun `--check` after migration and require `completed` from the same release.
 
@@ -133,10 +133,11 @@ retained database before considering another attempt.
 Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
 authentication: recreate development Agents, revisions, and provisioning
 requests before migrating` when an Agent draft, any AgentRevision, or a
-provisioning plan still holds a retired `chatgpt_service_account` binding. No
-API deletes an Agent revision or provisioning request on its own: delete each affected
-Agent, which also deletes its Agent revisions and requests, and create it again after
-the upgrade. Changing an Agent's binding does not clear earlier Agent revisions.
+provisioning plan still holds a retired `chatgpt_service_account` binding.
+An authorized operator can clear a draft-only binding if the installed
+controller supports it. No API deletes individual Agent revisions or provisioning
+requests. If the binding cannot be cleared, [deleting the Agent](../agents.md#deletion)
+removes its revisions and associated requests. Recreate it after upgrading.
 
 A provisioning request that never created an Agent survives Agent deletion.
 Let queued or running requests finish. Then, as the migration role, list the

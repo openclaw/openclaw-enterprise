@@ -20,15 +20,18 @@ Complete [Delete Agent](quickstart-delete-agent.md) first. It uses the saved ses
 
 After Agent deletion finishes, remove the disposable Installation from the same shell.
 
+Confirm exclusive ownership of the original cluster on the recorded engine. If the name may have been reused, stop. Matching local records alone cannot identify a replacement.
+
 Use the launcher’s printed cleanup command. For the OpenShell profile, the equivalent below requires the saved state directory and the cluster name from its installation record. Run it from the matching release checkout, using the CLI that created the installation.
 
 ```bash
-source /path/to/private/run/session.sh
-CLEANUP_STATE=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
-CLEANUP_CLUSTER=$(jq -er .cluster "$CLEANUP_STATE/state.json")
-: "${CLEANUP_STATE:?Set the saved state directory}" "${CLEANUP_CLUSTER:?Set the recorded cluster name}"
 (
   set -euo pipefail
+  unset OCC_DEVELOPMENT_STATE_DIRECTORY
+  source /path/to/private/run/session.sh
+  CLEANUP_STATE=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
+  CLEANUP_CLUSTER=$(jq -er .cluster "$CLEANUP_STATE/state.json")
+  : "${CLEANUP_STATE:?Set the saved state directory}" "${CLEANUP_CLUSTER:?Set the recorded cluster name}"
   # Check both records before deleting. A mismatch stops this block before dev down.
   test "$(jq -er .cluster "$CLEANUP_STATE/state.json")" = "$CLEANUP_CLUSTER"
   test "$(kubectl --kubeconfig "$CLEANUP_STATE/kubeconfig" config current-context)" = "k3d-$CLEANUP_CLUSTER"
