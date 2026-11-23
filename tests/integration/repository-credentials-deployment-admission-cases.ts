@@ -1453,7 +1453,30 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     // Deploy passes the same checks; placement is stubbed as in the other admission cases.
     stubAdmissionCompute(t, fixtureCompute, selected);
     sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
-    checkedEnvelope(await f.request("POST", path + "/deploy"), AgentRevisionResponse, 202);
+    const deployed = checkedEnvelope(
+      await f.request("POST", path + "/deploy"),
+      AgentRevisionResponse,
+      202,
+    );
+    // The admitting transaction recorded the revision's copy of the Source before the
+    // deployment was queued; nothing has installed or retired it yet.
+    assert.deepEqual(
+      await f.state.transact((unit) =>
+        unit.credentialSources.findUnretiredRepositorySourceCopies(
+          f.namespace.id,
+          repositorySourceId,
+        ),
+      ),
+      [
+        {
+          namespaceId: f.namespace.id,
+          credentialSourceId: repositorySourceId,
+          tokenServiceInstanceId: f.controller.currentTokenServiceInstanceId(),
+          agentId: agent.id,
+          revisionId: deployed.data.id,
+        },
+      ],
+    );
 
     // A Source that is no longer ready refuses the next save and deploy.
     await f.state.transact((unit) =>
