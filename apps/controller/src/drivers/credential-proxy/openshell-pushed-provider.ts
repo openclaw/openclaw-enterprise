@@ -403,21 +403,20 @@ export async function updateOccTokenServiceProviderCopy(input: {
   }
   const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment));
   const current = checkProvider(existing, sourceRef, workspace, owner.id, profileVersion);
-  if (input.version === current.sourceVersion) {
-    // TODO(manual retry): observe a persisted push without retransferring credential material.
-    refuse();
-  }
   if (!client.updateProviderCredentialsConditionally) {
     refuse();
   }
   const resolved = await input.resolveCredential();
   signal.throwIfAborted();
-  if (!resolved.credential || !resolved.version) {
+  if (
+    !resolved.credential ||
+    !resolved.version ||
+    (input.version !== undefined && input.version !== resolved.version)
+  ) {
     refuse();
   }
-  if (resolved.version === current.sourceVersion) {
-    refuse();
-  }
+  // A prior update may have persisted this Source version before its targets were ready.
+  // Reissuing the conditional delivery obtains fresh receipts for their serving state.
   const updated = await client.updateProviderCredentialsConditionally(
     {
       workspace,

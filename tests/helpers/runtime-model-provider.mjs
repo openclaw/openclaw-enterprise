@@ -9,13 +9,13 @@ import { createModelProbeCertificates } from "./runtime-model-probe-certificates
 // Shared by the launcher case and FirstAgentSmoke; callers own resources,
 // subprocess policy, image selection, and cleanup.
 /**
- * @param {{directory: string, caName: string, run: (command: string, args: string[]) => Promise<unknown>}} options
+ * @param {{directory: string, caName: string, run: (command: string, args: string[]) => Promise<unknown>, slackStandIn?: boolean}} options
  */
-export async function createModelProviderFiles({ directory, caName, run }) {
+export async function createModelProviderFiles({ directory, caName, run, slackStandIn = false }) {
   await mkdir(directory, { recursive: true });
   /** @param {string} name */
   const file = (name) => join(directory, name);
-  await createModelProbeCertificates({ directory, caName, run });
+  await createModelProbeCertificates({ directory, caName, run, slackStandIn });
   await copyFile(
     new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url),
     file("endpoint.mjs"),
@@ -54,6 +54,7 @@ export async function writeModelProviderTrust({ context, caPath }) {
  *   modelAddress: string,
  *   platformNamespace: string,
  *   serverFile: string,
+ *   additionalHosts?: readonly string[],
  * }} options
  */
 export async function configureModelProviderDNS({
@@ -62,6 +63,7 @@ export async function configureModelProviderDNS({
   modelAddress,
   platformNamespace,
   serverFile,
+  additionalHosts = [],
 }) {
   // k3s CoreDNS imports *.server files from the optional coredns-custom ConfigMap.
   const configMap = {
@@ -69,7 +71,9 @@ export async function configureModelProviderDNS({
     kind: "ConfigMap",
     metadata: { name: "coredns-custom", namespace: "kube-system" },
     data: {
-      [serverFile]: `api.openai.com:53 {\n    hosts {\n        ${modelAddress} api.openai.com\n    }\n}\n`,
+      [serverFile]: ["api.openai.com", ...additionalHosts]
+        .map((host) => `${host}:53 {\n    hosts {\n        ${modelAddress} ${host}\n    }\n}\n`)
+        .join(""),
     },
   };
   await kubectl(["apply", "-f", "-"], { input: JSON.stringify(configMap) });

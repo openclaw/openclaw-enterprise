@@ -254,13 +254,13 @@ acknowledged candidate write.
 
 Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 
-Add `--controller-compatibility-results /secure/occ/controller-results.json` with
-`--controller-image` to require the native PostgreSQL `run` result from
-[controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before shutdown, database-write, configured IAM activation and cleanup must pass for the
-exact image digests; index, manifest and config digests differ. [Recovery retains the receipt](production-upgrade-recovery.md).
-`sourceSha` identifies the test checkout, not image revisions or cleanliness.
-Writers stop; online migration and rollback remain unqualified.
+With `--controller-image`, add `--controller-compatibility-results FILE` to require
+[native PostgreSQL qualification](../../testing/postgresql.md#released-controller-compatibility).
+Before shutdown, writes, configured IAM activation and cleanup must pass for both exact
+image digests (index, manifest and config differ). [Recovery retains the receipt](production-upgrade-recovery.md).
+`sourceSha` identifies only the test commit.
+If warned of incompatible history, qualify another recovery controller before maintenance.
+Writers stop. Online migration and rollback remain unqualified.
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'

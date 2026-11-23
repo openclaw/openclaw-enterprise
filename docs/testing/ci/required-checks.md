@@ -38,8 +38,10 @@ CI. Mixing an RFC image with runtime or tooling changes also selects full CI.
 
 ## Scenarios
 
-`pr-safe` runs the selected matrix jobs below; `runtime-image-fixture` runs
-separately. If selection cannot be verified, CI runs every ordinary lane.
+`image-lanes` runs the selected `images-*` jobs after Shared Runtime Image
+succeeds. `pr-safe` runs the other selected matrix jobs. `runtime-image-fixture`
+runs separately.
+If selection cannot be verified, CI runs every ordinary lane.
 
 | Tests                                                                           | What is verified                                                                                                                                                                      | GitHub jobs and manifests                                                                                                                                                                                                                                                                                                                               |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -6,6 +6,9 @@ from the reviewed release checkout root after completing the
 Use the [chart procedure](production-upgrade.md#apply-other-installation-changes)
 for protected Installation settings.
 
+The offline plan rejects [preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+because their chart omits the initialization Job. Manage their database upgrades separately.
+
 Create an owner-only JSON profile outside the checkout. Set `context` to the
 name of a kubeconfig context whose cluster has an HTTPS `server` URL. Keep
 the kubeconfig in an owner-only regular file under a directory protected
@@ -104,6 +107,13 @@ after `--` to `plan` and `apply`. Review the deployment effects and image digest
 before you approve. Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
+
+With `--controller-compatibility-results FILE`, `plan` and a new `apply` check
+the PostgreSQL report and the selected controller digest before approval.
+If the check fails, rerun [controller qualification](../../testing/postgresql.md#released-controller-compatibility)
+for the installed and selected images. Retry with the passing report.
+Live preflight must still match the report to the installed controller.
+Qualify [recovery](production-upgrade-recovery.md) separately.
 
 Before the first `apply` or `preflight`,
 [bind the Installation Secret](production-upgrade.md#bind-the-installation-once).

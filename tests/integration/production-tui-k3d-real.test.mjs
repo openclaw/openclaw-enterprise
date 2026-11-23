@@ -51,11 +51,15 @@ import {
   selectRehearsalControllers,
 } from "../helpers/staging-upgrade-return.ts";
 import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts";
+import { upgradeRehearsalDiagnostic } from "../helpers/upgrade-rehearsal-diagnostic.ts";
 
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
-const returnSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const returnMode = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL;
+const inPlaceReturn = returnMode === "in-place";
+const ordinaryUpgrade = returnMode === "ordinary" || inPlaceReturn;
+const returnSelected = returnMode === "1" || ordinaryUpgrade;
 const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
 const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
 const protectedTuiSelection = {
@@ -79,6 +83,12 @@ function selectedTestTitle() {
   }
   if (onlineSelected) {
     return "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL";
+  }
+  if (inPlaceReturn) {
+    return "A populated production Helm Installation keeps the acknowledged write after switching controllers on the live database";
+  }
+  if (ordinaryUpgrade) {
+    return "A populated production Helm Installation retains the acknowledged write after an ordinary upgrade and controller return";
   }
   if (returnSelected) {
     return "A populated production Helm Installation retains the acknowledged write after controller return";
@@ -325,7 +335,7 @@ test(
       await writeFile(join(directory, "proof.json"), JSON.stringify(evidence, null, 2) + "\n", {
         mode: 0o600,
       });
-      context.diagnostic(`${details.disposition ?? "PASS"} ${row}`);
+      context.diagnostic(upgradeRehearsalDiagnostic(row, details));
     };
     // Sign-in qualifies controller images; host tools and both Helm operations belong to this harness.
     const occCli = rehearsal ? join(directory, "occ") : join(process.cwd(), "bin", "occ");
@@ -591,8 +601,7 @@ test(
         const { prepareMaterialization } = await import("../helpers/signin/materialization.mjs");
         const { providerDns } = await import("../helpers/signin/dns.ts");
         dns = providerDns({ system, suffix, custody, localCluster, kubectl, kubeArgs, run });
-        const { createOidcProviderMaterial } =
-          await import("../helpers/oidc-provider-material.mjs");
+        const { createOidcProviderMaterial } = await import("../helpers/oidc-provider-material.ts");
         providerMaterial = await createOidcProviderMaterial(directory, {
           hostname: "idp.signin-rehearsal.test",
           redirectUri: "https://console.signin-rehearsal.test/api/auth/providers/oidc/callback",
@@ -655,6 +664,7 @@ test(
         // Historical rehearsal charts keep their original credential contract.
         // Current-source workflow exercises automatic preparation through the CLI.
         bootstrapCredentials: custody ? "existing" : "generate",
+        useChartResourceDefaults: returnSelected,
         createPostgresResource: custody?.create,
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
@@ -2111,6 +2121,7 @@ test(
       }
       await rehearsePopulatedReturn({
         controllers: rehearsal,
+        ordinaryUpgrade,
         kubeconfig: selection.kubeconfigPath,
         context: selection.kubernetesContext,
         namespace: system,

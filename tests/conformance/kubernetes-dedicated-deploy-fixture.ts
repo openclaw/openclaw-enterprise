@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  kubernetesNamespaceName,
+  type KubernetesComputeDriver,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   NODE_SETUP_POLL_MS,
   type GatewayNodeEnrollment,
@@ -7,6 +10,7 @@ import {
 } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import type {
+  AgentRevision,
   HarnessWorkloadRequirements,
   RevisionHarnessDescriptor,
   RuntimeFailureEvidence,
@@ -330,6 +334,23 @@ export function recordingNativeSandbox(provisions: SandboxHarnessContext[]) {
   >;
 }
 
+export function refusingNativeSandbox(provisions: SandboxHarnessContext[], nextError: () => Error) {
+  return {
+    ...recordingNativeSandbox(provisions),
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      throw nextError();
+    },
+    async harnessStatus() {
+      return assert.fail("failed provisioning is reported without a status read");
+    },
+    async withdrawHarnessExposure() {},
+  } satisfies Partial<SandboxDriver>;
+}
+
 export function readyNativeHarnessPod(
   namespace: string,
   labels: HarnessWorkloadRequirements["labels"],
@@ -448,6 +469,21 @@ export function createDedicatedDeployEnrollmentFixture(clock?: FixtureClock) {
   };
   return { state, nodeEnrollment };
 }
+
+type DeployTransport = ReturnType<typeof createDedicatedDeployKubernetesFixture>;
+
+export type DedicatedDeployFixture = DeployTransport & {
+  state: DedicatedDeployEnrollmentState;
+  driver: KubernetesComputeDriver;
+  revision: AgentRevision;
+  namespace: string;
+  gatewayName: string;
+  gatewayNamespace: string;
+  gateway: DeployTransport;
+  agentName: string;
+  prepare: () => ReturnType<KubernetesComputeDriver["prepareRevision"]>;
+  markWorkloadsReady: () => void;
+};
 
 export function createDedicatedDeployKubernetesFixture(
   { namespace, gatewayName, state, revision, sandboxDriver, clock }: FixtureOptions,

@@ -86,12 +86,15 @@ function age(timestamp: string | null) {
 
 export function podCard(pod: AgentRuntimePodStatus) {
   const details = element("dl", { className: "credential-status-list" });
-  const add = (name: string, value: string) =>
-    details.append(element("dt", {}, name), element("dd", {}, value));
+  const add = (name: string, value: string, labelClass?: string) =>
+    details.append(
+      element("dt", labelClass ? { className: labelClass } : {}, name),
+      element("dd", {}, value),
+    );
   add("Phase", pod.phase);
   add("Ready", pod.ready ? "Yes" : "No");
   for (const container of pod.containers) {
-    add("Container", container.name);
+    add("Container", container.name, "runtime-container-label");
     add("Restarts", String(container.restartCount));
     add("State", `${container.state}${container.reason ? ` · ${container.reason}` : ""}`);
     const termination = container.lastTermination;
@@ -105,6 +108,7 @@ export function podCard(pod: AgentRuntimePodStatus) {
         ]
           .filter(Boolean)
           .join(" · "),
+        "runtime-termination-label",
       );
     }
   }

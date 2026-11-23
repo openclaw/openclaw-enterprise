@@ -3,7 +3,12 @@ import { isAbsolute, join, relative, sep } from "node:path";
 
 import { failureSecrets, redactFailure } from "./failure-redaction.ts";
 import { exercisedAssertionFailures, recordsCoverage } from "./full-integration-coverage.ts";
-import { openShellReplacementCheckpoints, upstreamOutageCase } from "./openshell-progress.mjs";
+import {
+  credentialReplacementCase,
+  credentialReplacementDiagnostic,
+  openShellReplacementCheckpoints,
+  upstreamOutageCase,
+} from "./openshell-progress.mjs";
 import {
   failureDetails,
   optionalReporterField,
@@ -14,12 +19,13 @@ import { isRecord } from "./records.ts";
 import { nativeFirstAgentProofDiagnostic } from "./reporter.ts";
 
 // Only the split failure notice consumes this value; symbols stay out of result JSON.
-export const nativeProofCaseFailed = Symbol("failed declared native redeployment case");
+export const splitCaseFailure = Symbol("failed declared split case");
 
 const nativeRedeploymentCase =
   "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution";
+const nativeFirstAgentComposeEntry = "tests/integration/local-first-agent-openshell-real.test.mjs";
 const nativeFirstAgentWrappers = new Set([
-  "tests/integration/local-first-agent-openshell-real.test.mjs",
+  nativeFirstAgentComposeEntry,
   "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
 ]);
 
@@ -58,7 +64,9 @@ export type FileEvidence = {
   measurements: unknown[];
   unfinishedStage?: "installation" | "replacement" | undefined;
   openShellReplacement?: OpenShellReplacement | undefined;
-  [nativeProofCaseFailed]?: true;
+  [splitCaseFailure]?:
+    | ReturnType<typeof nativeFirstAgentProofDiagnostic>
+    | ReturnType<typeof credentialReplacementDiagnostic>;
   testRunExercised: boolean;
   tests: TestCase[];
   skippedSuites: { name: unknown; source: SuiteSource | undefined }[];
@@ -471,29 +479,49 @@ export function readFileEvidence(
       durationMs,
     };
   });
-  if (
+  const nativeProofEntry =
     laneName === "openshell-installers" &&
     nativeFirstAgentWrappers.has(relativePath) &&
-    expectedTests.filter((name) => name === nativeRedeploymentCase).length === 1 &&
+    expectedTests.filter((name) => name === nativeRedeploymentCase).length === 1;
+  const credentialReplacementEntry =
+    laneName === "openshell-policy" &&
+    relativePath === credentialReplacementCase.entry &&
+    expectedTests.length === 1 &&
+    expectedTests[0] === credentialReplacementCase.name;
+  if (
+    (nativeProofEntry || credentialReplacementEntry) &&
     output.status === 1 &&
     !output.error &&
     !output.signal &&
     !rootFailure &&
     !events.some((event) => reporterField(event, "type") === "test:interrupted")
   ) {
-    // Both wrappers import the same declaration. Bind the normalized error to
-    // its unique nested terminal, since other cases may use the same diagnostic.
-    const [terminal, duplicate] = terminalEvents.filter(
-      ({ data }) => data.name === nativeRedeploymentCase,
-    );
+    // The native case is nested alongside other proofs. Policy must have no
+    // siblings at all. In both cases require the actual declaration's terminal.
+    const [terminal, duplicate] = nativeProofEntry
+      ? terminalEvents.filter(({ data }) => data.name === nativeRedeploymentCase)
+      : terminalEvents;
+    const declaration = nativeProofEntry
+      ? "tests/integration/local-first-agent-real.test.mjs"
+      : credentialReplacementCase.declaration;
     if (
       !duplicate &&
       terminal?.type === "test:fail" &&
       terminal.data.testType === "test" &&
-      terminal.data.nesting === 1 &&
-      terminal.data.file === join(root, "tests/integration/local-first-agent-real.test.mjs")
+      terminal.data.file === join(root, declaration) &&
+      terminal.data.nesting === (nativeProofEntry ? 1 : 0)
     ) {
-      evidence[nativeProofCaseFailed] = true;
+      if (nativeProofEntry) {
+        evidence[splitCaseFailure] = nativeProofFailure(
+          evidence.tests,
+          relativePath === nativeFirstAgentComposeEntry,
+        );
+      } else if (terminal.data.name === credentialReplacementCase.name) {
+        const diagnostic = optionalReporterField(evidence.tests[0]?.error, "diagnostic");
+        if (isRecord(diagnostic) && diagnostic.kind === "openshell-credential-replacement") {
+          evidence[splitCaseFailure] = credentialReplacementDiagnostic(diagnostic.stage);
+        }
+      }
     }
   }
   // A skipped describe() never registers its tests, so only its suite event shows the skip.
@@ -510,11 +538,18 @@ export function readFileEvidence(
 
 // Read the redacted error on the named case. A sibling may report a different
 // native proof failure, so scanning the file for any usable diagnostic is unsafe.
-export function nativeProofFailureStage(tests: readonly { name: unknown; error?: unknown }[]) {
+function nativeProofFailure(
+  tests: readonly { name: unknown; error?: unknown }[],
+  compose: boolean,
+) {
   const test = tests.find(({ name }) => name === nativeRedeploymentCase);
   const diagnostic = optionalReporterField(test?.error, "diagnostic");
   return isRecord(diagnostic) && diagnostic.kind === "native-first-agent-proof"
-    ? nativeFirstAgentProofDiagnostic(diagnostic.failureStage, undefined)?.failureStage
+    ? nativeFirstAgentProofDiagnostic(
+        diagnostic.failureStage,
+        undefined,
+        compose ? diagnostic.modelPhase : undefined,
+      )
     : undefined;
 }
 

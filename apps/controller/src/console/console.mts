@@ -3215,7 +3215,11 @@ async function revalidateMountedAgent(current: Route) {
     focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
   const selection =
     typeof textField?.selectionStart === "number"
-      ? ([textField.selectionStart, textField.selectionEnd] as const)
+      ? ([
+          textField.selectionStart,
+          textField.selectionEnd,
+          textField.selectionDirection ?? undefined,
+        ] as const)
       : null;
   const restoreFocus = (afterRetry = false) => {
     if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
@@ -3262,7 +3266,7 @@ async function revalidateMountedAgent(current: Route) {
       (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
       target.value === textField?.value
     ) {
-      target.setSelectionRange(selection[0], selection[1]);
+      target.setSelectionRange(...selection);
     }
   };
   let checking = "session";
