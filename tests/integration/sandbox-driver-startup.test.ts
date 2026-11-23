@@ -55,7 +55,7 @@ test(
 );
 
 test(
-  "OpenShell applies the admitted Google route after Provider attachment without a legacy guard",
+  "OpenShell resumes staged Google policy on an attached Sandbox without a legacy guard",
   verifyStagedGooglePolicy,
 );
 

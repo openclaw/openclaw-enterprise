@@ -143,7 +143,8 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
 
 export async function verifyStagedGooglePolicy(): Promise<void> {
   const gateway = workspaceGatewayClient();
-  const driver = openShellDriver(gateway, openShellWorkspaceHarnessConfiguration());
+  const configuration = openShellWorkspaceHarnessConfiguration();
+  const driver = openShellDriver(gateway, configuration);
   const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
   fixture.requirements.credentialAttachments = [];
   const sourceRef = (id: string) => ({
@@ -252,7 +253,9 @@ export async function verifyStagedGooglePolicy(): Promise<void> {
     },
   };
   const context = { ...fixture.context, revision, requirements: fixture.requirements };
+  let creations = 0;
   gateway.createSandbox = async (request) => {
+    creations++;
     const sandbox = storedSandbox(request, {
       id: "sandbox-fixture",
       resourceVersion: "1",
@@ -262,8 +265,9 @@ export async function verifyStagedGooglePolicy(): Promise<void> {
     return sandbox;
   };
   await driver.ensureNamespace(context);
-  await driver.provisionStagedHarness(context);
-  const sandbox = [...gateway.sandboxes.values()][0]!;
+  const target = await driver.provisionStagedHarness(context);
+  const sandbox = [...gateway.sandboxes.values()].find(({ id }) => id === target.sandboxId);
+  assert.ok(sandbox);
   const spec = sandbox.spec!;
   const baseline = spec.policy as { network_middlewares?: Record<string, unknown> };
   assert.deepEqual(
@@ -281,18 +285,42 @@ export async function verifyStagedGooglePolicy(): Promise<void> {
     resourceVersion: "2",
     spec: { ...spec, providers: [...new Set(routes.map(({ provider }) => provider))] },
   });
-  gateway.updatePolicy = async ({ policy, expectedResourceVersion }) => {
-    assert.equal(expectedResourceVersion, "2");
-    const current = gateway.sandboxes.get(sandbox.name)!;
-    gateway.sandboxes.set(sandbox.name, { ...current, spec: { ...current.spec!, policy } });
+  let updates = 0;
+  gateway.updatePolicy = async (request) => {
+    assert.equal(request.workspace, sandbox.workspace);
+    assert.equal(request.sandbox, sandbox.name);
+    const current = gateway.sandboxes.get(request.sandbox)!;
+    assert.equal(request.expectedResourceVersion, current.resourceVersion);
+    updates++;
+    gateway.sandboxes.set(request.sandbox, {
+      ...current,
+      resourceVersion: "3",
+      spec: { ...current.spec!, policy: request.policy },
+    });
   };
-  await driver.applyNetworkPolicy(context, {
-    snapshot: revision.sandboxPolicy!,
-    expectedProviderVersion: "2",
+
+  // Recover after attachment but before policy apply. Compute uses the current
+  // observation to update the existing Sandbox before releasing the Harness.
+  const resumed = openShellDriver(gateway, configuration);
+  const snapshot = revision.sandboxPolicy!;
+  const observed = await resumed.observeNetworkPolicy(context, snapshot);
+  assert.equal(observed.resourceVersion, "2");
+  assert.equal(observed.state, "applied");
+  assert.equal(observed.matches, false, "the attached Sandbox still has the idle policy");
+  await resumed.applyNetworkPolicy(context, {
+    snapshot,
+    expectedProviderVersion: observed.resourceVersion,
     operationId: revision.id,
   });
-  assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
-  const applied = gateway.sandboxes.get(sandbox.name)!.spec!.policy as {
+  const installed = await resumed.observeNetworkPolicy(context, snapshot);
+  assert.equal(installed.resourceVersion, "3");
+  assert.equal(installed.state, "applied");
+  assert.equal(installed.matches, true);
+  assert.equal(creations, 1);
+  assert.equal(updates, 1);
+  const recovered = gateway.sandboxes.get(sandbox.name)!;
+  assert.equal(recovered.id, target.sandboxId);
+  const applied = recovered.spec!.policy as {
     network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
   };
   const endpoint = Object.values(applied.network_policies)
