@@ -91,14 +91,30 @@ func TestResourceRequestStopsWhenCommandContextIsCanceled(t *testing.T) {
 	}
 }
 
-func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.T) {
+const canonicalStaticSource = `{"id":"cs_00000000-0000-4000-8000-000000000001","namespaceId":"ns_00000000-0000-4000-8000-000000000001","name":"example-model","type":"static","state":"ready","createdAt":"2026-01-01T00:00:00.000Z","ref":{"kind":"credential_source","namespaceId":"ns_00000000-0000-4000-8000-000000000001","id":"cs_00000000-0000-4000-8000-000000000001"},"config":{"provider_preset":"openai"}}`
+
+const canonicalOAuthSource = `{"id":"cs_00000000-0000-4000-8000-000000000001","namespaceId":"ns_00000000-0000-4000-8000-000000000001","name":"example-account","type":"oauth2-refresh-token","state":"ready","createdAt":"2026-01-01T00:00:00.000Z","ref":{"kind":"credential_source","namespaceId":"ns_00000000-0000-4000-8000-000000000001","id":"cs_00000000-0000-4000-8000-000000000001"},"connectionTemplateId":"ctp_00000000-0000-4000-8000-000000000001","consent":{"kind":"connection_template","version":1,"oauthClientId":"ccr_00000000-0000-4000-8000-000000000001","ownerPrincipalId":"principal-example","requestedScopes":["read"],"grantedScopes":["read"],"issuer":"https://identity.example.test","tokenUrl":"https://identity.example.test/token","clientId":"example-client","destinations":[{"host":"api.example.test","port":443,"path":"/"}]}}`
+
+func TestCredentialSourceAndWithdrawalCommandsReachTheirRoutes(t *testing.T) {
 	type call struct{ method, path, body string }
 	var calls []call
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		body, _ := io.ReadAll(request.Body)
 		calls = append(calls, call{request.Method, request.URL.Path, string(body)})
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"data":{"id":"cs_00000000-0000-4000-8000-000000000001","state":"pending","requestedBy":"admin","reason":"CREDENTIAL_WITHDRAWAL_PENDING"},"meta":{"requestId":"req_1"}}`))
+		response := canonicalStaticSource
+		switch {
+		case strings.Contains(request.URL.Path, "/agents/"):
+			response = `{"namespaceId":"ns_00000000-0000-4000-8000-000000000001","agentId":"agt_00000000-0000-4000-8000-000000000001","revisionId":"rev_00000000-0000-4000-8000-000000000001","credentialSourceId":"cs_00000000-0000-4000-8000-000000000001","state":"pending","requestedBy":"principal-example","requestedAt":"2026-01-01T00:00:00.000Z","reason":"CREDENTIAL_WITHDRAWAL_PENDING","withdrawalInProgress":true}`
+			if request.Method == http.MethodPost {
+				writer.WriteHeader(http.StatusAccepted)
+			}
+		case strings.HasSuffix(request.URL.Path, "/rotate"):
+			response = strings.TrimSuffix(canonicalOAuthSource, "}") + `,"status":{"state":"ready","refresh":{"state":"ready"}}}`
+		case request.Method == http.MethodPost:
+			writer.WriteHeader(http.StatusCreated)
+		}
+		_, _ = fmt.Fprintf(writer, `{"data":%s,"meta":{"requestId":"req_1"}}`, response)
 	}))
 	defer server.Close()
 
@@ -107,9 +123,14 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	registration := filepath.Join(directory, "source.json")
+	createBody := `{"name":"example-model","type":"static","config":{"provider_preset":"openai"},"secret":{"opaque":"synthetic-key"}}`
+	if err := os.WriteFile(registration, []byte(createBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	replacement := filepath.Join(directory, "replacement.json")
-	secrets := `{"secrets":{"api_key":{"kind":"secret","namespaceId":"ns_00000000-0000-4000-8000-000000000001","id":"sec_00000000-0000-4000-8000-000000000002"}}}`
-	if err := os.WriteFile(replacement, []byte(secrets), 0o600); err != nil {
+	updateBody := `{"secret":{"opaque":"synthetic-replacement"}}`
+	if err := os.WriteFile(replacement, []byte(updateBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,8 +138,8 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 		args []string
 		want call
 	}{
-		{[]string{"credential-source", "update", "cs_00000000-0000-4000-8000-000000000001"}, call{http.MethodPatch, "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001", "{}"}},
-		{[]string{"credential-source", "update", "cs_00000000-0000-4000-8000-000000000001", "--file", replacement}, call{http.MethodPatch, "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001", secrets}},
+		{[]string{"credential-source", "create", "--file", registration}, call{http.MethodPost, "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources", createBody}},
+		{[]string{"credential-source", "update", "cs_00000000-0000-4000-8000-000000000001", "--file", replacement}, call{http.MethodPatch, "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001", updateBody}},
 		{[]string{"credential-source", "rotate", "cs_00000000-0000-4000-8000-000000000001"}, call{http.MethodPost, "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001/rotate", ""}},
 		{[]string{"agent", "credential-withdrawal", "request", "agt_00000000-0000-4000-8000-000000000001", "cs_00000000-0000-4000-8000-000000000001"}, call{http.MethodPost, "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001/withdraw", ""}},
 		{[]string{"agent", "credential-withdrawal", "get", "agt_00000000-0000-4000-8000-000000000001", "cs_00000000-0000-4000-8000-000000000001"}, call{http.MethodGet, "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001/withdrawal", ""}},
@@ -135,19 +156,22 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 	}
 
 	calls = nil
-	command := New(io.Discard, io.Discard)
-	command.SetArgs([]string{
-		"credential-source", "update", "cs_00000000-0000-4000-8000-000000000001", "--file=",
-		"--url", server.URL,
-		"--service-key-file", keyFile,
-		"--namespace", "ns_00000000-0000-4000-8000-000000000001",
-	})
-	err := command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "--file must name a JSON document") {
-		t.Fatalf("explicit empty --file error = %v", err)
-	}
-	if len(calls) != 0 {
-		t.Fatalf("explicit empty --file sent requests: %+v", calls)
+	for _, test := range []struct {
+		flag []string
+		want string
+	}{
+		{nil, `required flag(s) "file" not set`},
+		{[]string{"--file="}, "--file must name a JSON document"},
+	} {
+		command := New(io.Discard, io.Discard)
+		command.SetArgs(append(append([]string{"credential-source", "update", "cs_00000000-0000-4000-8000-000000000001"}, test.flag...), "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"))
+		err := command.Execute()
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("update %v error = %v", test.flag, err)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("update %v sent requests: %+v", test.flag, calls)
+		}
 	}
 }
 
@@ -1057,16 +1081,14 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	}
 }
 
-func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *testing.T) {
-	source := `{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"openai","state":"ready"`
+func TestCredentialSourceStaticTablesShowCanonicalMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources":
-			// The list API returns metadata only, never a live status.
-			_, _ = io.WriteString(w, `{"data":[`+source+`}],"meta":{"requestId":"req_1"}}`)
+			_, _ = io.WriteString(w, `{"data":[`+canonicalStaticSource+`],"meta":{"requestId":"req_1"}}`)
 		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001":
-			_, _ = io.WriteString(w, `{"data":`+source+`,"status":{"state":"ready"}},"meta":{"requestId":"req_2"}}`)
+			_, _ = io.WriteString(w, `{"data":`+canonicalStaticSource+`,"meta":{"requestId":"req_2"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1077,8 +1099,8 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 		args []string
 		rows [][]string
 	}{
-		{[]string{"list"}, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_00000000-0000-4000-8000-000000000001", "openai", "openai", "ready"}}},
-		{[]string{"get", "cs_00000000-0000-4000-8000-000000000001"}, [][]string{{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS"}, {"cs_00000000-0000-4000-8000-000000000001", "openai", "openai", "ready", "ready"}}},
+		{[]string{"list"}, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_00000000-0000-4000-8000-000000000001", "example-model", "static", "ready"}}},
+		{[]string{"get", "cs_00000000-0000-4000-8000-000000000001"}, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_00000000-0000-4000-8000-000000000001", "example-model", "static", "ready"}}},
 	} {
 		var out strings.Builder
 		command := New(&out, io.Discard)
@@ -1097,12 +1119,12 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 }
 
 func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.T) {
-	source := `{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"oauth2-refresh-token","state":"ready","status":{"state":"ready","refresh":{"state":"failed","failureCode":"token_rejected"}}}`
+	source := strings.TrimSuffix(canonicalOAuthSource, "}") + `,"status":{"state":"failed","refresh":{"state":"failed","failureCode":"token_rejected"}}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources":
-			_, _ = io.WriteString(w, `{"data":[{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"oauth2-refresh-token","state":"ready"}],"meta":{"requestId":"req_1"}}`)
+			_, _ = io.WriteString(w, `{"data":[`+canonicalOAuthSource+`],"meta":{"requestId":"req_1"}}`)
 		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001":
 			_, _ = io.WriteString(w, `{"data":`+source+`,"meta":{"requestId":"req_2"}}`)
 		default:
@@ -1124,8 +1146,8 @@ func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.
 		got = append(got, strings.Fields(line))
 	}
 	want := [][]string{
-		{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS", "REFRESH"},
-		{"cs_00000000-0000-4000-8000-000000000001", "openai", "oauth2-refresh-token", "ready", "ready", "failed"},
+		{"ID", "NAME", "TYPE", "STATE", "REFRESH"},
+		{"cs_00000000-0000-4000-8000-000000000001", "example-account", "oauth2-refresh-token", "ready", "failed"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("table = %#v, want %#v", got, want)
@@ -1143,6 +1165,10 @@ func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.
 	}
 	if _, ok := decoded["refreshStatus"]; ok {
 		t.Fatalf("json gained a table-only key: %s", structured.String())
+	}
+	consent, _ := decoded["consent"].(map[string]any)
+	if consent["version"] != float64(1) || consent["issuer"] != "https://identity.example.test" {
+		t.Fatalf("json consent = %#v", consent)
 	}
 	status, _ := decoded["status"].(map[string]any)
 	refresh, _ := status["refresh"].(map[string]any)

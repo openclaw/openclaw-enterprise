@@ -5251,7 +5251,7 @@ Create a new Agent and queue first-time provisioning
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
-| `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission. |
+| `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409. |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
@@ -10646,6 +10646,7 @@ Example response
           "profile.read"
         ],
         "issuer": "https://accounts.example.com",
+        "kind": "connection_template",
         "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
         "ownerPrincipalId": "user-docs-admin",
         "requestedScopes": [
@@ -10681,12 +10682,11 @@ Register a credential source
 
 **Operation ID:** `createCredentialSource`
 
-**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.
+**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `credential_source` | `namespace` |
-| `operate` | `secret` | `request_body` (when bound) |
 
 ##### Parameters
 
@@ -10864,6 +10864,7 @@ Example response
         "profile.read"
       ],
       "issuer": "https://accounts.example.com",
+      "kind": "connection_template",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "ownerPrincipalId": "user-docs-admin",
       "requestedScopes": [
@@ -10898,12 +10899,11 @@ Update a Source through its recorded owner
 
 **Operation ID:** `updateCredentialSource`
 
-**Permissions:** Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.
+**Permissions:** Requires update permission on the requested CredentialSource.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `credential_source` | `requested` |
-| `operate` | `secret` | `requested` (when bound) |
 
 ##### Parameters
 
@@ -11040,6 +11040,7 @@ Example response
         "profile.read"
       ],
       "issuer": "https://accounts.example.com",
+      "kind": "connection_template",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "ownerPrincipalId": "user-docs-admin",
       "requestedScopes": [

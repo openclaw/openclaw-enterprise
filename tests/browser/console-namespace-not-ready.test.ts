@@ -171,6 +171,7 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   // promising it deploys when created (finding 1990).
   await start.click();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const formNote = view.getByRole("status").filter({ hasText: NOT_READY });
   assert.match((await formNote.textContent()) ?? "", /^Namespace status: Provisioning\. /);
   assert.deepEqual(await statusTone(formNote), WARNING);
@@ -382,6 +383,7 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
   // A ready Namespace's form keeps its plain promise and shows no note.
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await view
     .getByText("Dedicated Agents are provisioned and deployed when created.", { exact: true })
     .waitFor();
@@ -612,6 +614,7 @@ async function openGatedForm(
   const view = page.locator(settledView);
   await view.getByRole("button", { name: "Start without Preset" }).click();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await view.getByText(WAITS, { exact: true }).waitFor();
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
@@ -680,6 +683,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     await view.getByRole("button", { name: "Start over", exact: true }).click();
     await view.getByRole("button", { name: "Start without Preset" }).click();
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+    await view.getByLabel("Credential storage", { exact: true }).selectOption("secret");
     await view.getByText(WAITS, { exact: true }).waitFor();
     // Two polls. Reads count as the page starts them, and a replaced form's timer fires in the
     // same ticks, so any read it started counts too.

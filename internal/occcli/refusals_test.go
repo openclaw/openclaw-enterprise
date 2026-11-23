@@ -152,6 +152,11 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent logs", "Agent read_logs (or administer) and Agent read", true)) {
 		t.Fatalf("logs refusal = %v", err)
 	}
+	// An OAuth grant owner can revoke with read and operate instead of delete.
+	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "credential-source", "delete", "cs_00000000-0000-4000-8000-000000000001")
+	if err == nil || !strings.HasSuffix(err.Error(), grantHint("credential-source delete", "credential source delete, or read and operate when you own the OAuth grant", true)) {
+		t.Fatalf("credential source delete refusal = %v", err)
+	}
 	// A command without an ID argument does not mention missing IDs.
 	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "iam", "role", "list")
 	if err == nil || !strings.HasSuffix(err.Error(), "\n"+grantHint("iam role list", "Installation administer and Namespace read", false)) {

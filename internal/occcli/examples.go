@@ -51,15 +51,31 @@ JSON
   Add harnessAuth to select model authentication. See
   https://docs-enterprise.openclaw.org/reference/agents/`
 
-const credentialSourceCreateExample = `  cat > credential-source.json <<'JSON'
-  {"name": "openai", "type": "openai",
-   "secrets": {"api_key": {"kind": "secret", "namespaceId": "<namespace-id>", "id": "<secret-id>"}}}
-JSON
-  occ credential-source create --file credential-source.json
+const credentialSourceCreateExample = `  (
+    umask 077
+    source_file=$(mktemp -- "${TMPDIR:-/tmp}/occ-source.XXXXXX") || exit
+    trap 'rm -f -- "$source_file"' EXIT
+    jq -Rs '{name: "example-model", type: "static", config: {provider_preset: "openai"}, secret: {opaque: gsub("\n"; "")}}' < /path/to/key > "$source_file" &&
+      occ credential-source create --file "$source_file"
+  )
 
-  Each secrets field is the ref that occ secret create -o json returns. The gateway
-  keeps its own copy of the value; see
+  The body is {"name": "example-model", "type": "static", "config": {"provider_preset": "openai"}, "secret": {"opaque": "<credential>"}}.
+  TokenService takes custody of the write-only credential. The example keeps the
+  credential off the command line and removes the temporary file on exit. See
   https://docs-enterprise.openclaw.org/reference/credential-sources/`
+
+const credentialSourceUpdateExample = `  (
+    umask 077
+    source_file=$(mktemp -- "${TMPDIR:-/tmp}/occ-source.XXXXXX") || exit
+    trap 'rm -f -- "$source_file"' EXIT
+    jq -Rs '{secret: {opaque: gsub("\n"; "")}}' < /path/to/key > "$source_file" &&
+      occ credential-source update cs_00000000-0000-4000-8000-000000000001 --file "$source_file"
+  )
+
+  The body is {"secret": {"opaque": "<replacement-credential>"}}. Replace the example Source ID.
+  Supply secret, config, or both. Omitted fields retain their values. Change or remove
+  provider_preset separately from credential replacement. See
+  https://docs-enterprise.openclaw.org/reference/credential-sources/managed-static/`
 
 const iamServicePrincipalCreateExample = `  occ iam service-principal create --namespace <namespace-id>
 

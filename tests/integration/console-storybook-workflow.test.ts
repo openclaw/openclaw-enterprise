@@ -493,12 +493,12 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     );
     const registration = {
       name: "Registered model",
-      type: "openai",
-      config: { authorized_base_url: "https://models.example.test/v1" },
-      secrets: { api_key: { kind: "secret", namespaceId: namespace, id: "sec_demo_model" } },
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: "SYNTHETIC-preview-key" },
     };
-    // A lost answer must leave the registration available to the Create form's
-    // recovery read. This exercises the router through the native Request body.
+    // A lost answer leaves a committed Source visible to subsequent inspection,
+    // while its submitted credential material is never returned by the fixture.
     await assert.rejects(
       frame.fetch(
         new Request(`https://preview.example.test${path}credential-sources`, {
@@ -509,10 +509,18 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       ),
       { name: "TypeError", message: "Failed to fetch" },
     );
-    const sourcePath = `credential-sources/${id("csr", 100)}`;
-    assert.partialDeepStrictEqual(await (await request(sourcePath)).json(), {
-      data: { ...registration, id: id("csr", 100), state: "ready" },
+    const sourcePath = `credential-sources/${id("cs", 100)}`;
+    const exact = await (await request(sourcePath)).json();
+    assert.partialDeepStrictEqual(exact, {
+      data: {
+        name: registration.name,
+        type: "static",
+        config: registration.config,
+        id: id("cs", 100),
+        state: "ready",
+      },
     });
+    assert.equal(JSON.stringify(exact).includes(registration.secret.opaque), false);
     const listed: unknown = await (await request("credential-sources")).json();
     assert.ok(
       listed !== null &&
@@ -654,19 +662,26 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     installFixture({}, evidence());
     await invalidRequest("credential-sources", "POST", null);
     assert.partialDeepStrictEqual(await (await request("credential-sources")).json(), { data: [] });
-    // Config and Secret bindings are opaque here: the fixture must not normalize
-    // or disclose the referenced Secret while saving the ordinary Create request.
+    // A valid canonical registration saves metadata without returning the key.
     const registration = {
       name: "New model",
-      type: "openai",
-      config: { authorized_base_url: "https://models.example.test/v1" },
-      secrets: { api_key: { kind: "secret", namespaceId: namespace, id: "sec_demo_model" } },
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: "SYNTHETIC-preview-key" },
     };
     const valid = await request("credential-sources", "POST", registration);
     assert.equal(valid.status, 201);
-    assert.partialDeepStrictEqual(await valid.json(), {
-      data: { ...registration, id: id("csr", 100), state: "ready" },
+    const saved = await valid.json();
+    assert.partialDeepStrictEqual(saved, {
+      data: {
+        name: registration.name,
+        type: "static",
+        config: registration.config,
+        id: id("cs", 100),
+        state: "ready",
+      },
     });
+    assert.equal(JSON.stringify(saved).includes(registration.secret.opaque), false);
   });
 
   await t.test("Opaque IAM replies retain payload order and binding identity", async () => {
@@ -677,7 +692,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     };
     const createdRole = await request("iam/roles", "POST", role);
     assert.equal(createdRole.status, 201);
-    const roleWire = { ...role, id: "role_100", namespaceId: namespace };
+    const roleWire = { ...role, id: id("role", 100), namespaceId: namespace };
     const meta = { requestId: id("req", 1) };
     assert.equal(await createdRole.text(), JSON.stringify({ data: roleWire, meta }));
     assert.equal(
@@ -687,19 +702,19 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     const binding = {
       subjectKind: "identity",
       subjectId: "identity_demo_agent",
-      roleId: "role_100",
+      roleId: roleWire.id,
       resourceKind: "secret",
       resourceId: "sec_demo_model",
     };
     const createdBinding = await request("iam/access-bindings", "POST", binding);
     assert.equal(createdBinding.status, 201);
-    const bindingWire = { ...binding, id: "binding_101", namespaceId: namespace };
+    const bindingWire = { ...binding, id: id("binding", 101), namespaceId: namespace };
     assert.equal(await createdBinding.text(), JSON.stringify({ data: bindingWire, meta }));
     assert.equal(
       await (await request("iam/access-bindings")).text(),
       JSON.stringify({ data: [bindingWire], meta }),
     );
-    assert.equal((await request("iam/access-bindings/binding_101", "DELETE")).status, 204);
+    assert.equal((await request(`iam/access-bindings/${bindingWire.id}`, "DELETE")).status, 204);
     assert.partialDeepStrictEqual(await (await request("iam/access-bindings")).json(), {
       data: [],
     });

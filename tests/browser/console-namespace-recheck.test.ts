@@ -146,6 +146,7 @@ async function openGatedForm(
   const view = page.locator(settledView);
   await view.getByRole("button", { name: "Start without Preset" }).click();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await view.getByText(WAITS, { exact: true }).waitFor();
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
@@ -437,6 +438,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByRole("button", { name: "Start over", exact: true }).click();
     await view.getByRole("button", { name: "Start without Preset" }).click();
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+    await view.getByLabel("Credential storage", { exact: true }).selectOption("secret");
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     assert.equal(await view.getByText(NOT_READY).count(), 0);
   });

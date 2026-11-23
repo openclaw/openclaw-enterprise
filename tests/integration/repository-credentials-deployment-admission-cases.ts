@@ -23,7 +23,6 @@ import {
   AgentSchema,
   ConfigurationResponse,
   ConfigurationSchema,
-  CredentialSourceResponse,
   ErrorResponse,
   JsonValue,
   Meta,
@@ -1131,15 +1130,14 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       SecretResponse,
       201,
     );
-    const { data: model } = checkedEnvelope(
-      await f.request("POST", `${namespacePath}/credential-sources`, {
-        name: "protected-repository-model",
-        type: "openai",
-        secrets: { api_key: secret.ref },
-      }),
-      CredentialSourceResponse,
-      201,
-    );
+    // These policy and deployment cases exercise an existing Gateway-owned Source. Canonical
+    // TokenService enrollment is not admitted by this historical serving path.
+    const model = await f.controller.createCredentialSource(f.actorId, {
+      namespaceId: f.namespace.id,
+      name: "protected-repository-model",
+      type: "openai",
+      secrets: { api_key: secret.ref },
+    });
     const sourceId = model.id;
     async function createSelectedAgent(gatewayManagedMode?: boolean) {
       const agent = await f.createAgent({

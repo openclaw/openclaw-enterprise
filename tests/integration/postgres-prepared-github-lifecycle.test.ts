@@ -66,19 +66,16 @@ test(
     assert.deepEqual(reference, { kind: "github_app_installation", key: source.key });
     const readsBeforeRefusal = f.secretReads;
     const registration = { source, secret: fixture.issuer };
-    for (const [invalid, message] of [
-      [registration, /unknown token registration kind/i],
-      [{ ...registration, kind: "prepared_source" }, /provider does not support this token kind/],
-      [
-        { ...registration, kind: "oauth_refresh_token" },
-        /requires an account, approved template and grant/,
-      ],
-    ] as const) {
+    for (const invalid of [
+      registration,
+      { ...registration, kind: "prepared_source" },
+      { ...registration, kind: "oauth_refresh_token" },
+    ]) {
       const register: (input: never, signal: AbortSignal) => Promise<PreparedTokenRef> =
         tokens.register.bind(tokens);
       const pending: unknown = callFixture(register, tokens, [invalid, t.signal]);
       assert.ok(pending instanceof Promise);
-      await assert.rejects(pending, { message });
+      await assert.rejects(pending, { message: /provider does not support this token kind/i });
     }
     assert.equal(
       f.secretReads,
@@ -301,9 +298,6 @@ test(
     assert.ok((await f.resolve(captureMetadata(f))).refused);
     assert.equal(upstreamReads(), sent, "the upstream received no request after IAM loss");
 
-    // Withdrawal also fences later direct resolution of the same registration by a peer.
-    await fixture.lifecycle.withdraw(source, t.signal);
-    assert.equal(await other(), undefined);
     assert.equal(gh.issuesOfTokens.length, 3);
     assert.equal(
       (
@@ -314,13 +308,20 @@ test(
       ).rowCount,
       0,
     );
-    const unused = await findPreparedSource(f.state, f.namespace.id, unrelated);
-    await fixture.lifecycle.withdraw(unused, t.signal);
+    // Keep this case's families out of later fixture scheduling, then let their issuer drain
+    // pending retirement through the same maintenance path used by the worker.
+    await f.pool.query<Record<string, unknown>>(
+      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=ANY($1::text[])",
+      [[source.key.source.id, unrelated]],
+    );
+    while ((await fixture.lifecycle.maintain(t.signal)) === "retired") {
+      // Drain only this fixture owner's already-pending cleanup.
+    }
   },
 );
 
 test(
-  "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
+  "PostgreSQL prepared custody: source consent, proactive renewal, restart and issuer rotation",
   requiresPostgres,
   async (t) => {
     let invalidScope = false;
@@ -666,9 +667,8 @@ test(
     assert.equal(rotated.ownerEpoch, 2);
     assert.notEqual(rotated.inputVersion, old.inputVersion);
     assert.equal(await status(rotated.accessToken), 200);
-    // A issued a real token, but its response cannot qualify the token for use. Withdrawal
-    // under B must preserve that exceptional cleanup candidate and A's now-displaced current token.
-    const withdrawn = await selectPreparedSend();
+    // A issued a real token, but its response cannot qualify the token for use. A worker at B
+    // must not disclose or settle A's exceptional cleanup candidate.
     invalidScope = true;
     await f.pool.query<Record<string, unknown>>(
       "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '8 minutes' WHERE material_version=$1",
@@ -677,51 +677,34 @@ test(
     await due();
     assert.equal(await fresh.maintain(signal), "quarantined");
     invalidScope = false;
-    await t.test(
-      "API restart at B cannot disclose A's quarantined issuance during withdrawal",
-      async () => {
-        const pending = await pendingRetirements();
-        assert.deepEqual(
-          pending.map((r) => r.state),
-          ["quarantined"],
-        );
-        const attemptsAtA = gh.trace.length;
-        await assert.rejects(restartedAtB.withdraw(source, signal), {
-          name: "CredentialTokenUnsettledError",
-        });
-        assert.equal(credentialRequestsAtB, 0, "B received A's exceptional pending credential");
-        assert.equal(gh.trace.length, attemptsAtA);
-        const kept = await pendingRetirements();
-        assert.deepEqual(kept.map((r) => r.state).sort(), ["committed", "quarantined"]);
-        assert.deepEqual(
-          kept.find((r) => r.id === pending[0]?.id),
-          pending[0],
-        );
-        assert.equal(
-          gh.tokenState().filter((r) => !r.revoked).length,
-          2,
-          "A still owns both live tokens",
-        );
-      },
-    );
-    await t.test("before-send refuses a withdrawn prepared family", async () => {
-      assert.equal((await withdrawn.authorize()).refused?.code, f.refusalCode("DENIED"));
-      await assertPoolIdle();
+    await t.test("worker restart at B cannot disclose A's quarantined issuance", async () => {
+      const pending = await pendingRetirements();
+      assert.deepEqual(
+        pending.map((r) => r.state),
+        ["quarantined"],
+      );
+      const attemptsAtA = gh.trace.length;
+      assert.equal(await restartedAtB.maintain(signal), "issuer-mismatch");
+      assert.equal(credentialRequestsAtB, 0, "B received A's exceptional pending credential");
+      assert.equal(gh.trace.length, attemptsAtA);
+      const kept = await pendingRetirements();
+      assert.deepEqual(kept, pending);
+      assert.equal(
+        gh.tokenState().filter((r) => !r.revoked).length,
+        2,
+        "A still owns both live tokens",
+      );
     });
-    await fresh.withdraw(source, signal);
-    assert.equal(
-      gh.tokenState().every((r) => r.revoked),
-      true,
-      "only A can confirm both retirements",
-    );
+    assert.equal(await fresh.maintain(signal), "retired");
     assert.deepEqual(await pendingRetirements(), []);
-    assert.equal(await fresh.ready(source, signal), false);
-    assert.equal(await readWarm(fresh, source, readWindow()), undefined);
-    assert.equal(
-      await status(rotated.accessToken),
-      401,
-      "withdrawal must revoke the actual provider credential",
-    );
+    assert.equal(await status(rotated.accessToken), 200, "cleanup preserves current material");
+    // Isolate later maintenance cases from the already-exercised family.
+    const park = (id: string) =>
+      f.pool.query<Record<string, unknown>>(
+        "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+        [id],
+      );
+    await park(source.key.source.id);
     // Lose the response *after* the synthetic provider owns the token. A different worker must
     // observe the durable quarantine, never issue again, and never claim remote revocation.
     const lostSource = await registerSource("prepared-lost-response");
@@ -743,9 +726,7 @@ test(
     );
     assert.equal(gh.issuesOfTokens.length, issuedBefore + 1);
     assert.equal(await readWarm(lifecycle, lost, readWindow()), undefined);
-    await assert.rejects(lifecycle.withdraw(lost, signal), {
-      name: "CredentialTokenUnsettledError",
-    });
+    await park(lostSource);
     await t.test("a lost retirement commit receipt clears the unreceived candidate", async (t) => {
       // An out-of-scope issuance leaves a real cleanup candidate for the next worker pass.
       await registerSource("prepared-lost-retirement-commit");

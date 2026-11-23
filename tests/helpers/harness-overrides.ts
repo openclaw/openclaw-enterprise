@@ -67,18 +67,21 @@ export async function exerciseHarnessOverrides(
   };
   // Source consent may differ from the Installation default. It does not choose the route.
   const destination = f.modelProvider.baseUrl.replace("/v1", "/evaluation/v1");
-  const source = await post("/credential-sources", {
+  // Current deployment still serves historical Gateway-owned Sources. Establish
+  // that former enrollment through its owner instead of using retired public CRUD.
+  const source = await f.controller.createCredentialSource(f.principal.id, {
+    namespaceId: f.namespace.id,
     name: "evaluation",
     type: "openai",
     config: { authorized_base_url: destination },
     secrets: f.source.secrets,
   });
-  // Destination restrictions are enforced by protected-source admission. A new
-  // Gateway source must be explicitly adopted before this workflow binds it.
-  const adopted = await f.request("PATCH", `${root}/credential-sources/${source.id}`, {
-    body: { adoption: "live", authorityScope: "execution" },
+  await f.controller.updateCredentialSource(f.principal.id, {
+    namespaceId: f.namespace.id,
+    credentialSourceId: source.id,
+    adoption: "live",
+    authorityScope: "execution",
   });
-  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   const create = async (name: string, sourceId: string) => {
     const agent = await post("/agents", {
       name,

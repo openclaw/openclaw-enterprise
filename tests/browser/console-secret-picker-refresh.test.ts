@@ -719,6 +719,7 @@ test("Create Agent discards a pending model Secret even after switching provider
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const key = page.getByLabel("API key Secret", { exact: true });
   const provider = page.getByLabel("Provider", { exact: true });
   const permission = `${fixture.origin}/namespaces/${namespace.id}/permissions/secrets`;
@@ -757,12 +758,14 @@ test("Create Agent waits for the replacement model Secret before validating", as
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const key = page.getByLabel("API key Secret", { exact: true });
   const base = `${fixture.origin}/namespaces/${namespace.id}`;
   const permission = `${base}/permissions/secrets`;
   const requests = apiRequests(page, fixture.origin);
   // A failed read leaves no cached answer, so the replacement waits for a fresh check.
   await page.route(permission, (route) => route.abort(), { times: 1 });
+  const beforeSearch = await asksBeforeUnload(page);
   await key.fill(first.name);
   await page.getByRole("option", { name: first.name }).waitFor();
   const searching = await asksBeforeUnload(page);
@@ -796,7 +799,7 @@ test("Create Agent waits for the replacement model Secret before validating", as
   const validated = await validation;
   assert.equal(validated.status(), 204);
   assert.deepEqual(validated.request().postDataJSON().harnessAuth.source, second.ref);
-  assert.equal(searching, false);
+  assert.equal(searching, beforeSearch, "searching does not add a draft edit");
   assert.equal(selected, true);
 });
 
