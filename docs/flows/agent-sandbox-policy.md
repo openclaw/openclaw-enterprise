@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/63971d23-fdba-482e-b355-2819e32e6a46"
+last_updated_session: "authoring-run/19359633-e6f9-48aa-aedb-66a9b329a7fd"
 ---
 
 # Agent sandbox policy flow
@@ -90,10 +90,11 @@ defaults targeting `github.com`, its subdomains or IP addresses. Deploy and
 binding-preserving updates check SandboxPolicy `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds repository rules to the credential-only Provider. Git and read-only API
-access stay local. A compiled [PR POST](../reference/repository-credentials/access-levels.md#pull-request-creation)
-attaches mandatory `api.github.com` middleware. The Worker validates the body
-before injection and authorizes that Agent's permitted API reads.
+binds repository rules to the credential-only Provider. OpenShell alone enforces
+Git, issue and PR reads and [PR creation](../reference/repository-credentials/access-levels.md#pull-request-creation).
+The Git middleware selects no admitted host, so no OCE service is in the request
+path. Deny rules refuse the create fields in a query string. Request bodies are
+not inspected ([known limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -271,7 +272,7 @@ counters, controls and empty rows.
 
 ## Changelog
 
-- 2026-11-23 05:02: Explain local PR reads and the Worker dependency for compiled PR creation rules. (authoring-run/63971d23-fdba-482e-b355-2819e32e6a46 - 3fd844babfc51ecc743c768a022e233ff4a08dee)
+- 2026-11-23 09:00: Explain that OpenShell alone enforces PR reads and creation, with no request-time OCE check. (authoring-run/19359633-e6f9-48aa-aedb-66a9b329a7fd - eab74449a971c0efd318d62304640dca4f54ba76)
 
 - 2026-11-22 13:25: Explain draft retention and recovery after a concurrent repository grant change. (authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa - 19ce90f1761a9da44d9a972c42d49686732a604a)
 
