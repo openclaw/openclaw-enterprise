@@ -1122,6 +1122,14 @@ test("plugin preview and publication share an upload budget per authenticated pr
     session: reader.session,
   });
   assertApiError(other, 403, "FORBIDDEN");
+  // Denied callers also have a bounded budget before the Namespace grant check.
+  const denied = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      controller.request("POST", path + "/preview", { ...upload, session: reader.session }),
+    ),
+  );
+  assert.ok(denied.some((response) => response.status === 403));
+  assert.ok(denied.some((response) => response.status === 429));
 });
 
 test("a Namespace publisher admits an immutable plugin release only for Agents in that Namespace", async (t) => {

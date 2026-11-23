@@ -429,7 +429,6 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
   return (
-    isPluginReleaseUpload(operation) ||
     operation.operationId === "createPreset" ||
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
@@ -1559,10 +1558,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
-    if (isPluginReleaseUpload(operation)) {
-      await controller.authorizePluginPublication(context.actorId, params.namespaceId as string);
-      return;
-    }
     if (
       operation.operationId === "createConfiguration" ||
       operation.operationId === "updateConfiguration"
@@ -3404,7 +3399,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
+      const route: Parameters<
+        typeof routes.route<RouteGenericInterface, { auditManagementRequest?: true }>
+      >[0] = {
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
@@ -3431,27 +3428,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             await authorizeBeforeBody(request, operation);
           }
         },
-        ...(isPluginReleaseUpload(operation)
-          ? {
-              preParsing: async (
-                request: FastifyRequest,
-                reply: FastifyReply,
-                payload: NodeJS.ReadableStream,
-              ) => {
-                const context = contexts.get(request)!;
-                const retryAfter = pluginUploadRateLimit.consume(context.actorId);
-                if (retryAfter !== undefined) {
-                  reply.header("retry-after", String(retryAfter));
-                  throw failure(
-                    429,
-                    "RATE_LIMITED",
-                    "Too many plugin upload requests. Wait before retrying.",
-                  );
-                }
-                return payload;
-              },
-            }
-          : {}),
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
@@ -3476,7 +3452,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
-        ...(authorizesBeforeBody(operation)
+        ...(authorizesBeforeBody(operation) || isPluginReleaseUpload(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => {
@@ -3542,7 +3518,42 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 return payload;
               },
             }),
-      });
+      };
+      if (isPluginReleaseUpload(operation)) {
+        const { method: _method, url: _url, handler, onRequest: _onRequest, ...shared } = route;
+        routes.post<
+          RouteGenericInterface,
+          { auditManagementRequest?: true; rateLimit: RequestRateLimiter }
+        >(
+          operation.path,
+          {
+            ...shared,
+            config: { ...shared.config, rateLimit: pluginUploadRateLimit },
+            onRequest: async (request, reply) => {
+              await admit(request, operation);
+              await resolveIdentity(request, operation);
+              const context = contexts.get(request)!;
+              const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "RATE_LIMITED",
+                  "Too many plugin upload requests. Wait before retrying.",
+                );
+              }
+              if (controller === undefined) {
+                throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+              }
+              const params = request.params as Record<string, string>;
+              await controller.authorizePluginPublication(context.actorId, params.namespaceId!);
+            },
+          },
+          handler,
+        );
+      } else {
+        routes.route(route);
+      }
     }
   });
 
