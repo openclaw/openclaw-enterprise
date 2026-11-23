@@ -219,7 +219,10 @@ Sandbox until it ends.
 
 Replacement and retirement wait while the Worker holds the Source's catalog row.
 The Worker limits the hold to 60 seconds and confirms it before and after the
-Provider write. A missing hold prevents dispatch. If confirmation fails after
+Provider write. When the Worker is frozen or cut off from the database,
+PostgreSQL ends its idle session. The same limit applies to the Worker's
+transaction the checks run in, which holds the Namespace row that replacement
+and retirement lock first. A missing hold prevents dispatch. If confirmation fails after
 dispatch, the Worker blocks the route as `write_unknown` and does not retry or
 confirm delivery. The Gateway may still install the submitted credential with
 its original expiry. Stop the Agent and verify the Sandbox has retired before
