@@ -126,8 +126,8 @@ export interface ConnectionCallbackDependencies {
 }
 
 /**
- * Completes the connection, then redirects to the console without the query string, so the
- * the landing page and callback audit receive no OAuth code or state.
+ * Completes the connection, then redirects with only the outcome and Source identity. The
+ * landing page and callback audit receive no OAuth code or state.
  */
 export function createConnectionCallback(dependencies: ConnectionCallbackDependencies) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
@@ -164,7 +164,7 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
         ),
       );
       reply.redirect(
-        `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
+        `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected&sourceId=${encodeURIComponent(connection.id)}`,
         303,
       );
     } catch (error) {

@@ -263,6 +263,10 @@ test(
       `/oauth/callback?${new URLSearchParams({ state: manualState, error: "access_denied" })}`,
     );
     assert.match(String(deniedManual.headers.location), /reason=consent_denied/);
+    assert.equal(
+      new URL(String(deniedManual.headers.location), publicOrigin).searchParams.has("sourceId"),
+      false,
+    );
     assert.deepEqual((await inject("GET", sources)).json().data, []);
     // A provider-authenticated callback must not publish a ready Source if private custody fails.
     const custodyFailure = await inject("POST", connections, manual);
@@ -491,6 +495,18 @@ test(
     }
     // The same user in a second browser cannot spend the first browser's state or code.
     const { callback } = await begin();
+    const pendingSources = await owner("GET", sources);
+    assert.equal(pendingSources.statusCode, 200, pendingSources.body);
+    assert.equal(
+      pendingSources
+        .json()
+        .data.some(
+          (entry: { connectionTemplateId?: string }) =>
+            entry.connectionTemplateId === input.connectionTemplateId,
+        ),
+      false,
+      "consent has not created a Source before the successful callback",
+    );
 
     // Only Keycloak can start a flow. The built-in Google template still has no OAuth client.
     assert.equal(new URL(callback, publicOrigin).searchParams.has("iss"), false);
@@ -511,10 +527,22 @@ test(
     assert.equal(beforeCallback.statusCode, 200, beforeCallback.body);
     const completed = await owner("GET", callback);
     assert.equal(completed.statusCode, 303, completed.body);
-    assert.match(String(completed.headers.location), /connection=connected/);
     assert.match(String((await owner("GET", callback)).headers.location), /reason=unknown_session/);
     const savedSource = await oauthSource(input.connectionTemplateId);
     const id = savedSource.id;
+    // The opener receives only the newly saved Source ID after consent succeeds; OAuth
+    // state, authorization code, and tokens never enter the same-origin landing URL.
+    const landing = new URL(String(completed.headers.location), publicOrigin);
+    assert.equal(landing.origin, publicOrigin);
+    assert.equal(landing.pathname, "/console/");
+    assert.deepEqual(
+      [...landing.searchParams.entries()],
+      [
+        ["namespace", namespaceId],
+        ["connection", "connected"],
+        ["sourceId", id],
+      ],
+    );
     const policy = await state.loadNativeIAMState(controller.installation.id);
     const exactOwnerGrant = policy.bindings.find(
       (grant) =>

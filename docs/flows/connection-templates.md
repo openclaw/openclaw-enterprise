@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
 updated: "2026-11-23"
-last_updated_session: "authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a"
+last_updated_session: "authoring-run/f79523c1-41c8-4d45-8e08-14669a2afd29"
 ---
 
 # How OCC saves a connection template
@@ -81,6 +81,8 @@ On callback, OCC consumes the matching attempt once, checks the person's session
 
 After exchange, OCC calls the selected TokenService's typed Source registration operation with the OAuth grant, Template ID, original consent version, selected client, and requested and granted scopes. TokenService allocates the Source ID, creates the ready OAuth Source, and stores the access token and refresh grant privately. OCC then grants the creator access and records the completion audit against the Source and the authorized Namespace create operation. When the provider omits scopes after a provider-default request, the Source records an empty granted-scope list.
 
+The callback redirects to the same-origin Console with the Namespace and newly created nonsecret Source ID. The redirect contains no authorization code, state, or token. Console can use the ID to read the exact Source.
+
 ### 5. Renew the grant
 
 `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
@@ -107,6 +109,7 @@ The worker renews due OAuth Sources. A trusted consumer obtains a usable credent
 
 ## Changelog
 
+- 2026-11-23 10:15: Describe the callback's Source handoff to Console. (authoring-run/f79523c1-41c8-4d45-8e08-14669a2afd29 - 223d6347d)
 - 2026-11-23 13:30: Replace provisional and saved connections with consent state followed by TokenService-owned OAuth Source registration. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
 
 - 2026-11-22 22:35: Trace static Bearer template management through the generic Console and distinguish OAuth-only client registration. (authoring-run/f81c2ba5-1907-4d22-af81-7eafc3d4e151 - 307773df82de054c2ef7a72be3ede9aaab4080d9)
