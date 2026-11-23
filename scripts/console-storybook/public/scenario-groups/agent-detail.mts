@@ -567,7 +567,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: shareExistingPerson,
         description:
-          "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+          "The sharing acknowledgment explains that removing the Agent grant leaves the separate Namespace discovery grant in place. Other grants may still provide access.",
       },
       agentSharingHoldsNavigation: {
         group: "Pages/Agent detail",
@@ -1503,12 +1503,12 @@ export function createAgentDetailScenarios({
         description:
           "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
         steps: [
-          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration. The conflict moves focus to Reload draft, which is described by the alert.",
           "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
           "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
           "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
         ],
-        gap: "Simulated preflight conflict only; the browser regression checks a real Controller PATCH race.",
+        gap: "Simulated preflight conflict. The browser regression covers a real Controller PATCH conflict arriving during a return-to-tab access check.",
       },
       admitted: {
         group: "Pages/Agent detail",

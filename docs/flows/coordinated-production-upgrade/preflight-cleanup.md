@@ -1,7 +1,7 @@
 ---
 created: "2026-11-11"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/94311d6d-595a-410d-8621-eb947450804f"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/ac4e2468-e42e-4789-abc3-09c92e35b753"
 ---
 
 # Interrupted preflight cleanup flow
@@ -121,9 +121,10 @@ Readbacks retain resource identity rather than Secret or Job contents.
 
 ### 4. Report cleanup without resuming an upgrade
 
-`scripts/upgrade-production-images:553` writes a version `1`
-`preflight-cleanup-result.json` containing `complete` and `unknown` in the new
-invocation directory. Any uncertain create or unconfirmed deletion makes
+The `--cleanup-preflight` branch in `scripts/upgrade-production-images` calls
+`scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight`. The branch then writes
+a version `1` `preflight-cleanup-result.json` containing `complete` and `unknown`
+in the new invocation directory. Any uncertain create or unconfirmed deletion makes
 `complete` false and exits `1`; confirmed cleanup exits `0`. Invalid evidence
 exits `2` before this directory or Kubernetes operations are created. Interruption
 before a result does not establish completion.
@@ -157,6 +158,8 @@ reconciling database, release and workload state. Cleanup never authorizes resum
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 20:10: Correct the cleanup result source pointer. (authoring-run/ac4e2468-e42e-4789-abc3-09c92e35b753 - bc82a1499fa335fa57e96634a0ff64ff5b82fede)
 
 - 2026-11-18 03:25: Bind cleanup to the selected-image migration helper and chart program. (authoring-run/94311d6d-595a-410d-8621-eb947450804f - 6a4fb6e566fe01b6d5088618531299e02d1686cc)
 
