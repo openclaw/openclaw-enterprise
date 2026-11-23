@@ -9,6 +9,9 @@ export const helmTargetOverrides = [
   "HELM_KUBECAFILE",
   "HELM_KUBETLS_SERVER_NAME",
   "HELM_KUBEINSECURE_SKIP_TLS_VERIFY",
+  "HELM_KUBETOKEN",
+  "HELM_KUBEASUSER",
+  "HELM_KUBEASGROUPS",
 ];
 export const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 export const controller = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
@@ -43,7 +46,7 @@ export function execute(
   });
 }
 
-async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) {
+async function commandPath(name: "helm" | "sleep" | "setsid" | "python3", fallback: string) {
   const { stdout } = await execute("bash", [
     "--noprofile",
     "--norc",
@@ -74,7 +77,14 @@ export async function createRecoveryTools(repository: string) {
     sleep: await commandPath("sleep", "/bin/sleep"),
     setsid: await commandPath("setsid", "/usr/bin/setsid"),
   };
-  return { repository, sourceRevision, script, realHelm, shimTools };
+  return {
+    repository,
+    sourceRevision,
+    script,
+    realHelm,
+    realPython: await commandPath("python3", "/usr/bin/python3"),
+    shimTools,
+  };
 }
 
 export type RecoveryTools = Awaited<ReturnType<typeof createRecoveryTools>>;

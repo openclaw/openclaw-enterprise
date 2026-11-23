@@ -13,7 +13,7 @@ import {
   writePostgresState,
 } from "../helpers/ci-prepare-fixture.ts";
 import { rejectPostgresStartup, startFakePostgres } from "../helpers/fake-postgres-server.ts";
-import { readJsonLines } from "../helpers/json-lines.mjs";
+import { readJsonLines } from "../helpers/json-lines.ts";
 
 const childPath = fileURLToPath(
   new URL("./ci-prepare-postgres-diagnostics-child.ts", import.meta.url),

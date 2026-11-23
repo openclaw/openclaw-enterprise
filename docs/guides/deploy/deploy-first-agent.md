@@ -166,7 +166,7 @@ request GET "$base/configurations/$cfg" |
     .values.gateway += {publicOrigin:$origin,controlUi:{enabled:true,allowedOrigins:[$origin]}} |
     .values.gateway.auth += {mode:"trusted-proxy",
       trustedProxy:{userHeader:"x-occ-identity",allowUsers:["occ-workspace-files"],
-        deviceAutoApprove:{enabled:true,scopes:["operator.read","operator.write"]}},
+        requiredHeaders:["x-openclaw-scopes"]},
       identityScopes:{"occ-workspace-files":["operator.admin"]}}' |
   request PATCH "$base/configurations/$cfg" --data-binary @- > "$RUN_DIR/browser-configuration"
 ```
@@ -210,7 +210,7 @@ wait_deployment "$revision"
 </Accordion>
 <Accordion title="CLI">
 
-Use the API helper defined above:
+Run the [deployment helper](quickstart-session.md#files-and-helpers) loaded during installation setup.
 
 ```bash
 deploy_and_wait

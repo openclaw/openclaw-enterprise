@@ -16,6 +16,7 @@ uncleanStopRestartTest(
 uncleanStopRestartTest(
   "Kubernetes",
   "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
+  { workspaceHistory: true },
 );
 uncleanStopRestartTest(
   "Kubernetes",

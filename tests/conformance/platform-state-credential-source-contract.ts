@@ -12,11 +12,9 @@ import type {
   Secret,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import type {
-  ConfigurationOwnership,
-  PlatformStateStore,
-  PlatformUnitOfWork,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { ConfigurationOwnership } from "../../packages/occ/src/ports/configurations.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 import {
   assertCreatedRevision,
   identifier,

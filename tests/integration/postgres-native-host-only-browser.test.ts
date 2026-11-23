@@ -183,7 +183,7 @@ test(
         `/chat/main/test-session-${randomUUID().replaceAll("-", "")}`,
         native.origin,
       );
-      const expectedPath = `/namespaces/${namespace.id}/agents/${agent.id}${namedUrl.pathname}`;
+      const expectedPath = `/native-browser/namespaces/${namespace.id}/agents/${agent.id}${namedUrl.pathname}`;
       const reachedNamedPage = (from: number) =>
         upstream.requests
           .slice(from)

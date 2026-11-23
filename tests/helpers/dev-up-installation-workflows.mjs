@@ -390,7 +390,7 @@ export function registerInstallationKeycloak() {
         await page.goto(`${origin}/console/`);
         const signedIn = await api(page, "/api/auth/sign-in/email", {
           email: "admin@development.openclaw.invalid",
-          password: (await fixture.read("initial-admin-password")).trim(),
+          password: await fixture.read("initial-admin-password"),
         });
         assert.equal(signedIn.status, 200, "the recovery administrator remains usable");
         const admin = await api(page, "/api/auth/session");
@@ -454,10 +454,14 @@ export function registerInstallationKeycloak() {
               ({ name, value }) => name === "__Secure-openclaw_occ_shared.session_token" && value,
             );
             assert.ok(sessionCookie);
-            // OIDC preserves the shared session scope for the Console and Agent hosts.
+            // The default session spans this cluster's Console and Agent hosts;
+            // its scope must not extend to another development installation.
+            assert.equal(sessionCookie.name, "__Secure-openclaw_occ_shared.session_token");
             assert.equal(sessionCookie.domain, `.${fixture.cluster}.oce.localhost`);
             assert.equal(sessionCookie.secure, true);
             assert.equal(sessionCookie.httpOnly, true);
+            assert.equal(sessionCookie.path, "/");
+            assert.equal(sessionCookie.sameSite, "Lax");
 
             const endpoint = {
               hostname: fixture.consoleHost,
@@ -508,7 +512,7 @@ export function registerInstallationKeycloak() {
               await recoveryPage.goto(`${origin}/console/`);
               const signedIn = await api(recoveryPage, "/api/auth/sign-in/email", {
                 email: "admin@development.openclaw.invalid",
-                password: (await fixture.read("initial-admin-password")).trim(),
+                password: await fixture.read("initial-admin-password"),
               });
               assert.equal(signedIn.status, 200);
               const recoveryCookies = await recovery.cookies(origin);

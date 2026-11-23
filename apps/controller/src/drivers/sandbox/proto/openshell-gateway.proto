@@ -822,6 +822,9 @@ message ProviderMutationReceipt {
   string workspace = 4;
   ProviderMutationKind kind = 5;
   ProviderDesiredIdentity desired = 6;
+  reserved 7;
+  reserved "persisted_at_ms";
+  google.protobuf.Timestamp persisted_time = 107;
 }
 
 enum ProviderMutationKind {

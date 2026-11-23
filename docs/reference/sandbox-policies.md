@@ -34,7 +34,7 @@ details with the error; it does not reduce them to a generic Driver refusal.
 
 ## Authority and admission
 
-User editing is disabled by default. Enabling or disabling
+Editing defaults to disabled. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
 `manage_policy` and exact-SandboxPolicy `update`. Live application also requires
@@ -46,12 +46,18 @@ The editing switch is temporary until the platform Guardrails primitive owns
 these restrictions. Its controller and HTTP operation are named
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`; callers must
 expect this API to change when Guardrails replaces it.
-Disabling editing preserves approved additions and previously admitted work.
+Disabling editing preserves additions and admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
 Without per-Agent network policy support, enabling editing returns HTTP 409;
 disabling it stays allowed. When the Installation selects no Sandbox Driver,
 validate, save and apply return the same 409 right after authorization. Policy GET
 then returns `capability: null` and the cause in `unavailableReason`.
+
+If the controller cannot read the active revision of an Agent with saved
+repository grants, GET returns the saved policy with `protectedExecution`,
+`capability` and `defaults` set to `null`. See `unavailableReason`. An
+authorized editor can clear saved grants. Use a compatible controller and
+Worker to inspect or stop the workload and confirm retirement.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
@@ -86,36 +92,28 @@ limits each grant to 1024 distinct ports. These writes also share the
 [early authorization budget](api-explorer.md#write-request-limits) with Preset and
 Configuration writes.
 
-The Helm deployment mounts the complete trusted startup document from one
-Kubernetes Secret shared by the API, worker and upgrade preflight. Its decoded
-data must fit Kubernetes' 1 MiB Secret limit, including all other startup fields.
-This byte limit can bind before the 16,384-entry schema limit; there is no fixed
-Helm entry count because executable paths, hostnames and port lists vary. Compact
-the document and measure its UTF-8 bytes before creating the Secret. For example,
-the 16,384-rule startup fixture's ceiling alone is 1,780,053 bytes and does not
-fit this deployment path. The file-based startup test proves schema capacity,
-not deployment of that fixture through Helm. See [Kubernetes Secret limits](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
+Helm stores the complete trusted startup document in one Kubernetes Secret for
+API, worker and preflight. All decoded fields must fit the
+[1 MiB Secret limit](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
+Measure compact UTF-8 bytes; variable grant sizes prevent a fixed Helm entry count.
+The 16,384-rule fixture's ceiling alone is 1,780,053 bytes and cannot fit.
+File startup proof establishes schema capacity, not full-size Helm deployability.
 
-Default rules, generated workspace access, model credential delivery, and Compute
-isolation remain controlled by their existing owners. Users cannot submit
-arbitrary provider policy YAML, alter defaults, share policies, or change their
-Agent/Namespace association. Policy identities use `sbp_` and the owner's UUID.
-Policies are created and removed with the Agent; there is no standalone
-create/delete or policy-reference API. Exact policy AccessBindings and
-Restrictions are removed with their policy.
+Default rules, workspace access, model credential delivery and Compute isolation
+retain their owners. Users cannot submit provider YAML, alter defaults, share
+policies or change ownership. Identities use `sbp_` and the Agent UUID. Agent
+lifecycle creates and removes policies and their exact IAM records; no standalone
+create/delete or policy-reference API exists.
 
 ## Desired and applied versions
 
-Saving additions requires `expectedVersion` and advances the desired policy
-version. It performs no provider mutation. Deploy explicitly to freeze selected
-Driver defaults and approved additions into a new AgentRevision;
-deployment retains its usual authorization and interruption behavior.
-**Save and apply to current revision** sends the reviewed additions, expected
-policy version and running revision in one request to the existing apply URL.
-OCC saves the new version and queues its application in one transaction. An
-empty additions list requests removal of the Agent-specific grants. Omitting
-the additions field applies the previously saved version. If the response is
-lost, refresh the policy and its application status before deciding what to do.
+Saving requires `expectedVersion`, advances the desired version and performs no
+provider mutation. Deploy explicitly to freeze defaults and additions into a new
+AgentRevision, with normal authorization and interruption behavior.
+**Save and apply to current revision** sends reviewed additions, expected version
+and running revision to the apply URL; save and enqueue are atomic. Empty additions
+remove Agent grants; omission applies the saved version. After a lost response,
+refresh policy and application status before proceeding.
 
 Live application additionally requires a supporting Driver, enabled editing, the
 expected desired version, and the exact running revision. OCC records a durable
@@ -152,13 +150,10 @@ that policy, and the worker does not send it again:
 | `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
-The last
-confirmed live version remains recorded separately when desired additions change.
-Policy GET returns the running revision as `defaultsRevisionId` and the saved
-policy version it was deployed with as `deployedPolicyVersion`. When that version
-is the saved version and no application targets that revision, the Sandbox
-enforces the saved rules without live application. The console shows **Deployed**.
-Revision snapshots and attributable audit evidence preserve the original admission.
+Last confirmed live evidence survives desired changes. GET exposes `defaultsRevisionId`
+and `deployedPolicyVersion`. If that version is saved and no application targets
+it, the console shows **Deployed**. Snapshots and audit evidence retain admission.
+
 The console shows read-only defaults from the running revision, or the selected
 Driver before deployment, separately from the delegation ceiling and additions.
 
@@ -173,6 +168,46 @@ for `GetSandbox` and `GetSandboxPolicyStatus`, and `config:write` and Workspace
 role `admin` for `UpdateConfig`. Recommendations through `GetDraftPolicy` need
 `config:read` and Workspace role `user`. OpenShell scope enforcement must be configured
 on its OIDC gateway; these permissions are separate from OCE resource authority.
+
+## Repository network policy
+
+Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
+
+`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
+
+PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
+
+A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+
+When a Channel needs a bound Secret, the controller checks the saved repository
+policy and the caller's Secret access before handing the value to the Channel.
+The handoff shares the lock used by permission changes. The controller checks
+permissions committed before it acquires the lock. It releases the lock before
+waiting for the provider and checks deployment admission again before saving the
+revision.
+
+To opt into repository policy, an Agent must have an explicit list from its
+first deployment. Ordinary Agents can keep deploying without a list.
+A delayed write to its Gateway can outlive a Worker claim and a completed
+stop. Deployment returns 409 if any earlier revision has no list. The Worker
+checks the same history before preparing a queued scoped revision. For a
+previously deployed Agent with that history, create a new Agent and save
+the list before deploying it. An Agent that started with a list can
+deploy subsequent policy changes under the same Agent ID.
+
+After refusing a scoped replacement before its first provider call, the Worker
+can maintain the serving predecessor if the deployment has no earlier attempt.
+If earlier work could have changed the Gateway, the Worker keeps that repair
+blocked. Stop the Agent and confirm its workload has retired.
+
+The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/access-levels.md#native-git-delivery)
+for a dedicated Codex Harness, an OpenAI credential source and the managed
+Gateway. The controller build must pin the inspected Gateway and Agent images
+by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
+`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both role images together, then use the
+[runtime-first controller build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). Leaving the arguments empty disables this
+placement. A first empty list can be saved. Deploying it is refused before
+launch. Stop the active revision to retire its access.
 
 ## Denials and recommendations
 

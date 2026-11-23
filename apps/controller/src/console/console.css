@@ -51,6 +51,8 @@
   --color-inverse-selected: color-mix(in srgb, var(--color-link) 65%, var(--color-surface-inverse));
   --color-inverse-marker: color-mix(in srgb, var(--color-accent) 48%, var(--color-surface));
   --color-focus-inverse: color-mix(in srgb, var(--color-focus) 25%, var(--color-surface));
+  --color-collection-header: color-mix(in srgb, var(--color-link) 12%, var(--color-surface));
+  --color-collection-label: color-mix(in srgb, var(--color-link) 55%, var(--color-text-strong));
   /* Type: size and its line height. */
   --font-sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -104,7 +106,7 @@
   --content-max: 1300px;
   --form-max: 960px;
   --prose-max: 640px;
-  --sidebar-w: 258px;
+  --sidebar-w: 240px;
   /* Breakpoints (media queries cannot read custom properties): phone <= 520px,
      tablet <= 760px, desktop <= 1100px. */
   /* Older names, kept as aliases until every rule uses the tokens above. */
@@ -639,7 +641,7 @@ p {
 .shell {
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: 258px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
 }
 .sidebar,
 .topbar,
@@ -769,10 +771,11 @@ p {
     border-color: Highlight;
   }
 }
-.nav-icon {
-  font-size: 16px;
-  width: 16px;
-  text-align: center;
+.nav .line-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  stroke-linejoin: round;
 }
 .external-link-icon {
   width: 16px;
@@ -875,7 +878,7 @@ p {
 }
 .content {
   padding: var(--space-8);
-  max-width: 1300px;
+  max-width: var(--content-max);
   width: 100%;
 }
 /* Page header (UX spec 3.2). Collections: the title and its scope line at the left, the actions
@@ -887,6 +890,9 @@ p {
   align-items: end;
   gap: var(--space-4) var(--space-6);
   margin-bottom: var(--space-8);
+}
+.page-header:not(.page-header--subpage) {
+  margin-bottom: var(--space-6);
 }
 .page-title {
   min-width: 0;
@@ -1114,6 +1120,34 @@ p {
 .collection-toolbar > input[type="search"] {
   max-width: 360px;
 }
+.agent-list-toolbar {
+  container-type: inline-size;
+}
+.agent-search-keys,
+.agent-name-keys {
+  display: none;
+  margin-inline-end: auto;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.agent-list-toolbar kbd {
+  font: inherit;
+  display: inline-block;
+  min-width: var(--space-5);
+  padding-inline: var(--space-1);
+  text-align: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+@container (min-width: 760px) {
+  input:focus + .agent-search-keys:not([hidden]),
+  .agent-list-toolbar:has(~ div .agent-table td:first-child > a:focus-visible) .agent-name-keys {
+    display: flex;
+  }
+}
 /* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
    and its content; it is not a card. Cards live inside sections. */
 .section {
@@ -1208,7 +1242,7 @@ p {
 }
 .resource-linked .resource-name :is(a, button) {
   color: var(--color-link);
-  font-weight: var(--weight-medium);
+  font-weight: var(--weight-semibold);
   text-decoration-color: transparent;
 }
 .resource-linked .resource-name button {
@@ -1237,14 +1271,37 @@ p {
   outline: none;
 }
 /* A resource collection is one surface, with a header and divided, keyboard-focusable rows. */
-.resource-list {
+.resource-list,
+.table-scroll {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
+}
+.resource-list {
   overflow: hidden;
 }
+.resource-list-header,
+.agent-table th,
+.oauth-catalog-table thead th {
+  background: var(--color-collection-header);
+  color: var(--color-collection-label);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+/* Keep the focused control's own outline and show which record it belongs to. */
+.resource-linked:has(:focus-visible),
+:is(.agent-table, .oauth-catalog-table) tbody tr:has(:focus-visible) {
+  background: var(--color-surface-hover);
+  box-shadow: inset 3px 0 var(--color-focus);
+}
+@media (forced-colors: active) {
+  .resource-linked:has(:focus-visible),
+  :is(.agent-table, .oauth-catalog-table) tbody tr:has(:focus-visible) {
+    outline: 2px solid Highlight;
+    outline-offset: var(--focus-offset-inset);
+  }
+}
 .resource-list-header {
-  background: var(--color-surface-2);
   border-bottom: 1px solid var(--color-border);
 }
 .resource-list .collection {
@@ -1262,7 +1319,7 @@ p {
 }
 /* Namespace rows are list items; each cell names itself for a screen reader. */
 .namespace-table {
-  --namespace-columns: minmax(0, 1fr) 8rem 11rem 10rem;
+  --namespace-columns: minmax(0, 1fr) 8rem 13rem 10rem;
 }
 .namespace-table-head,
 .namespace-row {
@@ -1273,10 +1330,7 @@ p {
   padding: 0 var(--space-4);
 }
 .namespace-table-head {
-  min-height: var(--space-12);
-  color: var(--color-text-muted);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
+  padding-block: var(--space-2);
 }
 .namespace-row {
   min-height: 56px;
@@ -1359,13 +1413,8 @@ p {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* Stack Namespace rows when the sidebar leaves too little room for four columns. */
 @media (max-width: 1100px) {
-  .namespace-table {
-    --namespace-columns: minmax(0, 1fr) 7rem 9rem 8rem;
-  }
-}
-/* Phone: the badge sits beside the name and Created goes underneath, labelled. */
-@media (max-width: 760px) {
   .namespace-table-head {
     display: none;
   }
@@ -2769,6 +2818,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   flex-wrap: wrap;
   margin-top: var(--space-5);
 }
+.namespace-search {
+  justify-content: flex-start;
+}
+.namespace-search > input[type="search"] {
+  flex: 1 1 190px;
+  min-width: 0;
+}
 .namespace-toolbar {
   display: flex;
   align-items: center;
@@ -2850,9 +2906,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .table-scroll {
   overflow-x: auto;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
 }
 .agent-table {
   border-collapse: collapse;
@@ -2860,15 +2913,26 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .agent-table th,
 .agent-table td {
-  padding: var(--space-4);
+  padding: var(--space-2);
   text-align: left;
   border-bottom: 1px solid var(--line);
 }
+.agent-table :is(th, td):where(:first-child) {
+  padding-inline-start: var(--space-4);
+}
+.agent-table :is(th, td):where(:last-child) {
+  padding-inline-end: var(--space-4);
+}
 .agent-table th {
-  background: var(--surface-muted);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-  color: var(--muted);
+  white-space: nowrap;
+}
+.agent-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.agent-table td,
+.namespace-cell-created,
+.oauth-catalog-table td {
+  font-variant-numeric: tabular-nums;
 }
 .agent-table tbody tr {
   cursor: pointer;
@@ -2878,6 +2942,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .agent-table td {
   vertical-align: top;
+  font-size: var(--text-md);
 }
 /* A set width and a one-line note, so a landing deployment read neither grows its row nor
    re-flows the columns (finding 1488). The note adds nothing to the column's width. */
@@ -2900,10 +2965,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   contain: inline-size;
 }
 .agent-table .agent-deployment-note {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
   contain: inline-size;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.agent-table .agent-deployment-note[data-tone="danger"] {
+  color: var(--color-danger);
 }
 /* Linked revision IDs keep their monospace face and underline. */
 .agent-table .agent-revision-link {
@@ -2915,7 +2988,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .agent-table .resource-id {
   display: block;
-  margin-top: var(--space-2);
+  margin-top: var(--space-1);
   max-width: 310px;
   overflow-wrap: anywhere;
 }
@@ -2930,7 +3003,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 /* Name links underline on hover and focus. Revision and deployment links keep their underline. */
 .agent-table td:first-child > a {
   color: var(--color-link);
-  font-weight: var(--weight-medium);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
   text-decoration-color: transparent;
 }
 .agent-table td:first-child > a:hover,
@@ -2997,6 +3071,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: 10.5rem;
 }
 .row-action-note {
+  /* Keep the absolutely positioned description inside the scrolling table. */
+  position: relative;
   display: block;
   height: 16px;
   margin-top: var(--space-2);
@@ -3072,6 +3148,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   grid-template-columns: 160px minmax(0, 1fr);
   gap: var(--space-4) var(--space-5);
 }
+.agent-settings-summary {
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  row-gap: var(--space-3);
+}
 .configuration-summary dt {
   color: var(--muted);
 }
@@ -3081,6 +3161,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .native-document {
   margin-top: var(--space-6);
+}
+.configuration-summary .native-document {
+  margin-top: 0;
 }
 .native-document summary {
   width: fit-content;
@@ -3246,6 +3329,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+#create-namespace-description {
+  overflow-wrap: anywhere;
+}
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
 }
@@ -3321,6 +3407,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .connection-destination-table :is(th, td):nth-child(2) {
   width: 5.5rem;
 }
+.connection-destination-table--static :is(th, td):nth-child(2) {
+  width: auto;
+}
+.connection-destination-table--static :is(th, td):is(:first-child, :nth-child(3)) {
+  width: 5.5rem;
+}
 .connection-destination-table :is(th, td):last-child {
   width: 2.5rem;
   padding-inline-end: 0;
@@ -3354,6 +3446,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .connection-destination-table td:last-child {
     width: auto;
     padding: 0;
+  }
+  .connection-destination-table--static td:is(:first-child, :nth-child(3)) {
+    width: auto;
+  }
+  .connection-destination-table--static tr {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .connection-destination-table td[data-label]::before {
     display: block;
@@ -3399,10 +3497,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .oauth-catalog-table thead th {
   padding-block: var(--space-2);
-  background: var(--color-surface-2);
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
 }
 .oauth-catalog-table tbody th {
   color: var(--color-text-strong);
@@ -3672,6 +3766,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .configuration-summary dd {
     margin-bottom: var(--space-3);
   }
+  .configuration-summary .native-document pre {
+    padding: var(--space-3);
+    font: var(--text-md) / var(--text-md--line-height) var(--font-mono);
+  }
 }
 /* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
    name (`data-label`), so nothing scrolls sideways. The header row stays for screen readers. */
@@ -3747,10 +3845,17 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     margin-top: 0;
   }
 }
-/* Narrow phones put each column's name above its value, so values keep the row's full width. */
+/* On phones pair execution mode with current version. Longer fields get the full row. */
 @media (max-width: 520px) {
+  .agent-table tbody tr {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .agent-table td[data-label] {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-table .agent-execution-mode,
+  .agent-table .agent-current-version {
+    grid-column: auto;
   }
   .agent-table .agent-deployment {
     grid-template-rows: auto auto calc(var(--text-sm) * var(--text-sm--line-height));

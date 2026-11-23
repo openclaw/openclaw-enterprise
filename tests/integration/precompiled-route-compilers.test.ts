@@ -23,7 +23,7 @@ import {
 } from "../../apps/controller/src/http/route-compilers.ts";
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
 import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.ts";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const VALID_SAMPLES = 40;
 const PERTURBED_SAMPLES = 80;

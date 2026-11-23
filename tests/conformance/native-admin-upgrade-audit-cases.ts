@@ -9,7 +9,7 @@ type BrowserSelection = Awaited<
   ReturnType<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>
 >;
 
-type Selection = {
+export type Selection = {
   readonly agent: Pick<BrowserSelection["agent"], "id" | "namespaceId" | "desiredRuntimeState">;
   readonly revision: Pick<BrowserSelection["revision"], "id" | "compute" | "configuration">;
   readonly mode: BrowserSelection["mode"];
@@ -19,18 +19,23 @@ export interface UpgradeAuditTransportOptions {
   authorize(input: Selection & { readonly denied: Error }): Selection | Promise<Selection>;
   append?(event: AuditEventCreationInput): Promise<void>;
   appendSocket?(event: AuditEventCreationInput): Promise<void>;
+  supportsBrowser?(): boolean;
 }
 
 export interface UpgradeAuditTransport {
+  readonly denied: Error;
   readonly host: string;
+  readonly entered: Promise<void>;
   readonly audits: readonly AuditEventCreationInput[];
   readonly warnings: readonly unknown[];
   readonly appClosed: Promise<void>;
   readonly auditEntered: Promise<void>;
   readonly serverClosed: Promise<boolean>;
-  readonly peerClosed: Promise<boolean>;
+  readonly peerClosed: Promise<void>;
   gatewayConnections(): number;
   denials(): readonly AuditEventCreationInput[];
+  closeAudit(): AuditEventCreationInput | undefined;
+  connectionAudits(): readonly AuditEventCreationInput[];
   shutdown(): Promise<void>;
   open(): Promise<{
     readonly closed: Promise<boolean>;
@@ -45,13 +50,6 @@ interface AuditTransportFixture {
     options: UpgradeAuditTransportOptions,
   ): Promise<UpgradeAuditTransport>;
   within<T>(promise: Promise<T>, description: string, milliseconds?: number): Promise<T>;
-}
-
-interface RefusedUpgradeAuditFixture extends AuditTransportFixture {
-  assertTransportDenial(
-    owner: Pick<UpgradeAuditTransport, "denials" | "host">,
-    revisionId: string | undefined,
-  ): void;
 }
 
 function socketAudit(event: AuditEventCreationInput): Record<string, unknown> {
@@ -213,11 +211,27 @@ export function registerUpgradeShutdownAuditCases({
   }
 }
 
+function assertTransportDenial(
+  owner: Pick<UpgradeAuditTransport, "denials" | "host">,
+  revisionId: string | undefined,
+): void {
+  assert.equal(owner.denials().length, 1, "one attributable denial audit attempt");
+  const [event] = owner.denials();
+  assert.ok(event);
+  assert.equal(event.actor?.principalId, "actor_1");
+  assert.equal(event.action, "openclaw.agents.native_admin.proxy.authorize");
+  assert.deepEqual(event.resource, { kind: "agent", id: "agent_a", namespaceId: "ns_a" });
+  const details = asRecord(event.details?.nativeAdmin);
+  assert.ok(details, "the denial audit must include native-admin details");
+  assert.equal(details.host, owner.host);
+  assert.equal(details.reason, "authorization_denied");
+  assert.equal(details.revisionId, revisionId);
+}
+
 export function registerRefusedUpgradeAuditCase({
   transportOwner,
   within,
-  assertTransportDenial,
-}: RefusedUpgradeAuditFixture): void {
+}: AuditTransportFixture): void {
   test(
     "real native-admin transport closes a refused upgrade while its audit is pending",
     { timeout: 15_000 },
@@ -246,6 +260,127 @@ export function registerRefusedUpgradeAuditCase({
         await owner.shutdown();
       }
       assert.equal(owner.denials().length, 1);
+    },
+  );
+}
+
+export function registerUpgradeTransportAuditCases({
+  transportOwner,
+  within,
+  settleCallbacks,
+}: AuditTransportFixture & { settleCallbacks(): Promise<void> }): void {
+  test(
+    "real native-admin transport closes both relay ends before a denied lease audit settles",
+    { timeout: 15_000 },
+    async (t) => {
+      const audit = Promise.withResolvers<void>();
+      let auditSettled = false;
+      let refuseLease = false;
+      const owner = await transportOwner(t, {
+        authorize: ({ agent, revision, denied }) =>
+          refuseLease
+            ? Promise.reject(denied)
+            : Promise.resolve({ agent, revision, mode: "admin" }),
+        append: () =>
+          audit.promise.then(() => {
+            auditSettled = true;
+          }),
+      });
+      try {
+        const client = await owner.open();
+        assert.match(
+          await within(client.ready, "real HTTPS upgrade and relay must open"),
+          /^HTTP\/1.1 101 /,
+        );
+        assert.equal(owner.gatewayConnections(), 1);
+        refuseLease = true;
+        await within(owner.auditEntered, "lease denial must reach the audit sink");
+        await within(
+          Promise.all([client.closed, owner.serverClosed, owner.peerClosed]),
+          "both relay ends must close before lease audit settlement",
+        );
+        assert.equal(auditSettled, false);
+        assertTransportDenial(owner, "rev_a");
+        const close = owner.closeAudit();
+        assert.ok(close, "the relay must emit a close audit");
+        assert.equal(socketAudit(close).closeReason, "authorization_denied");
+        assert.deepEqual(
+          owner.connectionAudits().map((event) => socketAudit(event).subject),
+          ["test:native-actor-1", "test:native-actor-1"],
+        );
+        assert.equal(
+          JSON.stringify(owner.connectionAudits()).includes("browser-test-secret"),
+          false,
+          "connection audits must never include the delegation credential",
+        );
+      } finally {
+        audit.resolve();
+        await owner.shutdown();
+      }
+      assert.equal(owner.denials().length, 1);
+    },
+  );
+
+  test(
+    "native browser lease closes when the selected Compute loses browser delegation",
+    { timeout: 15_000 },
+    async (t) => {
+      let supported = true;
+      const owner = await transportOwner(t, {
+        authorize: ({ agent, revision }) => Promise.resolve({ agent, revision, mode: "admin" }),
+        append: async () => {},
+        supportsBrowser: () => supported,
+      });
+      const client = await owner.open();
+      assert.match(await within(client.ready, "browser relay opens"), /^HTTP\/1\.1 101 /);
+      supported = false;
+      await within(
+        Promise.all([client.closed, owner.peerClosed]),
+        "withdrawn delegation closes both ends",
+      );
+      assert.equal(
+        owner.gatewayConnections(),
+        1,
+        "renewal must not open a shared-machine connection",
+      );
+      await owner.shutdown();
+    },
+  );
+
+  test(
+    "real native-admin transport audits a late denial once after its admission deadline",
+    { timeout: 15_000 },
+    async (t) => {
+      const admission = Promise.withResolvers<never>();
+      const owner = await transportOwner(t, {
+        authorize: () => admission.promise,
+        append: async () => {},
+      });
+      try {
+        const client = await owner.open();
+        await within(owner.entered, "authorization must remain pending");
+        // Exercise the production five-second deadline, not a mock timer or client reset.
+        await within(
+          Promise.all([client.closed, owner.serverClosed]),
+          "admission deadline must close the client",
+          7_500,
+        );
+        assert.equal(owner.denials().length, 0);
+        assert.equal(owner.gatewayConnections(), 0);
+        admission.reject(owner.denied);
+        await within(owner.auditEntered, "late attributable denial must still be audited");
+        assertTransportDenial(owner, undefined);
+        await settleCallbacks();
+      } finally {
+        admission.reject(owner.denied);
+        await owner.shutdown();
+      }
+      assert.equal(
+        owner.denials().length,
+        1,
+        "settlement and shutdown must not duplicate the audit",
+      );
+      assert.equal(owner.gatewayConnections(), 0);
     },
   );
 }

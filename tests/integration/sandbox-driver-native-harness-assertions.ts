@@ -143,6 +143,7 @@ export async function verifyDedicatedCodexStartup({
         ...structuredClone(request.spec),
         template: {
           ...structuredClone(template),
+          resources: withProtobufKinds(template.resources),
           driver_config: withProtobufKinds(template.driver_config),
         },
       },
@@ -351,7 +352,8 @@ export async function verifyDedicatedCodexStartup({
   assert.equal(environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/custom-workspace");
   const kubernetesDriver = structFields(fields(template.driver_config).kubernetes);
   const agentContainer = structFields(structFields(kubernetesDriver.containers).agent);
-  const resources = structFields(agentContainer.resources);
+  assert.equal(agentContainer.resources, undefined);
+  const resources = fields(template.resources);
   assert.deepEqual(structFields(resources.requests)["ephemeral-storage"], { stringValue: "256Mi" });
   assert.deepEqual(structFields(resources.limits)["ephemeral-storage"], { stringValue: "1Gi" });
   const mountValues = record(record(agentContainer.volume_mounts).listValue).values;

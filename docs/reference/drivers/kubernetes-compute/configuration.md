@@ -48,6 +48,12 @@ The [installation profiles](../../../guides/deploy/installation-profiles.md) exp
 the measured memory defaults. Invalid resource pairs, quotas, and selector labels
 fail before resource creation.
 
+Size `pods` by the Agents in one tenant namespace. An embedded OpenClaw Agent
+uses one Pod and a dedicated Codex Agent two; with a Strands Box Sandbox, a
+dedicated Agent uses two, and with an OpenShell Sandbox three, plus one
+short-lived workspace preparation Pod while a native OpenClaw Agent deploys.
+The example `"20"` fits six OpenShell Agents with one deploy in flight.
+
 Object-count quotas, such as `pods`, `services`, and `count/deployments.apps`,
 must satisfy Kubernetes integer precision. Use whole counts such as `"4"`;
 quantity suffixes that represent a whole count, such as `"1000m"` or `"1.5Ki"`,
@@ -210,7 +216,7 @@ drivers:
           requests: { cpu: 100m, memory: 768Mi }
           limits: { cpu: "4", memory: 6Gi }
         namespace:
-          quota: { pods: "10" }
+          quota: { pods: "20" }
           containerDefaults:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: "4", memory: 256Mi }

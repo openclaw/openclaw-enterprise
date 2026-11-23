@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { DeploymentParams } from "@openclaw-enterprise/contracts";
 
+import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
 import { isRecord } from "./egress-observation-values.ts";
 import type { createKubernetesClient } from "./kubernetes-real.ts";
 
@@ -11,6 +12,58 @@ interface ReplacementAgent {
     method: "GET",
     path: string,
   ): Promise<{ status: number; data?: unknown; error?: unknown }>;
+}
+
+interface RedeploymentResponse {
+  status: number;
+  data: { id: string };
+  error?: unknown;
+}
+
+interface RejectedRedeploymentResponse {
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 500 | 503;
+  error: unknown;
+}
+
+type RedeploymentResult = RedeploymentResponse | RejectedRedeploymentResponse;
+
+interface ReplacementRedeployment<Response extends RedeploymentResult> {
+  namespaceId: string;
+  agent: { id: string };
+  revision: { id: string };
+  request(method: "POST", path: string): Promise<Response>;
+}
+
+export function redeployOpenShellReplacement<Response extends RedeploymentResult>(
+  topology: ReplacementRedeployment<Response>,
+  reportProgress: boolean,
+  activate: (response: Extract<Response, RedeploymentResponse>) => Promise<void>,
+): Promise<Extract<Response, RedeploymentResponse>>;
+export async function redeployOpenShellReplacement(
+  topology: ReplacementRedeployment<RedeploymentResult>,
+  reportProgress: boolean,
+  activate: (response: RedeploymentResponse) => Promise<void>,
+): Promise<RedeploymentResponse> {
+  if (reportProgress) {
+    emitOpenShellReplacementCheckpoint("redeploy-request");
+  }
+  const redeployed = await topology.request(
+    "POST",
+    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+  );
+  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.notEqual(redeployed.data.id, topology.revision.id);
+  const revisionId = redeployed.data.id;
+  const observedAcceptance =
+    reportProgress && typeof revisionId === "string" && revisionId.length > 0;
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("activation");
+  }
+  await activate(redeployed);
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("reconciliation");
+  }
+  return redeployed;
 }
 
 export async function pollReplacementActivation(

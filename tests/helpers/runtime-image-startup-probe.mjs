@@ -271,6 +271,7 @@ export async function runStartupProbeScenario(
     kind,
     mode,
     delayMs = 0,
+    workspaceHistory = false,
     heldPrompt = /** @type {string | undefined} */ (undefined),
     until,
     act,
@@ -286,7 +287,14 @@ export async function runStartupProbeScenario(
   const wrapper = startupProbeWrapper(kind, gatewayManagedMode);
   const material = await createStartupProbeMaterial(t);
   if (wrapper.configuration !== undefined) {
-    await writeFile(join(material, "openclaw.json"), JSON.stringify(wrapper.configuration));
+    if (workspaceHistory) {
+      wrapper.environment.push("OPENCLAW_WORKSPACE_DIR=/home/node/workspace");
+    }
+    // Expose workspace functions directly for this provider protocol check.
+    const configuration = workspaceHistory
+      ? { ...wrapper.configuration, tools: { allow: ["read"], codeMode: false, toolSearch: false } }
+      : wrapper.configuration;
+    await writeFile(join(material, "openclaw.json"), JSON.stringify(configuration));
     await chmod(join(material, "openclaw.json"), 0o644);
   }
   const suffix = randomBytes(6).toString("hex");
@@ -320,6 +328,7 @@ export async function runStartupProbeScenario(
     `PROBE_ENDPOINT_MODE=${mode}`,
     "-e",
     `PROBE_ENDPOINT_DELAY_MS=${delayMs}`,
+    ...(workspaceHistory ? ["-e", "PROBE_ENDPOINT_WORKSPACE_HISTORY=1"] : []),
     ...(heldPrompt === undefined ? [] : ["-e", `PROBE_ENDPOINT_HELD_PROMPT=${heldPrompt}`]),
     "-e",
     `PROBE_OBSERVE_NATIVE_PORT=${wrapper.nativePort}`,

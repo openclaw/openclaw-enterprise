@@ -20,16 +20,23 @@ const nameVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME";
 const idVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_ID";
 // Names the component (api or worker) whose credentials and grants the Pod checks.
 const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
-// The saved draft of each Agent the upgrade deploys (finding 2809): the API Pod reads it from
+// The saved draft of each Agent the upgrade deploys (finding 2809): the API Job reads it from
 // the temporary Secret, gzipped, under this key and path.
 const draftsKey = "agent-drafts.json.gz";
 const draftsDirectory = "/var/run/openclaw/upgrade-preflight";
 const draftsVariable = "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS";
+const channelTargetsFilename = "channel-targets.json.gz";
+
+function channelTargetsKey(installationKey: JsonValue | undefined): string {
+  return installationKey === channelTargetsFilename
+    ? `upgrade-preflight-${channelTargetsFilename}`
+    : channelTargetsFilename;
+}
+const channelTargetsVariable = "OCC_UPGRADE_PREFLIGHT_CHANNEL_TARGETS";
 // Printed before each Agent whose draft the image's deploy admission would refuse, with the
 // Agent and OCC's message as one JSON object.
 const draftRefusal = "Agent draft refused:";
-// Kubernetes refuses a Secret whose values exceed 1 MiB in total. The preflight Secret holds the
-// candidate Installation and the drafts, so the drafts get what the Installation leaves.
+// Kubernetes refuses a Secret whose values exceed 1 MiB in total.
 const secretLimitBytes = 1024 * 1024;
 
 const identityCheck = `
@@ -99,6 +106,7 @@ clearTimeout(identityDeadline);
 // Other Compute Drivers keep the load-only check.
 const startupCheck = `
 let drivers;
+let kubernetesCompute;
 let formatConfigurationFailure;
 try {
   ({ formatStartupConfigurationFailure: formatConfigurationFailure } = await import(
@@ -132,7 +140,8 @@ try {
     "/app/apps/controller/src/drivers/compute/kubernetes/index.ts"
   );
   if (drivers?.computeDriver instanceof KubernetesComputeDriver) {
-    await drivers.computeDriver.preflight();
+    kubernetesCompute = drivers.computeDriver;
+    await kubernetesCompute.preflight();
     // Two-cluster profile: the component's tenant grants in the execution cluster,
     // which a separate openclaw-execution release owns. Older images skip it.
     if (typeof drivers.computeDriver.verifyExecutionTenantGrants === "function") {
@@ -177,21 +186,43 @@ if (typeof contracts.isName === "function" && !contracts.isName(storedName)) {
   );
   process.exit(1);
 }
+async function readPreflightInput(path) {
+  const { readFileSync } = await import("node:fs");
+  const { gunzipSync } = await import("node:zlib");
+  return JSON.parse(gunzipSync(readFileSync(path)).toString("utf8"));
+}
+if (process.env.${channelTargetsVariable} !== undefined && kubernetesCompute &&
+    drivers.installation?.drivers?.compute?.configuration?.runtime?.channelEgress !== undefined) {
+  if (typeof kubernetesCompute.verifyUpgradeChannelDirectEgressGuard === "function") {
+    try {
+      await kubernetesCompute.verifyUpgradeChannelDirectEgressGuard(
+        await readPreflightInput(process.env.${channelTargetsVariable}),
+      );
+      process.stdout.write("channel-direct-egress-guard-no-refusal\\n");
+    } catch (error) {
+      const refused = error?.constructor?.name === "ConfigurationFailure";
+      process.stderr.write(refused
+        ? "Channel direct-egress guard preflight refused the candidate: " + error.message + "\\n"
+        : "Channel direct-egress guard preflight could not forecast the guard for the saved drafts. Check the worker's existing tenant grants and Kubernetes API access.\\n");
+      process.exit(1);
+    }
+  } else {
+    process.stdout.write("channel-direct-egress-guard-unavailable\\n");
+  }
+}
 // Each Agent the upgrade deploys, with its saved Configuration. Deploy admission runs these
 // resolver and values-only rules on the stored Configuration, so a
 // draft saved before one of this image's rules would stop the fleet deploy after the controller
 // moved. Every refused Agent is printed. An image without the shared rules skips the check.
 if (process.env.${draftsVariable} !== undefined) {
   let drafts;
-  let settings;
   try {
-    const { readFileSync } = await import("node:fs");
-    const { gunzipSync } = await import("node:zlib");
-    drafts = JSON.parse(gunzipSync(readFileSync(process.env.${draftsVariable})).toString("utf8"));
+    drafts = await readPreflightInput(process.env.${draftsVariable});
   } catch (error) {
     process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
     process.exit(1);
   }
+  let settings;
   try {
     settings = await import("/app/packages/occ/src/configuration-settings.ts");
   } catch {
@@ -444,11 +475,17 @@ function documents(path: string): JsonObject[] {
 }
 
 // Gathers the helper's per-Agent drafts (one JSON line each: the Agent, its name and its saved
-// Configuration) into one gzipped document, each Configuration once. Exits 3 when it would not
-// fit in the preflight Secret beside the candidate Installation.
-function drafts([draftsPath, installationPath, outputPath]: [string, string, string]): number {
+// Configuration) into separate API and worker inputs. If the API inputs fit beside the
+// Installation, reserve their space before considering the worker's channel targets.
+function drafts([draftsPath, installationPath, outputPath, channelTargetsPath]: [
+  string,
+  string,
+  string,
+  string,
+]): number {
   const agents: AgentDraftIdentity[] = [];
   const configurations: JsonObject = {};
+  const channelTargets: JsonObject[] = [];
   for (const line of readFileSync(draftsPath, "utf8").split("\n")) {
     if (line.trim().length === 0) {
       continue;
@@ -457,13 +494,50 @@ function drafts([draftsPath, installationPath, outputPath]: [string, string, str
     if (draft == null) {
       fail("cannot read a recorded Agent draft.");
     }
-    const { namespaceId, agentId, name, configurationId, values } = object(draft) ?? {};
+    const { namespaceId, agentId, name, configurationId, executionMode, values } =
+      object(draft) ?? {};
     agents.push({ namespaceId, agentId, name, configurationId });
     configurations[String(configurationId)] = values;
+
+    const channels = object(object(values)?.channels);
+    if (!channelTargetsPath || executionMode !== "dedicated" || !channels) {
+      continue;
+    }
+    const channelEntries: [string, JsonObject][] = [];
+    for (const [provider, channel] of Object.entries(channels)) {
+      // As in enabledChannelEntries, shared settings and explicitly disabled channels
+      // cannot select a Gateway. The candidate Driver still resolves the provider.
+      const enabled = object(channel)?.enabled;
+      if (provider === "defaults" || provider === "modelByChannel" || enabled === false) {
+        continue;
+      }
+      channelEntries.push([provider, enabled === true ? { enabled } : {}]);
+    }
+    if (channelEntries.length > 0) {
+      channelTargets.push({
+        namespaceId,
+        agentId,
+        executionMode,
+        values: { channels: Object.fromEntries(channelEntries) },
+      });
+    }
   }
   const document = gzipSync(JSON.stringify({ agents, configurations }));
   const installationBytes = readFileSync(installationPath).length;
-  if (document.length + installationBytes > secretLimitBytes) {
+  const draftFits = installationBytes + document.length <= secretLimitBytes;
+  const channelBudget = secretLimitBytes - installationBytes - (draftFits ? document.length : 0);
+  if (channelTargets.length > 0) {
+    const projection = gzipSync(JSON.stringify(channelTargets));
+    if (projection.length > channelBudget) {
+      const reservedDrafts = draftFits ? " and the recorded Agents' drafts" : "";
+      process.stderr.write(
+        `upgrade-production-images: the channel direct-egress guard forecast was skipped because its targets do not fit in the startup preflight Secret beside the candidate Installation${reservedDrafts}. The Worker runs the guard during activation.\n`,
+      );
+    } else {
+      writeFileSync(channelTargetsPath, projection, { mode: 0o600 });
+    }
+  }
+  if (!draftFits) {
     process.stderr.write(
       `upgrade-startup-preflight: ${agents.length} Agent drafts take ${document.length} bytes gzipped; with the ${installationBytes}-byte candidate Installation that is over the ${secretLimitBytes}-byte Secret limit.\n`,
     );
@@ -473,9 +547,10 @@ function drafts([draftsPath, installationPath, outputPath]: [string, string, str
   return agents.length;
 }
 
-// The Secret holds the candidate Installation, under the chart's key, and the gzipped Agent
-// drafts when the helper passes them (an empty path passes none).
-function secret([installationPath, key, name, namespace, release, draftsPath]: [
+// The Secret stores optional preflight inputs under separate keys so each workload mounts
+// only the data it uses.
+function secret([installationPath, key, name, namespace, release, draftsPath, channelTargetsPath]: [
+  string,
   string,
   string,
   string,
@@ -494,6 +569,9 @@ function secret([installationPath, key, name, namespace, release, draftsPath]: [
     data: {
       [key]: readFileSync(installationPath).toString("base64"),
       ...(draftsPath === "" ? {} : { [draftsKey]: readFileSync(draftsPath).toString("base64") }),
+      ...(channelTargetsPath === ""
+        ? {}
+        : { [channelTargetsKey(key)]: readFileSync(channelTargetsPath).toString("base64") }),
     },
   };
 }
@@ -781,6 +859,33 @@ function migrationDatabase([installed, candidate, release, namespace]: [
   return [...new Set(names)].join("\n");
 }
 
+function checkedMigrationInvocation(initializer: Container) {
+  const { command, args } = initializer;
+  if (
+    command !== undefined &&
+    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
+  ) {
+    fail("the initialization Job contains an invalid migration command.");
+  }
+  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const entry = migrationEntry(args);
+  if (!entry) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  return { entry, option: args.at(-1) };
+}
+
+function migrationMode([renderedPath, release]: [string, string]) {
+  const { initializer } = migrationInitializer(renderedPath, release);
+  const { option } = checkedMigrationInvocation(initializer);
+  if (option === "--expect-empty") {
+    fail("the initialization Job requires an empty database for a new install.");
+  }
+  return option === "--require-current" ? "separate" : "hook";
+}
+
 // Run only the selected image's migration program. Keep its database identity
 // and CA without copying other initialization containers.
 function migrationJob(
@@ -809,20 +914,7 @@ function migrationJob(
   if (podLabels != null && !isLabelMap(podLabels)) {
     fail("the rendered initialization Job contains invalid Pod labels.");
   }
-  const { command, args } = initializer;
-  if (
-    command !== undefined &&
-    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
-  ) {
-    fail("the initialization Job contains an invalid migration command.");
-  }
-  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
-    fail("the initialization Job contains invalid migration arguments.");
-  }
-  const entry = migrationEntry(args);
-  if (!entry) {
-    fail("the initialization Job contains invalid migration arguments.");
-  }
+  const { entry } = checkedMigrationInvocation(initializer);
   const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
   const options = {
@@ -943,7 +1035,13 @@ function job(
   container.env = [
     ...(container.env ?? []).filter(
       (variable) =>
-        ![nameVariable, idVariable, componentVariable, draftsVariable].includes(variable.name),
+        ![
+          nameVariable,
+          idVariable,
+          componentVariable,
+          draftsVariable,
+          channelTargetsVariable,
+        ].includes(variable.name),
     ),
     { name: nameVariable, value: JSON.stringify(storedName).replaceAll("$", () => "$$") },
     { name: idVariable, value: JSON.stringify(storedId).replaceAll("$", () => "$$") },
@@ -961,21 +1059,34 @@ function job(
     fail(`the rendered ${component} container must mount the Installation Secret once.`);
   }
   installationVolume.secret.secretName = candidateSecret;
-  // The API Pod alone checks the Agent drafts: the worker would print the same refusals.
-  if (withDrafts === "drafts" && component === "api") {
-    const volume = "upgrade-preflight-agent-drafts";
+  const installationKey = installationVolume.secret.items?.find(
+    ({ path }) => path === "installation.yaml",
+  )?.key;
+  const preflightInput =
+    component === "api" && withDrafts === "drafts"
+      ? { key: draftsKey, path: draftsKey, variable: draftsVariable }
+      : component === "worker" && withDrafts === "channel-targets"
+        ? {
+            key: channelTargetsKey(installationKey),
+            path: channelTargetsFilename,
+            variable: channelTargetsVariable,
+          }
+        : undefined;
+  if (preflightInput) {
+    const { key, path, variable } = preflightInput;
+    const volume = `upgrade-preflight-${path.replace(".json.gz", "")}`;
     if (volumes.some((item) => item.name === volume)) {
       fail(`the rendered ${component} Deployment already has a ${volume} volume.`);
     }
     volumes.push({
       name: volume,
-      secret: { secretName: candidateSecret, items: [{ key: draftsKey, path: draftsKey }] },
+      secret: { secretName: candidateSecret, items: [{ key, path }] },
     });
     container.volumeMounts = [
       ...(container.volumeMounts ?? []),
       { name: volume, mountPath: draftsDirectory, readOnly: true },
     ];
-    container.env.push({ name: draftsVariable, value: `${draftsDirectory}/${draftsKey}` });
+    container.env.push({ name: variable, value: `${draftsDirectory}/${path}` });
   }
   return {
     apiVersion: "batch/v1",
@@ -1210,6 +1321,7 @@ type Command =
   | { action: "drafts"; input: Parameters<typeof drafts>[0] }
   | { action: "secret"; input: Parameters<typeof secret>[0] }
   | { action: "job" | "identity-job"; input: JobArguments }
+  | { action: "migration-mode"; input: Parameters<typeof migrationMode>[0] }
   | { action: "migration-database"; input: Parameters<typeof migrationDatabase>[0] }
   | { action: "migration-job"; input: Parameters<typeof migrationJob> }
   | { action: "child"; input: Parameters<typeof child>[0] }
@@ -1253,11 +1365,13 @@ function parseCommand([action, ...input]: string[]): Command {
       };
     }
     case "drafts":
-      return { action, input: argumentsOf(input, 3) };
+      return { action, input: argumentsOf(input, 4) };
     case "secret":
-      return { action, input: argumentsOf(input, 6) };
+      return { action, input: argumentsOf(input, 7) };
     case "child":
       return { action, input: argumentsOf(input, 4) };
+    case "migration-mode":
+      return { action, input: argumentsOf(input, 2) };
     case "migration-database":
       return { action, input: argumentsOf(input, 4) };
     case "migration-job": {
@@ -1289,7 +1403,7 @@ function parseCommand([action, ...input]: string[]): Command {
 
 function failUsage(): never {
   return fail(
-    "expected drafts, secret, job, identity-job, migration-database, migration-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
+    "expected drafts, secret, job, identity-job, migration-mode, migration-database, migration-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
   );
 }
 
@@ -1322,6 +1436,8 @@ function run(command: Command): string | number {
       );
     case "child":
       return child(command.input);
+    case "migration-mode":
+      return migrationMode(command.input);
     case "migration-database":
       return migrationDatabase(command.input);
     case "migration-job":

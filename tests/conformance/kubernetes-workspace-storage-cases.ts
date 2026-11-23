@@ -1,18 +1,23 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import type { AgentRevision, SandboxDriver } from "../../packages/contracts/src/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   createKubernetesComputeDriver,
   harnessWorkspacePreparationScript,
   kubernetesNamespaceName,
   type KubernetesComputeDriver,
+  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { options, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { options, routedRevision, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { resourceRecord, resourceRecords } from "../helpers/kubernetes-rendered-resources.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 export async function checkWorkspacePreparation(t: TestContext) {
@@ -351,4 +356,272 @@ export async function checkGatewayPrivateStateClaimOwnership() {
     plane: "execution",
   });
   assert.equal(mutations.length, 1);
+}
+
+type ScratchVolume = NonNullable<
+  NonNullable<KubernetesComputeDriverOptions["runtime"]>["scratchVolumes"]
+>[number];
+type HarnessOwner = { namespaceId: string; agentId: string; revisionId: string };
+type LoginMode = "api_key" | "codex_pat" | "chatgptAuthTokens";
+type WorkspaceNode = "none" | "setup-file" | "native";
+type HarnessRender = (
+  loginMode: LoginMode,
+  node: WorkspaceNode,
+  initialSetup: boolean,
+  environment?: Record<string, string>,
+  scratch?: ScratchVolume,
+) => { driver: KubernetesComputeDriver; pod: unknown };
+type ScratchCompute = (bindings?: readonly ScratchVolume[]) => KubernetesComputeDriver;
+type RequirementsForLaunch = (
+  driver: KubernetesComputeDriver,
+  owner: HarnessOwner,
+) => (scratch?: ScratchVolume) => unknown;
+type ScratchOperations = {
+  scratchAdmission(driver: KubernetesComputeDriver, revision: AgentRevision): unknown;
+  sandboxDriver(driver: KubernetesComputeDriver): unknown;
+  codexLaunch(
+    driver: KubernetesComputeDriver,
+    revision: AgentRevision,
+    sandbox: SandboxDriver,
+  ): unknown;
+  runtimeAdmission(driver: KubernetesComputeDriver, revision: AgentRevision): unknown;
+};
+const claimVolume = "openclaw-workspace";
+const nodePath = "/home/node/.openclaw-node";
+const homePath = "/home/node/.codex";
+
+function renderedPod(value: unknown) {
+  const pod = resourceRecord(value, "Harness Pod");
+  return {
+    volumes: resourceRecords(pod.volumes, "Harness volumes"),
+    initContainers: resourceRecords(pod.initContainers, "Harness init containers"),
+    containers: resourceRecords(pod.containers, "Harness containers"),
+    securityContext: resourceRecord(pod.securityContext, "Harness security context"),
+  };
+}
+
+function volumeMounts(container: Record<string, unknown>) {
+  return resourceRecords(container.volumeMounts, "container volume mounts");
+}
+
+function scratchAdmission(
+  operations: ScratchOperations,
+  driver: KubernetesComputeDriver,
+  revision: AgentRevision,
+) {
+  const admission = resourceRecord(
+    operations.scratchAdmission(driver, revision),
+    "scratch admission",
+  );
+  assert.ok(Object.hasOwn(admission, "runtime"), "scratch admission must contain runtime");
+  const runtime = admission.runtime;
+  assert.ok(
+    runtime === undefined || typeof runtime === "string",
+    "scratch admission runtime must be a string or undefined",
+  );
+  return { binding: admission.binding, runtime };
+}
+
+export async function checkDedicatedHarnessClaim(
+  t: TestContext,
+  render: HarnessRender,
+  nodeName: string,
+) {
+  for (const loginMode of ["api_key", "codex_pat", "chatgptAuthTokens"] as const) {
+    for (const node of ["none", "setup-file", "native"] as const) {
+      for (const initialSetup of [false, true]) {
+        await t.test(`${loginMode} ${node} setup=${initialSetup}`, () => {
+          const pod = renderedPod(render(loginMode, node, initialSetup).pod);
+          const claimVolumes = pod.volumes.filter((volume) => volume.persistentVolumeClaim);
+          assert.equal(claimVolumes.length, 1, "one volume for the Harness claim");
+          assert.equal(claimVolumes[0]?.name, claimVolume);
+          const volumeNames = new Set(pod.volumes.map(({ name }) => name));
+          assert.equal(volumeNames.size, pod.volumes.length);
+          for (const container of [...pod.initContainers, ...pod.containers]) {
+            for (const mount of volumeMounts(container)) {
+              assert(volumeNames.has(mount.name), `dangling mount ${mount.name}`);
+            }
+          }
+          const container = pod.containers[0];
+          assert.ok(container);
+          const mounts = volumeMounts(container);
+          const workspaceMounts = mounts.filter(({ name }) => name === claimVolume);
+          const expected = [
+            ["workspace", "/home/node/workspace"],
+            ["generated-images", "/home/node/.codex/generated_images"],
+            ["codex-sessions", "/home/node/.codex/sessions"],
+            ...(node === "none" ? [] : [[nodeName, nodePath]]),
+          ];
+          assert.deepEqual(
+            workspaceMounts.map(({ subPath, mountPath }) => [subPath, mountPath]),
+            expected,
+          );
+          // Authentication remains Pod-local for every supported login mode.
+          assert(!mounts.some(({ mountPath }) => mountPath === homePath));
+          assert(workspaceMounts.every(({ readOnly }) => readOnly === false));
+          const privateInit = pod.initContainers.find(
+            ({ name }) => name === "prepare-private-state",
+          );
+          assert.ok(privateInit);
+          assert.deepEqual(
+            volumeMounts(privateInit)
+              .filter(({ name }) => name === claimVolume)
+              .map(({ mountPath, subPath }) => [mountPath, subPath]),
+            [["/harness-workspace-state", undefined]],
+          );
+          assert.equal(pod.securityContext.runAsUser, 1000);
+          assert.equal(pod.securityContext.runAsGroup, 1000);
+          const setupInit = pod.initContainers.find(({ name }) => name === "initialize-workspace");
+          assert.equal(Boolean(setupInit), initialSetup);
+          if (setupInit) {
+            assert.deepEqual(
+              volumeMounts(setupInit)
+                .filter(({ name }) => name === claimVolume)
+                .map(({ subPath, mountPath }) => [subPath, mountPath]),
+              expected.filter(([subPath]) => subPath !== nodeName),
+            );
+            assert(!volumeMounts(setupInit).some(({ mountPath }) => mountPath === homePath));
+          }
+          if (node !== "none") {
+            // Run the actual generated init program against task-owned directories.
+            const root = mkdtempSync(join(tmpdir(), "harness-init-"));
+            try {
+              for (const dir of ["runtime-state", "runtime-temporary", "harness-workspace-state"]) {
+                mkdirSync(join(root, dir));
+              }
+              const args = privateInit.args;
+              assert.ok(Array.isArray(args));
+              const program: unknown = args[0];
+              assert.ok(typeof program === "string");
+              const script = program
+                .replaceAll("/runtime-state", `${root}/runtime-state`)
+                .replaceAll("/runtime-temporary", `${root}/runtime-temporary`)
+                .replaceAll("/harness-workspace-state", `${root}/harness-workspace-state`);
+              const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+              assert.equal(result.status, 0, result.stderr);
+              const stat = statSync(join(root, "harness-workspace-state", nodeName));
+              assert.equal(stat.mode & 0o777, 0o700);
+              assert.ok(process.getuid);
+              assert.equal(stat.uid, process.getuid());
+            } finally {
+              rmSync(root, { recursive: true, force: true });
+            }
+          }
+        });
+      }
+    }
+  }
+}
+
+export function checkScratchRequirements(
+  render: HarnessRender,
+  owner: HarnessOwner,
+  requirementsForLaunch: RequirementsForLaunch,
+) {
+  const scratch = {
+    namespaceId: owner.namespaceId,
+    agentId: owner.agentId,
+    namespace: "test",
+    claimName: "operator-scratch",
+    claimUid: "scratch-uid",
+  };
+  const rendered = render("api_key", "none", false, {}, scratch);
+  const { driver } = rendered;
+  const pod = renderedPod(rendered.pod);
+  const requirementsFor = requirementsForLaunch(driver, owner);
+  const requirements = resourceRecord(requirementsFor(scratch), "Harness requirements");
+  const workspaceMounts = resourceRecords(requirements.workspaceMounts, "Harness workspace mounts");
+  const expected = {
+    claimName: scratch.claimName,
+    subPath: "scratch",
+    mountPath: "/sandbox/scratch",
+    readOnly: false,
+  };
+  assert.deepEqual(
+    workspaceMounts.find(({ mountPath }) => mountPath === "/sandbox/scratch"),
+    expected,
+  );
+  assert.equal(
+    workspaceMounts.filter(({ claimName }) => claimName === scratch.claimName).length,
+    1,
+  );
+  assert(
+    workspaceMounts.some(
+      ({ mountPath, claimName }) =>
+        mountPath === "/home/node/workspace" && claimName !== scratch.claimName,
+    ),
+  );
+  assert.deepEqual(
+    pod.volumes.find(({ name }) => name === "openclaw-scratch"),
+    {
+      name: "openclaw-scratch",
+      persistentVolumeClaim: { claimName: scratch.claimName },
+    },
+  );
+  assert.deepEqual(
+    volumeMounts(resourceRecord(pod.containers[0], "Harness container")).find(
+      ({ name }) => name === "openclaw-scratch",
+    ),
+    {
+      name: "openclaw-scratch",
+      mountPath: expected.mountPath,
+      subPath: expected.subPath,
+      readOnly: false,
+    },
+  );
+  const withoutScratch = resourceRecord(requirementsFor(), "Harness requirements without scratch");
+  assert(
+    !resourceRecords(
+      withoutScratch.workspaceMounts,
+      "Harness workspace mounts without scratch",
+    ).some(({ mountPath }) => mountPath === "/sandbox/scratch"),
+  );
+}
+
+const createSiblingRevision: (
+  driver: KubernetesComputeDriver,
+  overrides: Required<Pick<AgentRevision, "agentId" | "sandboxDriverId">>,
+) => AgentRevision = routedRevision;
+
+export function checkPinnedScratchAdmission(
+  scratchCompute: ScratchCompute,
+  scratchRevision: (driver: KubernetesComputeDriver) => AgentRevision,
+  operatorBinding: ScratchVolume,
+  operations: ScratchOperations,
+) {
+  const original = scratchCompute([operatorBinding]);
+  const admitted = scratchRevision(original);
+  const replacement = scratchCompute([
+    { ...operatorBinding, claimName: "replacement", claimUid: "new-uid" },
+  ]);
+  const withoutScratch = scratchRevision(scratchCompute());
+  assert.deepEqual(scratchAdmission(operations, replacement, admitted).binding, operatorBinding);
+  const sandbox = operations.sandboxDriver(replacement);
+  assert.ok(sandbox instanceof OpenShellSandboxDriver);
+  assert.equal(
+    resourceRecord(operations.codexLaunch(replacement, admitted, sandbox), "Codex launch")
+      .openShellProgram,
+    "ordinary",
+  );
+  assert.equal(operations.runtimeAdmission(replacement, admitted), undefined);
+  assert.equal(scratchAdmission(operations, original, withoutScratch).binding, undefined);
+  assert.equal(
+    scratchAdmission(operations, scratchCompute(), admitted).runtime,
+    scratchAdmission(operations, original, admitted).runtime,
+  );
+  const sibling = createSiblingRevision(original, {
+    agentId: "sibling",
+    sandboxDriverId: "scratch-openshell",
+  });
+  assert.equal(sibling.agentId, "sibling");
+  assert.equal(sibling.sandboxDriverId, "scratch-openshell");
+  assert.equal(scratchAdmission(operations, original, sibling).binding, undefined);
+  assert.throws(
+    () => scratchAdmission(operations, original, { ...admitted, namespaceId: "foreign" }),
+    /scratch volume admission is invalid/,
+  );
+  assert.throws(
+    () => scratchAdmission(operations, original, { ...admitted, agentId: "foreign" }),
+    /scratch volume admission is invalid/,
+  );
 }

@@ -43,6 +43,7 @@ import {
   enablePublicReader,
   proveRetirement,
   publicReadTurn,
+  type RetirementNotices,
 } from "./first-agent-smoke/reader.ts";
 
 export {
@@ -77,6 +78,7 @@ export { clusterEventLines } from "./first-agent-smoke/reader.ts";
 
 const { step, smokeStep, initialAdmissions, timings, writeTimingReport } = createStepRecorder();
 const proofResults: string[] = [];
+const retirementNotices: RetirementNotices = { completed: 0, rows: [] };
 
 async function smoke() {
   if (!process.env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY) {
@@ -142,7 +144,7 @@ async function smoke() {
     await smokeStep("codex-chat", () => chatTurn(stack, codex.agent, codex.revisionId));
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
-      proveRetirement(stack, codex, control, reader, proofResults),
+      proveRetirement(stack, codex, control, reader, proofResults, retirementNotices),
     );
     await smokeStep("agent-logs", async () => {
       await readLogs(stack, embedded.agent, "gateway");
@@ -192,6 +194,20 @@ async function summarize() {
   }
 }
 
+async function writeRetirementNoticeOutput() {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) {
+    return;
+  }
+  const phase = timings.find(({ phase }) => phase === "reader-retirement");
+  try {
+    const output = { status: phase?.status ?? "unreached", ...retirementNotices };
+    await appendFile(outputPath, `retirement-notices=${JSON.stringify(output)}\n`);
+  } catch {
+    // The job's notice check is advisory.
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const command = process.argv[2];
   try {
@@ -216,8 +232,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         await summarize();
       }
     } finally {
-      if (command === "run" && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_TEMP) {
-        await writeTimingReport(process.env.RUNNER_TEMP);
+      if (command === "run" && process.env.GITHUB_ACTIONS === "true") {
+        if (process.env.RUNNER_TEMP) {
+          await writeTimingReport(process.env.RUNNER_TEMP);
+        }
+        await writeRetirementNoticeOutput();
       }
     }
   }

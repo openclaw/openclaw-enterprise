@@ -59,6 +59,19 @@ Run the checks needed for your task. A model response does not establish tool,
 plugin, repository, sandbox, or workspace-file behavior; verify those operations
 separately. The console reports persisted deployment state, not live gateway health.
 
+## Qualify a custom Codex provider
+
+Before relying on a custom Responses endpoint for an installation or upgrade, use the deployed Codex Agent and its actual configured endpoint, model, credential, and runtime version:
+
+1. Open a saved chat with the Agent, for example through the [OpenClaw TUI](../deploy/production-tui.md).
+2. Ask the Agent to complete a harmless task that requires a real local tool, such as reading a trial-owned workspace file. Confirm the tool ran and the Agent returned the result.
+3. Send a second message in the same chat and confirm that the Agent can use the earlier result. Save the chat before upgrading. If you use the TUI, save its `TUI_SESSION` value.
+4. After cutover, reopen the same chat and repeat the tool check. If you use the TUI, select the replacement Agent revision's Gateway and pass the saved value to `--session` in place of the newly generated session key. Confirm the Agent can still use the result from before the upgrade.
+
+The startup model probe asks for a text-only reply and fails if Codex uses a tool. The request can still advertise tools. A direct Responses request with a `function` tool checks only that tool type.
+
+If the first chat fails with HTTP 400 after a successful deployment, inspect the provider error without recording credentials or chat content. A provider error that rejects tool type `custom` identifies a request-schema mismatch. In that case, select an endpoint and model that accept the installed runtime's tool types, then repeat the saved-chat check.
+
 ## Prepare the Agent
 
 You need a working model credential, the Agent's local gateway password, Bash,

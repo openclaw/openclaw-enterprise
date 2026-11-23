@@ -19,6 +19,7 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  AGENT_READ,
   deploymentStatusResponse,
   authorizationDenials,
   apiRequests,
@@ -50,6 +51,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { refocusHeld } from "./console-refocus-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   deploymentRecordUrl,
@@ -76,12 +78,14 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
   KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   codexPluginRefusal,
-  configIncludeRefusal,
   pluginEntryKeyVariantRefusal,
   pluginPolicyListRefusal,
-  providerKeyVariantRefusal,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import {
+  configIncludeRefusal,
+  providerKeyVariantRefusal,
+} from "../helpers/refusal-configuration-runtime.ts";
 import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
@@ -3225,4 +3229,40 @@ test("Harness controls submit the latest request directly and recover from desti
   assert.equal(revision.harness.configuration.modelProvider.baseUrl, modelProvider.baseUrl);
   await page.getByText("Resolved Harness settings", { exact: true }).waitFor();
   assert.equal(pathRequests(requests, "POST", path + "/deploy").length, 2);
+
+  // Keep the summary short without losing any admitted fields when opened by keyboard.
+  const overrides = page.getByText("View overrides (modelProvider)", { exact: true });
+  assert.equal(await overrides.isVisible(), true);
+  const resolved = page.getByText("View settings (modelProvider)", { exact: true });
+  const json = page.locator(".configuration-summary pre:visible");
+  assert.equal(await json.count(), 0);
+  await overrides.press("Enter");
+  assert.equal(await json.innerText(), JSON.stringify(revision.harness.overrides, null, 2));
+  await overrides.press("Space");
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(resolved), true);
+  await page.keyboard.press("Enter");
+  await refocusHeld(t, page);
+  assert.equal(await json.innerText(), JSON.stringify(revision.harness.configuration, null, 2));
+
+  // Without an override, a version reader can still inspect the resolved destination.
+  const defaults = await fixture.deployAgent(namespace.id, agent.id);
+  assert.deepEqual(defaults.harness.overrides, {});
+  const reader = await fixture.createNamespaceMember("harness-reader", namespace.id, AGENT_READ);
+  const { page: phone } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(
+    phone,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, defaults.id),
+    reader.credentials,
+  );
+  const empty = phone.locator("dt:has-text('Requested Harness overrides') + dd");
+  assert.equal(await empty.innerText(), "None");
+  await phone.getByText("View settings (modelProvider)", { exact: true }).click();
+  const settings = phone.locator(".configuration-summary pre:visible");
+  assert.equal(await settings.innerText(), JSON.stringify(defaults.harness.configuration, null, 2));
+  assert.equal(await settings.evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+  await expectNoHorizontalScroll(phone);
 });

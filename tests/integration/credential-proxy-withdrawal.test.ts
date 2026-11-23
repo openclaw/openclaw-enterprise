@@ -5,7 +5,7 @@ import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type {
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   AcceptedEgressAssociation,
   AgentRevision,
   EgressRequest,
@@ -147,7 +147,7 @@ test(
             return typeof value === "function" ? value.bind(target) : value;
           },
         });
-        const proxy: CredentialProxyDriver = {
+        const proxy: LegacyEgressProxyDriver = {
           id: "policy-reduction-fixture",
           implementation: "policy-reduction-fixture",
           capability: "credential_proxy",

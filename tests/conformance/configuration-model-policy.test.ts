@@ -9,20 +9,22 @@ import {
   catalogRowNoModel,
   catalogRowUnselected,
   codexRuntimeOffProvider,
-  BOTH_RUNTIMES,
   keepRuntime,
   runtimeIdRequired,
+  runtimeIdUnsupported,
+  runtimePoliciesConflict,
+  selectableModelOffProvider,
+} from "../helpers/refusal-text.mjs";
+import {
+  BOTH_RUNTIMES,
   runtimeOfEntries,
   runtimeOfListedModels,
   runtimeOfOtherModels,
   runtimeOfPrimaryElsewhere,
-  runtimeIdUnsupported,
-  runtimePoliciesConflict,
-  selectableModelOffProvider,
   selectableModelRuntimeMismatch,
   selectableModelsNotObject,
   selectablePrimaryRuntimeRequired,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-configuration-runtime.ts";
 
 type RefusalCase = readonly [values: OpenClawConfigurationDocument, message: string];
 type RepairCase = readonly [...RefusalCase, fixed: OpenClawConfigurationDocument];

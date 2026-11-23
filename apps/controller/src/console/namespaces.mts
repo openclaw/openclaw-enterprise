@@ -16,8 +16,7 @@ import { createNamespaceDeletion } from "./namespace-deletion.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
-  askForGrant,
-  NAMESPACE_CREATE_DENIED,
+  namespaceCreateDenied,
 } from "./agents/access-reasons.mjs";
 
 // The heading wherever a caller reads no Namespace: the Namespaces page and the shell's panel
@@ -73,6 +72,7 @@ export function renderNamespaces(
     operatorId: string;
     installationAdmin: boolean | null;
     fromRefresh: boolean;
+    searchQuery: string;
     reload(): Promise<void>;
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     sorted(items: readonly Namespace[]): Namespace[];
@@ -95,12 +95,19 @@ export function renderNamespaces(
     ...(administrator && !refused ? { tone: "primary" } : {}),
     "data-create-namespace": "",
   });
+  const createDenied = namespaceCreateDenied(context.installationAdmin);
   const refusal = element(
     "p",
     { className: "muted", id: "namespace-create-refused" },
-    `${NAMESPACE_CREATE_DENIED} Then select Refresh.`,
+    `${createDenied} Then select Refresh.`,
   );
   const emptyText = element("p");
+  const empty = element(
+    "section",
+    { className: "state-panel" },
+    element("h2", {}, NO_READABLE_NAMESPACES),
+    emptyText,
+  );
   // The API refused this person's creation: the control says so instead of offering another
   // attempt that it would refuse again. It stays in the Tab order, described by the refusal (class
   // of finding 2899).
@@ -108,9 +115,9 @@ export function renderNamespaces(
     create.classList.remove("button", "button--primary");
     collection.before(refusal);
     setUnavailable(create, true, refusal);
-    emptyText.textContent = askAdministratorTo(
-      "create a Namespace or to give you access to an existing one",
-    );
+    if (context.installationAdmin !== false) {
+      emptyText.textContent = "No Namespaces are available to view.";
+    }
   }
   // Only a known administrator gets the short invitation: a caller whose answer is unknown may
   // be a member, who gets access from an Installation administrator (finding 2583).
@@ -135,7 +142,64 @@ export function renderNamespaces(
     collection,
   );
   if (items.length) {
+    const search = element("input", {
+      id: "namespace-search",
+      type: "search",
+      "aria-label": "Search Namespaces",
+      "data-refocus-key": "namespace-search",
+      placeholder: "Search Namespaces by name or ID",
+    });
+    search.value = context.searchQuery;
+    const clear = button(
+      "Clear search",
+      () => {
+        search.value = "";
+        search.focus();
+        updateMatches();
+      },
+      { tone: "ghost", "data-refocus-key": "namespace-clear-search" },
+    );
+    const searchToolbar = element(
+      "div",
+      { className: "collection-toolbar namespace-search" },
+      search,
+      clear,
+    );
     const list = element("ul", { className: "collection", "aria-label": "Namespaces" });
+    const table = element(
+      "div",
+      { className: "resource-list namespace-table" },
+      element(
+        "div",
+        { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
+        ...["Namespace", "Status", "Created", "Actions"].map((label) => element("span", {}, label)),
+      ),
+      list,
+    );
+    const noMatch = element(
+      "section",
+      { className: "state-panel" },
+      element("h2", {}, "No matching Namespaces"),
+      element("p", {}, "Try another name or ID."),
+    );
+    const rows = new Map<Namespace, HTMLLIElement>();
+
+    // Keep each row mounted so filtering preserves its deletion status and feedback.
+    function updateMatches() {
+      const query = search.value.trim().toLowerCase();
+      let matched = false;
+      for (const [item, row] of rows) {
+        row.hidden =
+          !item.id.toLowerCase().includes(query) && !item.name?.toLowerCase().includes(query);
+        matched ||= !row.hidden;
+      }
+      searchToolbar.hidden = rows.size === 0;
+      clear.hidden = !search.value;
+      table.hidden = !matched;
+      noMatch.hidden = matched || rows.size === 0;
+      empty.hidden = rows.size > 0;
+    }
+
     for (const item of context.sorted(items)) {
       const statuses = {
         ready: { label: "Ready", tone: "success" },
@@ -157,6 +221,7 @@ export function renderNamespaces(
       setStatus(item.status);
       const name = element("a", { href: context.pageUrl("agents", item.id) }, item.name ?? item.id);
       name.dataset.returnFocusHref = name.href;
+      name.dataset.refocusKey = `${item.id} namespace-name`;
       name.addEventListener("click", (event) => {
         if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
           return;
@@ -174,8 +239,12 @@ export function renderNamespaces(
             // page; focus left there goes to the outcome too.
             const active = document.activeElement;
             const focused =
-              row.contains(active) || (refocus && (!active || active === document.body));
+              row.contains(active) ||
+              (rows.size === 1 && searchToolbar.contains(active)) ||
+              (refocus && (!active || active === document.body));
             row.remove();
+            rows.delete(item);
+            updateMatches();
             context.onRemoved(namespace);
             outcome.replaceChildren(
               statusBlock(
@@ -184,16 +253,6 @@ export function renderNamespaces(
                 `${namespace.name ?? namespace.id} was deleted. Its name remains reserved.`,
               ),
             );
-            if (!list.children.length) {
-              collection.replaceChildren(
-                element(
-                  "section",
-                  { className: "state-panel" },
-                  element("h2", {}, NO_READABLE_NAMESPACES),
-                  emptyText,
-                ),
-              );
-            }
             if (focused) {
               outcome.focus();
             }
@@ -218,31 +277,14 @@ export function renderNamespaces(
         deletion.actions,
         deletion.feedback,
       );
+      rows.set(item, row);
       list.append(row);
     }
-    collection.append(
-      element(
-        "div",
-        { className: "resource-list namespace-table" },
-        element(
-          "div",
-          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
-          ...["Namespace", "Status", "Created", "Actions"].map((label) =>
-            element("span", {}, label),
-          ),
-        ),
-        list,
-      ),
-    );
+    search.addEventListener("input", updateMatches);
+    collection.append(searchToolbar, table, noMatch, empty);
+    updateMatches();
   } else {
-    collection.append(
-      element(
-        "section",
-        { className: "state-panel" },
-        element("h2", {}, NO_READABLE_NAMESPACES),
-        emptyText,
-      ),
-    );
+    collection.append(empty);
   }
   if (refused) {
     showRefused();
@@ -337,9 +379,109 @@ export function renderNamespaces(
           statusBlock("info", null, "Wait for Namespace creation to finish before leaving."),
         ),
     });
+
+    function confirmCreation(id: string, createdName: string) {
+      title.textContent = "Namespace created";
+      description.textContent = `${createdName} has been created.`;
+      const access = statusBlock(
+        "info",
+        null,
+        "Checking whether you can view this Namespace…",
+        [],
+        {
+          id: "create-namespace-access",
+        },
+      );
+      dialog.setAttribute(
+        "aria-describedby",
+        "create-namespace-description create-namespace-access",
+      );
+      const done = button("Done", close, { "aria-describedby": access.id });
+      const retry = button("Check access again", () => void checkAccess(false), {
+        tone: "primary",
+        "aria-describedby": access.id,
+      });
+      const actions = element("div", { className: "dialog-actions" }, done);
+      dialog.replaceChildren(title, description, access, actions);
+      done.focus();
+      void checkAccess(true);
+
+      async function checkAccess(initial: boolean) {
+        access.textContent = "Checking whether you can view this Namespace…";
+        setUnavailable(retry, true, access);
+        const result = await context.request("/namespaces", { expectedStatus: 200 }).then(
+          (listed) => {
+            if (
+              !Array.isArray(listed) ||
+              !listed.every((item: unknown) => typeof responseFields(item).id === "string")
+            ) {
+              return "unconfirmed";
+            }
+            return listed.some((item: unknown) => responseFields(item).id === id)
+              ? "readable"
+              : "omitted";
+          },
+          (cause: unknown) => {
+            const { status } = requestFailure(cause);
+            if (status === 401) {
+              return "expired";
+            }
+            return status === 403 ? "denied" : "unconfirmed";
+          },
+        );
+        if (!dialog.open || !dialog.isConnected || !context.isCurrent()) {
+          return;
+        }
+        if (result === "expired") {
+          context.onExpired();
+          return;
+        }
+        const keepDoneFocus = !initial && document.activeElement === done;
+        if (result === "readable") {
+          access.remove();
+          dialog.setAttribute("aria-describedby", description.id);
+          done.removeAttribute("aria-describedby");
+          const openAgents = button(
+            "Open Agents",
+            () => {
+              dialog.close();
+              context.navigate("agents", id);
+            },
+            { tone: "primary" },
+          );
+          actions.replaceChildren(done, openAgents);
+          (keepDoneFocus ? done : openAgents).focus();
+        } else if (result === "denied" || result === "omitted") {
+          if (result === "denied") {
+            const guidance =
+              context.installationAdmin === true
+                ? "Check whether an IAM Restriction applies."
+                : askAdministratorTo("check your access");
+            access.textContent = `Access to the Namespaces list was denied. ${guidance}`;
+          } else {
+            const guidance =
+              context.installationAdmin === true
+                ? "Check its status and access."
+                : askAdministratorTo("check its status and your access");
+            access.textContent = `This Namespace is unavailable to view. ${guidance}`;
+          }
+          done.classList.add("button", "button--primary");
+          actions.replaceChildren(done);
+          done.focus();
+        } else {
+          access.textContent = "Access could not be confirmed.";
+          setUnavailable(retry, false, null);
+          if (!retry.isConnected) {
+            actions.append(retry);
+          }
+          (keepDoneFocus ? done : retry).focus();
+        }
+      }
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (pending || unknown || forbidden || !validateFields([name])) {
+      if (pending || created || unknown || forbidden || !validateFields([name])) {
         return;
       }
       pending = true;
@@ -367,73 +509,7 @@ export function renderNamespaces(
           throw new Error("Invalid Namespace creation response");
         }
         created = true;
-        // Creating a Namespace grants the creator nothing, so a role that may create but not
-        // read Namespaces would open Agents into "Namespace unavailable". Read the list the
-        // Agents page reads; when it cannot be read, offer Open Agents as before (finding 2044).
-        const readable = await context.request("/namespaces").then(
-          (listed) =>
-            !Array.isArray(listed) ||
-            listed.some((item: unknown) => responseFields(item).id === id),
-          (cause: unknown) => {
-            const { status } = requestFailure(cause);
-            return status === 401 ? null : status !== 403;
-          },
-        );
-        if (!context.isCurrent()) {
-          return;
-        }
-        if (readable === null) {
-          context.onExpired();
-          return;
-        }
-        title.textContent = "Namespace created";
-        if (readable) {
-          description.textContent = `${createdName} has been created. Provisioning is in progress; Agents can be saved as drafts, but deployment waits until the Namespace is ready.`;
-          dialog.replaceChildren(
-            title,
-            description,
-            element(
-              "div",
-              { className: "dialog-actions" },
-              button("Done", close),
-              button(
-                "Open Agents",
-                () => {
-                  dialog.close();
-                  context.navigate("agents", id);
-                },
-                { tone: "primary" },
-              ),
-            ),
-          );
-        } else {
-          description.textContent = `${createdName} has been created.`;
-          dialog.setAttribute(
-            "aria-describedby",
-            "create-namespace-description create-namespace-access",
-          );
-          dialog.replaceChildren(
-            title,
-            description,
-            statusBlock(
-              "info",
-              null,
-              `Your access does not include viewing this Namespace. ${askForGrant("Namespace read on it to open its Agents")}`,
-              [],
-              { id: "create-namespace-access" },
-            ),
-            element(
-              "div",
-              { className: "dialog-actions" },
-              // A dialog's description is not reread when focus moves inside it.
-              button("Done", close, {
-                tone: "primary",
-                "aria-describedby": "create-namespace-access",
-              }),
-            ),
-          );
-        }
-        dialog.querySelector<HTMLButtonElement>(".dialog-actions button:last-child")?.focus();
+        confirmCreation(id, createdName);
       } catch (cause) {
         if (!context.isCurrent()) {
           return;
@@ -453,7 +529,7 @@ export function renderNamespaces(
           message =
             "Outcome unknown. Namespace creation could not be confirmed. Check Namespaces for this name before trying again.";
         } else if (forbidden) {
-          message = NAMESPACE_CREATE_DENIED;
+          message = createDenied;
         } else if (error.status === 409 && explainedConflict(cause) === undefined) {
           message =
             "This Namespace name is already in use or reserved by a deleted Namespace. Choose a different name.";

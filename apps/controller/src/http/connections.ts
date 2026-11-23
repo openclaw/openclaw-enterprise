@@ -1,4 +1,4 @@
-import type { AuditEvent, OccApiRoute, ResourceRef } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, ResourceRef } from "@openclaw-enterprise/contracts";
 import {
   BrowserAuthorizationError,
   CallerStateDeniedError,
@@ -93,8 +93,7 @@ export const connectionCallbackOperation = {
   authorizationTarget: "namespace_collection",
   summary: "Complete a browser connection for the signed-in person who started it",
   tags: ["Connections"],
-  schema: {},
-} as unknown as OccApiRoute;
+} as const;
 
 export const connectionCallbackSchema = {
   operationId: connectionCallbackOperation.operationId,

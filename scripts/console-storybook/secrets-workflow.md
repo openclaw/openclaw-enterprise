@@ -8,7 +8,9 @@ Kubernetes storage, credential delivery, or runtime consumption.
    At phone width, Create wraps below search and keeps that tab order. Open
    **No search matches**, then clear the search to recover the list. Switch Namespace and back.
 2. Create **Walkthrough key** with a synthetic value. Inspect masking, reveal and
-   hide it, then submit. Close the success message and open its detail.
+   hide it, then submit. Close the success message. Search for **Walkthrough key**
+   and select part of the query. Switch to another window and back. Check that
+   the search keeps focus and the selection when the list reloads. Open the result.
 3. Replace the value and inspect the deployment and CredentialSource instructions.
    After success, reopen replacement and check that its input is empty.
 4. Delete the unreferenced Secret after reviewing the confirmation. Verify that
