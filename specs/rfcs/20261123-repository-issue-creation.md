@@ -13,27 +13,27 @@ author: freeqaz-openai
 
 ## Summary
 
-Add an explicit `scopedRest: "v2"` option for selected GitHub App repositories. An Agent with saved Write can create issues through stock OpenShell 0.1.9 when every repository covered by its installation token also has the required issue-write authority. Defaults and v1 remain unchanged.
+Add `scopedRest: "v2"` for selected GitHub App repositories on stock OpenShell 0.1.9. A repository with saved Agent Write and **Issues: write** permits issue creation by default under v2. Its Namespace registration can set `createIssues: false` to disable that route. Other repositories' grants do not veto creation in the writable repository. Defaults, v1 and Git-only access remain unchanged.
 
 ## Motivation
 
-Agents can read issues but cannot create them under the current scoped REST grant. GitHub supports issue creation through one repository POST route. Its request body can also change metadata or link a parent issue in another repository, so authorizing the destination path alone is insufficient.
+An Agent with Read on A, Write on B and no grant on C should be able to create an issue in B while direct writes to A and direct access to C remain denied. GitHub exposes one repository issue-creation POST route. Authorizing that route also accepts GitHub's full request-body behavior, including effects on another repository.
 
 ## Proposal
 
-An operator selects `nativeGit: "v1"` and `scopedRest: "v2"` on each participating `github-repository` Namespace registration and approves **Issues: write**. An Admin saves Agent **Write**, rebinds the credential and redeploys. The Repo Driver may then permit `POST /repos/{owner}/{repo}/issues` on `api.github.com`. The Sandbox Driver compiles the exact method and path into native network policy with an explicit credential binding. OpenShell enforces the route and injects the credential from the endpointless Provider outside the Agent. No Worker callback or OCE body check runs.
+An operator selects `nativeGit: "v1"` and `scopedRest: "v2"` on B's selected `github-repository` Namespace registration and approves **Issues: write**. An Admin saves Agent **Write**, explicitly rebinds the credential and redeploys. Unless that registration sets `createIssues: false`, the Repo Driver permits `POST /repos/{owner}/{repo}/issues` on `api.github.com` for B. The optional setting is valid only under v2 and disables issue creation for that repository alone. Changing the registration requires a fresh rebind. A saved-grant change requires redeployment.
 
-**The selected installation token's complete repository scope is the boundary.** GitHub accepts `parent_issue_id` and can link to a parent in another repository when the caller has triage access to both. Withhold issue creation across the token unless its complete repository scope is verified and every covered repository is bound, explicitly selects v2, has **Issues: write**, and has saved Agent **Write**. Unknown or broader scope disables creation. If A is Read and B is Write on one token, B creation is disabled. Bind B alone to enable it when the selected token is confined to B. Recheck on binding, deployment and rotation.
+The Sandbox Driver compiles the exact method and path into native network policy with an explicit credential binding. Stock OpenShell enforces the direct route and injects the credential from the endpointless Provider outside the Agent. No Worker callback or OCE body check runs. A Read or C denied on the same selected installation token does not prevent B's POST. Direct requests to A and C still follow their own grants.
 
-**This authorizes the full GitHub endpoint.** GitHub may accept labels, assignees, milestone, type, status, issue-field values and parent links, subject to its permissions and enabled features. Creation can trigger notifications. Parent links within the authorized repository set are allowed. Administrators requiring title/body-only creation or stricter restrictions must leave v2 disabled until GitHub or upstream OpenShell can enforce them. See GitHub's [create-issue contract](https://docs.github.com/en/rest/issues/issues#create-an-issue).
+**This authorizes the full GitHub endpoint.** GitHub may accept labels, assignees, milestone, type, status, issue-field values and `parent_issue_id`, subject to its permissions and enabled features. Creation can trigger notifications. In particular, GitHub can link the new issue in B to a parent in a differently granted private repository when the caller has triage access to both. That may affect A or C even though the Agent cannot send a direct issue POST there. Native method-and-path enforcement cannot restrict these server-side effects. Administrators requiring title/body-only creation or strict isolation from such effects must disable issue creation. See GitHub's [create-issue contract](https://docs.github.com/en/rest/issues/issues#create-an-issue).
 
-Issue reads and separately authorized pull-request operations retain their existing rules. Issue editing, comments, other issue-write routes and GraphQL remain excluded. This proposal adds no token type, grant type, CLI, broker, middleware or OpenShell fork.
+Issue reads and pull-request grants remain independent. The existing [mixed-grant pull-request rule](https://github.com/openclaw/openclaw-enterprise/pull/7135) remains unchanged. `createIssues: false` denies the issue POST only. It does not prevent conversion of an existing issue through an independently permitted pull-request POST. Issue editing, comments, other issue-write routes and GraphQL remain excluded. This proposal adds no token type, grant type, CLI, broker, middleware or OpenShell fork.
 
 ## Interface changes
 
 ### APIs
 
-Add the outbound GitHub issue POST route under the stated conditions. No OCE HTTP API changes.
+Permit the outbound GitHub issue POST route under the stated per-repository conditions. No OCE HTTP API changes.
 
 ### IAM
 
@@ -45,19 +45,19 @@ No changes.
 
 ### Driver contracts
 
-Extend the Repo Driver's selected-repository registration with `scopedRest: "v2"` and require the complete installation token scope check. Reuse the Sandbox Driver's native route compiler and Credential Proxy's endpointless Provider.
+Extend the Repo Driver's selected-repository Namespace registration with `scopedRest: "v2"` and optional `createIssues: false`. Reuse the Sandbox Driver's native route compiler and Credential Proxy's endpointless Provider.
 
 ## Simplifications
 
-Stock OpenShell enforces the exact route without a patched supervisor or online OCE validator. This intentionally gives up title/body-only enforcement.
+Stock OpenShell enforces the direct route without a patched supervisor, online OCE validator or credential-wide issue-creation veto. Strict body and server-side effect controls remain upstream work.
 
 ## Acceptance Criteria
 
-- **AC-1.** On stock OpenShell 0.1.9, use the normal saved-Agent workflow to bind B alone or multiple repositories, each with v2, **Issues: write** and saved Write. Use stock `gh api` to create an issue in B and independently verify its repository and number. Verify allowed traffic reaches the controlled origin, credentials stay outside the Agent, and Worker callback attempts remain zero.
-- **AC-2.** Refuse creation before forwarding for default or v1 registration, missing permission, saved Read, an ungranted repository, or another method or path. A redirect outside the allowed route must send zero unauthorized HTTP requests to its destination. Withhold B creation when one token also covers A Read, a repository without v2 or **Issues: write**, or unknown or broader scope. Preserve permitted Git and REST reads.
-- **AC-3.** Downgrade B or withdraw its saved grant and redeploy the same Agent. Require a fresh rebind when changing registration. Verify old Sandbox retirement, remaining authorized reads, denial of a fresh POST before forwarding, and no new issue by independent readback. Repeat after rotation and token-scope changes.
-- **AC-4.** Verify no OCE body validator or callback runs and issue creation grants no additional pull-request authority. Record the exact packaged controller, runtime and stock OpenShell images for installed proof. Earlier patched-supervisor evidence does not qualify.
+- **AC-1.** On stock OpenShell 0.1.9, save A Read, B Write and C ungranted for the same Agent and selected installation token. Register B with v2 and **Issues: write**, omit `createIssues`, rebind and deploy. Use stock `gh api` to create an issue in B and independently verify its repository and number. Verify allowed traffic reaches the controlled origin, direct A creation and C access are denied before forwarding, credentials stay outside the Agent, and Worker callback attempts remain zero.
+- **AC-2.** Refuse direct creation before forwarding for default or v1 registration, Git-only access, missing **Issues: write**, saved Read, an ungranted repository, `createIssues: false`, or another method or path. A redirect outside the allowed route must send zero unauthorized HTTP requests to its destination. Change only B's registration to disable creation, rebind and redeploy, and verify other repositories' issue creation and B's permitted reads retain their own behavior. Verify the existing pull-request rule is unchanged and deny-create does not claim to block issue conversion through an allowed PR route.
+- **AC-3.** Downgrade B or withdraw its saved grant and redeploy the same Agent. Verify old Sandbox retirement, remaining authorized reads, denial of a fresh POST before forwarding, and no new issue by independent readback. Repeat after credential rotation and registration changes, with a fresh rebind for the latter.
+- **AC-4.** In the controlled origin, give the synthetic credential triage access to A, B and C. Create two issues in B, setting `parent_issue_id` first to a parent in read-only A, then to a parent in ungranted private C. Inspect the child and each parent independently. Record direct request and resulting simulated server-side effect separately. This controlled result is not live GitHub proof. Hold broader rollout if issue creation affects a denied private repository. Live validation requires separate, specific authorization. Record exact packaged controller, runtime and stock OpenShell images for installed proof. Earlier patched-supervisor evidence does not qualify.
 
 ## Delivery and verification
 
-Submit this RFC before changing the Driver contract. The selected behavior and installed acceptance criteria remain unverified until implementation and qualification complete.
+Submit this RFC before changing the Driver contract. The selected behavior and installed acceptance criteria remain unverified until implementation and qualification complete. No broad trial or live GitHub write is authorized by this proposal.
