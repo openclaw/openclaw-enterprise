@@ -4726,11 +4726,12 @@ export async function renderAgentDetail(
       mountedTab.reusable = false;
     }
     savedNotice = saved;
-    // A save lands well after its click, and the rebuilt tab is usually shorter than the editor
-    // it replaces. When the cards below the version layout are in view, scroll by the layout's
-    // change, so they keep their place and the summary takes the editor's (finding 1482).
-    const bottomBefore = versionLayout.getBoundingClientRect().bottom;
-    const anchorBelow = bottomBefore < globalThis.innerHeight;
+    // When a save collapses the editor, keep the cards below it in place if visible.
+    // If they were farther down the page, keep them below the viewport (finding 1482).
+    const anchorBottom = Math.min(
+      versionLayout.getBoundingClientRect().bottom,
+      globalThis.innerHeight,
+    );
     try {
       await renderTab();
     } finally {
@@ -4741,9 +4742,9 @@ export async function renderAgentDetail(
     }
     // The permission reread can land after the rebuilt tab was drawn.
     redrawConfigurationAccessViews();
-    const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
-    if (anchorBelow && shrunk < 0) {
-      globalThis.scrollBy({ top: shrunk, behavior: "instant" });
+    const scrollDelta = versionLayout.getBoundingClientRect().bottom - anchorBottom;
+    if (scrollDelta < 0) {
+      globalThis.scrollBy({ top: scrollDelta, behavior: "instant" });
     }
     // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
     // Cancel that the rebuilt editor hides falls back to the tab (finding 2386).
@@ -6755,6 +6756,7 @@ export async function renderAgentDetail(
           // A conflict keeps the same editor. Rebuilding it detaches a reader's focused
           // textarea and deactivates its selection before recovery can check focus.
           if (reloadRequired && body.contains(editor)) {
+            reload.id = "configuration-conflict-reload";
             cancel.after(reload);
           } else {
             render();

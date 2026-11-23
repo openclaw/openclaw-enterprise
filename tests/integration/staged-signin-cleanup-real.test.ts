@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.ts";
+import { stagedCreateTimeout } from "../../scripts/ci/k3d-preparation-diagnostics.ts";
 import {
   assertLocalRehearsalDaemon,
   FixtureCommandError,
@@ -292,7 +293,15 @@ async function fixture(
       statePath,
     ],
     { cwd: root, timeout: 4 * 60_000 },
-  );
+  ).catch(async (error: unknown) => {
+    if (error instanceof FixtureCommandError && error.settled && error.outcome.exitCode === 1) {
+      const hint = await stagedCreateTimeout(statePath);
+      if (hint) {
+        throw new Error(hint, { cause: error });
+      }
+    }
+    throw error;
+  });
   const resource = JSON.parse(prepared) as Record<string, unknown> & {
     name: string;
     nodeImage: string;

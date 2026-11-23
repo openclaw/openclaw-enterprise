@@ -84,6 +84,10 @@ initializer Job or Pod or changing the committed migration history. The test
 does not edit Helm storage or disable hooks. If Helm finishes before the
 interruption, the rehearsal fails rather than claiming recovery coverage.
 
+After the candidate acknowledges the new Agent, the previous image’s migrator
+must report completed history on the candidate database. If this check fails,
+the rehearsal stops before the return measurement or writer shutdown.
+
 The archive taken before the upgrade
 must omit the candidate's acknowledged draft. The archive taken after the write
 must contain it. The previous controller must accept the restored migration
