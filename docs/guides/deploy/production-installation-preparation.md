@@ -337,16 +337,13 @@ For Slack Agents, prepare the [managed channel egress fleet](channel-egress.md)
 and matching Helm and Installation settings before deployment. For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
-Use an approved lowercase `sha256` digest for `images.controller`. To reuse older
-values, [prepare a copy for the fresh install](production-installation.md#prepare-retained-values-for-a-fresh-install).
+Pin `images.controller` to an approved image reference with a lowercase `sha256` digest. For older values, [prepare a copy for the fresh install](production-installation.md#prepare-retained-values-for-a-fresh-install).
 
-Verify `OCC_INPUT_DIRECTORY` contains both YAML files. In a new shell,
+Check both YAML files in `OCC_INPUT_DIRECTORY`. In new shells,
 [restore the setup](#configure-the-installation).
 
-Render before provisioning the password profile. Correct the named check on
-failure. After checking the directory, the block invalidates the previous render.
-It exports settings only on success. The offline render checks only the Secret
-selection.
+Render before provisioning the password profile. Fix any failed check. After checking the directory, the block invalidates the previous render.
+It exports settings only on success. Rendering cannot verify Secret existence or contents.
 
 ```bash
 {

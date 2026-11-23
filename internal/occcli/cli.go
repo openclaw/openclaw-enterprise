@@ -1581,7 +1581,7 @@ var emptyFlagValues = map[string]string{
 	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
 	"sandbox-network-policy-file":         "a Sandbox network policy file",
 	"level":                               "error, warn, info or debug",
-	"out":                                 "a key file path",
+	"out":                                 "an output file path",
 	"pod":                                 "a Pod",
 	"revision":                            "a revision ID",
 	"service-key-file":                    "a bootstrap or service-key response file",

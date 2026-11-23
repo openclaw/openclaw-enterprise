@@ -28,11 +28,6 @@ func (app *application) installationMigrateValuesCommand() *cobra.Command {
 			if cmd.Flags().Changed("out") && (out == "" || out == "-" || os.IsPathSeparator(out[len(out)-1])) {
 				return errors.New("--out must name a new local file")
 			}
-			// Helm initializes its storage Driver even for a client dry run.
-			switch os.Getenv("HELM_DRIVER") {
-			case "sql", "memory":
-				return errors.New("unset HELM_DRIVER before converting installation values")
-			}
 			data, err := readInstallationInput(values, 4<<20)
 			if err != nil {
 				return errors.New("installation values must be a readable regular file of at most 4 MiB")
@@ -68,7 +63,7 @@ func (app *application) installationMigrateValuesCommand() *cobra.Command {
 				return err
 			}
 			if converted == nil {
-				_, err = fmt.Fprintln(cmd.OutOrStdout(), "Values already omit the legacy bootstrap settings.")
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "Values already omit the legacy bootstrap settings. No output file created.")
 				return err
 			}
 			candidate := filepath.Join(work, "converted.yaml")
@@ -85,11 +80,13 @@ func (app *application) installationMigrateValuesCommand() *cobra.Command {
 			if ctx.Err() != nil {
 				return errors.New("conversion was interrupted before writing the output")
 			}
-			if err = writeConvertedInstallationValues(chartDir, out, converted); err != nil {
+			if err = writeConvertedInstallationValues(info, out, converted); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Wrote converted installation values to a new private file.")
-			return err
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Wrote converted installation values to a new private file."); err != nil {
+				return errors.New("the output file was written, but OCC could not print the confirmation")
+			}
+			return nil
 		},
 	}
 	flags := cmd.Flags()
@@ -247,15 +244,25 @@ func canonicalValuesDirectory(path string) (string, error) {
 	return filepath.EvalSymlinks(path)
 }
 
-func writeConvertedInstallationValues(chart, path string, contents []byte) error {
+func writeConvertedInstallationValues(chart os.FileInfo, path string, contents []byte) error {
 	parent, name := filepath.Split(path)
 	parent, err := canonicalValuesDirectory(parent)
 	if err != nil {
 		return errors.New("cannot locate the output directory")
 	}
-	rel, err := filepath.Rel(chart, parent)
-	if err == nil && filepath.IsLocal(rel) {
-		return errors.New("output file must be outside the selected chart directory")
+	// Path spellings can differ on case-insensitive filesystems. Private
+	// values must never become a file in a chart Helm may package.
+	for ancestor := parent; ; ancestor = filepath.Dir(ancestor) {
+		info, err := os.Stat(ancestor)
+		if err != nil {
+			return errors.New("cannot verify the output directory")
+		}
+		if os.SameFile(chart, info) {
+			return errors.New("output file must be outside the selected chart directory")
+		}
+		if ancestor == filepath.Dir(ancestor) {
+			break
+		}
 	}
 	dir, err := os.OpenRoot(parent)
 	if err != nil {

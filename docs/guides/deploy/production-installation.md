@@ -90,7 +90,7 @@ only when not using profiles. Continue through the shared checks and workspace a
 ### Shared credential and configuration checks
 
 First complete the [configuration setup](production-installation-preparation.md#configure-the-installation)
-for the intended protected input directory and prepare or select the YAML as directed there.
+and [prepare any retained values](#prepare-retained-values-for-a-fresh-install) in a new private directory.
 In the same Bash shell, run the complete [shared checks](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks),
 keep their validated exports, and continue to workspace access.
 
@@ -217,8 +217,7 @@ Helm, [provision both Secret keys](production-installation-preparation.md#option
 with credentials prepared for the fresh install. Keep any old PVC output files
 for recovery of the original Installation.
 
-Run the preview from the target release checkout with Helm installed and
-`HELM_DRIVER` unset. The command takes a local chart directory and a values file
+Run the preview from the target release checkout with Helm installed. The command takes a local chart directory and a values file
 of at most 4 MiB. Use one YAML mapping with unique string keys and simple block
 entries for the retired settings. The command refuses anchors, aliases, merge
 keys, and explicit tags.
@@ -231,8 +230,8 @@ occ installation migrate-values --release oce --kube-namespace openclaw-system \
 After `Preview passed`, create a directory with mode `0700` outside the chart.
 Set `OCC_INPUT_DIRECTORY` to that directory and repeat with
 `--out "$OCC_INPUT_DIRECTORY/values.yaml"`.
-The command compares the rendered install manifests, including hooks and CRDs,
-before creating the `0600` file. It refuses an existing output path. If both
+The command repeats the checks with the current inputs before it saves the
+`0600` file. Rendered resources, hooks and CRDs must match. It refuses an existing output path. If both
 retired settings are already absent, it reports that and creates no file. Pair the verified values
 with the reviewed `installation.yaml` and complete
 [configuration and workspace access checks](#configure-the-installation).

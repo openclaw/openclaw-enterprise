@@ -61,9 +61,9 @@ Solid arrows describe implemented source paths, not deployment evidence.
 
 `internal/occcli/installation_values.go:installationMigrateValuesCommand`
 prepares values for a future fresh install. It resolves the bootstrap Job
-against the original values, then compares manifests from both renders of the
-same target chart. With `--out`, it publishes a new file after the comparison
-passes. The installation command receives the copy as new inputs. Retain the
+against the original values. It compares the original and cleaned manifests
+with and without an OCC attempt ID. With `--out`, it writes a new file only
+if settings were removed and both comparisons passed. The installation command receives the copy as new inputs. Retain the
 original values with the previous attempt's receipt.
 
 ### 1. Freeze and check the selected target
