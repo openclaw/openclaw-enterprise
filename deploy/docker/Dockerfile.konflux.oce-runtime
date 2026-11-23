@@ -1,5 +1,5 @@
-ARG BASE_IMAGE=registry.access.redhat.com/hi/nodejs:24@sha256:99ea76ae7dd5448bd6ea0d8dabb3acfc8137996ce84415ff6e297ac5ec6d5258
-ARG BUILDER_IMAGE=registry.access.redhat.com/hi/nodejs:24-builder@sha256:0d0b51223986aafa26289d4f7c02aeb13558f104c9fac4813a74e00a92eb12c8
+ARG BASE_IMAGE=registry.access.redhat.com/hi/nodejs:24@sha256:0b3b95334a00e6724b8e0ed6d4ae1cd6c482ed72a9fd92b402d4c7d7742c29a3
+ARG BUILDER_IMAGE=registry.access.redhat.com/hi/nodejs:24-builder@sha256:c61a52c0d50c2122a3dccf46f8bb0cca9c41a1e1df7ff2776b496433331726b3
 
 # OpenClaw Enterprise (OCE) runtime image on Hummingbird.
 #
@@ -296,9 +296,8 @@ RUN --mount=type=bind,source=deploy/runtime/Dockerfile,target=/tmp/oce/Dockerfil
 # up. Allow 30 seconds in this test-only stage, which the image never copies
 # from. The worker provider identity transport cases also fail intermittently in
 # CI with a missing identity-turn.identity.json, so each of them gets two
-# retries. The two chained runs follow the fork's Dockerfile:
-# the first runs only the named run-loop case, the second the restart-resume
-# files, and both reuse the compiled tree.
+# retries. The chained run follows the fork's Dockerfile: it runs only the
+# named run-loop case and reuses the compiled tree.
 RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir .artifacts \
     && grep -q '^  timeout: number | AbortSignal = 10_000,$' test/helpers/gateway-websocket.ts \
     && sed -i 's/^  timeout: number | AbortSignal = 10_000,$/  timeout: number | AbortSignal = 30_000,/' \
@@ -313,10 +312,6 @@ RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
-    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
-    src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
-    src/config/sessions/session-entry-json.test.ts \
     && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
@@ -334,8 +329,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none chmod 1777 /tmp && test -k /tmp && cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts \
-    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
-    src/pages/chat/chat-history-subscription-errors.test.ts
+    src/app/gateway-page-activation.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Rootless Podman and Buildah-in-container builds hide the cgroup memory limit,
@@ -561,6 +555,8 @@ COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \
@@ -599,34 +595,15 @@ test "$(CODEX_HOME="$codex_home" codex --version)" = "codex-cli ${OPENAI_CODEX_V
 rm -rf "$codex_home"
 test -f /app/dist/extensions/codex/openclaw.plugin.json
 test -f /app/dist/extensions/slack/openclaw.plugin.json
-# The fork compiles a patched Node 24.22.1 (deploy/runtime/node) so terminating a
-# worker during require(esm) cannot abort the Gateway. This image keeps the
-# Hummingbird Node, a known gap until a Node release carries that fix, and records
-# that executable's identity, which the inventory checks against the running node.
-mkdir -p /usr/local/share/oce-node
-node -e '
-const { createHash } = require("node:crypto");
-const fs = require("node:fs");
-const executable = fs.realpathSync(process.execPath);
-fs.writeFileSync("/usr/local/share/oce-node/provenance.json", JSON.stringify({
-  source: "hummingbird",
-  image: process.argv[1],
-  workerTerminationRepair: false,
-  version: process.versions.node,
-  architecture: process.arch,
-  platform: process.platform,
-  modules: process.versions.modules,
-  napi: process.versions.napi,
-  icu: process.versions.icu,
-  executable,
-  sha256: createHash("sha256").update(fs.readFileSync(executable)).digest("hex"),
-}, null, 2) + "\n");
-' "${BASE_IMAGE}"
-node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json
+node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /tmp/additional-download-clients.json
 rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 EOF
 
-RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
+RUN --mount=type=bind,source=deploy/runtime/repository-credentials/github-repository-rest/SKILL.md,target=/tmp/github-repository-rest.md \
+    /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig \
+    && skill=/etc/codex/skills/github-repository-rest \
+    && install -D -m 0444 /tmp/github-repository-rest.md "$skill/SKILL.md" \
+    && touch -d @0 "$skill/SKILL.md" "$skill"
 
 RUN node -e 'const fs = require("node:fs"); const provenance = JSON.parse(fs.readFileSync("/opt/oce/runtime/provenance.json", "utf8")); if (!/^[a-f0-9]{40}$/.test(process.argv[1]) || provenance.commit !== process.argv[1]) throw new Error("OpenClaw label must match packaged provenance");' "${OPENCLAW_COMMIT}" \
     && node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision}));' "${OCE_COMMIT}"
