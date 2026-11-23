@@ -56,6 +56,7 @@ import {
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
+import { withWriteHold } from "../../apps/controller/src/drivers/repo/access/material-hold.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
 import {
@@ -4587,6 +4588,79 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
   assert.equal(f.calls.material, reads);
   assert.equal(activity.updates, 2);
   assert.equal(confirmed().length, 2);
+});
+
+/**
+ * Gives every material read of a lent Source its own row hold, as the Source custody does:
+ * `confirm` stands for the round trip on the holding session.
+ */
+function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
+  const holds: { open: boolean; confirms: number; releases: number }[] = [];
+  const session = {
+    /** Whether the database still holds the row when the Worker asks. */
+    alive: true,
+    /** Runs after a confirmed round trip, before the runtime's next step. */
+    afterConfirm: (_hold: { open: boolean }) => {},
+  };
+  const read = f.owner.readOpenShellMaterial.bind(f.owner);
+  f.owner.readOpenShellMaterial = (async (...args: Parameters<typeof read>) => {
+    const material = await read(...args);
+    if (!material || "absent" in material) {
+      return material;
+    }
+    const hold = { open: true, confirms: 0, releases: 0 };
+    holds.push(hold);
+    return withWriteHold(
+      { ...material },
+      {
+        held: () => hold.open,
+        async confirm() {
+          hold.confirms += 1;
+          if (!hold.open || !session.alive) {
+            hold.open = false;
+            return false;
+          }
+          session.afterConfirm(hold);
+          return true;
+        },
+        async release() {
+          hold.releases += 1;
+          hold.open = false;
+        },
+      },
+    );
+  }) as typeof read;
+  return {
+    holds,
+    session,
+    allReleased: () => holds.every(({ open, releases }) => !open && releases > 0),
+  };
+}
+
+test("native Git writes a lent Source only after the holding session confirms its hold", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { holds, session, allReleased } = lentSourceHolds(f);
+  // The database ended the hold while the Worker was frozen; locally it still looks held.
+  session.alive = false;
+  await reconcile();
+  assert.equal(activity.updates, 0, "nothing is written under a hold the database ended");
+  assert.ok(
+    holds.some(({ confirms }) => confirms > 0),
+    "the session is asked before the write",
+  );
+  assert.ok(allReleased());
+  assert.notEqual(f.runtime.route(revision.id).state, "installed");
+
+  session.alive = true;
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
 });
 
 test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {

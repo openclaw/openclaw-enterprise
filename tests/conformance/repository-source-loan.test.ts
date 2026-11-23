@@ -72,6 +72,7 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
               },
         hold: {
           held: () => open,
+          confirm: async () => open,
           async release() {
             if (open) {
               open = false;

@@ -211,7 +211,10 @@ Sandbox until it ends.
 
 A loan holds the Source's catalog row from its checks until the Provider write
 returns, so replacement and retirement wait for an in-flight write. A hold ends
-after at most 60 seconds, and a Worker paused past it sends nothing.
+about 60 seconds after it was taken: the Worker commits it, and when the Worker
+is frozen or cut off from the database, PostgreSQL ends its idle session. Right
+before the write the Worker confirms the hold on that session, so a Worker that
+resumes after the database ended its hold writes nothing from that loan.
 
 ## Console access levels
 

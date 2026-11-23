@@ -2188,6 +2188,12 @@ export class OpenShellGitRuntime {
                     return;
                   }
                 }
+                // The database may have ended the hold while this Worker was frozen or cut off;
+                // only the holding session can tell, so ask it last before the write.
+                if (hold && !((await hold.confirm()) && held())) {
+                  await hold.release();
+                  return;
+                }
                 return {
                   value: current.value,
                   expiresAt: entry.preview.native
