@@ -139,6 +139,9 @@ operation was not authorized.`
   bound Secret and `credential_source:operate` on each source. The deploy
   [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
   for each source the caller can operate.
+- Selecting or changing an [Agent Gateway channel proxy credential](../agents/network-proxy.md)
+  requires `secret:operate` on that exact same-Namespace Secret. Deployment also
+  checks the Agent principal's exact Secret grant.
 - Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
   off or changing the setting also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or

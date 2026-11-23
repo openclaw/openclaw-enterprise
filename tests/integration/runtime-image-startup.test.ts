@@ -8,7 +8,7 @@ import {
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
 } from "../helpers/runtime-image-startup.ts";
-import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
+import { gatewayLogsThroughReady } from "../helpers/runtime-image-gateway-observations.ts";
 import { verifyRuntimeSeccompRecord } from "./runtime-image-seccomp-case.ts";
 import { verifyRuntimeCodexAuthMount } from "./runtime-image-codex-auth-mount-case.ts";
 import { verifyRuntimeGatewayProbeCleanup } from "./runtime-image-gateway-probe-cleanup-case.ts";
@@ -45,14 +45,13 @@ async function verifyGatewaySmoke(t: TestContext, collectPlugins: boolean) {
   const configuration = createAdmittedRuntimeImageConfiguration("openclaw", {
     enableSlack: true,
   });
-  const { logs, pluginList } = await runGatewaySmoke(t, "openclaw", {
+  const { containerName, pluginList } = await runGatewaySmoke(t, "openclaw", {
     entrypoint: controller.dockerGateway,
     configuration,
     collectPlugins,
     ...(!collectPlugins ? { extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"] } : {}),
   });
-  assert.ok(typeof logs === "string");
-  const entries = jsonLogEntries(logs);
+  const { logs, entries } = await gatewayLogsThroughReady(containerName);
   assertGatewayReadyLog(entries);
   assertGatewayModelLog(entries, "openai/" + runtimeImageModel);
   if (collectPlugins) {
