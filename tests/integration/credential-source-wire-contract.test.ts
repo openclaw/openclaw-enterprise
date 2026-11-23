@@ -60,8 +60,17 @@ test("published TokenService source request schemas validate managed static mate
     assert.equal(register({ ...source, config, secret: credential }), true);
     // Static custody accepts one opaque value without assigning authority to its field name.
     assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), true);
-    // Template attachment is not part of static Source enrollment.
-    assert.equal(register({ ...source, connectionTemplateId, secret: credential }), false);
+    // Source enrollment selects a Template by identity; version selection belongs to admission.
+    assert.equal(register({ ...source, connectionTemplateId, secret: credential }), true);
+    assert.equal(
+      register({
+        ...source,
+        connectionTemplateId,
+        connectionTemplateVersion: 1,
+        secret: credential,
+      }),
+      false,
+    );
     assert.equal(register(source), false);
     assert.equal(register({ ...source, secret: refs }), false);
     assert.equal(register({ ...source, secrets: refs }), false);

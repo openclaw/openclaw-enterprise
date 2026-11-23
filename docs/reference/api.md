@@ -10743,7 +10743,6 @@ List readable credential sources without revealing credential values
 | `data` | `array<object>` | Yes | — |
 | `data[].config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data[].connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `data[].egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data[].egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data[].egress.retention` | `"none"` | Yes | — |
@@ -10851,13 +10850,12 @@ Register a credential source
 
 **RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
 
-Register a managed static Source. Supply connectionTemplateId and its positive connectionTemplateVersion together, or omit both. OCC validates the selected approved current static Template before TokenService takes custody.
+Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
 | `connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 | `type` | `"static"` | Yes | — |
@@ -10901,7 +10899,6 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
@@ -11033,7 +11030,6 @@ Get one readable credential source and its available status
 | `data` | `object` | Yes | — |
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
@@ -11172,7 +11168,6 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
@@ -11271,7 +11266,6 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data` | `object` | Yes | — |
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |

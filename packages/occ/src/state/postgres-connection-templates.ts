@@ -350,7 +350,7 @@ export function postgresConnectionTemplates(
           "constraint" in error &&
           (error.constraint === "authentication_states_template_version" ||
             error.constraint === "saved_connections_template_version" ||
-            error.constraint === "static_credential_source_templates_version")
+            error.constraint === "static_credential_source_templates_template")
         ) {
           throw new ResourceStateConflictError("The connection template is in use.");
         }

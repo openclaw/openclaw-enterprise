@@ -42,10 +42,7 @@ function clientCredentialSource(
     type: source.type,
     ...(source.connectionTemplateId === undefined
       ? {}
-      : {
-          connectionTemplateId: source.connectionTemplateId,
-          connectionTemplateVersion: source.connectionTemplateVersion,
-        }),
+      : { connectionTemplateId: source.connectionTemplateId }),
     ownerCapability: source.ownerCapability,
     config: source.config,
     secrets: source.secrets,
@@ -98,10 +95,7 @@ export const credentialSourceHandlers = {
           ...(providerPreset === undefined ? {} : { providerPreset }),
           ...(body.connectionTemplateId === undefined
             ? {}
-            : {
-                connectionTemplateId: body.connectionTemplateId as string,
-                connectionTemplateVersion: body.connectionTemplateVersion as number,
-              }),
+            : { connectionTemplateId: body.connectionTemplateId as string }),
         },
         (resource, phase) => phaseAudit(mutationEvent(resource), phase),
       );

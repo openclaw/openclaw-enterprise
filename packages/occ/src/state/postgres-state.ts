@@ -687,15 +687,10 @@ function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentia
 function staticCredentialSourceTemplateFromRow(
   row: PostgresRow,
 ): Readonly<StaticCredentialSourceTemplate> {
-  const version = row.connection_template_version;
-  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
-    throw new PersistedStateInvalidError("Persisted static Source Template version is invalid.");
-  }
   return {
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
     connectionTemplateId: text(row, "connection_template_id"),
-    connectionTemplateVersion: version,
   };
 }
 
@@ -3062,7 +3057,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       findStaticConnectionTemplate: async (namespaceId, credentialSourceId) => {
         const rows = decodeQueryRows(
           await client.query(
-            `SELECT namespace_id, credential_source_id, connection_template_id, connection_template_version FROM occ.static_credential_source_templates WHERE namespace_id=$1 AND credential_source_id=$2`,
+            `SELECT namespace_id, credential_source_id, connection_template_id FROM occ.static_credential_source_templates WHERE namespace_id=$1 AND credential_source_id=$2`,
             [namespaceId, credentialSourceId],
           ),
         );
@@ -3071,18 +3066,17 @@ export class PostgresPlatformState implements PlatformStateStore {
       listStaticConnectionTemplates: async (namespaceId) =>
         decodeQueryRows(
           await client.query(
-            `SELECT namespace_id, credential_source_id, connection_template_id, connection_template_version FROM occ.static_credential_source_templates WHERE namespace_id=$1 ORDER BY credential_source_id`,
+            `SELECT namespace_id, credential_source_id, connection_template_id FROM occ.static_credential_source_templates WHERE namespace_id=$1 ORDER BY credential_source_id`,
             [namespaceId],
           ),
         ).map(staticCredentialSourceTemplateFromRow),
       associateStaticConnectionTemplate: async (association) => {
         await client.query(
-          `INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id,connection_template_version) VALUES ($1,$2,$3,$4)`,
+          `INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id) VALUES ($1,$2,$3)`,
           [
             association.namespaceId,
             association.credentialSourceId,
             association.connectionTemplateId,
-            association.connectionTemplateVersion,
           ],
         );
       },

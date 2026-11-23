@@ -229,6 +229,7 @@ test(
     assert.equal(pendingSource.statusCode, 200, pendingSource.body);
     assert.equal(Object.hasOwn(pendingSource.json().data, "connectionTemplateId"), false);
     assert.equal(Object.hasOwn(pendingSource.json().data, "connectionTemplateVersion"), false);
+    assert.deepEqual(pendingSource.json().data.config, {});
     const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
     assert.equal(removed.statusCode, 204, removed.body);
     const pendingSession = await pool.query(
@@ -581,15 +582,14 @@ test(
     // Source discovery derives the approved Template identity from the saved account.
     const savedAccount = accounts.json().data[0];
     assert.equal(sourceDetails.json().data.connectionTemplateId, savedAccount.connectionTemplateId);
-    assert.equal(
-      sourceDetails.json().data.connectionTemplateVersion,
-      savedAccount.connectionTemplateVersion,
-    );
+    assert.equal(Object.hasOwn(sourceDetails.json().data, "connectionTemplateVersion"), false);
+    assert.deepEqual(sourceDetails.json().data.config, {});
     const sourceList = await owner("GET", `${base}/credential-sources`);
     assert.equal(sourceList.statusCode, 200, sourceList.body);
     const listedSource = sourceList.json().data.find((entry: { id: string }) => entry.id === id);
     assert.equal(listedSource?.connectionTemplateId, savedAccount.connectionTemplateId);
-    assert.equal(listedSource?.connectionTemplateVersion, savedAccount.connectionTemplateVersion);
+    assert.equal(Object.hasOwn(listedSource, "connectionTemplateVersion"), false);
+    assert.deepEqual(listedSource.config, {});
     // The saved source and its authorization must retain the Namespace consumed by the callback.
     const completedEvents = (await state.transact((unit) => unit.audit.list())).filter(
       (event) =>
@@ -740,7 +740,7 @@ test(
       .data.find((entry: { id: string }) => entry.id === id);
     for (const projected of [pinnedSource.json().data, pinnedListedSource]) {
       assert.equal(projected?.connectionTemplateId, savedAccount.connectionTemplateId);
-      assert.equal(projected?.connectionTemplateVersion, savedAccount.connectionTemplateVersion);
+      assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
     }
     const currentMcp = async () => {
       const result = await owner("GET", connections);
@@ -751,6 +751,10 @@ test(
     };
     assert.deepEqual((await currentMcp()).destinations, [recipient]);
     assert.equal((await currentMcp()).oauthClientId, oauthClientId);
+    assert.equal(
+      (await currentMcp()).connectionTemplateVersion,
+      savedAccount.connectionTemplateVersion,
+    );
     const futureConsent = await owner("POST", connections, input);
     assert.equal(futureConsent.statusCode, 201, futureConsent.body);
     assert.equal(
@@ -800,10 +804,8 @@ test(
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
     assert.equal(rotated.json().data.connectionTemplateId, savedAccount.connectionTemplateId);
-    assert.equal(
-      rotated.json().data.connectionTemplateVersion,
-      savedAccount.connectionTemplateVersion,
-    );
+    assert.equal(Object.hasOwn(rotated.json().data, "connectionTemplateVersion"), false);
+    assert.deepEqual(rotated.json().data.config, {});
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
@@ -907,10 +909,12 @@ test(
     assert.equal(revokingSource?.state, "deleting");
     assert.equal(Object.hasOwn(revokingSource, "connectionTemplateId"), false);
     assert.equal(Object.hasOwn(revokingSource, "connectionTemplateVersion"), false);
+    assert.deepEqual(revokingSource.config, {});
     const revokingExact = await owner("GET", source);
     assert.equal(revokingExact.statusCode, 200, revokingExact.body);
     assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateId"), false);
     assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateVersion"), false);
+    assert.deepEqual(revokingExact.json().data.config, {});
     assert.ok(secretDriver.has(privateRef));
     // Releasing a read after OCC committed revocation must withhold the already-read bearer.
     release.resolve();

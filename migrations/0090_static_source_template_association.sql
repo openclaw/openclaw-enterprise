@@ -2,12 +2,11 @@ CREATE TABLE occ.static_credential_source_templates (
   namespace_id text NOT NULL,
   credential_source_id text NOT NULL,
   connection_template_id text NOT NULL,
-  connection_template_version integer NOT NULL,
   PRIMARY KEY (namespace_id, credential_source_id),
   CONSTRAINT static_credential_source_templates_source FOREIGN KEY (namespace_id, credential_source_id)
     REFERENCES occ.credential_sources(namespace_id, id) ON UPDATE RESTRICT ON DELETE CASCADE,
-  CONSTRAINT static_credential_source_templates_version FOREIGN KEY (connection_template_id, connection_template_version)
-    REFERENCES occ.static_key_template_versions(template_id, version) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT static_credential_source_templates_template FOREIGN KEY (connection_template_id)
+    REFERENCES occ.connection_templates(id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 --> statement-breakpoint
 CREATE FUNCTION occ.check_static_source_template_scope() RETURNS trigger
@@ -16,10 +15,10 @@ BEGIN
   PERFORM 1 FROM occ.credential_sources s JOIN occ.connection_templates t ON t.id=NEW.connection_template_id
     WHERE s.namespace_id=NEW.namespace_id AND s.id=NEW.credential_source_id
       AND s.owner_capability='token_service' AND s.token_service_instance_id IS NOT NULL AND s.type='static'
-      AND NOT (s.config ? 'provider_preset')
+      AND t.static_key AND NOT (s.config ? 'provider_preset')
       AND (t.namespace_id IS NULL OR t.namespace_id=NEW.namespace_id);
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'static Source Template association has invalid owner, scope, or provider preset' USING ERRCODE='23514';
+    RAISE EXCEPTION 'static Source Template association has invalid owner, mode, scope, or provider preset' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END $$;

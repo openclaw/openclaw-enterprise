@@ -22,10 +22,7 @@ export function isManagedTokenServiceSource(
 export function credentialSourceMetadata(
   source: Readonly<CredentialSource>,
   status?: CredentialSourceStatus,
-  association?: {
-    readonly connectionTemplateId: string;
-    readonly connectionTemplateVersion: number;
-  },
+  association?: { readonly connectionTemplateId: string },
 ): Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }> {
   return Object.freeze({
     id: source.id,
@@ -34,12 +31,12 @@ export function credentialSourceMetadata(
     type: source.type,
     ...(association === undefined
       ? {}
-      : {
-          connectionTemplateId: association.connectionTemplateId,
-          connectionTemplateVersion: association.connectionTemplateVersion,
-        }),
+      : { connectionTemplateId: association.connectionTemplateId }),
     ownerCapability: source.ownerCapability,
-    config: source.config,
+    config:
+      source.ownerCapability === "token_service" && source.type === "oauth2-refresh-token"
+        ? {}
+        : source.config,
     secrets: source.secrets,
     ...(source.egress === undefined
       ? {}

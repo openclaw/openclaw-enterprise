@@ -700,7 +700,6 @@ export const CredentialSourceSchema = Type.Object(
     name: Name,
     type: CredentialSourceType,
     connectionTemplateId: Type.Optional(ConnectionTemplateId),
-    connectionTemplateVersion: Type.Optional(Type.Integer({ minimum: 1 })),
     ownerCapability: Type.Union(
       [
         Type.Literal("credential_gateway"),

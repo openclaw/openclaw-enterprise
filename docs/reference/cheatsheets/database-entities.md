@@ -238,9 +238,9 @@ Records each source owner. Gateway and Proxy sources identify their Driver. Mana
 
 ### `static_credential_source_templates`
 
-Pins one managed static Source to an immutable static Connection Template version. Source deletion removes the association; the Template version cannot be deleted while referenced.
+Associates one managed static Source with a static Connection Template by ID. The association cannot change. Source deletion removes it; the Template cannot be deleted while referenced.
 
-- `namespace_id`, `credential_source_id`, `connection_template_id`, `connection_template_version`
+- `namespace_id`, `credential_source_id`, `connection_template_id`
 
 ### `egress_installations`
 

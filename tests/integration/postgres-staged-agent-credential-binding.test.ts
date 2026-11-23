@@ -336,7 +336,6 @@ test(
       name: "Plugin Source",
       type: "static",
       connectionTemplateId: templateId,
-      connectionTemplateVersion: 1,
       secret: { opaque: selectedMaterial },
     };
     // A Template scoped to the first ready Namespace is unavailable in another real Namespace.
@@ -371,7 +370,7 @@ test(
     );
     assert.equal(installedSource.statusCode, 201, installedSource.body);
     assert.equal(installedSource.json().data.connectionTemplateId, installedTemplateId);
-    assert.equal(installedSource.json().data.connectionTemplateVersion, 1);
+    assert.equal(Object.hasOwn(installedSource.json().data, "connectionTemplateVersion"), false);
     assert.equal(
       (await inject("DELETE", `${otherBase}/credential-sources/${installedSource.json().data.id}`))
         .statusCode,
@@ -383,13 +382,27 @@ test(
     );
     sourceCountsBeforeCustody.length = 0;
 
-    const incomplete = remember(
+    // A Source selects identity only; a caller cannot pin a Template version in this API.
+    const versionSelection = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
-        connectionTemplateVersion: undefined,
+        connectionTemplateVersion: 1,
       }),
     );
-    assert.equal(incomplete.statusCode, 400, incomplete.body);
+    assert.equal(versionSelection.statusCode, 400, versionSelection.body);
+    const catalog = await inject("GET", "/connection-templates");
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    const oauthTemplate = catalog
+      .json()
+      .data.find((entry: { current: { mode: string } }) => entry.current.mode !== "static_bearer");
+    assert.ok(oauthTemplate);
+    const wrongMode = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        connectionTemplateId: oauthTemplate.id,
+      }),
+    );
+    assert.equal(wrongMode.statusCode, 409, wrongMode.body);
     const mixed = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
@@ -425,19 +438,20 @@ test(
     });
     assert.equal(advanced.statusCode, 200, advanced.body);
     assert.equal(advanced.json().data.current.version, 2);
-    // v1 still exists, but new enrollment must select the approved current version.
-    const custodyBeforeStale = sourceCountsBeforeCustody.length;
-    const stale = remember(
+    // Updating the Template preserves the existing association and permits selection by the same ID.
+    const afterUpdate = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
-        name: "Historical selection",
+        name: "Updated Template Source",
       }),
     );
-    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(afterUpdate.statusCode, 201, afterUpdate.body);
+    assert.equal(afterUpdate.json().data.connectionTemplateId, templateId);
+    assert.equal(Object.hasOwn(afterUpdate.json().data, "connectionTemplateVersion"), false);
     assert.equal(
-      sourceCountsBeforeCustody.length,
-      custodyBeforeStale,
-      "historical selection must fail before additional custody",
+      (await inject("DELETE", `${base}/credential-sources/${afterUpdate.json().data.id}`))
+        .statusCode,
+      204,
     );
     const selectedReplacement = randomUUID();
     material.push(selectedReplacement);
@@ -464,9 +478,9 @@ test(
       listed,
     ]) {
       assert.equal(projected?.connectionTemplateId, templateId);
-      assert.equal(projected?.connectionTemplateVersion, 1);
+      assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
     }
-    // The immutable version cannot be removed while a Source holds it. Source retirement
+    // The Template cannot be removed while a Source references it. Source retirement
     // still belongs to TokenService; its ordinary deletion cascades the association.
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 409);
     assert.equal(
@@ -491,8 +505,8 @@ test(
     // Nor can the application role attach a Template to an existing model-preset Source.
     await assert.rejects(
       pool.query(
-        "INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id,connection_template_version) VALUES ($1,$2,$3,$4)",
-        [namespaceId, sourceId, templateId, 1],
+        "INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id) VALUES ($1,$2,$3)",
+        [namespaceId, sourceId, templateId],
       ),
       { code: "23514" },
     );
@@ -682,7 +696,6 @@ test(
         type: "static",
         config: { provider_preset: "unknown" },
         connectionTemplateId: `ctp_${randomUUID()}`,
-        connectionTemplateVersion: 1,
         secret: { opaque: deniedEnrollmentMaterial },
       }),
     );

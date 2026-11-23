@@ -14,7 +14,6 @@ export interface StaticCredentialSourceTemplate {
   readonly namespaceId: string;
   readonly credentialSourceId: string;
   readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
 }
 
 export interface CredentialSourceReadRepository {

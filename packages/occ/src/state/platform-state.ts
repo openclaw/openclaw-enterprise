@@ -2294,9 +2294,6 @@ function repositories(
       const key = agentKey(association.namespaceId, association.credentialSourceId);
       const source = snapshot.credentialSources.get(key);
       const template = snapshot.connectionTemplates.get(association.connectionTemplateId);
-      const version = snapshot.connectionTemplateVersions.get(
-        versionKey(association.connectionTemplateId, association.connectionTemplateVersion),
-      );
       if (
         snapshot.staticCredentialSourceTemplates.has(key) ||
         source?.ownerCapability !== "token_service" ||
@@ -2305,7 +2302,7 @@ function repositories(
         Object.hasOwn(source.config, SOURCE_PROVIDER_PRESET_CONFIG_KEY) ||
         !template ||
         (template.namespaceId !== undefined && template.namespaceId !== association.namespaceId) ||
-        version?.mode !== "static_bearer"
+        template.current.mode !== "static_bearer"
       ) {
         throw new ResourceStateConflictError("The static Source Template association is invalid.");
       }

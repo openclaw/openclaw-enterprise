@@ -22,24 +22,13 @@ export const RegisterTokenServiceSourceBody = Type.Object(
     type: Type.Literal("static"),
     config: Type.Optional(managedConfig),
     connectionTemplateId: Type.Optional(ConnectionTemplateId),
-    connectionTemplateVersion: Type.Optional(Type.Integer({ minimum: 1 })),
     secret: material,
   },
   {
     $id: "RegisterTokenServiceSourceBody",
     additionalProperties: false,
-    allOf: [
-      {
-        if: { required: ["connectionTemplateId"] },
-        then: { required: ["connectionTemplateVersion"] },
-      },
-      {
-        if: { required: ["connectionTemplateVersion"] },
-        then: { required: ["connectionTemplateId"] },
-      },
-    ],
     description:
-      "Register a managed static Source. Supply connectionTemplateId and its positive connectionTemplateVersion together, or omit both. OCC validates the selected approved current static Template before TokenService takes custody.",
+      "Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.",
   },
 );
 

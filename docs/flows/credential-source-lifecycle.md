@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-22
+updated: 2026-11-23
 last_updated_session: 01a1f7eb-2091-7c21-9b03-27f01f958b69
 ---
 
@@ -22,10 +22,10 @@ An operator registers a credential with TokenService and selects its Source for 
 
 ```mermaid
 graph TD
-  Select["<b>OCC</b><br/>Authorize create and validate optional Template version"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
+  Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
   Register --> Associate["<b>OCC</b><br/>Save immutable association, creator grant, and audit"]
   Associate --> Kind{"Template-associated Source?"}
-  Kind -->|Yes| Discover["<b>OCC</b><br/>Expose pinned Source metadata; Plugin admission remains pending"]
+  Kind -->|Yes| Discover["<b>OCC</b><br/>Expose associated Template ID; Plugin admission remains pending"]
   Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize model Source and save policies"]
   Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
   Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
@@ -42,9 +42,9 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, non-static, or non-current version, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC then saves the immutable static Template association, grants the creator access, and records completion in one transaction. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
+OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC then saves the immutable static Template association, grants the creator access, and records completion in one transaction. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
 
-Source GET and authorized list return the saved static association. For an active OAuth Source, OCC derives the exact pair from `SavedConnection`, which records the completed consent version. A later Template update changes neither pair; pending and revoking OAuth connections omit it.
+Source responses return the associated Template ID, without a version. For an active OAuth Source, OCC derives the ID from `SavedConnection`; that record retains the original consent version. A Template update does not change the Source ID association or the OAuth consent record. Pending and revoking OAuth connections omit the ID. Resolving the current Template version during Plugin credential admission remains pending.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -109,6 +109,8 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 01:53: Change Source associations and metadata to use a Template ID while preserving the OAuth consent version. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - cd806684a)
 
 - 2026-11-22 15:16: Trace static Source Template validation and immutable association, and OAuth consent projection. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - e302d9e90)
 

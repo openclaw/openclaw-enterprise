@@ -281,17 +281,7 @@
       },
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
-        "allOf": [
-          {
-            "if": { "required": ["connectionTemplateId"] },
-            "then": { "required": ["connectionTemplateVersion"] }
-          },
-          {
-            "if": { "required": ["connectionTemplateVersion"] },
-            "then": { "required": ["connectionTemplateId"] }
-          }
-        ],
-        "description": "Register a managed static Source. Supply connectionTemplateId and its positive connectionTemplateVersion together, or omit both. OCC validates the selected approved current static Template before TokenService takes custody.",
+        "description": "Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
@@ -303,7 +293,6 @@
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
-          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -849,7 +838,6 @@
                 "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
               },
-              "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
               "egress": {
                 "additionalProperties": false,
                 "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
@@ -37550,7 +37538,6 @@
                             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
                           "egress": {
                             "additionalProperties": false,
                             "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",

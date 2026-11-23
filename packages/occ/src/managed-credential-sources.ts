@@ -55,10 +55,8 @@ export type CreateManagedCredentialSourceInput = Omit<
   "namespaceId" | "config"
 > & {
   readonly providerPreset?: string;
-} & (
-    | { readonly connectionTemplateId: string; readonly connectionTemplateVersion: number }
-    | { readonly connectionTemplateId?: never; readonly connectionTemplateVersion?: never }
-  );
+  readonly connectionTemplateId?: string;
+};
 
 export type UpdateManagedCredentialSourceInput =
   | (SourceUpdate & { readonly providerPreset?: SourceProviderPresetId | null })
@@ -219,12 +217,9 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
             "The Connection Template is unavailable in this Namespace.",
           );
         }
-        if (
-          template.current.mode !== "static_bearer" ||
-          template.current.version !== input.connectionTemplateVersion
-        ) {
+        if (template.current.mode !== "static_bearer") {
           throw new ResourceStateConflictError(
-            "Choose the approved current static Bearer Connection Template version.",
+            "Choose an approved static Bearer Connection Template.",
           );
         }
       }
@@ -273,7 +268,6 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
               namespaceId,
               credentialSourceId: created.id,
               connectionTemplateId: input.connectionTemplateId,
-              connectionTemplateVersion: input.connectionTemplateVersion,
             };
       if (association !== undefined) {
         await state.credentialSources.associateStaticConnectionTemplate(association);

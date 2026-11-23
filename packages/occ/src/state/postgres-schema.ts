@@ -2585,7 +2585,6 @@ export const staticCredentialSourceTemplates = occSchema.table(
     namespaceId: text("namespace_id").notNull(),
     credentialSourceId: text("credential_source_id").notNull(),
     connectionTemplateId: text("connection_template_id").notNull(),
-    connectionTemplateVersion: integer("connection_template_version").notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
@@ -2597,9 +2596,9 @@ export const staticCredentialSourceTemplates = occSchema.table(
       .onUpdate("restrict")
       .onDelete("cascade"),
     foreignKey({
-      name: "static_credential_source_templates_version",
-      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
-      foreignColumns: [staticKeyTemplateVersions.templateId, staticKeyTemplateVersions.version],
+      name: "static_credential_source_templates_template",
+      columns: [table.connectionTemplateId],
+      foreignColumns: [connectionTemplates.id],
     })
       .onUpdate("restrict")
       .onDelete("restrict"),
