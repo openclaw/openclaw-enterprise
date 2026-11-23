@@ -12,6 +12,8 @@ qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#r
 
 Confirm the database endpoint from your infrastructure outputs; EKS does not select RDS automatically. For RDS, obtain its [approved CA bundle](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html). The templates use Secret `occ-database-ca`, key `ca.pem`, mounted at `/etc/openclaw/database-ca`. Both database URLs must use the database hostname and `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`. Use the provider’s verified CA for other PostgreSQL services. Keep exact database and API egress addresses current through failover; security groups do not replace NetworkPolicies.
 
+GitHub omits steps 2 and 3. In a separate shell, start the [local preview](../../local-preview.md#start-the-preview) from this checkout. Return to your protected Bash session to run the steps.
+
 <Snippet file="../../snippets/openshell-quickstart/cluster-installation.md" />
 
 <a id="4-enroll-linear-and-protected-git"></a>

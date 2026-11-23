@@ -25,7 +25,7 @@ import {
   loadRuntimeArtifact,
   runtimeArtifactSelection,
 } from "./runtime-artifact.ts";
-import { cleanupResourceIds } from "./cleanup.ts";
+import { cleanupResourceIds, type RequireJournal } from "./cleanup.ts";
 import { withStateLock } from "./state-lock.ts";
 import { createPostgresPreparation } from "./prepare-postgres.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
@@ -2176,7 +2176,8 @@ async function prepareFile({
   statePath,
   template,
   modelSelectors,
-}: PrepareFileOptions): Promise<PreparedFile> {
+  requireJournal,
+}: PrepareFileOptions & { requireJournal?: RequireJournal | undefined }): Promise<PreparedFile> {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
@@ -2187,7 +2188,7 @@ async function prepareFile({
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
   return withStateLock(resolvedStatePath, () =>
-    prepareFileWithState({ name, relativeFile, resolvedStatePath, template }),
+    prepareFileWithState({ name, relativeFile, resolvedStatePath, template, requireJournal }),
   );
 }
 
@@ -2281,13 +2282,17 @@ async function prepareFileWithState({
   relativeFile,
   resolvedStatePath,
   template,
+  requireJournal,
 }: {
   name: string;
   relativeFile: string;
   resolvedStatePath: string;
   template: string | undefined;
+  requireJournal: RequireJournal | undefined;
 }): Promise<PreparedFile> {
+  requireJournal?.(true);
   const state = await readState(resolvedStatePath);
+  requireJournal?.(state !== undefined);
   const prepare = lanePrepare(name);
   if (suiteView === "full-integration" && isOpenShellLane(name)) {
     if (
@@ -2495,11 +2500,10 @@ async function prepareFileWithState({
           }
         }
       } finally {
-        await cleanupResourceIds(
-          resolvedStatePath,
-          resourceIds,
-          lockTimeoutMs === undefined ? {} : { lockTimeoutMs },
-        );
+        await cleanupResourceIds(resolvedStatePath, resourceIds, {
+          ...(lockTimeoutMs === undefined ? {} : { lockTimeoutMs }),
+          requireJournal,
+        });
       }
     },
   };
