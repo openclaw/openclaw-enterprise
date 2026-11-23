@@ -138,6 +138,11 @@ Namespace registration. [Pull request safeguards](#pull-request-creation) still 
 
 <div data-repository-actions></div>
 
+To change **one Agent’s grant**, edit its [repository network policy](../sandbox-policies.md#repository-network-policy).
+If the draft’s **Repositories** tab offers **Manage permissions**, open it there.
+Choose **Read-only** (Read) or **Contributor** (Write) for that repository,
+select **Save repository policy** and redeploy.
+
 #### Known limits
 
 OpenShell matches the method, path and query of a request. It does not inspect

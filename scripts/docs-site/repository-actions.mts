@@ -8,9 +8,9 @@ const actions = [
 
 function level(label: string, id: string) {
   return `<label>${label}<select aria-label="${label}" name="${id}">
-    <option value="none">None</option>
-    <option value="read">Read</option>
-    <option value="write" selected>Write</option>
+    <option value="none">${id === "grant" ? "No access" : "None"}</option>
+    <option value="read">${id === "grant" ? "Read-only" : "Read"}</option>
+    <option value="write" selected>${id === "grant" ? "Contributor" : "Write"}</option>
   </select></label>`;
 }
 
@@ -19,7 +19,7 @@ function mount(root: HTMLElement) {
     <div class="access-title">
       <strong data-title aria-live="polite"></strong>
       <span data-recommended>Recommended</span>
-      <button type="button" data-reset hidden>Reset to full access</button>
+      <button type="button" data-reset hidden>Reset filter</button>
     </div>
     <div class="access-scope">These actions depend on the Agent’s grant and approved Namespace and GitHub App permissions.</div>
     <dl>
@@ -27,7 +27,7 @@ function mount(root: HTMLElement) {
       <div><dt>Issues</dt><dd data-issues></dd></div>
       <div><dt>Pull requests</dt><dd data-pulls></dd></div>
     </dl>
-    <div data-default>Omit <code>apiActions</code>, select <strong>Write</strong> for this repository in the Agent’s policy, then deploy.</div>
+    <div data-default>For full permitted access, omit <code>apiActions</code>, save <strong>Contributor</strong> (Write) for this repository and deploy.</div>
     <div data-mode hidden></div>
     <details data-advanced>
       <summary>Advanced <span>· Customize access</span></summary>
@@ -47,7 +47,7 @@ function mount(root: HTMLElement) {
       </div>
       <details data-example>
         <summary>Example at next deployment</summary>
-        <div>These inputs affect only this example. It assumes native delivery and matching GitHub permissions. It reads no running policy.</div>
+        <div>This example assumes native delivery, matching GitHub permissions and no additional Agent restrictions. It reads no running policy.</div>
         <div class="example-levels">
           ${level("Issues permission", "issues")}
           ${level("Pull requests permission", "pull_requests")}
@@ -77,7 +77,7 @@ function mount(root: HTMLElement) {
     const create = operation === "create";
     const grant = selected("grant");
     if (grant === "none" || (create && grant !== "write")) {
-      return create ? "Needs a Write grant" : "Needs a Read or Write grant";
+      return create ? "Needs a Contributor grant" : "Needs a Read-only or Contributor grant";
     }
     const permission = selected(resource!);
     if (permission === "none" || (create && permission !== "write")) {
@@ -97,7 +97,7 @@ function mount(root: HTMLElement) {
     const omit = automatic && !ids.length;
     const gitOnly = !automatic && !ids.length;
     root.querySelector("[data-title]")!.textContent = omit
-      ? "Full access"
+      ? "Contributor"
       : gitOnly
         ? "Git only"
         : "Custom access";

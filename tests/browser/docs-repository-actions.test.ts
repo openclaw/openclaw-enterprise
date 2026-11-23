@@ -62,7 +62,7 @@ test("docs repository checklist generates filters independently of deployment", 
   const checklist = page.locator("[data-repository-actions]");
   const title = checklist.locator("[data-title]");
   const advanced = checklist.locator("summary").filter({ hasText: /customize access/i });
-  const reset = checklist.getByRole("button", { name: "Reset to full access", exact: true });
+  const reset = checklist.getByRole("button", { name: "Reset filter", exact: true });
   const checkbox = (name: string) => checklist.getByRole("checkbox", { name, exact: true });
   const action = (id: string) => checklist.locator(`details [data-action="${id}"]`);
   const future = checkbox("Include new eligible actions automatically");
@@ -76,7 +76,7 @@ test("docs repository checklist generates filters independently of deployment", 
 
   await advanced.waitFor();
   assert.equal(await title.isVisible(), true);
-  assert.equal(await title.innerText(), "Full access");
+  assert.equal(await title.innerText(), "Contributor");
   assert.equal(await checklist.getByText("Recommended", { exact: true }).isVisible(), true);
   assert.equal(await checklist.getByRole("checkbox").count(), 0);
   assert.equal(await reset.isVisible(), false);
@@ -118,12 +118,12 @@ test("docs repository checklist generates filters independently of deployment", 
 
   await issuesPermission.selectOption("write");
   await pullsPermission.selectOption("write");
-  await grant.selectOption("read");
+  await grant.selectOption({ label: "Read-only" });
   assert.match(await action("pull_requests:create").innerText(), /Needs.*grant/i);
   assert.match(await action("pull_requests:read").innerText(), /Eligible/i);
 
   // Another bound repository without a grant withholds PR creation while preserving reads.
-  await grant.selectOption("write");
+  await grant.selectOption({ label: "Contributor" });
   await missingGrant.check();
   assert.match(await action("pull_requests:create").innerText(), /Another bound repository/i);
   assert.match(await action("pull_requests:read").innerText(), /Eligible/i);
@@ -157,7 +157,7 @@ test("docs repository checklist generates filters independently of deployment", 
   await issuesPermission.selectOption("read");
   await reset.press("Enter");
   assert.equal(await advanced.evaluate((element) => element === document.activeElement), true);
-  assert.equal(await title.innerText(), "Full access");
+  assert.equal(await title.innerText(), "Contributor");
   assert.equal(await createIssues.isVisible(), false);
   await advanced.press("Enter");
   assert.equal(await output.isVisible(), false);
