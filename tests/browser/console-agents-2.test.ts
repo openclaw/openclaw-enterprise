@@ -37,7 +37,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";

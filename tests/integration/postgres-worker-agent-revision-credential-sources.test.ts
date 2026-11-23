@@ -38,7 +38,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";

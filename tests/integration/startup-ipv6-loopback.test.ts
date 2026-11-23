@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.ts";
 import { jsonEvent } from "../helpers/json-lines.mjs";
 
 type StartupEntryPoint =

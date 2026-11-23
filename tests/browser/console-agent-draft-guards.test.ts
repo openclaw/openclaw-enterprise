@@ -34,7 +34,7 @@ import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   routeFailedDeployment,

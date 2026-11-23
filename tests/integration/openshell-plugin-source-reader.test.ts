@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { randomUUID, X509Certificate } from "node:crypto";
 import test from "node:test";
 import { createServer } from "node:http";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { fileURLToPath } from "node:url";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";

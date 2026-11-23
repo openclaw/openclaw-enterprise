@@ -40,7 +40,7 @@ import {
 } from "./auth-session.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createReadyComputeDriver } from "./development.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import { grantRole } from "./iam-grants.ts";
 import { jsonRequestInit } from "./inject-json.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";

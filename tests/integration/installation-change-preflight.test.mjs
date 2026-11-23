@@ -13,7 +13,7 @@ import {
   parseProductionChart,
   renderProductionChart,
 } from "../helpers/production-chart.ts";
-import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.ts";
 import {
   chartListeners,
   requireChartListener,

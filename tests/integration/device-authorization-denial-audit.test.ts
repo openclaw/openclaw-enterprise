@@ -15,7 +15,7 @@ import {
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 

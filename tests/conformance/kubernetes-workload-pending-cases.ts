@@ -8,7 +8,7 @@ import {
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   nativeHarnessResource,
   nativeSandboxIdentity,

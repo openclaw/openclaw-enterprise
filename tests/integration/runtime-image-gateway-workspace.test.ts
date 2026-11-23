@@ -15,7 +15,7 @@ import type { OpenClawConfigurationDocument } from "../../packages/contracts/src
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import type { WorkspaceNodeHotApplyReceipt } from "../fixtures/runtime-workspace-node-hot-apply.ts";
 import { runDocker, commandOutput, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";

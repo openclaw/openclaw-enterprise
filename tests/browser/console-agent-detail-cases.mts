@@ -23,7 +23,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   AGENT_READ,
   apiRequests,

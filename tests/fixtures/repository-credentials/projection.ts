@@ -7,7 +7,7 @@ import type {
 } from "../../../packages/contracts/src/index.ts";
 import type { SessionStatus } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { RepositoryCredentialClientConfiguration } from "../../../apps/controller/src/drivers/repo/access/client-contracts.ts";
-import { createHarnessConfiguration } from "../../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../../helpers/harness-configuration.ts";
 import {
   repositoryMaterialDeployment,
   repositoryMaterialSpec,

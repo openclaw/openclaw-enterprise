@@ -24,7 +24,7 @@ import {
 import * as releaseFixture from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 import * as repositoryFixture from "../fixtures/driver-packages/protected-execution-driver/repository-git.ts";
 import { createExternalProtectedDriver } from "../../apps/controller/src/composition/driver-packages.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 
 const sensitive = "SECRET-DO-NOT-LEAK";
 const releaseConfiguration = {

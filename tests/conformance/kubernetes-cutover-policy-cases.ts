@@ -13,7 +13,7 @@ import type {
 import { ActivationFailedError, TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   openShellPolicyOptions,
   openShellPolicySandbox,

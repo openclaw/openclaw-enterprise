@@ -63,7 +63,7 @@ import {
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

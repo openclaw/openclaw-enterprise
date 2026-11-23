@@ -16,7 +16,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";

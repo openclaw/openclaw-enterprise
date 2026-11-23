@@ -15,7 +15,7 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";

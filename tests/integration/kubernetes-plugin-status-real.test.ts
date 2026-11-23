@@ -25,7 +25,7 @@ import {
   type SecretIdentity,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord, sha256Hex } from "../../packages/utils/src/index.ts";
-import { withStubbedProviderEndpoint } from "../helpers/harness-configuration.mjs";
+import { withStubbedProviderEndpoint } from "../helpers/harness-configuration.ts";
 import {
   createKubernetesClient,
   namespaceAlreadyTerminating,

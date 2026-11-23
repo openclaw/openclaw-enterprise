@@ -23,7 +23,7 @@ import {
   isMaskedSecretValue,
 } from "./console-agents-browser-helpers.ts";
 import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 
 function assertChannelOnlySlackAccess(configuration: unknown) {
   const channels = asRecord(asRecord(configuration)?.channels);

@@ -36,7 +36,7 @@ import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
 import { selfSigned } from "../helpers/certificates.ts";
-import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { relaySockets } from "../helpers/socket-relay.ts";
 import {

@@ -50,7 +50,7 @@ import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { selectPolicyProbeCommand } from "./openshell-policy-probe.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { assertNativeCronRunSucceeded } from "./native-cron-evidence.ts";
 import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import {

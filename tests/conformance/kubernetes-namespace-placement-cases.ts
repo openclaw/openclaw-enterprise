@@ -19,7 +19,7 @@ import {
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { DEDICATED_STORAGE_ROUTING_REQUIRED } from "../helpers/refusal-text.mjs";
 import {
   tenant,

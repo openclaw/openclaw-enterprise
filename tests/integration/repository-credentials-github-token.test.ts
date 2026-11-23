@@ -30,7 +30,7 @@ import {
   startTokenServiceScope,
 } from "../fixtures/repository-credentials/service-fixture.ts";
 import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
-import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.ts";
 import { listen } from "../helpers/listen.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 

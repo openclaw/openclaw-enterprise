@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
-import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.ts";
 import {
   log,
   minute,

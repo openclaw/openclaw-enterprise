@@ -17,7 +17,7 @@ import {
   type PluginDesiredState,
   type Role,
 } from "../../packages/contracts/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   bindHarnessKey,
   bootstrapInstallation,

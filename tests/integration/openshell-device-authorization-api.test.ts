@@ -20,7 +20,7 @@ import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/driv
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { unconfiguredGateway } from "../helpers/openshell-gateway-client.ts";

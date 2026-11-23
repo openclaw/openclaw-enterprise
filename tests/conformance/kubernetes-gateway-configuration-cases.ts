@@ -19,7 +19,7 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   kubernetesGatewayPasswordRequirement,

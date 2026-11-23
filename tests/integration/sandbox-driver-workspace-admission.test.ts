@@ -28,7 +28,7 @@ import {
   providerEndpointFixture,
   tlsPinnedWorkspaceSetupCode,
 } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { admitRevisionHarness as admitRevisionHarnessFixture } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";

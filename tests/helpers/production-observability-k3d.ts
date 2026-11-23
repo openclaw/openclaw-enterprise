@@ -15,7 +15,7 @@ import { installProductionHelmControlPlane } from "./production-helm-real.ts";
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
-} from "./harness-configuration.mjs";
+} from "./harness-configuration.ts";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -656,7 +656,7 @@ export async function installObservabilityControlPlane(
       "created Secret",
     );
     assert.ok(typeof credential.id === "string", "Expected Secret ID");
-    const configuration: HarnessConfiguration = createHarnessConfiguration(
+    const configuration = createHarnessConfiguration(
       executionMode === "dedicated" ? "codex" : "openclaw",
       modelInputs ? modelInputs.model.replace(/^(?:openai|codex)\//, "") : "gpt-4.1",
     );

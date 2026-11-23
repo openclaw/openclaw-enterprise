@@ -16,7 +16,7 @@ import {
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
-} from "../helpers/harness-configuration.mjs";
+} from "../helpers/harness-configuration.ts";
 import { uncleanStopRestartTest } from "../helpers/runtime-image-gateway-restart.ts";
 import { image, imageTestOptions, runtimeImageModel } from "../helpers/runtime-image-startup.ts";
 

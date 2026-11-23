@@ -1,5 +1,6 @@
-/** @param {string} harnessId @param {string} providerModel */
-export function createHarnessConfiguration(harnessId, providerModel) {
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
+
+export function createHarnessConfiguration(harnessId: string, providerModel: string) {
   const modelReference = `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`;
   const reasoning = !/^gpt-4(?:o(?:-mini)?|\.1)(?:-|$)/u.test(providerModel);
   const provider =
@@ -74,14 +75,19 @@ export function createHarnessConfiguration(harnessId, providerModel) {
 // For an image that stubs OpenClaw: names a provider endpoint that is not the
 // real one, so the runtime's upfront credential check never sends a fixture key
 // to the provider (it runs only against the default endpoint).
-export function withStubbedProviderEndpoint(configuration) {
-  const openai = configuration.models?.providers?.openai ?? { api: "openai-responses", models: [] };
+export function withStubbedProviderEndpoint<
+  T extends OpenClawConfigurationDocument & {
+    models?: { providers?: { openai?: OpenClawConfigurationDocument } };
+  },
+>(configuration: T) {
+  const { models, ...fields } = configuration;
+  const openai = models?.providers?.openai ?? { api: "openai-responses", models: [] };
   return {
-    ...configuration,
+    ...fields,
     models: {
-      ...configuration.models,
+      ...models,
       providers: {
-        ...configuration.models?.providers,
+        ...models?.providers,
         openai: { ...openai, baseUrl: "https://model.stub.invalid/v1" },
       },
     },
@@ -105,12 +111,9 @@ export function nativeAdminGatewayAuth() {
 
 // `configuration` with the native admin opt-in: the Control UI on, allowed only from `origin`
 // (the Agent's native admin origin), and nativeAdminGatewayAuth().
-/**
- * @template {{ gateway?: { controlUi?: Record<string, unknown> } }} T
- * @param {T} configuration
- * @param {string} origin
- */
-export function withNativeAdminGateway(configuration, origin) {
+export function withNativeAdminGateway<
+  T extends { gateway?: { controlUi?: Record<string, unknown> } },
+>(configuration: T, origin: string) {
   const { gateway, ...fields } = configuration;
 
   return {

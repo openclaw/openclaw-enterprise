@@ -62,7 +62,7 @@ test("Docker Compute reports absent HTTP capability before the Agent is deployed
 test("SSH Compute reports absent HTTP capability for an undeployed embedded Agent", async (t) => {
   const { SshComputeDriver } =
     await import("../../apps/controller/src/drivers/compute/ssh/index.ts");
-  const { createHarnessConfiguration } = await import("../helpers/harness-configuration.mjs");
+  const { createHarnessConfiguration } = await import("../helpers/harness-configuration.ts");
   const f = await createConsoleAppFixture(t, {
     computeDriver: new SshComputeDriver({
       ssh: { identityFile: "/unused/identity", knownHostsFile: "/unused/known-hosts" },

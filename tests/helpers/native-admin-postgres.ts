@@ -39,7 +39,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
-import { createHarnessConfiguration, withNativeAdminGateway } from "./harness-configuration.mjs";
+import { createHarnessConfiguration, withNativeAdminGateway } from "./harness-configuration.ts";
 import { createReadyComputeDriver } from "./development.mjs";
 import { selfSigned } from "./certificates.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";

@@ -27,7 +27,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {

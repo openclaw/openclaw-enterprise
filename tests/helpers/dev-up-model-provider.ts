@@ -14,7 +14,7 @@ import {
   configureModelProviderDNS,
   createModelProviderFiles,
   writeModelProviderTrust,
-} from "./runtime-model-provider.mjs";
+} from "./runtime-model-provider.ts";
 
 const repository = resolve(import.meta.dirname, "../..");
 const ownerLabel = "dev.openclaw.model-provider-owner";

@@ -57,7 +57,7 @@ have `{data,meta}` envelopes. Generate unique demo names and retain each returne
 | Deploy | Bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy`; HTTP 202, save revision `data.id`. |
 | Wait for activation | `GET /namespaces/:namespaceId/agents/:agentId`; require `data.activeRevisionId` to equal that revision ID. |
 
-Copy the embedded native configuration from [the runtime configuration helper](../../tests/helpers/harness-configuration.mjs)
+Copy the embedded native configuration from [the runtime configuration helper](../../tests/helpers/harness-configuration.ts)
 into a complete, editable guide example. It selects `openai/<model>` with runtime
 `openclaw`, enables `gateway.http.endpoints.chatCompletions`, and preserves the
 literal `${OPENCLAW_GATEWAY_TOKEN}` reference. Shell expansion must not replace it.

@@ -6,7 +6,7 @@ import type { SandboxNetworkGrant } from "../../packages/contracts/src/sandbox-p
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 
 export async function createPolicyConsole(
   t: TestContext,

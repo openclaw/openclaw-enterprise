@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

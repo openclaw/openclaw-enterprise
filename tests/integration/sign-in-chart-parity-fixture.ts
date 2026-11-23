@@ -11,7 +11,7 @@ import {
   bootstrapFailureCode,
 } from "../../scripts/lib/bootstrap-configuration.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { settled } from "../helpers/child-processes.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";

@@ -10,7 +10,7 @@ import { repositoryClientData } from "../fixtures/repository-credentials/builder
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import { settled } from "../helpers/child-processes.mjs";
-import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.ts";
 
 type CommandOptions = NonNullable<Parameters<typeof run>[2]>;
 type CommandResult = Awaited<ReturnType<typeof run>>;

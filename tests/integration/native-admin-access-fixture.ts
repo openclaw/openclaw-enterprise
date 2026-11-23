@@ -19,7 +19,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { OpenClawController, PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { grantRole, type ActionsByKind } from "../helpers/iam-grants.ts";
 import type { nativeAdminCaseDependencies } from "./native-admin-access.test.mjs";
 

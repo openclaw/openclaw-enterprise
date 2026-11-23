@@ -13,7 +13,7 @@ import {
   type ComputeAgentBinding,
 } from "../../packages/contracts/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   admitRevisionHarness,

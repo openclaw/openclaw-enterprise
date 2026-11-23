@@ -20,7 +20,7 @@ import {
 import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { requireLogRecord } from "../helpers/json-lines.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import {

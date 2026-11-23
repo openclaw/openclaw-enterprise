@@ -20,7 +20,7 @@ import type {
 import type { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
 
 import { openShellGitRetentionKind } from "../../scripts/ci/openshell-git-retention.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import { createOpenShellGitInstallation } from "./openshell-git-installation.mjs";
 
 interface RuntimePod {

@@ -18,7 +18,7 @@ import type { AccessBinding, CredentialGatewayDriver } from "../../packages/cont
 import { assertApiError } from "../helpers/api-error.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { listen } from "../helpers/listen.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";

@@ -21,7 +21,7 @@ import {
   grantMember,
   memberRole,
 } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";

@@ -18,7 +18,7 @@ import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-u
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   accessBindingPostRequests,
   accessibleDescription,

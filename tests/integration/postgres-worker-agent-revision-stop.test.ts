@@ -26,7 +26,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   repositoryRestartInventory,
   repositoryRestartState,

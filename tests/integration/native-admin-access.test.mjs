@@ -24,7 +24,7 @@ import { createReadyComputeDriver } from "../helpers/development.mjs";
 import {
   createHarnessConfiguration,
   withNativeAdminGateway,
-} from "../helpers/harness-configuration.mjs";
+} from "../helpers/harness-configuration.ts";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
