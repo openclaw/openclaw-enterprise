@@ -76,18 +76,19 @@ full Gateway Routing lane. To focus it, use the commands above with
 A selected run must pass without skips. Missing baseline inputs fail preparation.
 
 Preparation builds the previous controller and runtime from the detached source
-`535e08cae41dfd5bda0c072fcb37039e699203eb`, the exact pre-feature main parent,
-using the checkout's object store. This is not a previous published release.
-The full runtime tree fixes its nine bridges and native source
-`b58996d69286d55d1bbbd9b5c03b4ad837baac45`. Image labels, imported manifest
+`28593a5b76bbb2afaf86ae2972853fd5d734b0ff`, the native-profile feature's first
+parent on main, using the checkout's object store and upstream Node binaries.
+The full runtime tree fixes its bridge inventory and native source
+`82b682c627ba8bfc2c2bd51cf46ad8f51c583857`. Image labels, imported manifest
 references, and running Pod image IDs bind the observation to the selected pair.
 Old images are not obtained from mutable tags or expiring CI artifacts. The
 candidate receipt records its actual tested checkout, recipes, native pin, and
-bridge inventory independently; it is not forced to the old nine-bridge set.
+bridge inventory independently.
 
 The case owns a new database with only administrator-provisioned roles and
 empty schemas. The old image migrates with `--expect-empty`, checks its complete
-catalog, and runs its production bootstrap entrypoint. No current schema
+catalog, and runs its production bootstrap entrypoint with read-only credential
+input files. No current schema
 template or current bootstrap initializes that Installation. After both old
 writers stop, the candidate runs its actual migrations and checks its own
 current catalog; it need not equal the baseline. Only initialization receives

@@ -50,8 +50,9 @@ node --test tests/integration/first-agent-startup.test.ts
 ## Check packaged OpenShell Workspace resources
 
 With Helm and `jq` installed, point the test at a directory containing the
-stock OpenShell `0.1.8` packages `helm-chart-0.1.8.tgz` and
-`openshell-workspace-0.1.8.tgz`.
+stock OpenShell `0.1.9` chart archives `helm-chart-0.1.9.tgz` and
+`openshell-workspace-0.1.9.tgz`. Pull these published OCI charts with Helm;
+they are not GitHub release assets.
 
 ```sh
 OCC_TEST_OPENSHELL_STOCK_CHART_DIRECTORY=/path/to/stock/charts \

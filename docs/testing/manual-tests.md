@@ -17,6 +17,19 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
 - [`postgres-azure-workload-identity`](../../scripts/ci/test-suites/postgres-azure-workload-identity.json): see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - [`ssh-host`](../../scripts/ci/test-suites/ssh-host.json): requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
 - [`plugin-model`](../../scripts/ci/test-suites/plugin-model.json): requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
+- [`openshell-saved-agent`](../../scripts/ci/test-suites/openshell-saved-agent.json): run the saved-Agent Git ACL regression locally on Linux with Docker/k3d and the pinned OpenShell release. Prepare a qualified, same-source controller/runtime digest pair using the [native Git build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). The controller must embed the runtime digest for both roles. On the regression host, set `QUALIFIED_CONTROLLER_IMAGE` and `QUALIFIED_RUNTIME_IMAGE` to the build's verified `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` digest references, respectively. Set `PRIVATE_FRESH_ATTEMPT` to a fresh private attempt directory. Pull both images into the Docker daemon used by Local Setup.
+
+  ```bash
+  docker pull "${QUALIFIED_CONTROLLER_IMAGE:?}" &&
+  docker pull "${QUALIFIED_RUNTIME_IMAGE:?}" &&
+  env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE="${QUALIFIED_CONTROLLER_IMAGE:?}" \
+    OCC_KUBERNETES_RUNTIME_IMAGE="${QUALIFIED_RUNTIME_IMAGE:?}" \
+    node scripts/ci/run-tests.ts run openshell-saved-agent --lifecycle complete \
+    --attempt "${PRIVATE_FRESH_ATTEMPT:?}" \
+    --file tests/integration/openshell-saved-agent-git-policy-real.test.ts
+  ```
+
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
 - [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
 - [`openshell-oauth`](../../scripts/ci/test-suites/openshell-oauth.json): requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).

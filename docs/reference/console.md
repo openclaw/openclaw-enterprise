@@ -134,6 +134,8 @@ Creation needs collection `secret:create`; replacement and deletion need exact
 The API authorizes each operation; a refusal disables the submitted action.
 Names are fixed, values remain unreadable, and entered material is never saved
 in browser storage. Consumer counts retain read-permission and truncation limits.
+On return, the Console can restore the library search for the same session and
+Namespace. **Refresh** clears it.
 
 Follow [Manage Secrets in the console](../guides/console/secrets.md) for procedures,
 replacement delivery, deletion effects, and uncertain-write recovery.

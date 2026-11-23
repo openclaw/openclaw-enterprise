@@ -55,6 +55,7 @@ import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { workMatchesRevision, type ControllerWork } from "./controller-work.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import { deploymentProgressForWork } from "./deployment-work-status.ts";
 import {
   CallerStateDeniedError,
@@ -309,7 +310,6 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         input.namespaceId,
         configurationInput,
         () => new ProvisioningSecretDriverError(),
-        undefined,
         () => authorizeProvisioningRequest(principalId, input.namespaceId),
       );
       return { configurationInput, reservedAgentId };
@@ -378,6 +378,16 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         configurationInput.secretBindings,
         harnessAuth,
       );
+      if (
+        harnessAuth.method === "credential_source" &&
+        isManagedTokenServiceSource(
+          await state.credentialSources.findCredentialSource(namespace.id, harnessAuth.sourceId),
+        )
+      ) {
+        throw new ResourceStateConflictError(
+          "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
+        );
+      }
       await validateContent(configurationInput);
       const { repositoryBindings, repositoryAccess } = repository.repositorySettings(
         namespace.id,

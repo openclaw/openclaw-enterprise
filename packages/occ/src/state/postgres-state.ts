@@ -128,7 +128,10 @@ import type { NamespaceRepository, PersistedNamespace } from "../ports/namespace
 import type { PlatformAuditSink } from "./platform-state.ts";
 import type { PlatformOperation } from "../ports/platform-operations.ts";
 import type { PlatformReadView } from "../ports/platform-read-view.ts";
-import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type {
+  PlatformStateStore,
+  PlatformTransactionOptions,
+} from "../ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
 import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
@@ -156,6 +159,7 @@ import {
   harnessAuthMatches,
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
+  validStandaloneCredentialDeployment,
   namespaceRoleGrantsBeyondRead,
   assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
@@ -292,6 +296,22 @@ interface TransactionContext {
   /** The policy this unit last read, with the statement count of the read that produced it. */
   nativeIAM: { readonly state: PersistedNativeIAMState; readonly statement: number } | undefined;
 }
+
+type TransactionWork<T> =
+  | { readonly mode: "read"; readonly work: (state: PlatformReadView) => Promise<T> }
+  | { readonly mode: "read-context"; readonly work: (context: TransactionContext) => Promise<T> }
+  | {
+      readonly mode: "write" | "read-committed";
+      readonly work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>;
+    };
+
+const SNAPSHOT_BEGIN = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
+const TRANSACTION_BEGIN = {
+  read: SNAPSHOT_BEGIN,
+  "read-context": SNAPSHOT_BEGIN,
+  write: "BEGIN",
+  "read-committed": "BEGIN ISOLATION LEVEL READ COMMITTED",
+} as const;
 
 const PERMISSION_ACTIONS = new Set<string>(PLATFORM_PERMISSION_ACTIONS);
 const RESOURCE_KINDS = new Set<string>(PLATFORM_RESOURCE_KINDS);
@@ -765,28 +785,26 @@ type StoredExecutionAdmission = AgentRevision["executionAdmission"] & {
 function executionAdmissionFromRow(
   stored: StoredExecutionAdmission,
   policy: RepositoryNetworkPolicy | undefined,
-  egressPlan: AgentRevision["egressPlan"],
+  revision: Pick<
+    AgentRevision,
+    "egressPlan" | "credentialDeployment" | "harnessAuth" | "credentialSources"
+  >,
 ): AgentRevision["executionAdmission"] {
   try {
     const { repositoryNetworkPolicyVersion, ...admission } = stored;
     const hasReaderVersion = Object.hasOwn(stored, "repositoryNetworkPolicyVersion");
-    // Bind the storage-only marker to the policy and supported execution mode
-    // before exposing a scoped revision to Worker.
+    // Bind the storage-only marker to the policy before exposing a scoped revision to Worker.
     if (
       hasReaderVersion !== (policy !== undefined) ||
       (hasReaderVersion &&
-        (admission.mode !== "unprotected" ||
-          policy?.version !== 1 ||
+        (policy?.version !== 1 ||
           repositoryNetworkPolicyVersion !== policy.version ||
           !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
     ) {
       throw new Error("Invalid persisted repository network policy reader version.");
     }
     const executionAdmission = hasReaderVersion ? admission : stored;
-    assertExecutionAdmission({
-      executionAdmission,
-      ...(egressPlan === undefined ? {} : { egressPlan }),
-    });
+    assertExecutionAdmission({ executionAdmission, ...revision });
     return executionAdmission;
   } catch {
     throw new SavedConfigurationReadError(
@@ -811,6 +829,7 @@ function revisionFromRow(
     sandbox_policy?: AgentRevision["sandboxPolicy"];
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
+    credential_deployment?: AgentRevision["credentialDeployment"];
     egress_plan?: AgentRevision["egressPlan"];
     execution_admission: StoredExecutionAdmission;
     secret_driver_id?: AgentRevision["secretDriverId"];
@@ -819,14 +838,25 @@ function revisionFromRow(
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
+  // The protected marker fences old readers; standalone is fenced by its distinct
+  // execution admission and TokenService snapshot shape instead.
+  const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
   const executionAdmission = executionAdmissionFromRow(
     admitted.execution_admission,
     admitted.sandbox_policy?.repositoryNetworkPolicy,
-    admitted.egress_plan,
+    {
+      harnessAuth,
+      ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
+      ...(admitted.credential_deployment === undefined
+        ? {}
+        : { credentialDeployment: admitted.credential_deployment }),
+      ...(admitted.credential_sources === undefined
+        ? {}
+        : { credentialSources: admitted.credential_sources }),
+    },
   );
   // Older readers require an exact Harness-auth shape, rejecting the protected
   // reader version before handing a revision to Compute. It grants no authority.
-  const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
   const protectedAdmission = executionAdmission.mode === "protected";
   if (
     Object.hasOwn(admitted, "service_account") ||
@@ -842,6 +872,24 @@ function revisionFromRow(
     throw new SavedConfigurationReadError(
       "credentialSources",
       "Persisted AgentRevision credential sources are invalid.",
+    );
+  }
+  if (
+    !validStandaloneCredentialDeployment({
+      namespaceId: metadata.namespaceId,
+      executionAdmission,
+      harnessAuth,
+      ...(admitted.credential_deployment === undefined
+        ? {}
+        : { credentialDeployment: admitted.credential_deployment }),
+      ...(admitted.credential_sources === undefined
+        ? {}
+        : { credentialSources: admitted.credential_sources }),
+    })
+  ) {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision standalone credential binding is inconsistent.",
     );
   }
   const secretBindings =
@@ -898,6 +946,9 @@ function revisionFromRow(
     harnessAuth,
     executionAdmission,
     ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
+    ...(admitted.credential_deployment === undefined
+      ? {}
+      : { credentialDeployment: admitted.credential_deployment }),
     ...(admitted.credential_sources === undefined
       ? {}
       : { credentialSources: admitted.credential_sources }),
@@ -1398,18 +1449,21 @@ export class PostgresPlatformState implements PlatformStateStore {
     const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
       append: async (event) =>
-        this.execute(false, async (state, context) => {
-          if (auditWriteTimeoutMs !== undefined) {
-            // A local setting leaves other transactions on the pooled connection unaffected.
-            await context.client.query(
-              `SELECT pg_catalog.set_config(name,
+        this.execute({
+          mode: "write",
+          work: async (state, context) => {
+            if (auditWriteTimeoutMs !== undefined) {
+              // A local setting leaves other transactions on the pooled connection unaffected.
+              await context.client.query(
+                `SELECT pg_catalog.set_config(name,
                  CASE WHEN setting::integer = 0 THEN $1::text
                       ELSE LEAST(setting::integer, $1::integer)::text END, true)
                FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
-              [String(auditWriteTimeoutMs)],
-            );
-          }
-          await state.audit.append(event);
+                [String(auditWriteTimeoutMs)],
+              );
+            }
+            await state.audit.append(event);
+          },
         }),
     };
   }
@@ -1430,12 +1484,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       // cannot silently acquire a new client after the original operation ends.
       return current.lifetime.run(() => this.readNativeIAMState(current, installationId));
     }
-    return this.execute(true, async (_state, context) => {
-      const installation = await this.currentInstallation(context);
-      if (installation === undefined && this.bootstrapNativeIAM !== undefined) {
-        return this.bootstrapNativeIAM;
-      }
-      return this.readNativeIAMState(context, installationId);
+    return this.execute({
+      mode: "read-context",
+      work: async (context) => {
+        const installation = await this.currentInstallation(context);
+        if (installation === undefined && this.bootstrapNativeIAM !== undefined) {
+          return this.bootstrapNativeIAM;
+        }
+        return this.readNativeIAMState(context, installationId);
+      },
     });
   }
 
@@ -1726,18 +1783,21 @@ export class PostgresPlatformState implements PlatformStateStore {
   }
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
-    return this.execute(true, async (state, context) =>
-      work(createPlatformReadView(state, context.lifetime)),
-    );
+    return this.execute({ mode: "read", work });
   }
 
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T> {
+    return options?.readCommitted
+      ? this.transactReadCommitted(work)
+      : this.execute({ mode: "write", work: async (state) => work(state) });
   }
 
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
   async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state), true);
+    return this.execute({ mode: "read-committed", work: async (state) => work(state) });
   }
 
   /**
@@ -1804,9 +1864,9 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) {
       throw new ScopeViolationError("The Installation authority request is invalid.");
     }
-    return this.execute(
-      false,
-      async (state, context) => {
+    return this.execute({
+      mode: "read-committed",
+      work: async (state, context) => {
         const statement =
           intent === "read"
             ? "SELECT pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended($1, 0))"
@@ -1829,8 +1889,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         await this.requireInstallation(context, installationId);
         return work(state);
       },
-      true,
-    );
+    });
   }
 
   queryInTransaction(
@@ -1943,11 +2002,10 @@ export class PostgresPlatformState implements PlatformStateStore {
   ): Promise<T> {
     const { readCommitted, ...queueOverrides } = options;
     const queueOptions = { ...this.queueOptions, ...queueOverrides };
-    return this.execute(
-      false,
-      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
-      readCommitted,
-    );
+    return this.execute({
+      mode: readCommitted ? "read-committed" : "write",
+      work: async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+    });
   }
 
   /**
@@ -2000,11 +2058,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ]);
   }
 
-  private async execute<T>(
-    readOnly: boolean,
-    work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>,
-    readCommitted = false,
-  ): Promise<T> {
+  private async execute<T>(transaction: TransactionWork<T>): Promise<T> {
     let client: PostgresClient;
     try {
       client = await this.pool.connect();
@@ -2042,13 +2096,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         throw transportError;
       }
       try {
-        await client.query(
-          readOnly
-            ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
-            : readCommitted
-              ? "BEGIN ISOLATION LEVEL READ COMMITTED"
-              : "BEGIN",
-        );
+        await client.query(TRANSACTION_BEGIN[transaction.mode]);
       } catch (error) {
         // A BEGIN abandoned by a client query timeout may still be in flight on this
         // connection; every later statement would queue behind it. Never reuse it.
@@ -2089,14 +2137,24 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         installation: undefined,
         installationLoaded: false,
-        readOnly,
+        readOnly: transaction.mode === "read" || transaction.mode === "read-context",
         statements: 0,
         nativeIAM: undefined,
       };
-      const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
-      unit = activeUnit;
-      this.contexts.set(activeUnit, context);
-      const result = await this.currentTransaction.run(context, () => work(activeUnit, context));
+      let run: () => Promise<T>;
+      if (transaction.mode === "read") {
+        const { work } = transaction;
+        const repositories = this.repositories(context);
+        run = async () => work(createPlatformReadView(repositories, lifetime));
+      } else if (transaction.mode === "read-context") {
+        run = () => transaction.work(context);
+      } else {
+        const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
+        unit = activeUnit;
+        this.contexts.set(activeUnit, context);
+        run = () => transaction.work(activeUnit, context);
+      }
+      const result = await this.currentTransaction.run(context, run);
       await lifetime.finish();
       if (transportError) {
         throw transportError;
@@ -4147,11 +4205,6 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         const repositoryPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
-        if (repositoryPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
-          throw new ScopeViolationError(
-            "Repository network policy requires unprotected execution.",
-          );
-        }
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
@@ -4182,7 +4235,8 @@ export class PostgresPlatformState implements PlatformStateStore {
           async (ids) =>
             decodeQueryRows(
               await client.query(
-                `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability, cs.driver_id
+                `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability,
+                        cs.driver_id, cs.token_service_instance_id
                    FROM occ.credential_sources AS cs
                    JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                    WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
@@ -4195,7 +4249,10 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
-              driverId: text(row, "driver_id"),
+              ...(row.driver_id == null ? {} : { driverId: text(row, "driver_id") }),
+              ...(row.token_service_instance_id == null
+                ? {}
+                : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -4273,6 +4330,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                       repositoryNetworkPolicyVersion: 1,
                     },
               ...(revision.egressPlan === undefined ? {} : { egress_plan: revision.egressPlan }),
+              ...(revision.credentialDeployment === undefined
+                ? {}
+                : { credential_deployment: revision.credentialDeployment }),
               ...(revision.credentialSources === undefined
                 ? {}
                 : { credential_sources: revision.credentialSources }),

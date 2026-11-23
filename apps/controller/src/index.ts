@@ -20,7 +20,6 @@ import {
   UpdateTokenServiceSourceBody,
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
-  ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   JsonValue,
   occApiRoutes,
@@ -65,6 +64,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   PostgresCommitOutcomeUnknownError,
@@ -113,6 +113,7 @@ import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { createDeviceAuthorizationHandlers } from "./http/device-authorization.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
@@ -144,6 +145,7 @@ import {
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { permissionAdvice } from "./http/permission-advice.ts";
+import { createAuthRouteSchemas, installationAuthOperation } from "./http/auth-schemas.ts";
 import { routePermissionMetadata, type RequiredPermission } from "./http/permission-metadata.ts";
 import { presetHandlers } from "./http/presets.ts";
 import { connectionTemplateHandlers } from "./http/connection-templates.ts";
@@ -173,7 +175,7 @@ import {
 } from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
-import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+import type { RequestContext, RequestOperation, ResourceHandlers } from "./http/types.ts";
 import { createWorkspaceFileHandlers, WORKSPACE_FILE_BODY_LIMIT } from "./http/workspace-files.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
@@ -435,7 +437,7 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
 }
 
 function operationTarget(
-  operation: OccApiRoute,
+  operation: RequestOperation,
   installationId: string,
   params: Readonly<Record<string, unknown>>,
 ): ResourceRef {
@@ -794,60 +796,38 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     options.agentAuditCursorSecret === undefined
       ? undefined
       : createAgentAuditReader(options.agentAuditCursorSecret);
-  const createAuthAccountOperation = {
+  const createAuthAccountOperation = installationAuthOperation({
     operationId: "createAuthAccount",
     method: "POST",
     path: "/api/auth/accounts",
     action: "openclaw.auth.accounts.create",
-    iamAction: "administer",
-    resourceKind: "installation",
-    authorizationTarget: "installation",
     summary: "Create a local auth account as an Installation administrator",
-    tags: ["Authentication"],
-    schema: {
-      body: {
-        type: "object",
-        additionalProperties: false,
-        required: ["email", "password"],
-        properties: {
-          email: { type: "string", minLength: 3, maxLength: 320 },
-          password: { type: "string", minLength: 12, maxLength: 128 },
-          name: { type: "string", minLength: 1, maxLength: 200 },
-          roleId: { type: "string", minLength: 1, maxLength: 200 },
-        },
+  });
+  const serviceKeyOperations = (
+    [
+      {
+        operationId: "createServiceKey",
+        method: "POST",
+        path: "/api/auth/service-keys",
+        action: "openclaw.auth.service-keys.create",
+        summary: "Issue a service API key",
       },
-    },
-  } as unknown as OccApiRoute;
-  const serviceKeyOperations = [
-    {
-      operationId: "createServiceKey",
-      method: "POST",
-      path: "/api/auth/service-keys",
-      action: "openclaw.auth.service-keys.create",
-      summary: "Issue a service API key",
-    },
-    {
-      operationId: "revokeServiceKey",
-      method: "DELETE",
-      path: "/api/auth/service-keys/:keyId",
-      action: "openclaw.auth.service-keys.revoke",
-      summary: "Revoke a service API key",
-    },
-  ].map((operation) => ({
-    ...operation,
-    iamAction: "administer",
-    resourceKind: "installation",
-    authorizationTarget: "installation",
-    tags: ["Authentication"],
-    schema: {},
-  })) as unknown as readonly OccApiRoute[];
+      {
+        operationId: "revokeServiceKey",
+        method: "DELETE",
+        path: "/api/auth/service-keys/:keyId",
+        action: "openclaw.auth.service-keys.revoke",
+        summary: "Revoke a service API key",
+      },
+    ] as const
+  ).map(installationAuthOperation);
   const runtimeLogLimiter = new RuntimeLogLimiter();
   const runtimeLogCursor =
     options.agentRuntimeLogs?.enabled === true
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
       : undefined;
   function event(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     resource: ResourceRef,
     kind: AuditEventKind,
@@ -945,7 +925,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /** Log views and downloads share a route and permissions but not an audit action. */
-  function auditAction(operation: OccApiRoute, request: FastifyRequest): string {
+  function auditAction(operation: RequestOperation, request: FastifyRequest): string {
     return operation.operationId === "getAgentDeploymentRuntimeLogs" &&
       isRuntimeLogDownload(request.query as AgentRuntimeLogsQuery)
       ? RUNTIME_LOG_DOWNLOAD_ACTION
@@ -1004,7 +984,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function requireInstallationAdmin(
     request: FastifyRequest,
-    operation: OccApiRoute,
+    operation: RequestOperation,
     context: RequestContext,
   ) {
     const target: ResourceRef = { kind: "installation", id: installationId };
@@ -1078,7 +1058,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   async function denial(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     kind: "authorization_denial",
     context?: RequestContext,
@@ -1124,7 +1104,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   async function rejectedMutation(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     context: RequestContext,
     reasonCode: string,
@@ -1152,7 +1132,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   function logRequestAuditFailure(
     request: FastifyRequest,
-    operation: OccApiRoute,
+    operation: RequestOperation,
     action: string,
     error: unknown,
   ): void {
@@ -1174,7 +1154,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function appendRequestAudit(
     sink: AuditSink,
     request: FastifyRequest,
-    operation: OccApiRoute,
+    operation: RequestOperation,
     observation: ApiRequestAuditObservation,
   ): Promise<boolean> {
     const context = contexts.get(request);
@@ -1246,6 +1226,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
       rejectDeployment: (request, context) =>
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
+    }),
+    ...createDeviceAuthorizationHandlers({
+      auditSink: options.auditSink,
+      // Start phases belong in the factory input, before audit details are sanitized and frozen.
+      startEvent: ({ context, request }, resource, details) =>
+        event(context.operation, request, resource, "mutation", context, undefined, {
+          outcome: "success",
+          details,
+        }),
     }),
     ...createWorkspaceFileHandlers({
       access: options.workspaceFilesAccess,
@@ -1335,7 +1324,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   }
 
-  async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+  async function admit(request: FastifyRequest, operation: RequestOperation): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
@@ -1476,7 +1465,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     admissions.set(request, admitted);
   }
 
-  async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+  async function resolveIdentity(
+    request: FastifyRequest,
+    operation: RequestOperation,
+  ): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
       throw dependencyUnavailable();
@@ -1641,19 +1633,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       validateConfiguration(body);
     }
 
-    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
-    // Older handlers would otherwise ignore a requested provider or credential destination.
-    if (
-      body?.mode === "static_bearer" &&
-      (operation.operationId === "createConnectionTemplate" ||
-        operation.operationId === "updateConnectionTemplate")
-    ) {
-      throw failure(
-        501,
-        "NOT_IMPLEMENTED",
-        "Static Connection Templates are unavailable on this controller.",
-      );
-    }
+    // TODO(RFC-0034): Remove this guard when the ModelProvider implementation is available.
     if (
       (body &&
         "modelProviderId" in body &&
@@ -1939,71 +1919,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (
-      operation.operationId === "startAgentDeviceAuthorization" ||
-      operation.operationId === "startSavedAgentDeviceAuthorization" ||
-      operation.operationId === "pollAgentDeviceAuthorization" ||
-      operation.operationId === "pollSavedAgentDeviceAuthorization" ||
-      operation.operationId === "cancelAgentDeviceAuthorization" ||
-      operation.operationId === "cancelSavedAgentDeviceAuthorization"
-    ) {
-      const agentId = params.agentId;
-      let result;
-      if (operation.operationId.startsWith("start")) {
-        result = await controller.startAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          body?.harnessId as string,
-          agentId,
-          (source, phase) =>
-            event(
-              operation,
-              request,
-              phase === "session_pending"
-                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
-                : source.ref,
-              "mutation",
-              context,
-              undefined,
-              { outcome: "success", details: { phase, sourceId: source.id } },
-            ),
-        );
-      } else if (operation.operationId.startsWith("poll")) {
-        result = await controller.pollAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.sessionId as string,
-          agentId,
-        );
-      } else {
-        await controller.cancelAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.sessionId as string,
-          agentId,
-        );
-      }
-      // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
-        await options.auditSink.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-      }
-      reply.header("cache-control", "no-store");
-      if (result === undefined) {
-        reply.status(204).send();
-      } else {
-        reply.send({ data: result, meta: { requestId: request.id } });
-      }
-      return;
-    }
-
     if (operation.operationId === "discoverAgentModels") {
       const models = await controller.discoverAgentModels(context.actorId, namespaceId, {
         provider: body?.provider as string,
@@ -2116,6 +2031,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (resourceHandler) {
       await resourceHandler({
         controller,
+        resolveHarness: options.resolveHarness,
         context,
         request,
         reply,
@@ -2313,53 +2229,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   void app.register(async (routes) => {
-    const meta = {
-      type: "object",
-      additionalProperties: false,
-      required: ["requestId"],
-      properties: { requestId: { type: "string" } },
-    };
-    const envelope = (data: Record<string, unknown>) => ({
-      type: "object",
-      additionalProperties: false,
-      required: ["data", "meta"],
-      properties: { data, meta },
-    });
-    const error = {
-      type: "object",
-      additionalProperties: false,
-      required: ["error", "meta"],
-      properties: {
-        error: {
-          type: "object",
-          additionalProperties: false,
-          required: ["code", "message"],
-          properties: {
-            code: { type: "string" },
-            message: { type: "string" },
-            // Schema 400s point at the rejected field; without this the serializer drops it.
-            details: { type: "array", maxItems: 32, items: ErrorDetailSchema },
-          },
-        },
-        meta,
-      },
-    };
-    const responses = (success: Record<string, unknown>, status = 200) => ({
-      [status]: { description: status === 201 ? "Created" : "OK", ...envelope(success) },
-      401: { description: "Unauthorized", ...error },
-      503: { description: "Service Unavailable", ...error },
-    });
-    const resourceErrors = () => ({
-      400: { description: "Bad Request", ...error },
-      403: { description: "Forbidden", ...error },
-      404: { description: "Not Found", ...error },
-      409: { description: "Conflict", ...error },
-    });
-    // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
-    const bodyErrors = {
-      413: { description: "Payload Too Large", ...error },
-      415: { description: "Unsupported Media Type", ...error },
-    };
+    const authSchemas = createAuthRouteSchemas();
+    const { bodyErrors, envelope, error, responses } = authSchemas;
     // Refuse request text that cannot be stored unchanged, as on OCC API routes.
     const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
       const unstorable =
@@ -2368,103 +2239,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         throw unstorable;
       }
     };
-    const accountBody = (
-      createAuthAccountOperation.schema as {
-        readonly body: { readonly properties: Record<string, unknown> };
-      }
-    ).body;
-    const account = {
-      type: "object",
-      additionalProperties: true,
-      required: ["id", "email", "name", "principalId"],
-      properties: {
-        id: { type: "string" },
-        email: { type: "string", format: "email" },
-        name: { type: "string" },
-        principalId: { type: "string" },
-      },
-    };
-
     for (const operation of serviceKeyOperations) {
       const creating = operation.method === "POST";
-      const serviceKey = {
-        type: "object",
-        additionalProperties: false,
-        required: ["id", "servicePrincipalId", "name", "expiresAt", "key"],
-        properties: {
-          id: { type: "string" },
-          servicePrincipalId: { type: "string" },
-          namespaceId: { type: "string" },
-          name: { type: "string" },
-          expiresAt: { type: "string", format: "date-time" },
-          key: { type: "string" },
-        },
-      };
       routes.route({
-        method: operation.method as HTTPMethods,
+        method: operation.method,
         url: operation.path,
-        schema: {
-          operationId: operation.operationId,
-          summary: operation.summary,
-          description: creating
-            ? "Requires a session or Installation-scoped service key with administer on the Installation. Issues a Better Auth key for an existing non-Agent ServicePrincipal in its exact scope when the caller already holds every IAM grant of that ServicePrincipal at the same or a broader scope; creates no identity or IAM grant. The plaintext key is returned only here."
-            : "Requires a session or Installation-scoped service key with administer on the Installation, plus every IAM grant of the key's ServicePrincipal, as for issuance. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
-          tags: [...operation.tags],
-          security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          ...(creating
-            ? {
-                body: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["servicePrincipalId", "name"],
-                  properties: {
-                    servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
-                    namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
-                    name: {
-                      type: "string",
-                      minLength: 1,
-                      maxLength: SERVICE_KEY_NAME_MAX_LENGTH,
-                      pattern: "\\S",
-                    },
-                    expiresIn: {
-                      type: "integer",
-                      minimum: 86400,
-                      maximum: 31536000,
-                      description: "Lifetime in seconds; defaults to 30 days.",
-                    },
-                  },
-                },
-              }
-            : {
-                params: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["keyId"],
-                  properties: { keyId: { type: "string", minLength: 1, maxLength: 200 } },
-                },
-              }),
-          response: {
-            ...responses(
-              creating
-                ? serviceKey
-                : {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["id", "revoked"],
-                    properties: {
-                      id: { type: "string" },
-                      revoked: { type: "boolean", const: true },
-                    },
-                  },
-              creating ? 201 : 200,
-            ),
-            ...resourceErrors(),
-            ...(creating ? bodyErrors : {}),
-          },
-        } as DocumentedFastifySchema,
+        schema: authSchemas.serviceKey(operation, RESOURCE_ID.namespaceId.source),
         onRequest: async (request) => admit(request, operation),
         preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
@@ -2769,24 +2549,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
     }
 
-    const accountParams = {
-      type: "object",
-      additionalProperties: false,
-      required: ["userId"],
-      properties: { userId: { type: "string", minLength: 1, maxLength: 200 } },
-    };
-    const accountReadOperation = {
+    function accountAdmission(operation: RequestOperation) {
+      return {
+        onRequest: async (request: FastifyRequest) => admit(request, operation),
+        preValidation: async (request: FastifyRequest) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, operation);
+        },
+      };
+    }
+
+    const accountReadOperation = installationAuthOperation({
       operationId: "getAuthAccount",
       method: "GET",
       path: "/api/auth/accounts/:userId",
       action: "openclaw.auth.accounts.read",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Inspect current human account state",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     // Account state and its controls live in the guarded external sign-in profile; the
     // password-only profile has no account version, disabled state, or bound sessions.
     function accountControlsUnsupported(): RequestFailure {
@@ -2798,7 +2577,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     async function humanAccountActor(
       request: FastifyRequest,
-      operation: OccApiRoute,
+      operation: RequestOperation,
       context: RequestContext,
       targetUserId?: string,
     ) {
@@ -2954,50 +2733,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.get(
       accountReadOperation.path,
       {
-        schema: {
-          operationId: accountReadOperation.operationId,
-          summary: accountReadOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          params: accountParams,
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["userId", "principalId", "version", "disabled", "methods"],
-              properties: {
-                userId: { type: "string" },
-                principalId: { type: "string" },
-                version: { type: "integer", minimum: 1 },
-                disabled: { type: "boolean" },
-                methods: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["methodId", "providerId", "subject"],
-                    properties: {
-                      methodId: { type: "string" },
-                      providerId: { type: "string" },
-                      subject: { type: "string" },
-                    },
-                  },
-                },
-              },
-            }),
-            ...resourceErrors(),
-          },
-        },
-        onRequest: async (request) => admit(request, accountReadOperation),
-        preValidation: async (request) => {
-          refuseUnstorableText(request);
-          await resolveIdentity(request, accountReadOperation);
-        },
+        schema: authSchemas.readAccount(accountReadOperation),
+        ...accountAdmission(accountReadOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3054,72 +2791,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         summary: "Detach an external sign-in identity from an account",
       },
     ] as const;
-    const methodParams = {
-      type: "object",
-      additionalProperties: false,
-      required: ["userId", "methodId"],
-      properties: {
-        userId: { type: "string", minLength: 1, maxLength: 200 },
-        methodId: { type: "string", minLength: 1, maxLength: 200 },
-      },
-    };
     for (const { operationName, path, operationId, summary } of accountOperations) {
-      const operation = {
+      const operation = installationAuthOperation({
         operationId,
         method: "POST",
         path,
         action: `openclaw.auth.accounts.${operationName}`,
-        iamAction: "administer",
-        resourceKind: "installation",
-        authorizationTarget: "installation",
-        tags: ["Authentication"],
         summary,
-        schema: {},
-      } as unknown as OccApiRoute;
+      });
       routes.post(
         operation.path,
         {
-          schema: {
-            operationId: operation.operationId,
-            summary: operation.summary,
-            description:
-              "Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.",
-            tags: [...operation.tags],
-            security: [{ sessionCookie: [] }],
-            "x-openclaw-permissions": [
-              { action: "administer", resourceKind: "installation", scope: "requested" },
-            ],
-            params: operationName === "detach" ? methodParams : accountParams,
-            body: {
-              type: "object",
-              additionalProperties: false,
-              required:
-                operationName === "google" || operationName === "oidc"
-                  ? ["subject", "expectedVersion"]
-                  : ["expectedVersion"],
-              properties: {
-                expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-                ...(operationName === "google" || operationName === "oidc"
-                  ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
-                  : {}),
-              },
-            },
-            response: {
-              ...responses({
-                type: "object",
-                additionalProperties: false,
-                required: ["userId"],
-                properties: { userId: { type: "string" } },
-              }),
-              ...resourceErrors(),
-              ...bodyErrors,
-            },
-          },
-          onRequest: async (request) => admit(request, operation),
-          preValidation: async (request) => {
-            refuseUnstorableText(request);
-            await resolveIdentity(request, operation);
-          },
+          schema: authSchemas.changeAccount(operation, operationName),
+          ...accountAdmission(operation),
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -3158,48 +2842,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
     }
 
-    const recoveryResponse = {
-      type: "object",
-      additionalProperties: false,
-      required: ["userId", "principalId", "methodId"],
-      properties: {
-        userId: { type: "string" },
-        principalId: { type: "string" },
-        methodId: { type: "string" },
-      },
-    };
-    const recoveryReadOperation = {
+    const recoveryReadOperation = installationAuthOperation({
       operationId: "getAuthRecovery",
       method: "GET",
       path: "/api/auth/recovery",
       action: "openclaw.auth.recovery.read",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Inspect the recovery account designation",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     routes.get(
       recoveryReadOperation.path,
       {
-        schema: {
-          operationId: recoveryReadOperation.operationId,
-          summary: recoveryReadOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          response: {
-            ...responses(recoveryResponse),
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
-          },
-        },
+        schema: authSchemas.readRecovery(recoveryReadOperation),
         onRequest: async (request) => admit(request, recoveryReadOperation),
         preValidation: async (request) => resolveIdentity(request, recoveryReadOperation),
       },
@@ -3219,56 +2872,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     );
 
-    const recoveryReplaceOperation = {
+    const recoveryReplaceOperation = installationAuthOperation({
       operationId: "replaceAuthRecovery",
       method: "POST",
       path: "/api/auth/recovery",
       action: "openclaw.auth.recovery.replace",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Move the recovery designation to another Installation administrator",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     routes.post(
       recoveryReplaceOperation.path,
       {
-        schema: {
-          operationId: recoveryReplaceOperation.operationId,
-          summary: recoveryReplaceOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin who holds every IAM grant of the current holder's Principal (else 403). The target must be an enrolled, enabled account with one password whose Principal administers the Installation. expectedCurrentUserId comes from the recovery read and expectedVersion from the target's account read. Commits state and audit together; an unknown outcome must be inspected without automatic retry.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["userId", "expectedCurrentUserId", "expectedVersion"],
-            properties: {
-              userId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedCurrentUserId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-            },
-          },
-          response: {
-            ...responses({
-              ...recoveryResponse,
-              required: [...recoveryResponse.required, "changed"],
-              properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
-            }),
-            ...resourceErrors(),
-            ...bodyErrors,
-          },
-        },
-        onRequest: async (request) => admit(request, recoveryReplaceOperation),
-        preValidation: async (request) => {
-          refuseUnstorableText(request);
-          await resolveIdentity(request, recoveryReplaceOperation);
-        },
+        schema: authSchemas.replaceRecovery(recoveryReplaceOperation),
+        ...accountAdmission(recoveryReplaceOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3335,52 +2950,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     );
 
-    const enrolOperation = {
+    const enrolOperation = installationAuthOperation({
       operationId: "enrolAuthAccount",
       method: "POST",
       path: "/api/auth/accounts/:userId/enrol",
       action: "openclaw.auth.accounts.enrol",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Enrol an existing account that activation skipped",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     routes.post(
       enrolOperation.path,
       {
-        schema: {
-          operationId: enrolOperation.operationId,
-          summary: enrolOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. The account must already have its IAM Principal and exactly one password. Idempotent; enrolment grants no access beyond the account's existing IAM bindings.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          params: accountParams,
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["userId", "principalId", "version", "created"],
-              properties: {
-                userId: { type: "string" },
-                principalId: { type: "string" },
-                version: { type: "integer", minimum: 1 },
-                created: { type: "boolean" },
-              },
-            }),
-            ...resourceErrors(),
-          },
-        },
-        onRequest: async (request) => admit(request, enrolOperation),
-        preValidation: async (request) => {
-          refuseUnstorableText(request);
-          await resolveIdentity(request, enrolOperation);
-        },
+        schema: authSchemas.enrolAccount(enrolOperation),
+        ...accountAdmission(enrolOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3407,15 +2988,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
           tags: ["Authentication"],
           security: [],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["email", "password"],
-            properties: {
-              email: accountBody.properties.email,
-              password: accountBody.properties.password,
-            },
-          },
+          body: authSchemas.passwordBody,
           response: {
             // A browser Origin other than the console's, or a cross-site fetch, is refused
             // before the credentials are read.
@@ -3500,32 +3073,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => options.auth.session(request, reply),
     );
     routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
-      "/api/auth/accounts",
+      createAuthAccountOperation.path,
       {
         config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
-        schema: {
-          ...createAuthAccountOperation.schema,
-          operationId: createAuthAccountOperation.operationId,
-          summary: createAuthAccountOperation.summary,
-          description:
-            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
-          tags: [...createAuthAccountOperation.tags],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          response: {
-            ...responses(account, 201),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            409: { description: "Conflict", ...error },
-            429: {
-              description: "Too many account creation requests; wait for Retry-After",
-              ...error,
-            },
-            ...bodyErrors,
-          },
-        } as DocumentedFastifySchema,
+        schema: authSchemas.createAccount(createAuthAccountOperation),
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
           // Passwords are hashed before persistence; their existing schema and hashing
@@ -4224,7 +3775,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         failure: error.failure,
       });
     }
-    if (
+    if (error instanceof CredentialDeliveryFailedError) {
+      const params = request.params as { namespaceId?: string; credentialSourceId?: string };
+      app.log.warn({
+        event: "credential.delivery_failed",
+        requestId: request.id,
+        namespaceId: params.namespaceId,
+        credentialSourceId: params.credentialSourceId,
+        code: "CREDENTIAL_DELIVERY_FAILED",
+      });
+    } else if (
       mapped.status === 503 &&
       mapped.code === "DEPENDENCY_UNAVAILABLE" &&
       error instanceof Error &&

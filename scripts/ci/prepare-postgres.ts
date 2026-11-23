@@ -221,6 +221,7 @@ export function createPostgresPreparation(
           `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
           `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
           `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
+        Object.assign(error, { dockerSubnetExhausted: true });
       }
       throw error;
     }
