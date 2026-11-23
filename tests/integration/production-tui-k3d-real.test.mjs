@@ -660,6 +660,7 @@ test(
         // Historical rehearsal charts keep their original credential contract.
         // Current-source workflow exercises automatic preparation through the CLI.
         bootstrapCredentials: custody ? "existing" : "generate",
+        useChartResourceDefaults: returnSelected,
         createPostgresResource: custody?.create,
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
