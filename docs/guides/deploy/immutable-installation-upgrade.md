@@ -14,29 +14,56 @@ changes beyond those supported by the image-upgrade helper.
 
 ## Prepare the staged configuration
 
+If an earlier attempt stopped, follow [upgrade recovery](production-upgrade-recovery.md)
+before preparing any files. If that attempt can resume, skip preparation and go
+to [Preflight, upgrade and recover](#preflight-upgrade-and-recover).
+
 Complete the [release preparation](production-upgrade.md#prepare-the-release),
 including the protected baseline, image qualification and backups. Keep the
 original `--values` and `--installation` files unchanged. Freeze unrelated edits
 to the release and both Secrets through the upgrade and recovery.
 
+Use a private directory with no other writers. If an output path already exists
+or is a symbolic link, stop and inspect it. If a command fails, keep any partial
+output for inspection.
+
+If you prepared supported [Installation settings](production-upgrade.md#include-reviewed-settings),
+set the corresponding `values_source` or `installation_source` below to the
+reviewed candidate file. Keep the reviewed files unchanged.
+
 In the same dedicated Bash shell, select a new Secret name and read the existing
 name and key from the protected values. Use your release's actual namespace and
-context:
+context.
 
 ```bash
 umask 077
 kube=(kubectl --kubeconfig /secure/occ/kubeconfig
       --context '<reviewed-context>' --namespace openclaw-system)
 original_secret=$(yq -er '.installation.secretName // "occ-installation-startup"' \
-  /secure/occ/values.yaml)
+  /secure/occ/values.yaml) || exit 1
 installation_key=$(yq -er '.installation.key // "installation.yaml"' \
-  /secure/occ/values.yaml)
+  /secure/occ/values.yaml) || exit 1
 successor_secret='occ-installation-next'
-cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
-cp /secure/occ/installation.yaml /secure/occ/staged-installation.yaml
+values_source=/secure/occ/values.yaml
+installation_source=/secure/occ/installation.yaml
+
+for output_path in \
+  /secure/occ/staged-values.yaml \
+  /secure/occ/staged-installation.yaml \
+  /secure/occ/original-installation-secret.json \
+  /secure/occ/successor-installation-secret.json
+do
+  if [[ -e "$output_path" || -L "$output_path" ]]; then
+    printf 'Stop and inspect %s before continuing.\n' "$output_path" >&2
+    exit 1
+  fi
+done
+
+cp "$values_source" /secure/occ/staged-values.yaml || exit 1
+cp "$installation_source" /secure/occ/staged-installation.yaml || exit 1
 SUCCESSOR_SECRET="$successor_secret" yq -i \
   '.installation.secretName = strenv(SUCCESSOR_SECRET)' \
-  /secure/occ/candidate-values.yaml
+  /secure/occ/staged-values.yaml || exit 1
 ```
 
 For a runtime upgrade, apply the same qualified digest that you will pass as
@@ -47,14 +74,12 @@ export RUNTIME_IMAGE='<registry>/<runtime>@sha256:<qualified-digest>'
 yq -i \
   '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
    .drivers.compute.configuration.images.agent = strenv(RUNTIME_IMAGE)' \
-  /secure/occ/staged-installation.yaml
+  /secure/occ/staged-installation.yaml || exit 1
 ```
 
-If you also prepared supported [Installation settings](production-upgrade.md#include-reviewed-settings),
-start the staged file from that reviewed candidate before applying the runtime
-digest. Keep the file passed as `--candidate-installation` separate: it contains
-only the supported settings changes, with image fields still matching the
-baseline. The image flag supplies the new runtime selection.
+Keep the file passed as `--candidate-installation` separate. It contains only the
+supported settings changes, with image fields still matching the baseline. The
+image flag supplies the new runtime selection.
 
 The staged YAML must describe the helper's final candidate configuration. All
 Installation mapping keys must be strings; quote numeric-looking label keys. YAML
@@ -72,24 +97,27 @@ Installation ID. Only the selected data key changes. The new Secret has its own
 name and UID:
 
 ```bash
-"${kube[@]}" get secret "$original_secret" --output json \
-  > /secure/occ/original-installation-secret.json
-jq -e --arg name "$successor_secret" --arg key "$installation_key" \
-  --rawfile config /secure/occ/staged-installation.yaml '
-  select(.immutable == true) |
-  select(.metadata.annotations["openclaw.dev/installation-id"] | type == "string") |
-  select(.data[$key] | type == "string") |
-  {
-    apiVersion: "v1", kind: "Secret", type: .type, immutable: true,
-    metadata: {
-      name: $name, namespace: .metadata.namespace,
-      annotations: {
-        "openclaw.dev/installation-id": .metadata.annotations["openclaw.dev/installation-id"]
-      }
-    },
-    data: (.data | .[$key] = ($config | @base64))
-  }' /secure/occ/original-installation-secret.json \
-  > /secure/occ/successor-installation-secret.json
+(
+  set -o noclobber
+  "${kube[@]}" get secret "$original_secret" --output json \
+    > /secure/occ/original-installation-secret.json &&
+    jq -e --arg name "$successor_secret" --arg key "$installation_key" \
+      --rawfile config /secure/occ/staged-installation.yaml '
+      select(.immutable == true) |
+      select(.metadata.annotations["openclaw.dev/installation-id"] | type == "string") |
+      select(.data[$key] | type == "string") |
+      {
+        apiVersion: "v1", kind: "Secret", type: .type, immutable: true,
+        metadata: {
+          name: $name, namespace: .metadata.namespace,
+          annotations: {
+            "openclaw.dev/installation-id": .metadata.annotations["openclaw.dev/installation-id"]
+          }
+        },
+        data: (.data | .[$key] = ($config | @base64))
+      }' /secure/occ/original-installation-secret.json \
+      > /secure/occ/successor-installation-secret.json
+)
 ```
 
 Continue only if both commands succeeded. Review the protected result, then
@@ -106,8 +134,8 @@ writers. Staging alone does not change the running release.
 
 ## Preflight, upgrade and recover
 
-Add `--candidate-values /secure/occ/candidate-values.yaml` to the ordinary
-control-plane or runtime upgrade command. Include the separate
+For a new upgrade, add `--candidate-values /secure/occ/staged-values.yaml` to
+the ordinary control-plane or runtime upgrade command. Include the separate
 `--candidate-installation` file only when changing supported settings. First run
 with `--preflight-only` and a fresh evidence directory. Preflight rechecks both retained Secrets after its temporary Jobs finish. A passing
 preflight leaves the original release serving; then run with a different fresh
@@ -118,11 +146,11 @@ Helm's initializer and controller workloads. Runtime upgrades still redeploy the
 verify their selected revisions. Complete the normal
 [application verification](production-upgrade.md#verify-the-release).
 
-Retain both Secrets and all protected inputs during recovery. Resume the same
-attempt using the original command, unchanged candidate files and evidence
-directory. A deleted or replaced Secret, changed data, or an unexpected Helm
-revision requires investigation; a new object with the same name is not the
-recorded object. Follow [upgrade recovery](production-upgrade-recovery.md) for
+Retain both Secrets and all protected inputs during recovery. If the attempt
+can resume, add `--resume` to the original command. Use the unchanged candidate
+files and the original evidence directory. A deleted or replaced Secret, changed
+data, or an unexpected Helm revision requires investigation; a new object with
+the same name is not the recorded object. Follow [upgrade recovery](production-upgrade-recovery.md) for
 uncertain outcomes and [same-candidate Helm recovery](production-helm-recovery.md)
 when applicable. Do not switch references manually to make resume pass.
 
