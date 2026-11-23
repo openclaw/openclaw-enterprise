@@ -492,6 +492,23 @@ test("a github Source holds only a fine-grained token and an explicit repository
     assertManagedRefused(refused, "/config/repositories");
     assert.equal(leaks(refused.body), false, label);
   }
+  // An error names the entry it refuses; the ceiling is configuration, not secret.
+  assertManagedRefused(
+    await f.request("POST", f.path, {
+      body: githubSourceBody(FINE_GRAINED, { repositories: "octo/app:read,Octo/web:read" }),
+    }),
+    "/config/repositories",
+    'Repository entry 2 ("Octo/web:read"): Use a canonical lowercase owner/name without a .git suffix.',
+  );
+  // At most 32 entries.
+  const entries = (count) => Array.from({ length: count }, (_, i) => `octo/r${i}:read`).join(",");
+  assertManagedRefused(
+    await f.request("POST", f.path, {
+      body: githubSourceBody(FINE_GRAINED, { repositories: entries(33) }),
+    }),
+    "/config/repositories",
+    "Provide at most 32 repository grants.",
+  );
   const modelWithCeiling = await f.request("POST", f.path, {
     body: {
       name: "Model key",
@@ -520,6 +537,15 @@ test("a github Source holds only a fine-grained token and an explicit repository
   assert.deepEqual(created.data.secrets, {});
   assert.equal(created.data.ownerCapability, "token_service");
   const sourcePath = `${f.path}/${created.data.id}`;
+  // The audit records the ceiling, so who widened or narrowed repository scope stays visible.
+  const lastDetails = (action) =>
+    f.auditSink.events
+      .filter((event) => event.resource?.id === created.data.id && event.action === action)
+      .at(-1)?.details;
+  assert.deepEqual(lastDetails("openclaw.credential_sources.create"), {
+    providerPreset: "github",
+    repositories: expectedConfig.repositories,
+  });
   const read = await f.request("GET", sourcePath);
   assert.deepEqual(read.data.config, expectedConfig);
   assert.equal(leaks(created.body) || leaks(read.body), false);
@@ -548,6 +574,10 @@ test("a github Source holds only a fine-grained token and an explicit repository
   const second = await custody();
   assert.equal(second.credential, replacement);
   assert.notEqual(second.version, first.version);
+  assert.deepEqual(lastDetails("openclaw.credential_sources.update"), {
+    providerPreset: "github",
+    repositories: expectedConfig.repositories,
+  });
 
   // The ceiling changes alone while unbound; the preset is fixed at registration.
   const narrowed = await f.request("PATCH", sourcePath, {
@@ -557,6 +587,11 @@ test("a github Source holds only a fine-grained token and an explicit repository
   assert.deepEqual(narrowed.data.config, {
     provider_preset: "github",
     repositories: "octo/app:read",
+  });
+  assert.deepEqual(lastDetails("openclaw.credential_sources.update"), {
+    providerPreset: "github",
+    repositories: "octo/app:read",
+    previousRepositories: expectedConfig.repositories,
   });
   for (const body of [
     {
@@ -574,6 +609,12 @@ test("a github Source holds only a fine-grained token and an explicit repository
       body: { config: { provider_preset: "github", repositories: "octo/app:read,octo/app:read" } },
     }),
     "/config/repositories",
+  );
+  // A config update repeats the ceiling: the preset alone does not keep or clear it.
+  assertManagedRefused(
+    await f.request("PATCH", sourcePath, { body: { config: { provider_preset: "github" } } }),
+    "/config/repositories",
+    "A github credential source requires a repository ceiling.",
   );
   assert.equal((await custody()).version, second.version);
   assert.deepEqual((await f.request("GET", sourcePath)).data.config, narrowed.data.config);
@@ -595,6 +636,13 @@ test("a github Source holds only a fine-grained token and an explicit repository
   assert.deepEqual((await f.request("GET", `${f.path}/${model.data.id}`)).data.config, {
     provider_preset: "openai",
   });
+
+  // Exactly 32 entries are accepted.
+  const widest = await f.request("POST", f.path, {
+    body: githubSourceBody(FINE_GRAINED, { repositories: entries(32) }, "Widest"),
+  });
+  assert.equal(widest.status, 201, JSON.stringify(widest.body));
+  assert.equal(widest.data.config.repositories.split(",").length, 32);
 
   // The ceiling is Namespace-owned: another Namespace's path neither reads nor changes it.
   const other = await f.createNamespace("credential-other", { ready: true });

@@ -14,7 +14,7 @@ const sourceProviderPresetIds = [...modelSourcePresetIds, "github"] as const;
 export type SourceProviderPresetId = (typeof sourceProviderPresetIds)[number];
 
 /** A preset whose Source may authenticate a model provider. */
-export type ModelSourcePresetId = (typeof modelSourcePresetIds)[number];
+type ModelSourcePresetId = (typeof modelSourcePresetIds)[number];
 
 export const SOURCE_PROVIDER_PRESET_CONFIG_KEY = "provider_preset";
 
