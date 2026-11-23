@@ -1,5 +1,4 @@
 import type { KeyObject } from "node:crypto";
-import type { GitHubTokenClass } from "@openclaw-enterprise/contracts";
 import type { RepositoryBackendFactory, Clock } from "../../access/backend-contracts.ts";
 import type { ServiceLimits } from "../../access/service-contracts.ts";
 
@@ -34,6 +33,10 @@ export interface GitHubTokenConfiguration extends GitHubTokenConfigurationBase {
   readonly allowGraphql: boolean;
   readonly leaseSeconds: number;
 }
+
+/** Derived from the token prefix; never secret and never more than the prefix. */
+export type GitHubTokenClass =
+  "fine-grained" | "classic" | "oauth" | "app-user" | "app-installation" | "unknown";
 
 export interface GitHubKeyOwner {
   readonly kind: "github-app";

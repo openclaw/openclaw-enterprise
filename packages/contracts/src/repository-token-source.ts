@@ -14,35 +14,17 @@ export const GITHUB_SOURCE_PRESET_ID = "github" satisfies SourceProviderPresetId
  */
 export const SOURCE_REPOSITORIES_CONFIG_KEY = "repositories";
 
-/** Derived from the token prefix; never secret and never more than the prefix. */
-export type GitHubTokenClass =
-  "fine-grained" | "classic" | "oauth" | "app-user" | "app-installation" | "unknown";
+// The documented prefix of a GitHub fine-grained personal access token.
+const FINE_GRAINED_TOKEN_PREFIX = "github_pat_";
 
-// Longest prefix first: "github_pat_" must not be read as an unknown "gh" token.
-const prefixes: readonly (readonly [string, GitHubTokenClass])[] = [
-  ["github_pat_", "fine-grained"],
-  ["ghp_", "classic"],
-  ["gho_", "oauth"],
-  ["ghu_", "app-user"],
-  ["ghs_", "app-installation"],
-];
-
-function startsWith(token: Uint8Array | string, prefix: string): boolean {
-  if (token.length <= prefix.length) {
-    return false;
-  }
-  for (let index = 0; index < prefix.length; index++) {
-    const code = typeof token === "string" ? token.charCodeAt(index) : token[index];
-    if (code !== prefix.charCodeAt(index)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Reads only the documented prefix; no other character is returned or retained. */
-export function classifyGitHubToken(token: Uint8Array | string): GitHubTokenClass {
-  return prefixes.find(([prefix]) => startsWith(token, prefix))?.[1] ?? "unknown";
+/**
+ * Whether a value carries the fine-grained personal access token prefix. It reads only the
+ * prefix and the length; no other character is returned or retained.
+ */
+export function isGitHubFineGrainedToken(value: string): boolean {
+  return (
+    value.length > FINE_GRAINED_TOKEN_PREFIX.length && value.startsWith(FINE_GRAINED_TOKEN_PREFIX)
+  );
 }
 
 export class SourceRepositoryCeilingError extends Error {
