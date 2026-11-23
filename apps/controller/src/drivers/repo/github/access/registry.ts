@@ -639,6 +639,12 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
+      // The credential covers every bound repository. A pull request can name any repository
+      // in the target's fork network as its head, so creation needs a saved grant on each.
+      const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
+      const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
+        ? scope.scopedRest
+        : scope.scopedRest.map(({ createPullRequests, ...rest }) => Object.freeze(rest));
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
@@ -647,7 +653,7 @@ export function createGitHubRepositoryDeliveryResolver(
           repositories: scope.repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
-          ...(nativeGit && scope.scopedRest.length > 0 && { scopedRest: scope.scopedRest }),
+          ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
         }),
       });
     }

@@ -94,7 +94,12 @@ function resolverPort(runtime: Runtime): {
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
-type ScopedRest = { permissions: Record<string, string>; optedRepository?: string };
+// example/outside is bound without a saved grant unless `outside` says otherwise.
+type ScopedRest = {
+  permissions: Record<string, string>;
+  optedRepository?: string;
+  outside?: "read" | "unbound";
+};
 
 async function selectedV5(
   t: TestContext,
@@ -112,12 +117,14 @@ async function selectedV5(
       repository: "example/delivery",
     },
   ];
-  repositories.push({
-    ...repository,
-    repositoryRef: "outside",
-    repositoryId: "34569",
-    repository: "example/outside",
-  });
+  if (rest?.outside !== "unbound") {
+    repositories.push({
+      ...repository,
+      repositoryRef: "outside",
+      repositoryId: "34569",
+      repository: "example/outside",
+    });
+  }
   const selectedRegistry =
     native &&
     validateGitHubRepositoryRegistry(
@@ -228,6 +235,7 @@ async function selectedV5(
   const grants = [
     { repository: repositories[0]!.repository, access: "read" },
     { repository: repositories[1]!.repository, access: "write" },
+    ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
@@ -3629,7 +3637,10 @@ test("native scoped REST intersects the selected permissions, registry opt-in an
   assert.deepEqual(await apiRules({ permissions: { pull_requests: "read" } }, true), pullReads);
   // Creation needs the write permission and the saved Write grant, which only delivery has.
   const create = [{ method: "POST", path: "/repos/example/delivery/pulls" }];
-  const pulls = await apiRules({ permissions: { pull_requests: "write" } }, true);
+  const pulls = await apiRules(
+    { permissions: { pull_requests: "write" }, outside: "unbound" },
+    true,
+  );
   assert.deepEqual(
     pulls.filter((r) => r.method === "GET"),
     pullReads,
@@ -3638,7 +3649,29 @@ test("native scoped REST intersects the selected permissions, registry opt-in an
     pulls.filter((r) => r.method !== "GET"),
     create,
   );
-  const mixed = await apiRules({ permissions: { issues: "write", pull_requests: "write" } }, true);
+  // The credential also covers example/outside, bound without a saved grant. A pull request
+  // into delivery could name it as the head, so creation is withheld and the reads stay.
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "write" } }, true), pullReads);
+  // A Read grant on every bound repository restores creation; Read alone creates nowhere.
+  const allGranted = await apiRules(
+    { permissions: { pull_requests: "write" }, outside: "read" },
+    true,
+  );
+  assert.deepEqual(
+    allGranted.filter((r) => r.method !== "GET"),
+    create,
+  );
+  assert.deepEqual(
+    allGranted.filter((r) => r.method === "GET" && !r.path?.startsWith("/repos/example/outside/")),
+    pullReads,
+  );
+  assert.ok(
+    allGranted.some((r) => r.method === "GET" && r.path === "/repos/example/outside/pulls"),
+  );
+  const mixed = await apiRules(
+    { permissions: { issues: "write", pull_requests: "write" }, outside: "unbound" },
+    true,
+  );
   assert.deepEqual(
     mixed.filter((r) => r.path?.includes("/issues")),
     issues,
@@ -3818,20 +3851,34 @@ test("native issue policy survives Sandbox creation and independent Credential P
 });
 
 test("native pull request creation selects no hook through Sandbox creation and readback", async (t) => {
-  const bound = await verifyScopedRestReadback(t, { issues: "read", pull_requests: "write" });
+  const permissions = { issues: "read", pull_requests: "write" };
+  const bound = await verifyScopedRestReadback(t, permissions, "unbound");
   const path = "/repos/example/delivery/pulls";
   const [readOnly, writable] = bound.endpoints.filter(({ host }) => host === "api.github.com");
   assert.ok(readOnly && writable && "rules" in writable);
   assert.ok(writable.rules.some(({ allow }) => allow.method === "POST" && allow.path === path));
   assert.equal("deny_rules" in writable, false);
+  // Bound without a saved grant, example/outside withholds creation from the loaded policy too.
+  const withheld = await verifyScopedRestReadback(t, permissions);
+  const api = withheld.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.equal(api.length, 2);
+  for (const endpoint of api) {
+    assert.ok("rules" in endpoint);
+    assert.ok(endpoint.rules.length > 0);
+    assert.ok(endpoint.rules.every(({ allow }) => allow.method === "GET"));
+  }
 });
 
-async function verifyScopedRestReadback(t: TestContext, permissions: Record<string, string>) {
+async function verifyScopedRestReadback(
+  t: TestContext,
+  permissions: Record<string, string>,
+  outside?: ScopedRest["outside"],
+) {
   const {
     f,
     revision: admitted,
     executionId,
-  } = await selectedV5(t, true, undefined, { permissions });
+  } = await selectedV5(t, true, undefined, { permissions, ...(outside && { outside }) });
   const client = fixtureClient(f);
   let created: Awaited<ReturnType<RuntimeClient["createSandbox"]>> | undefined;
   const getSandbox = client.getSandbox.bind(client);
