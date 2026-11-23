@@ -2142,14 +2142,11 @@ export async function renderAgentDetail(
                 : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
-  // The newest version while its deployment is queued or running and it is not yet current. Right
-  // after Deploy new version it was called "Historical" beside "Selected version v1" (finding 2065).
+  // The newest version whose deployment is queued or running, including while it is selected
+  // for service and activation is still in progress.
   function deployingRevision() {
     const latest = visibleRevisions[0];
-    return latest &&
-      latest.id !== currentRevisionId &&
-      activityRevisionId === latest.id &&
-      deploymentPending(latestRecordedStatus)
+    return latest && activityRevisionId === latest.id && deploymentPending(latestRecordedStatus)
       ? latest
       : null;
   }
