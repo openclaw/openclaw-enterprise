@@ -171,6 +171,12 @@ export async function pollCodexDeviceAuthorization(
       signal,
     }),
   );
+  if (
+    token.token_type !== undefined &&
+    (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer")
+  ) {
+    throw new Error("Codex OAuth returned an unsupported token type.");
+  }
   const accessToken = required(token.access_token);
   const accessClaims = claims(accessToken);
   const identityClaims = claims(required(token.id_token));

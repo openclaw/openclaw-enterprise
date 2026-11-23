@@ -81,6 +81,7 @@ test("Codex device authorization validates issuer transport and grant fields", a
         chatgpt_plan_type: "business",
       },
     });
+    let tokenType = "Bearer";
     const server = await startProviderServer(t, (request, response) => {
       request.resume();
       response.setHeader("content-type", "application/json");
@@ -99,6 +100,7 @@ test("Codex device authorization validates issuer transport and grant fields", a
         response.end(
           JSON.stringify({
             access_token: accessToken,
+            token_type: tokenType,
             refresh_token: "synthetic-grant-refresh",
             id_token: identityToken,
             scope: "openid profile openid",
@@ -124,6 +126,21 @@ test("Codex device authorization validates issuer transport and grant fields", a
       account: { accountId: "account-fixture", planType: "business", isFedramp: false },
     });
     assert.deepEqual(server.requests, paths);
+    tokenType = undefined;
+    const withoutType = await startCodexDeviceAuthorization(signal);
+    assert.ok(
+      await pollCodexDeviceAuthorization(
+        codexDeviceAuthorizationState(withoutType.privateState),
+        signal,
+      ),
+      "the fixed issuer may omit the token type as the existing login client permits",
+    );
+    tokenType = "DPoP";
+    const unsupported = await startCodexDeviceAuthorization(signal);
+    await assert.rejects(
+      pollCodexDeviceAuthorization(codexDeviceAuthorizationState(unsupported.privateState), signal),
+      /unsupported token type/,
+    );
   });
 });
 
