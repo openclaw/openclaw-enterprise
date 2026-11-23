@@ -91,11 +91,11 @@
     "tests/conformance/openshell-staged-credential-proxy.test.ts",
     "tests/conformance/openshell-git-callback-observer.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
-    "tests/conformance/oauth-connection.test.mjs",
+    "tests/conformance/oauth-connection.test.ts",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
-    "tests/conformance/openshell-harness-status.test.mjs",
+    "tests/conformance/openshell-harness-status.test.ts",
     "tests/conformance/strands-box-status.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
@@ -110,7 +110,7 @@
     "tests/conformance/http-errors.test.ts",
     "tests/conformance/http-error-details.test.ts",
     "tests/conformance/docker-compute.test.ts",
-    "tests/conformance/secret-gateway-delivery.test.mjs",
+    "tests/conformance/secret-gateway-delivery.test.ts",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.ts",
     "tests/conformance/kubernetes-ownership.test.ts",
@@ -392,7 +392,7 @@
       ]
     },
     {
-      "path": "tests/conformance/oauth-connection.test.mjs"
+      "path": "tests/conformance/oauth-connection.test.ts"
     },
     {
       "path": "tests/conformance/openshell-managed-bootstrap.test.ts"
@@ -404,7 +404,7 @@
       "path": "tests/conformance/openshell-codex-device.test.mjs"
     },
     {
-      "path": "tests/conformance/openshell-harness-status.test.mjs"
+      "path": "tests/conformance/openshell-harness-status.test.ts"
     },
     {
       "path": "tests/conformance/strands-box-status.test.ts"
@@ -423,7 +423,7 @@
       "path": "tests/conformance/presets.test.ts"
     },
     {
-      "path": "tests/conformance/secret-gateway-delivery.test.mjs"
+      "path": "tests/conformance/secret-gateway-delivery.test.ts"
     },
     {
       "path": "tests/conformance/secret-occ.test.ts"
