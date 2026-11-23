@@ -8,7 +8,7 @@ author: freeqaz-openai
 
 - **ID:** RFC-20261122-reviewed-configuration-deployment
 - **Created:** 2026-11-22
-- **Last updated:** 2026-11-22
+- **Last updated:** 2026-11-23
 - **Related:** [Agent deployment](../../docs/reference/agents/deployment.md), [Harness overrides](0030-agent-harness-overrides.md)
 
 <a id="problem-and-decision"></a>
@@ -71,7 +71,10 @@ Reuse Configuration metadata and the existing deployment transaction. No reserva
 ## Acceptance Criteria
 
 - **AC-1** On a real Controller, deploy an Agent with history and the matching pair. Check the queued revision and overrides. Reject partial input and preserve latest-saved behavior on omission.
-- **AC-2** Race a save or same-generation rebind with credential handoff and final admission. Include a PostgreSQL lock wait without a Channel. Verify the refusal, unchanged deployment state, zero new work and identical denials for guesses of an unreadable binding.
+- **AC-2** Race a save or a same-generation rebind against deployment.
+  - Before the first Channel credential handoff, including while the Secret Driver retrieves the first credential, verify zero handoffs. For a change after the first handoff, provider validation may already have started. Verify that the Control Plane stops further handoffs and refuses admission.
+  - If the caller remains authorized, expect `409 RESOURCE_CONFLICT`, never `503 CHANNEL_CREDENTIAL_UNAVAILABLE`. Check the fixed message and exactly one `INVALID_VALUE` detail at `/expectedConfigurationId` for a rebind or `/expectedGeneration` for a save. Omit current values and Driver diagnostics. Verify that the request creates no revision, changes no desired state, queues no work and records no deployment success.
+  - Repeat the final-admission race during a PostgreSQL lock wait without a Channel. Verify indistinguishable denials for correct and incorrect guesses of an unreadable binding.
 - **AC-3** Repeat the two-editor browser flow. Check focus on the refusal, no request on reload and exactly one new version after a second explicit click.
 
 ## Delivery and verification
