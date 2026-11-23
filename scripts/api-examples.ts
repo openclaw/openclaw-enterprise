@@ -298,7 +298,7 @@ export const requestExamples = {
     expectedCredentialSourceId: null,
     releaseSha256: "a".repeat(64),
   },
-  startNamespaceConnection: { connectionTemplateId },
+  startNamespaceConnection: { connectionTemplateId, connectionTemplateVersion: 1 },
   createConnectionTemplate: {
     ...connectionTemplateInput,
     namespaceId,

@@ -2870,12 +2870,14 @@ Start consent for a reusable account in this Namespace
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
 | `selectedScopes` | `array<string>` | No | — |
 
 Example request
 ```json
 {
-  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000"
+  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+  "connectionTemplateVersion": 1
 }
 ```
 
@@ -5136,6 +5138,7 @@ Example request
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
+| `data.credentialSlots[].sources[].binding` | `"discovery_only"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
 | `data.credentialSlots[].sources[].toolDiscovery` | `"caller" or "agent"` | No | — |
@@ -7075,7 +7078,7 @@ Report advisory primary IAM permissions on a readable Agent, not authorization f
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.administer` | `boolean` | Yes | Whether the selected IAM Driver allows Agent administer now, which native admin UI access needs. Advisory only: other required permissions (native admin UI also needs a signed-in console session), lifecycle state, or a later authorization decision can still prevent the operation. |
-| `data.agentSourcesOperate` | `boolean` | Yes | Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on every credential source the Agent lists or uses for Harness authentication, and ServiceAccount read on a ServiceAccount Harness authentication source. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation. |
+| `data.agentSourcesOperate` | `boolean` | Yes | Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on directly bound or Harness authentication sources, and ServiceAccount read on a ServiceAccount Harness authentication source. Saved accounts already delegated to the Agent do not require the editor's own operate grant. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation. |
 | `data.configurationRead` | `boolean` | Yes | Whether the selected IAM Driver allows read of the Agent's Configuration now, which each Agent update needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `data.configurationSecretsOperate` | `boolean` | Yes | Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds: the Secrets in its `secretBindings`, or every bound Secret when it omits them. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `data.configurationSecretsOperateDeniedBindings` | `array<string>` | Yes | max items: 64; The names of the Agent's Configuration Secret bindings whose bound Secret the selected IAM Driver does not allow Secret operate on now, sorted. A Configuration save that submits `secretBindings` needs Secret operate only on the Secrets it submits, so a save that binds each listed name to another Secret does not need it on the Secrets they bind now. A save that omits `secretBindings` keeps every binding. Empty when `configurationSecretsOperate` is `true`, and when it is not reported: reported only to a caller with Configuration read and update. Advisory only: other required permissions, lifecycle state, the Secrets a save binds, or a later authorization decision can still prevent the operation. |
@@ -7331,6 +7334,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
+| `data.credentialSlots[].sources[].binding` | `"discovery_only"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
 | `data.credentialSlots[].sources[].toolDiscovery` | `"caller" or "agent"` | No | — |

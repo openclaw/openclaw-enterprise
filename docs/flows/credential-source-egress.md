@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-06
-last_updated_session: authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7
+updated: 2026-11-23
+last_updated_session: authoring-run/cc265200-cee2-4188-a5a7-63bb6f8b01fb
 ---
 
 # Protected credential request flow
@@ -143,14 +143,13 @@ Request JSON cannot supply a key; bearer-only RPCs refuse. Online authorization
 (`apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts:createAuthority`)
 likewise holds at most 1,024 decisions in flight, 256 per Sandbox.
 
-Before awaiting work, the adapter copies the request and binds a private capability to the stream.
-Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
-The stream owns the response. OCC copies each authenticated peer descriptor before
-awaiting more work. Send and response require the captured sender, Sandbox,
-instance, exchange, installation and optional peer key. Adding, changing or removing the key
-refuses; peer expiry must be valid and future at resolution, send and response lookup. A bearer
-or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
-releases material; pending policy or receipt work keeps its slot. No pipelining.
+Before I/O, the adapter copies the request and peer, binds a private stream capability,
+and reserves an authentication slot. Credential Proxy bounds and snapshots the body and
+headers. The stream owns its response. Resolution, send and response require the captured
+sender, Sandbox, instance, exchange, installation, optional peer key and future peer expiry.
+Key changes refuse. Bearers and handles cannot transfer custody. Closing cancels the stream;
+cancellation or expiry releases material after pending policy or receipt work settles.
+No pipelining.
 
 `packages/occ/src/credential-proxy.ts:resolve` moves the slot to the verified Sandbox's share,
 maps the peer to persisted installation state and pins eligible providers and methods before
@@ -160,6 +159,10 @@ escape detection. Secret Driver network access and supervisor response writes re
 After one exact route matches, OCC reserves a UUIDv7 request ID before capture or policy I/O.
 Creation fixes the 30-second replay horizon. [Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
 unsupported or ambiguous operations refuse before reservation.
+
+`packages/occ/src/index.ts:checkSavedAccountRequest` checks the Agent grant and policy,
+then reserves an approval. PostgreSQL serializes replicas, enforces global and
+per-Sandbox ID limits, and counts redeemed IDs until expiry.
 
 Supplier enrollment starts at its authenticated current supervisor hello, not the first
 exchange. The supplier must keep the corresponding private key outside the Agent and
@@ -328,6 +331,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-23 08:37: Bound saved-account approval IDs. (authoring-run/cc265200-cee2-4188-a5a7-63bb6f8b01fb - 1c37fae44f084669f7362702da34eac24a70da57)
 
 - 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
 

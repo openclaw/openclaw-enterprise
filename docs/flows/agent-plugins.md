@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-05
-last_updated_session: authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc
+updated: 2026-11-23
+last_updated_session: authoring-run/7849093e-8fc9-4490-bd3e-7af6d4af795d
 ---
 
 # Agent Plugin Deployment Flow
@@ -70,18 +70,13 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Browsing the catalog](../reference/drivers/plugin.md#selection-and-catalogs) on Create Agent requires Agent `create`. OCC checks the Harness and placement.
+[Catalog reads](../reference/drivers/plugin.md#selection-and-catalogs) require Agent `create` before save, or dedicated placement and caller `read`/`update` afterward. Hosted credentials require caller `operate`; Agent-bound credentials also require Agent `operate`.
 
-Browsing a saved Agent’s catalog requires dedicated placement and caller `read`/`update`. Hosted catalog credentials require caller `operate`. Agent-bound hosted credentials also require Agent `operate`.
+OpenShell reads metadata and exports over operator mTLS; external Gateways use `withSourceToken`. OCC rechecks the Source, Gateway owner, authority, attachment and catalog before dispatch. Cancellation discards late credentials; refresh stays with its owner.
 
-OpenShell reads metadata and exports over operator mTLS. External Gateways can use `withSourceToken`. OCC checks the source and Gateway owner, then rechecks authority, attachment and catalog before dispatch. Cancellation discards late credentials. Refresh stays with its owner.
+For MCP, OCC checks the receiver and caller permission or Agent grant. It marks unbindable accounts `discovery_only`; Console previews tools without changing the binding. Editors stage selected names in `driverPolicy.toolNames`. [Saved account flow](connection-templates.md)
 
-MCP tool discovery uses the caller’s credential permission or a saved Agent’s existing grant. OCC checks the receiver and authority before sending the credential and returning tool names. Both editors stage the selection in `driverPolicy.toolNames`. [Saved account flow](connection-templates.md)
-
-Closing cancels; account changes clear results; Harness changes clear selections
-and approvers. Hosted reads bound size/time, reject redirects and credential echoes,
-and return safe metadata with `Cache-Control: no-store`.
-See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+Console keeps discovery results per slot and account. Closing cancels discovery; changing the Harness clears selections and approvers. Hosted reads limit size and time, reject redirects and credential echoes, and return safe metadata with `Cache-Control: no-store`.
 The optional `NativeCodexPluginCatalogReader` uses stdio `plugin/list`, rejects
 invalid results and stops the child on teardown. HTTP uses the hosted reader.
 
@@ -358,6 +353,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 08:40: Explain credential preview. (authoring-run/7849093e-8fc9-4490-bd3e-7af6d4af795d - 1c37fae44)
 
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 

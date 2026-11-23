@@ -822,6 +822,14 @@ export interface AgentPluginCredentialSlot {
   }[];
 }
 
+/** OCC adds binding eligibility after checking the caller and the saved Agent slot. */
+export type AgentPluginCredentialSlotChoice = Omit<AgentPluginCredentialSlot, "sources"> & {
+  readonly sources: readonly (AgentPluginCredentialSlot["sources"][number] & {
+    /** The Agent may discover tools with this account, but the caller cannot bind it to this slot. */
+    readonly binding?: "discovery_only";
+  })[];
+};
+
 /** A connectable template for one plugin account slot, including its consent scope choices. */
 export interface PluginConnectionTemplateChoice {
   readonly id: string;
@@ -835,7 +843,7 @@ export interface PluginConnectionTemplateChoice {
 
 /** Namespace details add the account choices OCC authorizes for a new Agent. */
 export interface NamespaceAgentPluginDetails extends PluginCatalogEntry {
-  readonly credentialSlots?: readonly (AgentPluginCredentialSlot & {
+  readonly credentialSlots?: readonly (AgentPluginCredentialSlotChoice & {
     readonly connectionTemplates?: readonly PluginConnectionTemplateChoice[];
   })[];
 }

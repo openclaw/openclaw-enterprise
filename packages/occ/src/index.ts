@@ -411,6 +411,7 @@ import {
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
+  type PlatformTransactionOptions,
   type PlatformUnitOfWork,
 } from "./state/platform-state.ts";
 import {
@@ -623,6 +624,7 @@ export {
   type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformStateStore,
+  type PlatformTransactionOptions,
   type PlatformUnitOfWork,
   type ServiceAccountReadRepository,
   type ServiceAccountRepository,
@@ -1138,6 +1140,7 @@ export interface StartNamespaceConnectionInput {
   readonly sessionId: string;
   readonly namespaceId: string;
   readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
   /** The exact OCC callback URI, derived from trusted console configuration. */
   readonly redirectUri: string;
 }
@@ -3265,6 +3268,35 @@ export class OpenClawController {
     });
   }
 
+  /** Saved accounts already delegated to an Agent do not require its editor's own operate grant. */
+  async listDelegatedAgentCredentialSourceIds(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<readonly string[]> {
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    return this.read(async (state) => {
+      const agent = await state.agents.findAgent(namespaceId, agentId);
+      if (!agent) {
+        throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+      }
+      const delegated: string[] = [];
+      for (const { credentialSourceId } of await state.savedConnections.listAgentConnections(
+        namespaceId,
+        agentId,
+      )) {
+        const source = await state.credentialSources.findCredentialSource(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (source?.ownerCapability === "token_service") {
+          delegated.push(credentialSourceId);
+        }
+      }
+      return delegated;
+    });
+  }
+
   async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
     const agent = await this.getAgent(principalId, namespaceId, agentId);
     if (!agent.activeRevisionId) {
@@ -5087,6 +5119,11 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
+      if (version.version !== input.connectionTemplateVersion) {
+        throw new ResourceStateConflictError(
+          "The connection template changed. Choose its current version and try again.",
+        );
+      }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       if (intent && selected) {
         const { slot } = await this.savedPluginSlot(
@@ -5100,7 +5137,6 @@ export class OpenClawController {
           !slot ||
           slot.releaseSha256 !== intent.releaseSha256 ||
           slot.credentialSourceId !== intent.expectedCredentialSourceId ||
-          version.version !== intent.connectionTemplateVersion ||
           !slot.issuers.includes(version.issuer) ||
           !slot.acceptsRecipient(version)
         ) {
@@ -8157,7 +8193,9 @@ export class OpenClawController {
       return undefined;
     }
     const { slot, sourceId } = binding;
-    return this.transact(async (state) => {
+    const check = async (
+      state: PlatformUnitOfWork,
+    ): Promise<OAuthAccountRef | "without_credential" | undefined> => {
       const currentNamespace = await this.lockNamespace(state, namespaceId);
       const resource = { kind: "credential_source" as const, namespaceId, id: sourceId };
       const deny = async (code: string) => {
@@ -8271,13 +8309,15 @@ export class OpenClawController {
             policyDigest,
           },
           this.timestamp(),
+          this.credentialProxyCapacity,
         );
         if (!recorded) {
-          return deny("stale_configuration");
+          return deny("request_approval_refused");
         }
       }
       return { kind: "oauth_refresh_token", namespaceId, sourceId };
-    });
+    };
+    return this.transact(check, { isolation: "read_committed" });
   }
 
   /**
@@ -11555,6 +11595,8 @@ export class OpenClawController {
               name: granted.callerCanBrowse ? name : granted.source.name,
               ...(authorization && { authorization }),
               ...(choice.toolDiscovery && { toolDiscovery: granted.authority }),
+              ...(granted.authority === "agent" &&
+                slot?.credentialSourceId !== id && { binding: "discovery_only" as const }),
             },
           ];
         }),
@@ -11581,6 +11623,11 @@ export class OpenClawController {
               name,
               ...(mcp && { toolDiscovery: authority }),
               ...(!accepted && { authorization: "required" as const }),
+              ...(accepted &&
+                !callerCanBrowse &&
+                slot.credentialSourceId !== account.credentialSourceId && {
+                  binding: "discovery_only" as const,
+                }),
             },
           ];
         },
@@ -15352,28 +15399,38 @@ export class OpenClawController {
   }
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T> {
     const active = this.transactionContext.getStore();
     if (active) {
+      if (options) {
+        throw new DependencyUnavailableError(
+          "Cannot change isolation inside a platform transaction.",
+        );
+      }
       return work(active);
     }
 
     const rollbacks: (() => Promise<void>)[] = [];
     try {
-      return await this.state.transact(async (state) =>
-        this.transactionContext.run(state, () =>
-          this.mutationRollbacks.run(rollbacks, async () => {
-            const existing = await state.installations.getInstallation();
-            if (!existing) {
-              await state.installations.createInstallation(this.installation);
-            } else if (existing.id !== this.installation.id) {
-              throw new ScopeViolationError(
-                "The controller state belongs to another Installation.",
-              );
-            }
-            return work(state);
-          }),
-        ),
+      return await this.state.transact(
+        async (state) =>
+          this.transactionContext.run(state, () =>
+            this.mutationRollbacks.run(rollbacks, async () => {
+              const existing = await state.installations.getInstallation();
+              if (!existing) {
+                await state.installations.createInstallation(this.installation);
+              } else if (existing.id !== this.installation.id) {
+                throw new ScopeViolationError(
+                  "The controller state belongs to another Installation.",
+                );
+              }
+              return work(state);
+            }),
+          ),
+        options,
       );
     } catch (error) {
       if (error instanceof PostgresCommitOutcomeUnknownError) {

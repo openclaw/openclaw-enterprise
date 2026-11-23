@@ -59,10 +59,11 @@ scopes. Without a limit or requested scopes, it omits `scope` so the provider
 can apply its defaults. Discovery alone requests no optional scopes.
 Changing the MCP server URL, protected resource or issuer requires new consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
-At Agent setup, Console uses `tools/list` to show available tools. An authorized
-caller selects tools by exact name for that Agent and server. By default the
-selection is empty. The deployed worker exposes only selected tools permitted
-by the Agent's policy. Newly advertised tools require explicit selection and deployment.
+At setup, Console uses `tools/list`. An authorized caller's first **Load tools**
+stages all available tool names for that Agent and server. The caller can disable
+tools before saving. **Reload tools** preserves existing selections, including an
+empty list. The worker exposes only selected tools allowed by policy. New tools
+require selection and deployment.
 
 ### Client registrations
 

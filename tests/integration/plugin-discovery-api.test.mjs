@@ -7,6 +7,8 @@ import { createServer, request as httpRequest } from "node:http";
 import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
   callerDenied,
@@ -27,6 +29,73 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { listen } from "../helpers/listen.mjs";
+
+test("Create Agent consent refuses a connection template changed after the picker read it", async (t) => {
+  const state = new InMemoryPlatformState();
+  const secrets = createTestSecretDriver();
+  const service = new TokenService();
+  const fixture = await createConsoleAppFixture(t, {
+    state,
+    secretDriver: secrets,
+    preparedTokens: service,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  service.registerIssuer(
+    new OAuthAccountTokens(
+      state,
+      secrets,
+      fixture.controller.resolveConnectionClient.bind(fixture.controller),
+    ),
+  );
+  const namespace = await fixture.createNamespace("Consent version", { ready: true });
+  const values = {
+    displayName: "OAuth consent",
+    mode: "manual",
+    issuer: "https://issuer.example.test",
+    authorizationUrl: "https://issuer.example.test/authorize",
+    tokenUrl: "https://issuer.example.test/token",
+    destinations: [{ host: "api.example.test", port: 443, path: "/**" }],
+    scopes: ["read"],
+  };
+  const created = await fixture.request("POST", "/connection-templates", {
+    body: { ...values, namespaceId: namespace.id },
+  });
+  assert.equal(created.status, 201);
+  const id = created.data.id;
+  const client = await fixture.request("POST", "/oauth-clients", {
+    body: {
+      connectionTemplateId: id,
+      connectionTemplateVersion: created.data.current.version,
+      displayName: "Public client",
+      clientId: "public-client",
+      tokenEndpointAuthMethod: "none",
+    },
+  });
+  assert.equal(client.status, 201);
+  const shown = await fixture.request("GET", `/connection-templates/${id}`);
+  assert.equal(shown.status, 200);
+  const changed = await fixture.request("PATCH", `/connection-templates/${id}`, {
+    body: { ...values, scopes: ["read", "write"], oauthClientId: client.data.id },
+  });
+  assert.equal(changed.status, 200);
+  const sourcesPath = `/namespaces/${namespace.id}/credential-sources`;
+  const sourcesBefore = await fixture.request("GET", sourcesPath);
+  const consentPath = `/namespaces/${namespace.id}/connections`;
+  // A stale picker cannot silently authorize new fixed scopes or reserve an account.
+  const stale = await fixture.request("POST", consentPath, {
+    body: { connectionTemplateId: id, connectionTemplateVersion: shown.data.current.version },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.data, undefined);
+  const sourcesAfter = await fixture.request("GET", sourcesPath);
+  assert.deepEqual(sourcesAfter.data, sourcesBefore.data);
+  const current = await fixture.request("POST", consentPath, {
+    body: { connectionTemplateId: id, connectionTemplateVersion: changed.data.current.version },
+  });
+  assert.equal(current.status, 201);
+  assert.equal(new URL(current.data.authorizationUrl).searchParams.get("scope"), "read write");
+});
 
 const accessToken = "at-plugin-discovery-private-fixture";
 const pluginId = "codex-plugin:knowledge@openai-remote";

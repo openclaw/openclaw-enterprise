@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { Pool } from "pg";
-import type { AgentPluginCredentialSlot, PluginDriver } from "@openclaw-enterprise/contracts";
+import type {
+  AgentPluginCredentialSlot,
+  AgentPluginCredentialSlotChoice,
+  PluginDriver,
+} from "@openclaw-enterprise/contracts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -37,6 +41,7 @@ import {
   OpenClawController,
   PostgresHumanAuthentication,
   PostgresPlatformState,
+  resolveCredentialProxyCapacity,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
@@ -257,7 +262,10 @@ async function oauthAccounts(
     revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
   });
   assert.equal(template.statusCode, 201, template.body);
-  const manual = { connectionTemplateId: template.json().data.id };
+  const manual = {
+    connectionTemplateId: template.json().data.id,
+    connectionTemplateVersion: template.json().data.current.version,
+  };
   const listsManualTemplate = async (path: string) => {
     const result = await inject("GET", path);
     assert.equal(result.statusCode, 200, result.body);
@@ -279,7 +287,17 @@ async function oauthAccounts(
   });
   assert.equal(registered.statusCode, 201, registered.body);
   const oauthClientId = registered.json().data.id;
-  const input: { connectionTemplateId: string; selectedScopes?: string[] } = { ...manual };
+  const selectedManual = await inject(
+    "GET",
+    "/connection-templates/" + manual.connectionTemplateId,
+  );
+  assert.equal(selectedManual.statusCode, 200, selectedManual.body);
+  manual.connectionTemplateVersion = selectedManual.json().data.current.version;
+  const input: {
+    connectionTemplateId: string;
+    connectionTemplateVersion: number;
+    selectedScopes?: string[];
+  } = { ...manual };
   const ownerId = principal.id;
   const owner = await accountSession(app, adminAccount.email, adminAccount.password);
   const mcpConfig = {
@@ -307,10 +325,12 @@ async function oauthAccounts(
     const mcp = await inject("POST", "/connection-templates", { ...mcpConfig, namespaceId });
     assert.equal(mcp.statusCode, 201, mcp.body);
     input.connectionTemplateId = mcp.json().data.id;
+    input.connectionTemplateVersion = mcp.json().data.current.version;
     input.selectedScopes = ["openid"];
     for (const choice of [undefined, ["profile"], ["openid", "other"]]) {
       const refused = await inject("POST", connections, {
         connectionTemplateId: input.connectionTemplateId,
+        connectionTemplateVersion: input.connectionTemplateVersion,
         ...(choice && { selectedScopes: choice }),
       });
       assert.equal(refused.statusCode, 400, refused.body);
@@ -325,12 +345,18 @@ async function oauthAccounts(
     assert.equal(unrestrictedMcp.statusCode, 201, unrestrictedMcp.body);
     const unrestrictedId = unrestrictedMcp.json().data.id;
     assert.equal(
-      (await inject("POST", connections, { connectionTemplateId: unrestrictedId })).statusCode,
+      (
+        await inject("POST", connections, {
+          connectionTemplateId: unrestrictedId,
+          connectionTemplateVersion: unrestrictedMcp.json().data.current.version,
+        })
+      ).statusCode,
       400,
     );
     const manyScopes = ["openid", ...Array.from({ length: 32 }, (_, i) => "custom." + i)];
     const freeStart = await inject("POST", connections, {
       connectionTemplateId: unrestrictedId,
+      connectionTemplateVersion: unrestrictedMcp.json().data.current.version,
       selectedScopes: manyScopes,
     });
     assert.equal(freeStart.statusCode, 201, freeStart.body);
@@ -361,6 +387,7 @@ async function oauthAccounts(
     await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
     const defaults = await owner("POST", connections, {
       connectionTemplateId: unrestrictedManual.json().data.id,
+      connectionTemplateVersion: unrestrictedManual.json().data.current.version,
       selectedScopes: [],
     });
     assert.equal(defaults.statusCode, 201, defaults.body);
@@ -385,6 +412,7 @@ async function oauthAccounts(
     // openid. Completing the real callback must retain both the request and what Keycloak granted.
     const broader = await owner("POST", connections, {
       connectionTemplateId: unrestrictedManual.json().data.id,
+      connectionTemplateVersion: unrestrictedManual.json().data.current.version,
       selectedScopes: ["openid"],
     });
     assert.equal(broader.statusCode, 201, broader.body);
@@ -883,7 +911,10 @@ test(
     };
     assert.deepEqual((await currentMcp()).destinations, [recipient]);
     assert.equal((await currentMcp()).oauthClientId, oauthClientId);
-    const futureConsent = await owner("POST", connections, input);
+    const futureConsent = await owner("POST", connections, {
+      ...input,
+      connectionTemplateVersion: switchRegistration.json().data.current.version,
+    });
     assert.equal(futureConsent.statusCode, 201, futureConsent.body);
     assert.equal(
       new URL(futureConsent.json().data.authorizationUrl).searchParams.get("client_id"),
@@ -944,6 +975,7 @@ test(
       mcpConfig,
     );
     assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
+    input.connectionTemplateVersion = restoreMcp.json().data.current.version;
     // Publish the due schedule used for rotation but make no resolve request. A separate worker
     // must use the saved account's refresh grant and publish a new version before it is read.
     const prior = await state.read((view) =>
@@ -1480,6 +1512,7 @@ test(
         );
         const unavailable = await owner("POST", connections, {
           connectionTemplateId: reportTemplateId,
+          connectionTemplateVersion: reportTemplate.json().data.current.version,
           selectedScopes: ["openid"],
         });
         assert.equal(unavailable.statusCode, 409, unavailable.body);
@@ -1540,8 +1573,14 @@ test(
         assert.equal(ready?.templateSetup, undefined);
       },
     );
+    const currentReportTemplate = await inject(
+      "GET",
+      "/connection-templates/" + reportTemplate.json().data.id,
+    );
+    assert.equal(currentReportTemplate.statusCode, 200, currentReportTemplate.body);
     const reportInput = {
       connectionTemplateId: reportTemplate.json().data.id,
+      connectionTemplateVersion: currentReportTemplate.json().data.current.version,
       selectedScopes: ["openid"],
     };
     const report = await begin(connections, reportInput, "carol");
@@ -1695,6 +1734,8 @@ test(
             const savedAgent = created.json().data.id;
             const editor = await enroll("Reports Agent editor");
             await editor.grantExact("agent", ["read", "update"], [savedAgent, b]);
+            await editor.grantExact("configuration", ["read"], [config.json().data.id]);
+            await editor.grantExact("secret", ["operate"], [harnessRef.id]);
             const direct = () => discover(report.id, "reports", editor.request);
             const throughAgent = (id: string) =>
               editor.request("POST", path(id) + "/plugins/details", {
@@ -1714,12 +1755,21 @@ test(
             );
             assert.equal(capabilities.statusCode, 200, capabilities.body);
             const account = (
-              capabilities.json().data.credentialSlots as AgentPluginCredentialSlot[]
+              capabilities.json().data.credentialSlots as AgentPluginCredentialSlotChoice[]
             )
               .find((slot) => slot.id === "reports")
               ?.sources.find((source) => source.id === report.id);
             assert.equal(account?.name, report.id);
             assert.equal(account?.toolDiscovery, "agent");
+            assert.equal(account?.binding, undefined, "the existing slot binding can be retained");
+            const permissions = await editor.request("GET", path(savedAgent) + "/permissions");
+            assert.equal(permissions.statusCode, 200, permissions.body);
+            assert.equal(permissions.json().data.agentSourcesOperate, true);
+            const retained = await editor.request("PATCH", path(savedAgent), {
+              configurationId: config.json().data.id,
+              plugins: selection(report.id, ["list_reports"]),
+            });
+            assert.equal(retained.statusCode, 200, retained.body);
             const permitted = await throughAgent(savedAgent);
             assert.equal(permitted.statusCode, 200, permitted.body);
             assert.deepEqual(
@@ -1731,6 +1781,36 @@ test(
               403,
               "discovering with an Agent grant must not give its editor personal use",
             );
+            // A separate Agent may use this account for discovery without granting its editor
+            // permission to bind it to a new slot. The capability reports that distinction.
+            assert.equal(
+              (await owner("POST", `${path(b)}/connections/${report.id}`)).statusCode,
+              204,
+            );
+            try {
+              const unboundCapabilities = await editor.request(
+                "GET",
+                path(b) + "/plugins/capabilities",
+              );
+              assert.equal(unboundCapabilities.statusCode, 200, unboundCapabilities.body);
+              const unbound = (
+                unboundCapabilities.json().data.credentialSlots as AgentPluginCredentialSlotChoice[]
+              )
+                .find((slot) => slot.id === "reports")
+                ?.sources.find((source) => source.id === report.id);
+              assert.equal(unbound?.toolDiscovery, "agent");
+              assert.equal(unbound?.binding, "discovery_only");
+              const preview = await throughAgent(b);
+              assert.equal(preview.statusCode, 200, preview.body);
+              const cannotBind = await editor.request("PATCH", path(b), {
+                configurationId: config.json().data.id,
+                plugins: selection(report.id),
+              });
+              assert.equal(cannotBind.statusCode, 403, cannotBind.body);
+            } finally {
+              const detachedPreview = await owner("DELETE", `${path(b)}/connections/${report.id}`);
+              assert.equal(detachedPreview.statusCode, 204, detachedPreview.body);
+            }
             const clear = await owner("PATCH", path(savedAgent), {
               configurationId: config.json().data.id,
               plugins: { [pluginId]: { enabled: true } },
@@ -1741,7 +1821,7 @@ test(
             assert.equal(await canUse(savedAgent, report.id), false);
             const after = await throughAgent(savedAgent);
             assert.ok(after.statusCode >= 400 && after.statusCode < 500, after.body);
-            assert.equal(readTools.mock.callCount(), before + 1);
+            assert.equal(readTools.mock.callCount(), before + 2);
           },
         );
 
@@ -2213,6 +2293,116 @@ test(
     );
     assert.equal(origin.requests.length, 2, "a disabled tool never reached the issuer's resource");
 
+    // The test owns this database. Clear its prior Sandbox records so each quota scenario
+    // starts empty without changing any other Sandbox's replay window.
+    const clearOwnApprovals = () =>
+      pool.query(
+        "DELETE FROM occ.request_credential_approvals WHERE recipient_id = ANY($1::text[])",
+        [[agentA.peer.sandboxId, agentB.peer.sandboxId]],
+      );
+    const quotaNamespace = ns;
+    assert.ok(quotaNamespace);
+    async function quotaPeer(
+      bindHost: string,
+      agent: NonNullable<typeof agentA>,
+      limits: { requestIds: number; sandboxRequestIds: number },
+    ) {
+      // An operator can choose a stricter database default. Approval admission must
+      // still use fresh snapshots after waiting for the shared quota lock.
+      const replicaPool = new Pool({
+        connectionString: pool.options.connectionString,
+        max: 2,
+        options: "-c default_transaction_isolation=repeatable\\ read",
+      });
+      t.after(() => replicaPool.end());
+      assert.equal(
+        (await replicaPool.query("SHOW default_transaction_isolation")).rows[0]
+          .default_transaction_isolation,
+        "repeatable read",
+      );
+      const replicaState = new PostgresPlatformState(replicaPool);
+      const quota = resolveCredentialProxyCapacity(limits, "requestCapacity");
+      assert.ok(quota.capacity);
+      const restarted = new OpenClawController(controller.installation, {
+        state: replicaState,
+        preparedTokens,
+        credentialProxyCapacity: quota.capacity,
+        driverConfigurations: [savedAccountSandboxRegistration],
+      });
+      const { id, implementation } = controller.selectedDriver("iam");
+      const iam = new NativeIAMDriver(replicaState, { id, implementation });
+      const compute = controller.selectedDriver("compute");
+      for (const driver of [iam, compute]) {
+        restarted.registerDriver(driver);
+        restarted.selectDriver(driver.capability, driver.id);
+      }
+      restarted.installPluginDrivers([codexCatalog, plugin]);
+      const pair = await installSavedAccountProxy(
+        proxyFixture,
+        restarted,
+        "oauth-credential",
+        bindHost,
+      );
+      return {
+        pair,
+        peer: pair.peer(
+          quotaNamespace,
+          agent.revision,
+          pluginId,
+          "reports",
+          report.id,
+          agent.peer.sandboxId,
+        ),
+      };
+    }
+
+    // Two different Agents and API replicas race for one global durable approval slot.
+    // Redeeming the approval cannot release its replay protection before its deadline.
+    await clearOwnApprovals();
+    const globalLimit = { requestIds: 1, sandboxRequestIds: 1 };
+    const quotaPeers = [
+      await quotaPeer("127.0.0.2", agentA, globalLimit),
+      await quotaPeer("127.0.0.3", agentB, globalLimit),
+    ];
+    const receipts = await Promise.all(
+      quotaPeers.map(({ peer }) => peer.authorize(target, allowed)),
+    );
+    assert.equal(receipts.filter(Boolean).length, 1, "replicas admit only one live approval");
+    const winner = receipts.findIndex(Boolean);
+    const loser = 1 - winner;
+    assert.equal(typeof (await quotaPeers[winner]!.peer.redeem(receipts[winner]!)), "string");
+    assert.equal(await quotaPeers[loser]!.peer.authorize(target, allowed), undefined);
+
+    // Move the spent record into the past without a wall-clock sleep. On the next real
+    // middleware request OCC must prune it and make the capacity available again.
+    await pool.query(
+      `WITH expired AS (
+         DELETE FROM occ.request_credential_approvals WHERE recipient_id = $1 RETURNING *
+       ) INSERT INTO occ.request_credential_approvals
+         (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id,
+          policy_digest, driver_ref, expires_at, consumed)
+       SELECT recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id,
+              policy_digest, driver_ref, clock_timestamp() - interval '1 second', consumed
+       FROM expired`,
+      [quotaPeers[winner]!.peer.sandboxId],
+    );
+    assert.equal(typeof (await quotaPeers[loser]!.peer.authorize(target, allowed)), "string");
+    await Promise.all(quotaPeers.map(({ pair }) => pair.close()));
+
+    // A Sandbox's share can fill while the global pool still has room.
+    await clearOwnApprovals();
+    const sandboxLimit = await quotaPeer("127.0.0.2", agentA, {
+      requestIds: 2,
+      sandboxRequestIds: 1,
+    });
+    const sameSandbox = await Promise.all([
+      sandboxLimit.peer.authorize(target, allowed),
+      sandboxLimit.peer.authorize(target, allowed),
+    ]);
+    assert.equal(sameSandbox.filter(Boolean).length, 1, "one Sandbox cannot exceed its share");
+    await sandboxLimit.pair.close();
+    await clearOwnApprovals();
+
     // Refresh the stored grant using the normal API and real issuer, then use the unchanged deployments.
     const initialVersion = await tokenVersion();
     const renewed = await owner("POST", source + "/rotate");
@@ -2325,6 +2515,7 @@ test(
       assert.equal(typeof (await peer.authorize(target, allowed)) === "string", accepted);
       await pair.close();
     }
+
     t.diagnostic(
       process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER
         ? "Native OpenShell relay sent four accepted requests and withheld four denied requests."

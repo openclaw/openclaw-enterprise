@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-05"
-last_updated_session: codex/01a1aad6-adec-7fa0-802a-50b5e0486319
+updated: "2026-11-23"
+last_updated_session: authoring-run/b8caf77f-f1cd-4cef-95ea-8c840906980f
 ---
 
 # How OCC saves an OAuth connection template
@@ -61,7 +61,7 @@ Rotation replaces the confidential client's secret at the same private reference
 
 `packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
 
-OCC verifies the person's Namespace permission and pins the selected template version. It reserves a pending credential source and records the state hash, browser session, principal, requested scopes and Proof Key for Code Exchange (PKCE) verifier in a private, expiring attempt. The provider receives the state and the challenge derived from that verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults.
+OCC verifies the person's Namespace permission and locks the template. If its current version differs from the version the person selected, OCC returns a conflict before it reserves a credential source or opens consent. Otherwise, OCC pins that version, reserves a pending credential source and records the state hash, browser session, principal, requested scopes and Proof Key for Code Exchange (PKCE) verifier in a private, expiring attempt. The provider receives the state and the challenge derived from that verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults.
 
 ### 4. Exchange the code and save the account
 
@@ -82,6 +82,8 @@ When listing a manual account, OCC returns the current destinations from the sam
 OCC registers the returned grant under the Namespace and credential source ID. The worker renews due accounts. A trusted consumer resolves the same reference with a deadline and required remaining lifetime. If it needs a fresher token, the Token Service starts or joins renewal for that account. It rechecks that the account is active before releasing the committed token. On renewal, the Token Service checks the saved grant against its registration and reads the current client secret through OCC when required. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
 
 ### 6. Bind a saved account to a plugin
+
+`packages/occ/src/index.ts:selectedPluginAccounts` and `packages/occ/src/index.ts:startAgentPluginConnection`
 
 OCC compares the slot’s issuer and recipient with each template available to the Namespace. If no match has an assigned client, it checks the caller’s Installation administration permission before returning setup choices. The Console opens the Credentials editor for the selected template or starts a new one using the slot’s setup information. The picker reads current eligibility again after configuration.
 
@@ -116,4 +118,5 @@ OCC records the selected Driver registration and saved source IDs on the Agent r
 
 ## Changelog
 
+- 2026-11-23 08:35: Record the selected-template version check before consent reservation. (authoring-run/b8caf77f-f1cd-4cef-95ea-8c840906980f - 1c37fae44)
 - 2026-11-05 21:47: Traced administrator setup, OCC browser consent and Token Service custody with the accompanying ownership change. (codex/01a1aad6-adec-7fa0-802a-50b5e0486319 - d32f76579)

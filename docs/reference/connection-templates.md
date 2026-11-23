@@ -47,8 +47,8 @@ OCC handles browser consent and the callback. After exchange, OCC registers the 
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
    `credential_source:create` for that Namespace. A template appears here once
    its current version has an OAuth client.
-2. Send the chosen `connectionTemplateId` to
-   `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
+2. Send the chosen `connectionTemplateId` and `connectionTemplateVersion` to
+   `POST /namespaces/{namespaceId}/connections`. If the current template version changed, OCC returns `409` before starting consent; refresh the template and choose again. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
    `authorizationUrl` in the same browser and approve the request.
    Register the public OCC callback URL ending in `/oauth/callback` with the provider.
 3. After the redirect, look up the saved account with
@@ -85,4 +85,6 @@ Updating a saved Agent requires permission to update that Agent and operate the 
 
 To detach a saved account, clear the plugin slots that use it on that Agent. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
 
-A person with permission to use a saved MCP account can **Load tools** before creating an Agent. On a saved Agent, its editor can also use the Agent’s existing grant to discover tools. To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. Stock OpenShell v0.1.7 supports saved-account delivery with the pre-credentials middleware and runtime token grant configured. A model key or another authorized Credential Gateway source can use its existing delivery alongside the saved account. See [Credential Proxy configuration](drivers/credential-proxy.md#saved-oauth-accounts).
+A person with permission to use a saved MCP account can **Load tools** before creating an Agent. On a saved Agent, its editor can also use the Agent’s existing grant to discover tools. If the editor cannot grant the account to a new plugin slot, the Console offers a read-only tool preview and keeps the draft binding unchanged.
+
+To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. Stock OpenShell v0.1.7 supports saved-account delivery with the pre-credentials middleware and runtime token grant configured. A model key or another authorized Credential Gateway source can use its existing delivery alongside the saved account. See [Credential Proxy configuration](drivers/credential-proxy.md#saved-oauth-accounts).

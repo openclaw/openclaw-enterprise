@@ -156,6 +156,7 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         {
           namespaceId,
           connectionTemplateId: body!.connectionTemplateId as string,
+          connectionTemplateVersion: body!.connectionTemplateVersion as number,
           ...(body!.selectedScopes === undefined
             ? {}
             : { selectedScopes: body!.selectedScopes as string[] }),

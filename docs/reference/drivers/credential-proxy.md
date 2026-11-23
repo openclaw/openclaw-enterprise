@@ -221,7 +221,10 @@ response transport. See [qualification requirements](../../testing/protected-rep
 The OCC [request registry](../../../packages/occ/src/credential-proxy.ts) keeps
 its bounds in memory, per API process. Set them with the optional
 `requestCapacity` block beside the selection's `id` and `configuration`. It
-applies to any selected Driver, bundled or packaged:
+applies to any selected Driver, bundled or packaged. For saved-account requests,
+OCC also applies `requestIds` and `sandboxRequestIds` to a separate approval
+store shared by API replicas. Each approval counts until its deadline, including
+after redemption.
 
 ```yaml
 drivers:
@@ -241,7 +244,7 @@ drivers:
 | `operations`               | Operations in progress, all Sandboxes | 1024                      | 8192    | When the handle closes or expires and no authentication, installation, policy, Secret or receipt work is pending |
 | `authenticatingOperations` | Operations still authenticating       | A quarter of `operations` | 8192    | When peer verification settles; a verified request moves to its Sandbox's share                                  |
 | `sandboxOperations`        | Operations in progress, per Sandbox   | A quarter of `operations` | 8192    | When the handle closes or expires and no installation, policy, Secret or receipt work is pending                 |
-| `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | 30 s after each ID's UUIDv7 creation time                                                                        |
+| `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | 30 s after each protected request ID's UUIDv7 creation time; at the approval deadline for saved-account requests |
 | `sandboxRequestIds`        | Request IDs, per Sandbox              | A quarter of `requestIds` | 131072  | Same                                                                                                             |
 
 Each value is a count from 1 to its maximum. An omitted share is a quarter of

@@ -16,6 +16,7 @@ export const UsableConnectionTemplatesResponse = Type.Object(
 export const StartNamespaceConnectionBody = Type.Object(
   {
     connectionTemplateId: ConnectionTemplateId,
+    connectionTemplateVersion: Type.Integer({ minimum: 1 }),
     selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
   },
   { additionalProperties: false },

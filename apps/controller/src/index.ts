@@ -419,10 +419,11 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 function agentBoundSourceGrants(
   namespaceId: string,
   agent: Pick<Agent, "harnessAuth" | "credentialSources">,
+  delegatedSources: ReadonlySet<string>,
 ): [PermissionAction, ResourceRef][] {
-  const grants: [PermissionAction, ResourceRef][] = (agent.credentialSources ?? []).map(
-    ({ sourceId }) => ["operate", { kind: "credential_source", namespaceId, id: sourceId }],
-  );
+  const grants: [PermissionAction, ResourceRef][] = (agent.credentialSources ?? [])
+    .filter(({ sourceId }) => !delegatedSources.has(sourceId))
+    .map(({ sourceId }) => ["operate", { kind: "credential_source", namespaceId, id: sourceId }]);
   const harnessAuth = agent.harnessAuth;
   if (harnessAuth?.method === "credential_source") {
     grants.push(["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }]);
@@ -2891,11 +2892,27 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         configurationSecretsOperateDeniedBindings.length === 0;
       // An Agent update needs Configuration read and checks the sources the Agent binds now,
       // which the Agent read shows. Unreadable saved settings leave it unanswered.
+      const delegatedSources =
+        update &&
+        configurationRead &&
+        !("configurationReadError" in agent) &&
+        (agent.credentialSources?.length ?? 0) > 0
+          ? new Set(
+              await controller.listDelegatedAgentCredentialSourceIds(
+                context.actorId,
+                namespaceId,
+                agentId,
+              ),
+            )
+          : new Set<string>();
       const agentSourcesOperate =
         update &&
         configurationRead &&
         !("configurationReadError" in agent) &&
-        (await callerMayAll([...bindingGrants, ...agentBoundSourceGrants(namespaceId, agent)]));
+        (await callerMayAll([
+          ...bindingGrants,
+          ...agentBoundSourceGrants(namespaceId, agent, delegatedSources),
+        ]));
       reply.send({
         data: {
           update,

@@ -1,5 +1,5 @@
 import type {
-  AgentPluginCredentialSlot,
+  AgentPluginCredentialSlotChoice,
   DriverConfigurationDescriptor,
   Installation,
   InstallationCapabilities,
@@ -24,7 +24,7 @@ type InstallationScenario = {
   pluginCapabilities?: NonNullable<
     InstallationCapabilities["pluginCatalogs"]
   >[number]["pluginPolicies"] & {
-    credentialSlots?: readonly AgentPluginCredentialSlot[];
+    credentialSlots?: readonly AgentPluginCredentialSlotChoice[];
   };
   pluginDiscoveryCredential?: "required" | "none";
 };

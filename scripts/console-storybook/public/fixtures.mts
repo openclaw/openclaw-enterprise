@@ -2,7 +2,7 @@ import { createConnectionTemplateFixture } from "./connection-template-fixture.m
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
-  AgentPluginCredentialSlot,
+  AgentPluginCredentialSlotChoice,
   CredentialSourceMetadata,
   CredentialSourceReference,
   SecretMetadata,
@@ -57,7 +57,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
       NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]>,
       "policyScopeByPlugin" | "credentialSlots"
     > & {
-      credentialSlots?: readonly (Omit<AgentPluginCredentialSlot, "toolDiscovery"> & {
+      credentialSlots?: readonly (Omit<AgentPluginCredentialSlotChoice, "toolDiscovery"> & {
         toolDiscovery?: boolean;
       })[];
       policyScopeByPlugin?: Readonly<Record<string, string>>;

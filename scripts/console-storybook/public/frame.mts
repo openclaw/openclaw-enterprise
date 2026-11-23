@@ -25,6 +25,7 @@ type FrameScenario = FrameScenarioBase &
         connectionPreview?: ConnectionPreview;
         pluginCatalog?: PluginFieldsOptions["catalog"];
         pluginCapabilities?: PluginFieldsOptions["capabilities"];
+        managedToolPreview?: boolean;
         disabled?: boolean | undefined;
       }
   );
@@ -125,6 +126,17 @@ if (scenario.component === "plugins") {
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
+    ...(scenario.managedToolPreview && {
+      // The component preview returns its preloaded simulated result on reload.
+      onLoadTools: async (id, connection) => {
+        if (!connection) {
+          return;
+        }
+        return scenario.pluginCatalog?.entries?.find((entry) => entry.id === id)?.managedTools?.[
+          connection.slot
+        ]?.[connection.sourceId]?.tools;
+      },
+    }),
     ...(scenario.connectionPreview && {
       saveHint: "Changes are saved when you choose Save plugin selections.",
       getSlotConnection: () => ({

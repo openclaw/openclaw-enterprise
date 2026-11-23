@@ -14,14 +14,22 @@ export function memoryRequestCredentialApprovals(
   records: Map<string, StoredRequestCredentialApproval>,
 ): RequestCredentialApprovalRepository {
   return {
-    async insert(approval, now) {
+    async insert(approval, now, capacity) {
+      let recipientIds = 0;
       for (const [key, record] of records) {
         if (record.deadlineAt <= now) {
           records.delete(key);
+        } else if (record.recipientId === approval.recipientId) {
+          recipientIds += 1;
         }
       }
       const key = JSON.stringify([approval.recipientId, approval.requestId]);
-      if (records.has(key) || approval.deadlineAt <= now) {
+      if (
+        records.has(key) ||
+        approval.deadlineAt <= now ||
+        records.size >= capacity.requestIds ||
+        recipientIds >= capacity.sandboxRequestIds
+      ) {
         return false;
       }
       records.set(key, immutableCopy({ ...approval, consumed: false }));
@@ -49,14 +57,22 @@ export function postgresRequestCredentialApprovals(
   client: PostgresQueryClient,
 ): RequestCredentialApprovalRepository {
   return {
-    async insert(approval, now) {
+    async insert(approval, now, capacity) {
+      // All API replicas use the same transaction lock before pruning and reserving a slot.
+      // The following statement gets a fresh READ COMMITTED snapshot after any lock wait.
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('occ.request_credential_approvals.capacity', 0))",
+      );
       await client.query("DELETE FROM occ.request_credential_approvals WHERE expires_at <= $1", [
         now,
       ]);
       const result = await client.query(
         `INSERT INTO occ.request_credential_approvals
           (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz WHERE $9::timestamptz > $10::timestamptz
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz
+         WHERE $9::timestamptz > $10::timestamptz
+           AND (SELECT count(*) FROM occ.request_credential_approvals) < $11
+           AND (SELECT count(*) FROM occ.request_credential_approvals WHERE recipient_id = $1) < $12
          ON CONFLICT DO NOTHING`,
         [
           approval.recipientId,
@@ -69,6 +85,8 @@ export function postgresRequestCredentialApprovals(
           JSON.stringify(approval.driver),
           approval.deadlineAt,
           now,
+          capacity.requestIds,
+          capacity.sandboxRequestIds,
         ],
       );
       return result.rowCount === 1;

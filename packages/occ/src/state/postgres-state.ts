@@ -104,6 +104,7 @@ import type {
   PlatformOperation,
   PlatformReadView,
   PlatformStateStore,
+  PlatformTransactionOptions,
   PlatformUnitOfWork,
   SecretReferenceKind,
   SecretRepository,
@@ -1573,8 +1574,15 @@ export class PostgresPlatformState implements PlatformStateStore {
     );
   }
 
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T> {
+    return this.execute(
+      false,
+      async (state) => work(state),
+      options?.isolation === "read_committed",
+    );
   }
 
   /**

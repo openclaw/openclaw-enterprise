@@ -207,6 +207,7 @@ const PluginCredentialSlotSchema = Type.Object(
           name: Type.String(),
           toolDiscovery: Type.Optional(Type.Union([Type.Literal("caller"), Type.Literal("agent")])),
           authorization: Type.Optional(Type.Literal("required")),
+          binding: Type.Optional(Type.Literal("discovery_only")),
         },
         { additionalProperties: false },
       ),
@@ -855,7 +856,7 @@ export const AgentCallerPermissionsResponse = Type.Object(
         }),
         agentSourcesOperate: Type.Boolean({
           description:
-            "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on every credential source the Agent lists or uses for Harness authentication, and ServiceAccount read on a ServiceAccount Harness authentication source. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
+            "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on directly bound or Harness authentication sources, and ServiceAccount read on a ServiceAccount Harness authentication source. Saved accounts already delegated to the Agent do not require the editor's own operate grant. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
         }),
         sandboxPolicyRead: Type.Boolean({
           description:

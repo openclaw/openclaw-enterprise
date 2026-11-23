@@ -1,5 +1,6 @@
 import type {
   AgentPluginCredentialSlot,
+  AgentPluginCredentialSlotChoice,
   InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
@@ -30,13 +31,13 @@ export type ManagedToolConnection = {
   toolDiscovery: "caller" | "agent";
 };
 export type ManagedToolDiscovery = {
-  connection: ManagedToolConnection;
   status: "loading" | "loaded" | "error";
   tools?: readonly PluginToolCatalogEntry[];
   message?: string;
 };
 export type CatalogEntry = NamespaceAgentPluginDetails & {
-  managedTools?: ManagedToolDiscovery | undefined;
+  managedTools?:
+    Readonly<Record<string, Readonly<Record<string, ManagedToolDiscovery>>>> | undefined;
   toolStatus?: "loading" | "loaded" | undefined;
   toolError?: string | undefined;
 };
@@ -69,7 +70,7 @@ export interface PluginFieldsOptions {
   catalog?: PluginFieldCatalog | null;
   capabilities?:
     | (NonNullable<InstallationCapabilities["pluginCatalogs"]>[number]["pluginPolicies"] & {
-        credentialSlots?: readonly AgentPluginCredentialSlot[];
+        credentialSlots?: readonly AgentPluginCredentialSlotChoice[];
       })
     | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
@@ -226,6 +227,7 @@ export function createPluginFields({
   let disabled = false;
   let configuredOnly = false;
   let capabilitiesUnread = false;
+  const discoveryPreviews = new Map<string, string>();
   const tabs = [newTabState(), newTabState()] as const;
   let renderedTab: PluginTabState | null = null;
   let renderedPlugin: string | null = null;
@@ -491,13 +493,10 @@ export function createPluginFields({
     slot: AgentPluginCredentialSlot,
     connection: ManagedToolConnection,
     selected: EditableSelection,
+    previewOnly = false,
   ) {
     const { sourceId } = connection;
-    const result =
-      entry.managedTools?.connection.slot === slot.id &&
-      entry.managedTools.connection.sourceId === sourceId
-        ? entry.managedTools
-        : undefined;
+    const result = entry.managedTools?.[slot.id]?.[sourceId];
     function currentPolicy() {
       const selection = selections()?.[entry.id];
       const policy = selection?.driverPolicy;
@@ -515,7 +514,7 @@ export function createPluginFields({
         const tools = await onLoadTools?.(entry.id, connection);
         const policy = currentPolicy();
         // Seed only a new choice. An explicit empty list means the operator disabled every tool.
-        if (tools && policy && policy.toolNames === undefined) {
+        if (!previewOnly && tools && policy && policy.toolNames === undefined) {
           updateSelection(entry.id, (selection) => {
             selection.driverPolicy = {
               ...policy,
@@ -534,16 +533,26 @@ export function createPluginFields({
       !catalog?.canLoad || catalog.status === "loading" || result?.status === "loading",
     );
     const tools = result?.tools ?? [];
+    const heading = previewOnly ? "Available tools" : "Tools";
     const picker = element(
       "section",
-      { "aria-label": "Tools" },
+      { "aria-label": previewOnly ? "Preview tools" : "Tools" },
       element(
         "div",
         { className: "plugin-detail-header" },
-        element("h4", {}, result?.status === "loaded" ? `Tools (${tools.length})` : "Tools"),
+        element("h4", {}, result?.status === "loaded" ? `${heading} (${tools.length})` : heading),
         load,
       ),
     );
+    if (previewOnly) {
+      picker.append(
+        element(
+          "p",
+          { className: "hint" },
+          "Preview only. You need permission to use this credential before you can bind it to this plugin slot.",
+        ),
+      );
+    }
     if (result?.status === "loading") {
       picker.append(element("p", { className: "hint", role: "status" }, "Loading tools…"));
     } else if (result?.status === "error") {
@@ -560,6 +569,16 @@ export function createPluginFields({
       }
       const toolNames = selected.driverPolicy?.toolNames;
       const rows = tools.map((tool): ToolRow => {
+        if (previewOnly) {
+          return [
+            tool,
+            element(
+              "div",
+              { className: "plugin-tool-row", "data-tool": tool.id },
+              element("strong", {}, tool.name),
+            ),
+          ];
+        }
         const toggle = element("input", {
           type: "checkbox",
           className: "plugin-tool-switch",
@@ -1060,11 +1079,15 @@ export function createPluginFields({
             selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
           const options: Choice[] = [
             ["", "Install without an account"],
-            ...slot.sources.map(({ id, name, authorization }) =>
-              authorization === "required"
-                ? ([id, `${name} — authorization required for this server`, "explained"] as const)
-                : ([id, name] as const),
-            ),
+            ...slot.sources.map(({ id, name, authorization, binding }): Choice => {
+              if (authorization === "required") {
+                return [id, `${name} — authorization required for this server`, "explained"];
+              }
+              if (binding === "discovery_only") {
+                return [id, `${name} — permission required to bind`, "explained"];
+              }
+              return [id, name];
+            }),
           ];
           if (stale) {
             options.push(["stale", "Release changed — select an account again", true]);
@@ -1136,7 +1159,7 @@ export function createPluginFields({
             }
           }
           if (
-            slot.sources.some((source) => !source.authorization) &&
+            slot.sources.some((source) => !source.authorization && !source.binding) &&
             (!slotConnection?.grantOnCreate || !slot.connectAccount)
           ) {
             details.append(
@@ -1161,12 +1184,12 @@ export function createPluginFields({
           if (
             slot.toolDiscovery &&
             !current &&
-            slot.sources.some((source) => source.toolDiscovery)
+            slot.sources.some((source) => source.toolDiscovery && !source.binding)
           ) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
           const toolSource = slot.sources.find(
-            ({ id, authorization }) => id === current && !authorization,
+            ({ id, authorization, binding }) => id === current && !authorization && !binding,
           );
           if (slot.toolDiscovery && !stale && toolSource?.toolDiscovery) {
             details.append(
@@ -1177,6 +1200,39 @@ export function createPluginFields({
                 selected,
               ),
             );
+          }
+          const discoveryOnly = slot.sources.filter(
+            (source) => source.binding === "discovery_only" && source.toolDiscovery,
+          );
+          if (discoveryOnly.length) {
+            const previewKey = JSON.stringify([entry.id, slot.id]);
+            const previewId = discoveryPreviews.get(previewKey) ?? "";
+            details.append(
+              select(
+                `Preview tools for ${slot.label}`,
+                previewId,
+                [
+                  ["", "Choose an attached account to preview"],
+                  ...discoveryOnly.map(({ id, name }) => [id, name] as const),
+                ],
+                (sourceId) => {
+                  discoveryPreviews.set(previewKey, sourceId);
+                  render();
+                },
+              ),
+            );
+            const preview = discoveryOnly.find(({ id }) => id === previewId);
+            if (preview?.toolDiscovery) {
+              details.append(
+                managedToolPicker(
+                  entry,
+                  slot,
+                  { slot: slot.id, sourceId: preview.id, toolDiscovery: preview.toolDiscovery },
+                  selected,
+                  true,
+                ),
+              );
+            }
           }
         }
       }

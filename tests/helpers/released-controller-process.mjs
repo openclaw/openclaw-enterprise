@@ -122,11 +122,20 @@ try {
         },
       });
       assert.equal(registration.statusCode, 201, registration.body);
+      const selected = await app.inject({
+        method: "GET",
+        url: `/connection-templates/${data.id}`,
+        headers,
+      });
+      assert.equal(selected.statusCode, 200, selected.body);
       const started = await app.inject({
         method: "POST",
         url: `/namespaces/${input.namespaceId}/connections`,
         headers,
-        payload: { connectionTemplateId: data.id },
+        payload: {
+          connectionTemplateId: data.id,
+          connectionTemplateVersion: selected.json().data.current.version,
+        },
       });
       assert.equal(started.statusCode, 201, started.body);
       const sourceId = started.json().data.credentialSourceId;

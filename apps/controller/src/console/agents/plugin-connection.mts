@@ -390,7 +390,7 @@ export function pluginConnectionControl(
         : currentName
           ? "Connect a different account"
           : "Choose a connection template",
-    choose,
+    () => choose(),
     { tone: "secondary", size: "sm" },
   );
   const root = element("div", { className: "stack" }, open, notice);
@@ -410,11 +410,13 @@ export function pluginConnectionControl(
         : "You need permission to update this Agent and connect an account in this Namespace.";
     }
     if (status === 409) {
-      return "The template or plugin selection changed. Reload the Agent before connecting.";
+      return connections.grantOnCreate
+        ? "The connection template changed. Refresh templates and review the updated permissions before connecting."
+        : "The template or plugin selection changed. Reload the Agent before connecting.";
     }
     return "Could not load or start the connection. Check the connection templates and try again.";
   }
-  function choose() {
+  function choose(message?: string) {
     if (busy || connections.unavailable(slot)) {
       return;
     }
@@ -429,13 +431,22 @@ export function pluginConnectionControl(
     let template: SlotTemplate | undefined;
     let selectedScopes: readonly string[] | null | undefined;
     let starting = false;
+    let refreshNeeded = false;
+    let actionLabel = "Connect and attach";
+    if (connections.grantOnCreate) {
+      actionLabel = "Connect account";
+    } else if (currentName) {
+      actionLabel = "Authorize and replace account";
+    }
     const action = button(
-      connections.grantOnCreate
-        ? "Connect account"
-        : currentName
-          ? "Authorize and replace account"
-          : "Connect and attach",
+      actionLabel,
       async () => {
+        if (refreshNeeded) {
+          refreshNeeded = false;
+          action.textContent = actionLabel;
+          await refresh();
+          return;
+        }
         if (
           !template ||
           selectedScopes === null ||
@@ -451,7 +462,11 @@ export function pluginConnectionControl(
           starting = false;
           dialog.close();
         };
-        await start(template, selectedScopes, action, status, close);
+        const result = await start(template, selectedScopes, action, status, close);
+        if (result === "template_changed") {
+          refreshNeeded = true;
+          action.textContent = "Refresh templates";
+        }
         starting = false;
         cancel.disabled = false;
       },
@@ -523,9 +538,11 @@ export function pluginConnectionControl(
           element("label", { className: "plugin-control" }, "Connection template", picker),
           scopes,
         );
-        status.textContent = currentName
-          ? `After authorization, this account will replace ${currentName} in the ${slot.label} slot.`
-          : "";
+        status.textContent =
+          message ??
+          (currentName
+            ? `After authorization, this account will replace ${currentName} in the ${slot.label} slot.`
+            : "");
         action.hidden = false;
         action.disabled = true;
         const selectTemplate = () => {
@@ -565,7 +582,7 @@ export function pluginConnectionControl(
     action: HTMLButtonElement,
     status: HTMLElement,
     close?: () => void,
-  ) {
+  ): Promise<"template_changed" | void> {
     if (busy || connections.unavailable(slot)) {
       return;
     }
@@ -587,7 +604,17 @@ export function pluginConnectionControl(
           retryButton?.remove();
           retryButton = button(
             "Try again",
-            () => void start(template, selectedScopes, retryButton!, notice),
+            async () => {
+              const result = await start(template, selectedScopes, retryButton!, notice);
+              if (result === "template_changed") {
+                retryButton?.remove();
+                retryButton = undefined;
+                notice.textContent = "";
+                choose(
+                  "The connection template changed. Review its current permissions before connecting.",
+                );
+              }
+            },
             { tone: "primary" },
           );
           notice.textContent =
@@ -624,6 +651,9 @@ export function pluginConnectionControl(
       if (current === attempt) {
         (status.isConnected ? status : notice).textContent = describeError(cause);
         action.textContent = "Try again";
+        if (connections.grantOnCreate && requestFailure(cause).status === 409) {
+          return "template_changed";
+        }
       }
     } finally {
       if (current === attempt) {

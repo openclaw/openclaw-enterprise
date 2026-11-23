@@ -34,6 +34,7 @@ import {
   nextFrames,
   operateDeniedSecretOption,
   pathRequests,
+  revokeAdministratorGrant,
   selectSecret,
   settledView,
   statusTone,
@@ -331,6 +332,7 @@ test("Standalone consent selects the returned account in the new Agent draft bef
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   let issued = "";
+  let templateVersion = 1;
   const savedAccounts: { id: string; name: string }[] = [];
   const prior = "cs_00000000-0000-4000-8000-000000000004";
   const offeredScopes = [
@@ -367,7 +369,7 @@ test("Standalone consent selects the returned account in the new Agent draft bef
         {
           id: "demo",
           displayName: "Workspace OAuth",
-          version: 1,
+          version: templateVersion,
           mode: "mcp_discovery",
           scopes: [],
           requiredScopes: ["channels:read"],
@@ -382,6 +384,12 @@ test("Standalone consent selects the returned account in the new Agent draft bef
     await route.fulfill({ response, json: body });
   });
   await page.route(`**${base}/connections`, (route) => {
+    if (route.request().postDataJSON().connectionTemplateVersion !== templateVersion) {
+      return route.fulfill({
+        status: 409,
+        json: { error: { code: "CONFLICT", message: "The connection template changed." } },
+      });
+    }
     issued = "cs_" + crypto.randomUUID();
     return route.fulfill({
       status: 201,
@@ -563,12 +571,54 @@ test("Standalone consent selects the returned account in the new Agent draft bef
     requestedScopes,
     [reduced, reduced, reduced, offeredScopes].map((selectedScopes) => ({
       connectionTemplateId: "demo",
+      connectionTemplateVersion: 1,
       selectedScopes,
     })),
   );
   for (const target of [base + "/agents", base + "/agents/provision"]) {
     assert.equal(pathRequests(requests, "POST", target).length, 0);
   }
+  // A template may change while the consent picker is open. Recovery keeps the Agent draft.
+  await dialog.getByRole("button", { name: "Connect a different account" }).click();
+  await consent.getByLabel("Connection template for Slack user account").selectOption("demo");
+  templateVersion = 2;
+  await consent.getByRole("button", { name: "Connect account", exact: true }).click();
+  await consent
+    .getByText(
+      "The connection template changed. Refresh templates and review the updated permissions before connecting.",
+    )
+    .waitFor();
+  assert.equal(await page.getByLabel("Agent name").inputValue(), "Keep my draft");
+  assert.equal(await picker.inputValue(), issued);
+  await consent.getByRole("button", { name: "Refresh templates", exact: true }).click();
+  await consent.getByLabel("Connection template for Slack user account").waitFor();
+
+  // A closed popup leaves retry in the editor. A later template change must open a
+  // fresh picker rather than repeatedly retrying the stale version.
+  const selectedId = await picker.inputValue();
+  const popup = page.context().waitForEvent("page");
+  await consent.getByRole("button", { name: "Connect account", exact: true }).click();
+  const provider = await popup;
+  await provider.getByRole("link", { name: "Approve" }).waitFor();
+  await provider.close();
+  templateVersion = 3;
+  await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+  await consent
+    .getByText("The connection template changed. Review its current permissions before connecting.")
+    .waitFor();
+  await consent.getByLabel("Connection template for Slack user account").waitFor();
+  assert.equal(await page.getByLabel("Agent name").inputValue(), "Keep my draft");
+  assert.equal(await picker.inputValue(), selectedId);
+  const retryPopup = page.context().waitForEvent("page");
+  await consent.getByRole("button", { name: "Connect account", exact: true }).click();
+  const refreshedProvider = await retryPopup;
+  await refreshedProvider.getByRole("link", { name: "Approve" }).waitFor();
+  const attempts = pathRequests(requests, "POST", base + "/connections");
+  assert.deepEqual(
+    attempts.slice(-3).map((attempt) => record(attempt.body).connectionTemplateVersion),
+    [2, 2, 3],
+  );
+  await refreshedProvider.close();
 });
 
 test("Slack tool discovery stages all names once and preserves the saved allowlist on reload", async (t) => {
@@ -707,6 +757,202 @@ test("Slack tool discovery stages all names once and preserves the saved allowli
   for (const name of advertised) {
     assert.equal(await tool(name).isChecked(), false);
   }
+
+  // Seed the committed result of consent, not a Gateway bearer: an attached saved account
+  // delegates authority to the Agent and does not require its editor's own operate permission.
+  // The real Keycloak/PostgreSQL integration covers how consent produces this state.
+  const boundId = `cs_${randomUUID()}`;
+  const savedId = `cs_${randomUUID()}`;
+  const clientId = `ccr_${randomUUID()}`;
+  const templateId = `ctp_${randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  const issuer = "https://mcp.slack.com";
+  const tokenUrl = "https://slack.com/api/oauth.v2.user.access";
+  const destinations = [{ host: "mcp.slack.com", port: 443, path: "/mcp" }];
+  const owner = fixture.policy.identities[0];
+  assert.ok(owner);
+  await controller(fixture).transact(async (state) => {
+    await state.connectionTemplates.createOAuthClient({
+      id: clientId,
+      displayName: "Slack public client",
+      issuer,
+      tokenUrl,
+      clientId: "fixture-public-client",
+      tokenEndpointAuthMethod: "none",
+      createdAt,
+    });
+    await state.connectionTemplates.createConnectionTemplate({
+      id: templateId,
+      displayName: "Slack MCP",
+      createdAt,
+      current: {
+        templateId,
+        version: 1,
+        mode: "mcp_discovery",
+        issuer,
+        authorizationUrl: "https://slack.com/oauth/v2/authorize",
+        tokenUrl,
+        oauthClientId: clientId,
+        scopes: [],
+        authorizationParameters: {},
+        destinations,
+        mcp: { serverUrl: "https://mcp.slack.com/mcp", resource: issuer },
+        createdAt,
+      },
+    });
+    for (const [id, name] of [
+      [boundId, "Bound Slack account"],
+      [savedId, "Attached Slack account"],
+    ] as const) {
+      await state.credentialSources.createCredentialSource({
+        id,
+        namespaceId: namespace.id,
+        name,
+        type: "oauth2-refresh-token",
+        config: {
+          connection_template_id: templateId,
+          connection_template_version: "1",
+          oauth_client_id: clientId,
+        },
+        secrets: {},
+        ownerCapability: "token_service",
+        state: "ready",
+        createdAt,
+      });
+      await state.savedConnections.createSavedConnection({
+        namespaceId: namespace.id,
+        credentialSourceId: id,
+        ownerPrincipalId: owner.id,
+        oauthClientId: clientId,
+        clientId: "fixture-public-client",
+        issuer,
+        tokenUrl,
+        mcpServerUrl: "https://mcp.slack.com/mcp",
+        destinations,
+        resource: issuer,
+        requestedScopes: [],
+        grantedScopes: [],
+        connectionTemplateId: templateId,
+        connectionTemplateVersion: 1,
+        createdAt,
+      });
+    }
+  });
+  const delegatedAgent = agentEntity(
+    await fixture.createAgent(namespace.id, "Delegated Slack Agent", nativeValues("delegated"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const delegatedPath = `/namespaces/${namespace.id}/agents/${delegatedAgent.id}`;
+  assert.equal(
+    (
+      await fixture.request("PATCH", delegatedPath, {
+        body: {
+          configurationId: delegatedAgent.configurationId,
+          plugins: { [pluginId]: { enabled: true } },
+        },
+      })
+    ).status,
+    200,
+  );
+  for (const id of [boundId, savedId]) {
+    assert.equal((await fixture.request("POST", `${delegatedPath}/connections/${id}`)).status, 204);
+  }
+  const capabilities = responseData(
+    await fixture.request("GET", `${delegatedPath}/plugins/capabilities`),
+  );
+  const slots = capabilities.credentialSlots as { pluginId: string; releaseSha256: string }[];
+  const slot = slots.find((item) => item.pluginId === pluginId);
+  assert.ok(slot);
+  assert.equal(
+    (
+      await fixture.request("PATCH", delegatedPath, {
+        body: {
+          configurationId: delegatedAgent.configurationId,
+          plugins: {
+            [pluginId]: {
+              enabled: true,
+              driverPolicy: {
+                releaseSha256: slot.releaseSha256,
+                credentials: { account: boundId },
+              },
+            },
+          },
+        },
+      })
+    ).status,
+    200,
+  );
+  const restore = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  t.after(restore);
+  grantRole(fixture.policy, owner.id, {
+    id: "bound-slack-account-use",
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: boundId },
+  });
+  let previews = 0;
+  const previewTool = "slack_preview_search";
+  await page.route(`**/credential-sources/${boundId}/mcp-tools`, async (route) => {
+    assert.deepEqual(route.request().postDataJSON(), { pluginId, slot: "account" });
+    await route.fulfill({
+      json: {
+        data: {
+          id: pluginId,
+          name: "Slack",
+          tools: [{ id: search, name: search, ownerId: pluginId }],
+        },
+      },
+    });
+  });
+  await page.route(`**${delegatedPath}/plugins/details`, async (route) => {
+    if (!route.request().postDataJSON().managedConnection) {
+      await route.continue();
+      return;
+    }
+    previews++;
+    assert.deepEqual(route.request().postDataJSON(), {
+      pluginId,
+      managedConnection: { slot: "account", sourceId: savedId },
+    });
+    await route.fulfill({
+      json: {
+        data: {
+          id: pluginId,
+          name: "Slack",
+          tools: [{ id: previewTool, name: previewTool, ownerId: pluginId }],
+        },
+      },
+    });
+  });
+  await page.goto(detailUrl(fixture, namespace.id, delegatedAgent.id, "draft", "plugins").href);
+  await openSlack();
+  const accountSelect = dialog.getByLabel("Slack user account", { exact: true });
+  const blocked = accountSelect.locator(`option[value="${savedId}"]`);
+  assert.equal(await blocked.getAttribute("disabled"), "");
+  assert.match((await blocked.textContent()) ?? "", /permission required to bind/);
+  const editableTools = dialog.getByRole("region", { name: "Tools", exact: true });
+  await editableTools.getByRole("button", { name: "Load tools for Slack" }).click();
+  assert.equal(await editableTools.getByRole("checkbox", { name: search }).isChecked(), true);
+  const draftBeforePreview = await page.locator("#agent-plugins").inputValue();
+  assert.deepEqual(record(record(JSON.parse(draftBeforePreview))[pluginId]).driverPolicy, {
+    releaseSha256: slot.releaseSha256,
+    credentials: { account: boundId },
+    toolNames: [search],
+  });
+  await dialog.getByLabel("Preview tools for Slack user account").selectOption(savedId);
+  const previewTools = dialog.getByRole("region", { name: "Preview tools", exact: true });
+  await previewTools.getByRole("button", { name: "Load tools for Slack" }).click();
+  await previewTools.getByText(previewTool, { exact: true }).waitFor();
+  assert.equal(previews, 1);
+  assert.equal(await editableTools.getByRole("checkbox", { name: search }).isChecked(), true);
+  assert.equal(await previewTools.getByRole("checkbox").count(), 0);
+  assert.equal(await page.locator("#agent-plugins").inputValue(), draftBeforePreview);
+  await editableTools.getByRole("button", { name: "Reload tools for Slack" }).click();
+  assert.equal(await editableTools.getByRole("checkbox", { name: search }).isChecked(), true);
+  assert.equal(await previewTools.getByText(previewTool, { exact: true }).count(), 1);
+  assert.equal(await page.locator("#agent-plugins").inputValue(), draftBeforePreview);
 });
 
 test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
@@ -2384,9 +2630,12 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
             selectableWithoutTools: true,
             tools: [],
             managedTools: {
-              connection: { slot: "support", sourceId: source.id, toolDiscovery: "agent" },
-              status: "loaded",
-              tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
+              support: {
+                [source.id]: {
+                  status: "loaded",
+                  tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
+                },
+              },
             },
           },
         ],

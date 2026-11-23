@@ -1231,9 +1231,16 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly operations: PlatformOperationRepository;
 }
 
+export interface PlatformTransactionOptions {
+  readonly isolation: "read_committed";
+}
+
 export interface PlatformStateStore {
   read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
-  transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
+  transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {

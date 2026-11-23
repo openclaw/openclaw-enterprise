@@ -148,8 +148,9 @@ export const OPERATION_AUTHENTICATION_BUDGET = OPERATION_CAPACITY / 4;
 export const OPERATION_SANDBOX_SHARE = OPERATION_CAPACITY / 4;
 
 /**
- * The request registry's in-memory bounds, per API process. Every value is a count. Installation
- * startup sets them from `drivers.credential_proxy.requestCapacity`.
+ * The request registry's in-memory bounds, per API process. The request-ID bounds also apply
+ * independently to saved-account approvals in shared storage. Every value is a count.
+ * Installation startup sets them from `drivers.credential_proxy.requestCapacity`.
  */
 export interface CredentialProxyCapacity {
   /** Operations in progress, all Sandboxes. */

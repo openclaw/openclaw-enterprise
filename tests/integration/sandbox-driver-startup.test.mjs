@@ -1682,6 +1682,24 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
         ),
       /exact paired Compute release/,
     );
+    // With the explicit opt-in, a Kubernetes-backed model key or other Secret
+    // can retain native delivery while the plugin uses request-time credentials.
+    assert.doesNotThrow(() =>
+      runtime.computeDriver.validateExecutionAdmission(
+        {
+          ...savedOnly,
+          ...binding,
+          plugins: {
+            ...savedOnly.plugins,
+            savedAccounts: {
+              ...savedOnly.plugins.savedAccounts,
+              driver: runtime.protectedDriver.ref,
+            },
+          },
+        },
+        runtime.protectedDriver,
+      ),
+    );
   }
   await assert.rejects(
     strict.sandboxDriver.provisionHarness({

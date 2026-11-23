@@ -29,6 +29,8 @@ export const ConnectionPermissionDenied = story("pluginConnectDenied");
 export const ConnectionTemplatesLoading = story("pluginConnectLoading");
 
 export const NamedSlotAccounts = story("namedSlotAccounts");
+export const AgentDiscoveryOnly = story("agentDiscoveryOnly");
+export const BoundAndDiscoveryOnlyTools = story("boundAndDiscoveryOnlyTools");
 export const AuthorizeForAnotherServer = story("namedSlotAuthorize");
 
 export const UnrestrictedConnectionScopes = story("unrestrictedSlotScopes");

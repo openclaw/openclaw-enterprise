@@ -12,7 +12,11 @@ export interface RequestCredentialApproval extends RequestCredentialGrant {
 }
 
 export interface RequestCredentialApprovalRepository {
-  insert(approval: RequestCredentialApproval, now: string): Promise<boolean>;
+  insert(
+    approval: RequestCredentialApproval,
+    now: string,
+    capacity: { readonly requestIds: number; readonly sandboxRequestIds: number },
+  ): Promise<boolean>;
   consume(
     grant: RequestCredentialGrant,
     driver: DriverRegistrationRef,

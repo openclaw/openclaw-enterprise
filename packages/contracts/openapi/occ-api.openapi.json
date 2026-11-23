@@ -18724,6 +18724,7 @@
                                   "additionalProperties": false,
                                   "properties": {
                                     "authorization": { "const": "required", "type": "string" },
+                                    "binding": { "const": "discovery_only", "type": "string" },
                                     "id": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                       "type": "string"
@@ -28016,7 +28017,7 @@
                           "type": "boolean"
                         },
                         "agentSourcesOperate": {
-                          "description": "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on every credential source the Agent lists or uses for Harness authentication, and ServiceAccount read on a ServiceAccount Harness authentication source. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
+                          "description": "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on directly bound or Harness authentication sources, and ServiceAccount read on a ServiceAccount Harness authentication source. Saved accounts already delegated to the Agent do not require the editor's own operate grant. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
                         },
                         "configurationRead": {
@@ -28721,6 +28722,7 @@
                                   "additionalProperties": false,
                                   "properties": {
                                     "authorization": { "const": "required", "type": "string" },
+                                    "binding": { "const": "discovery_only", "type": "string" },
                                     "id": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                       "type": "string"
@@ -36664,7 +36666,10 @@
               "examples": {
                 "example": {
                   "summary": "Example request",
-                  "value": { "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000" }
+                  "value": {
+                    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "connectionTemplateVersion": 1
+                  }
                 }
               },
               "schema": {
@@ -36674,6 +36679,7 @@
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
+                  "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
                   "selectedScopes": {
                     "items": {
                       "maxLength": 512,
@@ -36685,7 +36691,7 @@
                     "uniqueItems": true
                   }
                 },
-                "required": ["connectionTemplateId"],
+                "required": ["connectionTemplateId", "connectionTemplateVersion"],
                 "type": "object"
               }
             }

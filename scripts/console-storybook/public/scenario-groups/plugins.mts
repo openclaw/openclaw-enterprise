@@ -29,6 +29,7 @@ type PluginScenario = {
       component: "plugins";
       pluginCatalog?: PluginFieldsOptions["catalog"];
       pluginSelections?: string;
+      managedToolPreview?: boolean;
     }
   | {
       group: "Pages/Agent detail";
@@ -184,6 +185,118 @@ const namedSlotScenario = {
 } satisfies PluginScenario;
 
 export const pluginsScenarios = {
+  agentDiscoveryOnly: {
+    ...namedSlotScenario,
+    name: "Preview tools with an Agent-authorized account",
+    pluginSelections: JSON.stringify({ [namedPlugin]: { enabled: true } }),
+    pluginCatalog: {
+      status: "ready",
+      entries: [
+        {
+          id: namedPlugin,
+          name: "Team tools",
+          selectableWithoutTools: true,
+          tools: [],
+          managedTools: {
+            support: {
+              [savedSupportAccount.id]: {
+                status: "loaded",
+                tools: [{ id: "ticket_search", name: "Search tickets", ownerId: namedPlugin }],
+              },
+            },
+          },
+        },
+      ],
+    },
+    pluginCapabilities: {
+      ...namedSlotScenario.pluginCapabilities,
+      credentialSlots: [
+        {
+          pluginId: namedPlugin,
+          releaseSha256: namedRelease,
+          id: "support",
+          label: "Support account",
+          toolDiscovery: true,
+          sources: [{ ...savedSupportAccount, toolDiscovery: "agent", binding: "discovery_only" }],
+        },
+      ],
+    },
+    actions: [
+      ...namedSlotScenario.actions,
+      {
+        selector: 'select[aria-label="Preview tools for Support account"]',
+        value: savedSupportAccount.id,
+      },
+    ],
+    description:
+      "The Agent can use an attached account for discovery, but its editor cannot bind that account to a new slot. Previewing tools leaves the plugin draft unchanged.",
+    gap: "The account authorization and tool result are simulated Storybook state. The browser workflow test verifies the served editor's discovery request and unchanged draft.",
+  },
+  boundAndDiscoveryOnlyTools: {
+    ...namedSlotScenario,
+    name: "Edit bound tools while previewing another Agent-authorized account",
+    managedToolPreview: true,
+    pluginSelections: JSON.stringify({
+      [namedPlugin]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: namedRelease,
+          credentials: { support: savedSupportAccount.id },
+          toolNames: ["ticket_search"],
+        },
+      },
+    }),
+    pluginCatalog: {
+      status: "ready",
+      canLoad: true,
+      entries: [
+        {
+          id: namedPlugin,
+          name: "Team tools",
+          selectableWithoutTools: true,
+          tools: [],
+          managedTools: {
+            support: {
+              [savedSupportAccount.id]: {
+                status: "loaded",
+                tools: [{ id: "ticket_search", name: "Search tickets", ownerId: namedPlugin }],
+              },
+              [savedReportingAccount.id]: {
+                status: "loaded",
+                tools: [{ id: "report_view", name: "View reports", ownerId: namedPlugin }],
+              },
+            },
+          },
+        },
+      ],
+    },
+    pluginCapabilities: {
+      ...namedSlotScenario.pluginCapabilities,
+      credentialSlots: [
+        {
+          pluginId: namedPlugin,
+          releaseSha256: namedRelease,
+          id: "support",
+          label: "Support account",
+          toolDiscovery: true,
+          sources: [
+            { ...savedSupportAccount, toolDiscovery: "caller" },
+            { ...savedReportingAccount, toolDiscovery: "agent", binding: "discovery_only" },
+          ],
+        },
+      ],
+    },
+    actions: [
+      ...namedSlotScenario.actions,
+      {
+        selector: 'select[aria-label="Preview tools for Support account"]',
+        value: savedReportingAccount.id,
+      },
+    ],
+    description:
+      "An editor can keep editing the bound account's tool policy while previewing a different account available to the Agent. Preview tools are read-only and do not change the draft.",
+    gap: "The two account grants and preloaded tool results are simulated Storybook state; served Chromium coverage checks actual discovery calls and draft preservation.",
+  },
   namedSlotAccounts: {
     ...namedSlotScenario,
     pluginSelections: JSON.stringify({

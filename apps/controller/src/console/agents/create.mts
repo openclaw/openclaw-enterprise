@@ -1915,6 +1915,7 @@ function renderAgentForm(
               method: "POST",
               body: {
                 connectionTemplateId: template.id,
+                connectionTemplateVersion: template.version,
                 ...(selectedScopes && { selectedScopes }),
               },
             }) as Promise<{

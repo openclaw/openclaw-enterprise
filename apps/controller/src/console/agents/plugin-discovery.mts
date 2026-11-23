@@ -23,6 +23,20 @@ export interface PluginDiscoveryContext {
 type Message = string | (() => string);
 type CatalogRequest = { cursor?: string; q?: string } | { pluginId: string };
 
+function withManagedResult(
+  entry: CatalogEntry,
+  { slot, sourceId }: ManagedToolConnection,
+  result: ManagedToolDiscovery,
+): CatalogEntry {
+  return {
+    ...entry,
+    managedTools: {
+      ...entry.managedTools,
+      [slot]: { ...entry.managedTools?.[slot], [sourceId]: result },
+    },
+  };
+}
+
 interface PluginDiscoveryOptions extends Pick<
   PluginFieldsOptions,
   "input" | "saveHint" | "createApproverField" | "getSlotConnection"
@@ -150,8 +164,25 @@ export function createPluginDiscovery({
       if (entry.toolStatus === "loading") {
         entries.set(id, { ...entry, toolStatus: undefined });
       }
-      if (entry.managedTools?.status === "loading") {
-        entries.set(id, { ...entries.get(id)!, managedTools: undefined });
+      if (entry.managedTools) {
+        const managedTools = { ...entry.managedTools };
+        let removed = false;
+        for (const [slot, results] of Object.entries(managedTools)) {
+          const settled = Object.fromEntries(
+            Object.entries(results).filter(([, result]) => result.status !== "loading"),
+          );
+          if (Object.keys(settled).length !== Object.keys(results).length) {
+            removed = true;
+            if (Object.keys(settled).length) {
+              managedTools[slot] = settled;
+            } else {
+              delete managedTools[slot];
+            }
+          }
+        }
+        if (removed) {
+          entries.set(id, { ...entries.get(id)!, managedTools });
+        }
       }
     }
   }
@@ -293,12 +324,9 @@ export function createPluginDiscovery({
     if (!canDiscover() || isPending() || catalog.status === "loading" || !entry) {
       return;
     }
-    const pending: ManagedToolDiscovery | undefined = connection && {
-      connection,
-      status: "loading",
-    };
-    if (pending) {
-      entries.set(id, { ...entry, managedTools: pending });
+    const pending: ManagedToolDiscovery | undefined = connection && { status: "loading" };
+    if (pending && connection) {
+      entries.set(id, withManagedResult(entry, connection, pending));
     } else {
       if (
         (!entry.remoteId && !getSlotConnection?.()?.grantOnCreate) ||
@@ -311,11 +339,15 @@ export function createPluginDiscovery({
     const active = generation;
     const currentEntry = () => {
       const current = entries.get(id);
-      return context.isCurrent() &&
-        active === generation &&
-        (pending ? current?.managedTools === pending : current?.remoteId === entry.remoteId)
-        ? current
-        : undefined;
+      if (!context.isCurrent() || active !== generation || !current) {
+        return undefined;
+      }
+      if (pending && connection) {
+        return current.managedTools?.[connection.slot]?.[connection.sourceId] === pending
+          ? current
+          : undefined;
+      }
+      return current.remoteId === entry.remoteId ? current : undefined;
     };
     render();
     try {
@@ -344,11 +376,8 @@ export function createPluginDiscovery({
       }
       entries.set(
         id,
-        pending
-          ? {
-              ...current,
-              managedTools: { ...pending, status: "loaded", tools: detail.tools ?? [] },
-            }
+        pending && connection
+          ? withManagedResult(current, connection, { status: "loaded", tools: detail.tools ?? [] })
           : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
       );
       if (connection) {
@@ -377,8 +406,8 @@ export function createPluginDiscovery({
       );
       entries.set(
         id,
-        pending
-          ? { ...current, managedTools: { ...pending, status: "error", message } }
+        pending && connection
+          ? withManagedResult(current, connection, { status: "error", message })
           : { ...current, toolStatus: undefined, toolError: message },
       );
     } finally {
