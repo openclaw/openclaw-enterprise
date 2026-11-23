@@ -41,7 +41,7 @@ graph TD
 ```
 
 Arrows show implementation. Verify provider enforcement separately. OCC rejects apply for repository lists in
-saved policy or active Agent revision, even `[]`. Save and apply can share a transaction.
+saved policy or active Agent revision, even `[]`.
 Other admission checks apply.
 
 ## Execution Trace
@@ -155,6 +155,7 @@ Authorization denials still return `403 FORBIDDEN`.
 active revision and a supporting Driver. One transaction saves supplied
 changes, records the pending application and queues work. Omitting additions
 keeps the saved policy version. Provider readback confirms enforcement.
+CLI `--file` sends checked JSON.
 
 ### 3. Reconcile provider effects
 
@@ -272,6 +273,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23: CLI file apply.
 
 - 2026-11-23 11:47: Clarify policy flow. (authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80 - 226621cc08c630e3e966896ef04a7290d87d713a)
 

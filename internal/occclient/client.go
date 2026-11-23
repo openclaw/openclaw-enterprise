@@ -656,8 +656,8 @@ func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID, facet strin
 }
 
 // ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
-func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet, revisionID string, expectedVersion int) (any, error) {
-	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, body)
 }
 
 // TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.
