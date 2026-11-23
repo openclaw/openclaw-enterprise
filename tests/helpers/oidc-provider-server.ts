@@ -45,7 +45,8 @@ export async function startOidcProvider(directory: string, { host = "127.0.0.1",
       }
       if (request.method === "GET" && url.pathname === "/authorize") {
         const query = url.searchParams;
-        const state = query.get("state");
+        // Both callers mint state as 32 random bytes in base64url, like the code challenge.
+        const state = query.get("state") ?? "";
         if (
           new Set(query.keys()).size !== [...query.keys()].length ||
           query.get("client_id") !== config.clientId ||
@@ -55,7 +56,7 @@ export async function startOidcProvider(directory: string, { host = "127.0.0.1",
           query.get("code_challenge_method") !== "S256" ||
           !/^[A-Za-z0-9_-]{43}$/.test(query.get("code_challenge") ?? "") ||
           !query.get("nonce") ||
-          !state
+          !/^[A-Za-z0-9_-]{43}$/.test(state)
         ) {
           response.writeHead(400).end();
           return;

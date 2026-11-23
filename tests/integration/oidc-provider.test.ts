@@ -81,6 +81,11 @@ async function exerciseProvider(port: number, fixture: Awaited<ReturnType<typeof
   const duplicate = new URLSearchParams(parameters);
   duplicate.append("redirect_uri", "https://other.oce.example.test/callback");
   assert.equal((await httpsRequest(port, ca, `/authorize?${duplicate}`)).status, 400);
+  for (const malformed of ["", "short", `${state.slice(1)}=`]) {
+    const badState = new URLSearchParams(parameters);
+    badState.set("state", malformed);
+    assert.equal((await httpsRequest(port, ca, `/authorize?${badState}`)).status, 400);
+  }
   const authorize = async () => {
     const response = await httpsRequest(port, ca, `/authorize?${parameters}`);
     assert.equal(response.status, 302);
