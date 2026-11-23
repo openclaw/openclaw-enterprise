@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-11-19
-last_updated_session: authoring-run/d6c35425-ad20-4bc3-a09a-0756d3839065
+updated: 2026-11-23
+last_updated_session: authoring-run/b6ed636b-e626-44ae-a930-41e4fc6d05e7
 ---
 
 # CLI Agent metadata browsing flow
@@ -105,6 +105,14 @@ Neither branch treats missing settings as empty settings. The command retains
 the API error object in structured output. Explicit deployment, editing, and
 runtime commands continue to use their existing strict contracts.
 
+Automatic revision lookups use `internal/occclient/client.go:AgentRevisions`.
+`LatestAgentRevision` requests one summary first, while
+`internal/occcli/cli.go:revisionSummary` starts with 100. Both continue with
+requests for up to 100 summaries through empty pages, process each page before
+checking its next cursor, and stop when the cursor is empty or was already
+requested. A failed page returns its error. Manual history pagination and
+server-side permission filtering remain unchanged.
+
 ### 3. Render the preserved metadata and error
 
 `internal/occcli/output.go:printAgent` uses `printBrowsingItems` for individual
@@ -165,6 +173,12 @@ stored legacy settings. It does not run Gateway workloads or model turns. The
 focused Go command tests additionally check that history sends no status read
 for each version, and that `--cursor` continues the history. See the PostgreSQL testing guide for owned database setup.
 
+`internal/occcli/commands_test.go:TestDefaultRevisionLookupStopsAtARepeatedCursor`
+exercises `occ agent deployment-status` with repeated cursors, empty pages,
+and a readable revision on the page that closes a cycle.
+`TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults` checks the
+deploy lookup through the same cycle.
+
 ## Related docs
 
 - [CLI command reference](../reference/cli.md)
@@ -178,6 +192,8 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 22:39: Describe automatic revision lookup cursor handling and command coverage. (authoring-run/b6ed636b-e626-44ae-a930-41e4fc6d05e7 - bfd0d5177bb60ccb5fb517dbec037d09226ebaca)
 
 - 2026-11-19 14:44: Show the recorded cleanup status in the deployment status table. (authoring-run/d6c35425-ad20-4bc3-a09a-0756d3839065 - 7e8f8612809e5c18ad9f0bdde73aa5ab29edfb22)
 
