@@ -169,8 +169,10 @@ Declare the Default users Roles, Group, and bindings in the Installation
 configuration to let people create Agents in the shared `default` Namespace
 without other grants. Each account that an administrator creates afterwards
 joins the Group. The person owns each Agent, Configuration, Secret, and
-credential source they create, and deploys their Agents themselves. Other
-members cannot see or change those resources.
+credential source they create, and deploys their Agents themselves. With
+the sample bindings, other members have no grant to read or change those
+resources. Additional bindings to `default-user`, to another Group the member
+belongs to, or directly to the member can grant access, subject to Restrictions.
 [Default users and configured Roles](../../reference/authorization/default-users.md)
 defines each field and its limits.
 
@@ -183,16 +185,21 @@ defines each field and its limits.
    Namespaces or Agents a member creates.
 2. Restart the API and the worker. At startup, OCC writes the Roles, the Group,
    and the bindings. A configuration error stops startup and names the field.
-3. Create each person's account (steps 1–3 of [Add a person](#add-a-person)).
-   The account joins `default-user` as it is created. Accounts that already
-   exist do not join; there is no API, CLI, or console support to add them.
+3. Follow [Add a person](#add-a-person) for each new account. Skip step 4 if the
+   default Group grants all the access the person needs.
+   The account joins `default-user` as it is created. Applying the configuration
+   does not add existing accounts to the Group. An admitted
+   [OIDC enrollment](../../reference/authentication/team-enrollment.md) login can
+   add memberships selected by the enrollment policy, including default Groups
+   when `groupIds` is omitted. There is no API, CLI, or console support to add
+   members directly.
 
 The person can now create Agents in `default`. To stop all members from
 creating more, remove the binding from the configuration and restart. To stop
 one person, [disable their account](#remove-a-person). What they created stays,
-and their Agents keep running. To end their access to one resource, delete it,
-or delete its Owner binding `binding_owner_<resource-id>` with
-`occ iam access-binding delete` in that Namespace.
+and their Agents keep running. To revoke the Owner grant on one resource, delete
+`binding_owner_<resource-id>` with `occ iam access-binding delete` in that Namespace.
+Other bindings can still grant the person access directly or through a Group.
 
 ## Remove a person
 
