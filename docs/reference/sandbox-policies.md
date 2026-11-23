@@ -197,8 +197,8 @@ The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/
 for a dedicated Codex Harness, an OpenAI credential source and the managed
 Gateway. The controller build must pin the inspected Gateway and Agent images
 by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
-`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both images together before
-selecting those build arguments. Leaving the arguments empty disables this
+`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both role images together, then use the
+[runtime-first controller build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). Leaving the arguments empty disables this
 placement. A first empty list can be saved. Deploying it is refused before
 launch. Stop the active revision to retire its access.
 
