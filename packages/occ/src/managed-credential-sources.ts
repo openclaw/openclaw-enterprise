@@ -297,12 +297,17 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       const ref = credentialSourceRef(created);
       await dependencies.iamPolicy.bindCreator(state, principalId, ref);
       const completed = audit(ref);
+      const repositories = owner.ceiling[SOURCE_REPOSITORIES_CONFIG_KEY];
       await state.audit.append(
         input.providerPreset === undefined
           ? completed
           : {
               ...completed,
-              details: { ...completed.details, providerPreset: input.providerPreset },
+              details: {
+                ...completed.details,
+                providerPreset: input.providerPreset,
+                ...(repositories === undefined ? {} : { repositories }),
+              },
             },
       );
       return credentialSourceMetadata(created);
@@ -408,13 +413,23 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       }
       return source;
     };
-    const completedAudit = () => {
+    // The ceiling is not secret: the audit shows who changed a github Source's repository scope.
+    const completedAudit = (source: Readonly<CredentialSource>) => {
       const completed = audit(resource);
+      const repositories = ceiling?.[SOURCE_REPOSITORIES_CONFIG_KEY];
+      const previousRepositories = source.config[SOURCE_REPOSITORIES_CONFIG_KEY];
       return input.providerPreset === undefined
         ? completed
         : {
             ...completed,
-            details: { ...completed.details, providerPreset: input.providerPreset },
+            details: {
+              ...completed.details,
+              providerPreset: input.providerPreset,
+              ...(repositories === undefined ? {} : { repositories }),
+              ...(repositories === undefined || repositories === previousRepositories
+                ? {}
+                : { previousRepositories }),
+            },
           };
     };
     if (!changesCredential) {
@@ -428,7 +443,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         if (!updated) {
           throw new ResourceStateConflictError("The credential source changed during update.");
         }
-        await state.audit.append(completedAudit());
+        await state.audit.append(completedAudit(source));
         return credentialSourceMetadata(updated);
       });
     }
@@ -471,13 +486,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "The TokenService returned an invalid credential source.",
         );
       }
-      await dependencies.transactions.transact((state) => state.audit.append(completedAudit()));
+      await dependencies.transactions.transact((state) =>
+        state.audit.append(completedAudit(source)),
+      );
       return credentialSourceMetadata(updated);
     } catch (error) {
       try {
         await dependencies.transactions.transact(async (state) => {
           if (error instanceof CredentialDeliveryFailedError) {
-            await state.audit.append(completedAudit());
+            await state.audit.append(completedAudit(source));
           }
           await state.audit.append(
             failureAudit(
