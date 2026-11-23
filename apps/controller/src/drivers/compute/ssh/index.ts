@@ -855,6 +855,29 @@ export class SshComputeDriver implements ComputeDriver {
     return namespace;
   }
 
+  /** Private host observation; it does not authorize or establish a browser connection. */
+  async observeBrowserTarget(revision: AgentRevision) {
+    const observed = await this.revisionOperation("observe-browser-target", revision);
+    const { port } = observed;
+    if (
+      observed.namespaceId !== revision.namespaceId ||
+      observed.agentId !== revision.agentId ||
+      observed.revisionId !== revision.id ||
+      typeof port !== "number" ||
+      !Number.isSafeInteger(port) ||
+      port < 1024 ||
+      port > 65535
+    ) {
+      return undefined;
+    }
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      port,
+    };
+  }
+
   private async revisionOperation(
     operation: string,
     revision: AgentRevision,
