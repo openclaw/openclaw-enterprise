@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-22
-last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
+updated: 2026-11-23
+last_updated_session: authoring-run/b7ff67de-4bf2-49de-9896-f5a97e79e49b
 ---
 
 # Credential source lifecycle flow
@@ -12,7 +12,7 @@ An operator registers a credential with TokenService and selects its Source for 
 
 ## Entry Points
 
-- Trigger: register, bind, deploy, update, or retire a managed credential Source.
+- Trigger: register, bind, deploy, withdraw, update, or retire a managed credential Source.
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 - Source: `apps/controller/src/worker.ts:configureCredentialDeployment`
@@ -28,6 +28,16 @@ graph TD
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
   Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
   Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
+  Traffic --> Deny["<b>OCC</b><br/>Record withdrawal and deny use"]
+  Deny --> Target{"Sandbox exists?"}
+  Target -->|Present| Policy["<b>Sandbox Driver</b><br/>Apply and verify reduced policy"]
+  Target -->|Confirmed absent| Complete
+  Target -->|Unconfirmed| Pending
+  Policy --> Detach["<b>Credential Proxy</b><br/>Detach exact binding"]
+  Detach --> Receipt{"Detach receipt REVOKED?"}
+  Receipt -->|No| Pending["<b>Worker</b><br/>Keep pending and retry"]
+  Pending --> Policy
+  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revoked; retire last copy"]
 ```
 
 The arrows show implemented control flow. Readiness checks do not by themselves prove a successful model request or all enforcement guarantees.
@@ -67,10 +77,18 @@ Worker selects the Agent revision and checks Source authorization again before e
 
 On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absence of the revision's binding. It retains the saved target until cleanup succeeds. If a cleanup operation instead keeps the Sandbox, Sandbox must remove the policy's reference to the Provider before Proxy detaches it. Proxy attempts to delete its owned Provider and profile after cleanup; an attached-Provider refusal means it retains the shared copy until the last detach. The TokenService Source remains available for another deployment.
 
+### 5. Withdraw an Agent binding
+
+`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
+
+OCC checks `agent:operate` on the exact Agent, saves a pending withdrawal for each affected Agent revision, and queues Worker reconciliation in the same transaction. That record denies further admitted or routed use of the Source before native reconciliation begins. Worker checks each withdrawal requester’s current authority. Compute asks the selected native Credential Proxy to remove the admitted binding from the recorded target. The paired Sandbox Driver derives the reduced policy from the Agent revision, applies it, and checks that the loaded and effective policies no longer permit the credential destination. Proxy then detaches the Provider and checks the corresponding receipt. For a present Sandbox, `REVOKED` confirms native revocation. Proxy can also complete removal when it independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves the withdrawal pending with `DEPENDENCY_UNAVAILABLE` for retry or operator replay.
+
+After confirmed detachment, Proxy attempts to retire its owned delivery Provider and profile. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
+
 <a id="2-update-a-source"></a>
 <a id="5-retire-a-source"></a>
 
-### 5. Update or retire a Source
+### 6. Update or retire a Source
 
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
@@ -90,7 +108,7 @@ DELETE refuses blocking references and records retirement intent. OCC asks the s
 
 ## Debugging and Verification
 
-Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the [managed Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) and [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts). The first exercises Source DELETE and Agent Stop through Worker, Compute, and the concrete Proxy; Stop starts from simulated delivery state with an absent Sandbox. The second sends an authenticated active-Source PATCH through the selected native Proxy and verifies its update receipt. Controlled Kubernetes and gRPC transports do not establish live delivery or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for details.
+Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the [managed Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) and [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts). The first exercises Source DELETE, Agent Stop, and active withdrawal through the Fastify API, PostgreSQL Worker, Compute, Sandbox, and Proxy. It simulates the prior activation and controls the Kubernetes and OpenShell transports. Live withdrawal requires separate qualification. The second sends an authenticated active-Source PATCH through the selected native Proxy and verifies its update receipt. Controlled Kubernetes and gRPC transports do not establish live delivery or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for details.
 
 ## Related docs
 
@@ -103,6 +121,8 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 15:50: Describe staged Agent withdrawal, policy reduction, revocation receipts, and shared Provider retirement. (authoring-run/b7ff67de-4bf2-49de-9896-f5a97e79e49b - 82ab46ced89791f2283c64847c68c68bc54b1c02)
 
 - 2026-11-22 14:53: Combine the credential workflow with committed Source delivery updates and controlled caller proof. (authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf - ad9964a9b2975199780000000c6ada2a2e8b376a)
 
