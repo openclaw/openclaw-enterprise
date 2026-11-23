@@ -3183,28 +3183,32 @@ test("Unchanged deployment polls preserve selected Draft readiness text", async 
     { width: 1440, height: 900 },
     "Draft readiness",
   );
-  const running = deploymentStatusResponse(pending, { status: "running" });
+  let record = deploymentStatusResponse(pending, { status: "queued" });
   const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
   let statusCode = 200;
   await page.route(recordUrl, async (route, request) => {
     if (request.method() !== "GET") {
       return route.fallback();
     }
-    await route.fulfill(statusCode === 200 ? running : unavailable);
+    await route.fulfill(statusCode === 200 ? record : unavailable);
   });
-  await open("In progress", "configuration");
+  await open("Queued", "configuration");
   await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
-  const status = page.locator(".agent-draft-actions .card-actions").getByRole("status");
-  const ready = "Ready to deploy.";
-  await status.filter({ hasText: ready }).waitFor();
+  const actions = page.locator(".agent-draft-actions .card-actions");
+  const status = actions.getByRole("status");
+  const deploy = actions.getByRole("button", { name: "Deploy new version" });
+  const queued = "v2 was queued at the last check. Deploying again creates a new version.";
+  const running = "v2 was in progress at the last check. Deploying again creates a new version.";
   await page.locator(settledView).waitFor();
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  await waitForEnabled(deploy);
   await waitForIdleFetches(page);
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
-  await status.selectText();
-  const selection = () => page.evaluate(() => globalThis.getSelection()?.toString());
-  assert.equal(await selection(), ready);
+  assert.equal(await status.textContent(), queued);
+  assert.equal(await deploy.isEnabled(), true);
+  assert.equal(await deploy.getAttribute("aria-description"), queued);
 
-  for (const expectedStatus of [200, 503]) {
+  const poll = async (expectedStatus: number) => {
     statusCode = expectedStatus;
     const read = page.waitForResponse(
       (result) => result.url() === recordUrl && result.request().method() === "GET",
@@ -3212,10 +3216,24 @@ test("Unchanged deployment polls preserve selected Draft readiness text", async 
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     assert.equal((await read).status(), expectedStatus);
     await waitForIdleFetches(page);
-    assert.equal(await status.textContent(), ready);
+  };
+  record = deploymentStatusResponse(pending, { status: "running" });
+  await poll(200);
+  assert.equal(await status.textContent(), running);
+  assert.equal(await deploy.isEnabled(), true);
+  assert.equal(await deploy.getAttribute("aria-description"), running);
+
+  await status.selectText();
+  const selection = () => page.evaluate(() => globalThis.getSelection()?.toString());
+  assert.equal(await selection(), running);
+
+  for (const expectedStatus of [200, 503]) {
+    await poll(expectedStatus);
+    assert.equal(await status.textContent(), running);
+    assert.equal(await deploy.getAttribute("aria-description"), running);
     assert.equal(
       await selection(),
-      ready,
+      running,
       `Draft readiness text remains selected after a ${expectedStatus} deployment read`,
     );
   }
@@ -3224,6 +3242,8 @@ test("Unchanged deployment polls preserve selected Draft readiness text", async 
   const editor = page.locator("#configuration-json");
   await editor.fill(`${await editor.inputValue()}\n`);
   await status.filter({ hasText: CONFIGURATION_EDITS_PENDING }).waitFor();
+  assert.equal(await deploy.isEnabled(), false);
+  assert.equal(await deploy.getAttribute("aria-description"), null);
 });
 
 // A deploy in progress rewrote the deployment record and diagnostics on every 5 s poll, about half
