@@ -53,12 +53,33 @@ adopting previously deployed legacy Agents.
 
 OpenShell matches discovery and upload-pack for each read grant. Write also
 permits receive-pack. The Sandbox binds each repository path to a credential
-held by the Gateway. This selection grants Git only.
+held by the Gateway. By default, this selection grants Git only.
 
 Before installing or renewing the credential, OCE checks that the expected
 Sandbox is the Provider's sole recipient and the workspace has no additional
 members. Operators must retain exclusive control of workspace, Sandbox and
 Provider writes for this delivery mode.
+
+To allow issue reads with the stock OpenShell Supervisor and managed installation
+Provider, set `scopedRest: "v1"` on the repository's Namespace registration. The
+registry requires `nativeGit: "v1"` on the same registration. Issue reads also
+require `permissions.issues` set to `read` or `write` and the corresponding
+permission on the GitHub App.
+
+Complete the Worker rollout before enabling these settings. After updating the
+registration, rebind any existing repository access and deploy or redeploy the
+Agent with a saved read or write grant for that repository. Use the supplied
+`GITHUB_TOKEN` placeholder:
+
+```sh
+gh api --method GET repos/OWNER/REPO/issues
+gh api --method GET repos/OWNER/REPO/issues/NUMBER
+```
+
+`NUMBER` must be a positive decimal issue number of at most 19 digits. OpenShell
+injects the real credential outside the Agent and permits only these issue GET
+paths. Unlisted repositories, adjacent paths such as comments, REST writes and
+GraphQL remain denied. Omitting `scopedRest` keeps native delivery Git-only.
 
 ## Console access levels
 

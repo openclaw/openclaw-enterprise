@@ -4073,8 +4073,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     if (git) {
+      let issueReads = false;
       if (nativeGit) {
-        if (!repositoryPolicy || !git.nativeBinaries) {
+        if (!repositoryPolicy || !git.nativePolicy) {
           throw new OpenShellSandboxConfigurationFailure(
             "Native Git requires an admitted repository policy and transport binaries.",
           );
@@ -4082,8 +4083,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         const rule = compileOpenShellBoundGitRule(
           repositoryPolicy.grants,
           git.provider,
-          git.nativeBinaries,
+          git.nativePolicy.binaries,
+          git.nativePolicy.scopedRest,
         );
+        issueReads = rule.endpoints.some(({ host }) => host === "api.github.com");
         if (Object.hasOwn(composedPolicies, rule.name)) {
           throw new OpenShellSandboxConfigurationFailure(
             "Repository network policy rule already exists.",
@@ -4096,12 +4099,21 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         create.spec.environment,
         Object.fromEntries(git.environment.map(({ name, value }) => [name, value])),
       );
-      if (context.revision.egressPlan?.repositoryGit) {
-        const policy = asRecord(create.spec.policy.network_middlewares);
+      if (plan?.repositoryGit) {
+        // The protected base was verified before preparing a Provider. Issue-read endpoints
+        // require a native selector that leaves those paths to the stock policy and credential.
+        const middleware = issueReads
+          ? openShellEgressConfiguration(plan, this.options.egress!, context.revision, true)
+              .network_middlewares
+          : create.spec.policy.network_middlewares;
+        const policy = asRecord(middleware);
         if (!isDeepStrictEqual(policy?.["oce-prepared-git"], git.middlewares["oce-prepared-git"])) {
           throw new OpenShellSandboxConfigurationFailure(
             "Git middleware differs from its protected admission.",
           );
+        }
+        if (issueReads) {
+          Object.assign(create.spec.policy, { network_middlewares: middleware });
         }
       } else {
         Object.assign(create.spec.policy, { network_middlewares: git.middlewares });

@@ -153,11 +153,47 @@ function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGran
   });
 }
 
+export interface OpenShellScopedRestGrant {
+  readonly repository: string;
+  readonly readIssues: boolean;
+}
+
+function scopedApiEndpoints(
+  policy: readonly RepositoryNetworkGrant[],
+  permissions: readonly OpenShellScopedRestGrant[] | undefined,
+): readonly OpenShellProviderProfileEndpoint[] {
+  const endpoints: OpenShellProviderProfileEndpoint[] = [];
+  for (const { repository } of policy) {
+    const rules = [];
+    const rest = permissions?.find((grant) => grant.repository === repository);
+    if (rest?.readIssues === true) {
+      const path = `/repos/${repository}/issues`;
+      rules.push({ allow: { method: "GET", path } });
+      // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
+      // Enumerate positive decimal issue-number paths up to 19 digits.
+      for (let width = 1; width <= 19; width++) {
+        rules.push({ allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width - 1)}` } });
+      }
+    }
+    if (rules.length) {
+      endpoints.push({
+        host: "api.github.com",
+        port: 443,
+        protocol: "rest",
+        path: `/repos/${repository}/**`,
+        rules,
+      });
+    }
+  }
+  return endpoints;
+}
+
 /** The Sandbox owns the grants. The attached Provider supplies only the credential. */
 export function compileOpenShellBoundGitRule(
   grants: readonly RepositoryNetworkGrant[],
   provider: string,
   binaries: readonly string[],
+  scopedRest?: readonly OpenShellScopedRestGrant[],
 ) {
   if (typeof provider !== "string" || !/^oce-github-installation-[a-f0-9]{32}$/.test(provider)) {
     throw new Error("Expected an installation Git Provider.");
@@ -177,11 +213,16 @@ export function compileOpenShellBoundGitRule(
       throw new Error("Expected exact Git transport binary paths.");
     }
   }
+  const policy = canonicalGrants(grants);
+  const endpoints = [
+    ...policy.map(repositoryNetworkEndpoint),
+    ...scopedApiEndpoints(policy, scopedRest).map((endpoint) => openShellProfileEndpoint(endpoint)),
+  ];
   return {
     name: "repository-git-network",
     binaries: binaries.map((path) => ({ path })),
-    endpoints: canonicalGrants(grants).map((grant) => ({
-      ...repositoryNetworkEndpoint(grant),
+    endpoints: endpoints.map((endpoint) => ({
+      ...endpoint,
       credential_binding: { provider },
     })),
   };

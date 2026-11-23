@@ -10,6 +10,10 @@ export interface RepositoryGitDeliveryBinding {
         readonly installationId: string;
         readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
         readonly nativeGit?: "v1";
+        readonly scopedRest?: readonly Readonly<{
+          repository: string;
+          readIssues: boolean;
+        }>[];
         readonly permissions: Readonly<Record<string, string>>;
       }
     | { readonly repository: string; readonly installationId?: never }

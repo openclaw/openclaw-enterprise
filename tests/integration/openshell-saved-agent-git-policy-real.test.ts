@@ -13,7 +13,10 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { repositoryCleanupWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { wirePolicy } from "../../apps/controller/src/drivers/egress-proxy/openshell-wire-policy.ts";
 import { assertGitCallbackEndpoint } from "../fixtures/openshell-git-callback-proxy.ts";
-import type { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
+import {
+  scopedRestFixturePermissions,
+  type startSkipperPrivateGitOrigin,
+} from "../fixtures/skipper-private-git-origin.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import { observeUntil, prepareFiniteGitAgent } from "../helpers/finite-git-agent.ts";
 import { ownFirstAgentWork } from "../helpers/local-first-agent-stack.mjs";
@@ -30,6 +33,7 @@ const emptyDeployRefusal = {
 };
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
+const issueReads = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST === "reads";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
 
@@ -169,6 +173,97 @@ function savedGitProbeTools(fixture: GitInstallation, execute: GitExec) {
 }
 
 type IssuedDeployment = Deployed & { credentialIndex: number };
+
+async function exerciseSavedIssueReads(
+  fixture: GitInstallation,
+  execute: GitExec,
+  deployed: IssuedDeployment,
+  callbackBaseline: number,
+) {
+  const { origin, callbacks } = fixture;
+  const { network } = origin;
+  assert.ok(network && network.token === undefined && callbacks);
+  const token = origin
+    .snapshot()
+    .tokens.find(({ index }: { index: number }) => index === deployed.credentialIndex);
+  assert.ok(token && !token.revoked);
+  assert.deepEqual(token.permissions, scopedRestFixturePermissions);
+  assert.ok(Array.isArray(token.repositoryIds));
+  assert.deepEqual(
+    [...token.repositoryIds].sort(),
+    network.scopes.map(({ repositoryId }: { repositoryId: string }) => repositoryId).sort(),
+  );
+  assert.deepEqual((await deployed.readExecution()).identity, deployed.original.identity);
+  assert.equal(await callbacks.read(), callbackBaseline);
+
+  const { guest } = savedGitProbeTools(fixture, execute);
+  const ghGet = (route: string, includeHeaders = false): [string, ...string[]] => [
+    "sh",
+    "-ceu",
+    'unset GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_DEBUG; export GH_PROMPT_DISABLED=1; exec gh api --hostname github.com --method GET "$@"',
+    "--",
+    ...(includeHeaders ? ["--include"] : []),
+    route,
+  ];
+  // The bundled GitHub skill uses gh api. Count all origin HTTP and identify
+  // the exact credential that reached each allowed route from this revision.
+  for (const repository of ["fixture/a", "fixture/b"]) {
+    for (const [route, operation] of [
+      ["issues", "rest-issue-list"],
+      ["issues/42", "rest-issue-read"],
+    ] as const) {
+      const before = origin.snapshot().requests;
+      const offset = network.requests().length;
+      const result = await guest(
+        deployed.target,
+        { kind: "success" },
+        ghGet(`repos/${repository}/${route}`),
+      );
+      assert.equal(origin.snapshot().requests, before + 1, "Expected one origin request");
+      assert.deepEqual(network.requests().slice(offset), [
+        {
+          repository,
+          operation,
+          method: "GET",
+          authenticated: true,
+          credentialIndex: deployed.credentialIndex,
+        },
+      ]);
+      const expected = { number: 42, title: `Fixture issue in ${repository}`, state: "open" };
+      assert.ok(
+        isDeepStrictEqual(
+          JSON.parse(result.stdout.toString("utf8")),
+          route === "issues" ? [expected] : expected,
+        ),
+        "Unexpected controlled issue response",
+      );
+    }
+  }
+
+  // The first four requests calibrate the same whole-origin counter used here.
+  // Keep this journey read-only and require an HTTP refusal before the origin.
+  for (const route of [
+    "repos/fixture/c/issues",
+    "repos/fixture/c/issues/42",
+    "repos/fixture/a/issues/comments",
+  ]) {
+    const before = origin.snapshot().requests;
+    const result = await guest(deployed.target, { kind: "success" }, [
+      "sh",
+      "-ceu",
+      'status=0; "$@" 2>&1 || status=$?; test "$status" -eq 1',
+      "--",
+      ...ghGet(route, true),
+    ]);
+    const [statusLine] = result.stdout.toString("utf8").split(/\r?\n/, 1);
+    assert.ok(
+      /^HTTP\/[1-3](?:\.\d+)? 403(?: [^\r\n]*)?$/.test(statusLine ?? ""),
+      "Expected gh api to receive HTTP 403 for the GET",
+    );
+    assert.equal(origin.snapshot().requests, before, "Denied issue GET reached the origin");
+  }
+  assert.equal(await callbacks.read(), callbackBaseline);
+}
 
 async function deployWithIssuance(
   origin: GitOrigin,
@@ -572,6 +667,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
       );
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
+        issueReads,
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
@@ -670,7 +766,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
           );
         }
 
-        // Require one private Git route with exact method, path, and service
+        // Require one bound network rule with exact per-repository method, path and service
         // grants. This expectation derives from the scenario's independent
         // A/B/C oracle and never calls the product policy compiler.
         const rules = asRecord(asRecord(config.policy)?.network_policies);
@@ -689,7 +785,8 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
         });
         const grants = desired.repositoryNetworkPolicy;
         assert.ok(grants);
-        assert.equal(github.length, grants.length);
+        const restEnabled = issueReads && mode !== "peer";
+        assert.equal(github.length, grants.length * (restEnabled ? 2 : 1));
         const git = github.find(({ endpoint }) => endpoint?.host === "github.com");
         assert.ok(git?.endpoint && desired.repositoryNetworkPolicy);
         const providers = serving.sandbox.spec?.providers;
@@ -750,10 +847,16 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
           "The attached Git Provider must contribute an empty policy layer",
         );
         const gitEndpoints = [];
+        const apiEndpoints = [];
         for (const { name, endpoint } of github) {
           assert.ok(name === git.name && endpoint);
-          assert.equal(endpoint.host, "github.com");
-          gitEndpoints.push(endpoint);
+          assert.deepEqual(endpoint.credential_binding, { provider });
+          if (endpoint.host === "github.com") {
+            gitEndpoints.push(endpoint);
+          } else {
+            assert.equal(endpoint.host, "api.github.com");
+            apiEndpoints.push(endpoint);
+          }
           assert.equal(endpoint.port, 443);
           assert.equal(endpoint.protocol, "rest");
           assert.equal(endpoint.enforcement, "NETWORK_ENFORCEMENT_MODE_ENFORCE");
@@ -779,6 +882,25 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
         assert.deepEqual(
           wirePolicy(gitEndpoints.map(({ path, rules }) => ({ path, rules }))),
           wirePolicy(expected),
+        );
+        const issueRoutes = restEnabled
+          ? grants.map(({ repository }) => {
+              const path = `/repos/${repository}/issues`;
+              return {
+                path: `/repos/${repository}/**`,
+                rules: [
+                  { allow: { method: "GET", path } },
+                  ...Array.from({ length: 19 }, (_, width) => ({
+                    allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width)}` },
+                  })),
+                ],
+              };
+            })
+          : [];
+        assert.deepEqual(
+          wirePolicy(apiEndpoints.map(({ path, rules }) => ({ path, rules }))),
+          wirePolicy(issueRoutes),
+          "Loaded issue routes must match the saved repositories and admit only GET",
         );
         const generation = {
           ...identity,
@@ -1277,6 +1399,11 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
           prove,
         };
       };
+      if (issueReads) {
+        await t.test("Saved native Git grants admit read-only gh API on A and B", async () => {
+          await exerciseSavedIssueReads(fixture, exec, original, nativeCallbackBaseline);
+        });
+      }
       const peer = await startPeer();
       const finishPeer = async (stage: "after-expiry" | "after-stop") => {
         await peer.prove(stage);
@@ -1419,6 +1546,11 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
 
           await retire(original, installed.provider, index);
           requireTimelyGit(original.target);
+          if (issueReads) {
+            await t.test("Downgraded native Git grants retain read-only gh API", async () => {
+              await exerciseSavedIssueReads(fixture, exec, replacement, nativeCallbackBaseline);
+            });
+          }
           await peer.prove("after-downgrade");
           successor = replacement;
           successorProvider = current.provider;
