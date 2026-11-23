@@ -263,6 +263,24 @@ export function registerWorkerCases(): void {
         agentId: "agt_test",
         revisionId: "rev_test",
       },
+      // A recorded native Git copy of the Source: retired after read-back, or retained with why.
+      {
+        event: "worker.openshell-git-copy",
+        status: "retained",
+        reason: "provider_present",
+        credentialSourceId,
+        namespaceId: "ns_test",
+        agentId: "agt_test",
+        revisionId: "rev_test",
+      },
+      {
+        event: "worker.openshell-git-copy",
+        status: "retired",
+        credentialSourceId,
+        namespaceId: "ns_test",
+        agentId: "agt_test",
+        revisionId: "rev_test",
+      },
       {
         event: "worker.error",
         code: "REPOSITORY_SOURCE_LOAN_REFUSED",
