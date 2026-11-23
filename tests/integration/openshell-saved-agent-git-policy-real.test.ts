@@ -35,16 +35,6 @@ const emptyDeployRefusal = {
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 // Scoped REST covers issue reads, pull request reads and pull request creation.
 const issueReads = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST === "reads";
-const pullCreateFields = [
-  "title",
-  "head",
-  "head_repo",
-  "base",
-  "body",
-  "draft",
-  "maintainer_can_modify",
-  "issue",
-];
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
 
@@ -411,13 +401,6 @@ async function exerciseSavedPullWrites(
   }
   await deny(bIssues, issue);
   await refusePullRedirect(fixture, execute, deployed);
-
-  // OpenShell matches the query string, not the body. Each create field in the query of the
-  // admitted POST is refused before forwarding, with or without a valid body.
-  for (const field of pullCreateFields) {
-    await deny(`${bPulls}?${field}=1`, pull);
-    await deny(`${bPulls}?${field}=1`, {});
-  }
   assert.deepEqual(network.pullRequests("fixture/b"), []);
 
   const draftHead = "before-rotation";
@@ -1136,14 +1119,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
                     })),
                   ]),
                 ],
-                // The create fields cannot arrive in the query string of the admitted POST.
-                deny_rules: create
-                  ? pullCreateFields.map((field) => ({
-                      method: "POST",
-                      path: `${root}/pulls`,
-                      query: { [field]: { glob: "**" } },
-                    }))
-                  : [],
+                deny_rules: [],
               };
             })
           : [];

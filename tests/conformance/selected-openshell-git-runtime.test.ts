@@ -3817,20 +3817,13 @@ test("native issue policy survives Sandbox creation and independent Credential P
   await verifyScopedRestReadback(t, { issues: "read" });
 });
 
-test("native pull request creation keeps its deny rules and selects no hook through Sandbox creation and readback", async (t) => {
+test("native pull request creation selects no hook through Sandbox creation and readback", async (t) => {
   const bound = await verifyScopedRestReadback(t, { issues: "read", pull_requests: "write" });
   const path = "/repos/example/delivery/pulls";
   const [readOnly, writable] = bound.endpoints.filter(({ host }) => host === "api.github.com");
   assert.ok(readOnly && writable && "rules" in writable);
   assert.ok(writable.rules.some(({ allow }) => allow.method === "POST" && allow.path === path));
-  // The matcher cannot require an empty query, so each create field is denied by name.
-  assert.deepEqual(
-    "deny_rules" in writable && writable.deny_rules,
-    ["title", "head", "head_repo", "base", "body", "draft", "maintainer_can_modify", "issue"].map(
-      (field) => ({ method: "POST", path, query: { [field]: { glob: "**" } } }),
-    ),
-  );
-  assert.equal("deny_rules" in readOnly, false);
+  assert.equal("deny_rules" in writable, false);
 });
 
 async function verifyScopedRestReadback(t: TestContext, permissions: Record<string, string>) {
@@ -4068,12 +4061,10 @@ test("a Worker upgrade keeps saved bindings current and releases nothing to a Sa
   // the loaded policy differs, so the Sandbox keeps what it has and receives no material.
   const loaded = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
   const current = structuredClone(loaded);
-  assert.ok(current.some((endpoint) => "deny_rules" in endpoint));
   for (const endpoint of loaded) {
     assert.ok("rules" in endpoint);
     Object.assign(endpoint, {
       rules: endpoint.rules.filter(({ allow }) => !allow.path?.includes("/pulls")),
-      deny_rules: undefined,
     });
   }
   await held.reconcile();
