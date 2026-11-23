@@ -40,6 +40,7 @@ import {
   grantSecretOperate,
   hasFocus,
   holdRequests,
+  inViewport,
   isMaskedSecretValue,
   login,
   MEMBER_WRITE,
@@ -71,6 +72,8 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
+import { responseTo } from "./console-action-helpers.ts";
+import { refocusHeld, tagView, viewTag } from "./console-refocus-helpers.ts";
 import {
   withholdPermissionSummary,
   agentStopRequests,
@@ -86,6 +89,7 @@ import {
   CONFIGURATION_SAVE_DENIED,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
+  RELOAD_DRAFT_BEFORE_SAVING,
   RESOURCE_CONFLICT,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
@@ -1250,8 +1254,15 @@ test("A refused harness grant read leaves an administrator's Deploy alone", asyn
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
 });
 
-for (const focus of ["status", "editor", "navigation"]) {
-  test(`Configuration save conflict preserves ${focus} focus`, async (t) => {
+for (const [focus, refocus] of [
+  ["status", false],
+  ["editor", false],
+  ["navigation", false],
+  ["status", true],
+  ["navigation", true],
+] as const) {
+  const when = refocus ? " during a tab return" : "";
+  test(`Configuration save conflict preserves ${focus} focus${when}`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Conflict focus", { ready: true });
@@ -1274,7 +1285,10 @@ for (const focus of ["status", "editor", "navigation"]) {
     const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const url = new URL(path, fixture.origin).href;
     const held = await holdRequests(t, page, url, { method: "PATCH", once: true });
-    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+    await waitForEnabled(save);
+    await save.focus();
+    await page.keyboard.press("Enter");
     await held.requested;
     assert.equal(await hasFocus(page.getByText("Checking Configuration…", { exact: true })), true);
     const navigation = page.getByRole("link", { name: "Agents", exact: true });
@@ -1282,7 +1296,7 @@ for (const focus of ["status", "editor", "navigation"]) {
       // Read-only JSON must still support keyboard selection while the write is pending.
       await editor.click();
       await editor.press("ControlOrMeta+a");
-    } else if (focus === "navigation") {
+    } else if (focus === "navigation" && !refocus) {
       await navigation.focus();
     }
     const selection = () =>
@@ -1305,29 +1319,48 @@ for (const focus of ["status", "editor", "navigation"]) {
     );
     const before = await fixture.request("GET", path);
     assert.equal(before.status, 200);
-    const response = page.waitForResponse(
-      (reply) => reply.request().method() === "PATCH" && reply.url() === url,
-    );
-    held.release();
-    assert.equal((await response).status(), 409);
+    const releaseConflict = async () => {
+      const response = responseTo(page, "PATCH", url);
+      held.release();
+      assert.equal((await response).status(), 409);
+      // The alert's DOM updates while the inert view is absent from the accessibility tree.
+      await page.locator('#configuration-editor-feedback[role="alert"]').waitFor();
+    };
+    if (refocus) {
+      await tagView(page);
+      const session = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+      await refocusHeld(t, page, async () => {
+        if (focus === "navigation") {
+          await navigation.focus();
+          assert.equal(await hasFocus(navigation), true);
+          // A later blur must not give the save permission to reclaim focus.
+          await navigation.blur();
+        }
+        await releaseConflict();
+      });
+      assert.equal((await session).status(), 200);
+      assert.equal(await viewTag(page), "kept");
+    } else {
+      await releaseConflict();
+    }
     const reload = page.getByRole("button", { name: "Reload draft", exact: true });
     await reload.waitFor();
-    await page
-      .getByRole("alert")
-      .filter({ hasText: "The saved Configuration changed while you were editing." })
-      .waitFor();
+    const alert = page.getByRole("alert").filter({ hasText: RELOAD_DRAFT_BEFORE_SAVING });
+    await alert.waitFor();
     assert.equal(await editor.inputValue(), draft);
     assert.equal(await editor.getAttribute("readonly"), "");
-    assert.equal(
-      await page.getByRole("button", { name: "Save Configuration", exact: true }).isDisabled(),
-      true,
-    );
+    assert.equal(await save.isDisabled(), true);
     const after = await fixture.request("GET", path);
     assert.equal(after.status, 200);
     assert.deepEqual(after.data, before.data);
     assert.deepEqual(after.data.values, nativeValues("concurrent edit"));
     if (focus === "status") {
+      assert.equal(await reload.isEnabled(), true);
+      assert.equal(await accessibleDescription(reload), RELOAD_DRAFT_BEFORE_SAVING);
       assert.equal(await hasFocus(reload), true);
+      assert.equal(await inViewport(alert), true);
+    } else if (focus === "navigation" && refocus) {
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
     } else {
       assert.equal(await hasFocus(focus === "editor" ? editor : navigation), true);
       assert.deepEqual(await page.evaluate(() => [scrollX, scrollY]), scroll);

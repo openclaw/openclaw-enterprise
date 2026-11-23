@@ -732,6 +732,7 @@ async function assertReturnedInstallationAuthentication(
 }
 type Rehearsal = {
   controllers: Controllers;
+  ordinaryUpgrade: boolean;
   kubeconfig: string;
   context: string;
   namespace: string;
@@ -790,6 +791,16 @@ type Pod = {
 
 const labels = Type.Record(Type.String(), Type.String());
 const container = Type.Object({ name: Type.String(), image: Type.String() });
+const controllerContainer = Type.Object({
+  ...container.properties,
+  resources: Type.Optional(
+    Type.Object({
+      limits: Type.Optional(
+        Type.Object({ cpu: Type.Optional(Type.String()), memory: Type.Optional(Type.String()) }),
+      ),
+    }),
+  ),
+});
 const installationVolumes = Type.Optional(
   Type.Array(
     Type.Object({
@@ -816,7 +827,7 @@ const controllerPod = Type.Object({
   spec: Type.Object({
     nodeName: Type.Optional(Type.String()),
     serviceAccountName: Type.String(),
-    containers: Type.Array(container),
+    containers: Type.Array(controllerContainer),
     volumes: installationVolumes,
   }),
   status: Type.Object({
@@ -952,9 +963,11 @@ export function rehearsalPlane({
   kubeconfig,
   context,
   namespace,
+  recordResourceLimits = false,
 }: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
   kube: Kubectl;
   get: (resource: string) => Promise<unknown>;
+  recordResourceLimits?: boolean;
 }) {
   const pods = async () => {
     const listed = protectedJSON<unknown>(
@@ -1036,10 +1049,8 @@ export function rehearsalPlane({
             pod.status.phase === "Running",
           `${component} Pod did not start`,
         );
-        assert.equal(
-          pod.spec.containers.find((container) => container.name === component)?.image,
-          image.reference,
-        );
+        const podContainer = pod.spec.containers.find((container) => container.name === component);
+        assert.equal(podContainer?.image, image.reference);
         assertInstallationVolume(pod.spec, secretName);
         const status = pod.status.containerStatuses?.find((item) => item.name === component);
         assert.ok(status?.ready && status.containerID, `${component} container is not ready`);
@@ -1066,6 +1077,7 @@ export function rehearsalPlane({
           { protectedInput: true },
         );
         assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
+        const limits = podContainer?.resources?.limits;
         return {
           component,
           pod: pod.metadata.name,
@@ -1076,6 +1088,9 @@ export function rehearsalPlane({
           containerID: status.containerID,
           imageID: status.imageID,
           imageDigest,
+          ...(recordResourceLimits && {
+            limits: { cpu: limits?.cpu ?? null, memory: limits?.memory ?? null },
+          }),
         };
       }),
     );
@@ -1085,6 +1100,7 @@ export function rehearsalPlane({
 
 export async function rehearsePopulatedReturn({
   controllers,
+  ordinaryUpgrade,
   kubeconfig,
   context,
   namespace,
@@ -1182,6 +1198,7 @@ export async function rehearsePopulatedReturn({
     kubeconfig,
     context,
     namespace,
+    recordResourceLimits: true,
   });
   const candidateConnections = () =>
     sql(
@@ -1431,13 +1448,24 @@ export async function rehearsePopulatedReturn({
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase("Recover the interrupted controller upgrade after committed initialization", () =>
+  const forwardPhase = ordinaryUpgrade
+    ? "Complete the ordinary controller upgrade"
+    : "Recover the interrupted controller upgrade after committed initialization";
+  await phase(forwardPhase, () =>
     measureUpgradeAvailability(
       externalRequest,
       installationId,
       directory,
       async (measureGuardedResume) => {
         const evidence = join(directory, "forward");
+        if (ordinaryUpgrade) {
+          await upgrade(["--evidence-dir", evidence]);
+          const deployed = await helmStatus();
+          assert.equal(deployed.version, baselineRelease.version + 1);
+          assert.equal(deployed.info.status, "deployed");
+          await verifyInstallation();
+          return;
+        }
         const client = join(directory, "helm-client.json");
         const shimDirectory = join(directory, "helm-client-bin");
         const shim = join(shimDirectory, "helm");
@@ -1739,6 +1767,10 @@ export async function rehearsePopulatedReturn({
     accepted,
     candidatePods,
     helmRevision: candidateRelease.version,
+  });
+  await phase("Check the candidate database with the previous controller", async () => {
+    await custody.assertRelease();
+    await checkMigration(previous, previousJob, originalDatabase, "return-preflight");
   });
 
   const stopCandidateWriters = async () => {
