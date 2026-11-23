@@ -4535,7 +4535,7 @@ test("native Git cannot opt a ref or draft limited registration into repository-
 });
 
 test("native Git rotates a lent Source in place, confirms each version's delivery, and lends nothing after Stop", async (t) => {
-  const { f, revision, reconcile, activity, prepared, entry, lentVersion } = await heldGit(
+  const { f, store, revision, reconcile, activity, prepared, entry, lentVersion } = await heldGit(
     t,
     true,
     undefined,
@@ -4543,6 +4543,20 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
     "cs_fixture_token",
   );
   lentSourceHolds(f);
+  // The copy the deploy recorded; each write adds the Provider name and the Source version.
+  store.copies.set(revision.id, {
+    revisionId: revision.id,
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    credentialSourceId: "cs_fixture_token",
+    namespaceName: f.sandbox.workspace,
+    retired: false,
+    idle: false,
+  });
+  const installed = () => {
+    const copy = store.copies.get(revision.id);
+    return [copy?.provider, copy?.sourceVersion];
+  };
   assert.match(prepared.provider, /^oce-github-token-[a-f0-9]{32}$/);
   const confirmed = () =>
     f.events
@@ -4556,6 +4570,7 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
   assert.equal(activity.updates, 1);
   assert.equal(f.runtime.route(revision.id).state, "installed");
   assert.deepEqual(confirmed(), [["cs_fixture_token", "version-1", revision.id]]);
+  assert.deepEqual(installed(), [prepared.provider, "version-1"]);
   await reconcile();
   assert.equal(confirmed().length, 1, "confirmed once per version, not per pass");
 
@@ -4576,6 +4591,7 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
     ["cs_fixture_token", "version-1", revision.id],
     ["cs_fixture_token", "version-2", revision.id],
   ]);
+  assert.deepEqual(installed(), [prepared.provider, "version-2"]);
   assert.equal(JSON.stringify(f.events).includes(f.owner.material.value), false);
 
   // Stop withdraws the route: nothing is read or renewed for it again.

@@ -61,6 +61,7 @@
     "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-repository-source-custody.test.ts",
+    "tests/integration/postgres-repository-source-copies.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
@@ -554,6 +555,13 @@
         "PostgreSQL ends a Source hold its frozen Worker abandoned, and the resumed Worker writes nothing",
         "a Source hold whose session was terminated releases cleanly and lets writers through",
         "a Source lock reads ownership from the selected TokenService only, and the deployed access from the revision"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-repository-source-copies.test.ts",
+      "expectedTests": [
+        "a Source cannot be deleted until the Worker confirms each recorded copy retired, across restarts",
+        "the copy record keeps its identity and its retirement final for the application role"
       ]
     },
     {

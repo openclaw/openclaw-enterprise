@@ -1,4 +1,5 @@
 import type {
+  OpenShellGitIdleSourceCopy,
   OpenShellGitMaterialReference,
   OpenShellGitRouteRecord,
   OpenShellGitRouteStore,
@@ -16,8 +17,19 @@ type FixtureRoute = {
 type CountedOperation =
   "open" | "adopt" | "writing" | "cancelWriting" | "record" | "owns" | "block" | "withdraw";
 
+/** A repository Source copy row as migration 0093 keeps it; `idle` stands for the work and Agent
+ * state the PostgreSQL query reads (tests/integration/postgres-repository-source-copies.test.ts). */
+export type FixtureSourceCopy = Omit<OpenShellGitIdleSourceCopy, "retired"> & {
+  provider?: string;
+  sourceVersion?: string;
+  retirementBlocked?: string;
+  retired: boolean;
+  idle: boolean;
+};
+
 type FixtureStore = OpenShellGitRouteStore & {
   rows: Map<string, FixtureRoute>;
+  copies: Map<string, FixtureSourceCopy>;
   calls: Record<CountedOperation, number>;
 };
 
@@ -44,9 +56,64 @@ export function routeStore(): FixtureStore {
     block: 0,
     withdraw: 0,
   };
+  const copies = new Map<string, FixtureSourceCopy>();
+  const unretired = (revisionId: string) => {
+    const copy = copies.get(revisionId);
+    return copy !== undefined && !copy.retired ? copy : undefined;
+  };
   return {
     rows,
+    copies,
     calls,
+    async sourceCopy(revisionId) {
+      const copy = copies.get(revisionId);
+      return (
+        copy && {
+          revisionId: copy.revisionId,
+          namespaceId: copy.namespaceId,
+          agentId: copy.agentId,
+          credentialSourceId: copy.credentialSourceId,
+          retired: copy.retired,
+        }
+      );
+    },
+    async recordSourceCopyInstalled(revisionId, provider, sourceVersion) {
+      const copy = unretired(revisionId);
+      if (copy === undefined) {
+        return false;
+      }
+      Object.assign(copy, { provider, sourceVersion });
+      return true;
+    },
+    async idleSourceCopies() {
+      return Array.from(copies.values())
+        .filter((copy) => copy.idle && !copy.retired)
+        .map(({ revisionId, namespaceId, agentId, credentialSourceId, namespaceName }) => ({
+          revisionId,
+          namespaceId,
+          agentId,
+          credentialSourceId,
+          namespaceName,
+          retired: false,
+        }));
+    },
+    async retireSourceCopy(revisionId) {
+      const copy = unretired(revisionId);
+      if (copy === undefined) {
+        return false;
+      }
+      copy.retired = true;
+      delete copy.retirementBlocked;
+      return true;
+    },
+    async retainSourceCopy(revisionId, reason) {
+      const copy = unretired(revisionId);
+      if (copy === undefined) {
+        return false;
+      }
+      copy.retirementBlocked = reason;
+      return true;
+    },
     standing: unexpectedPersistentOperation,
     expire: unexpectedPersistentOperation,
     beginDetach: unexpectedPersistentOperation,
