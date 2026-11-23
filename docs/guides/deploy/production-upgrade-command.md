@@ -6,6 +6,9 @@ from the reviewed release checkout root after completing the
 Use the [chart procedure](production-upgrade.md#apply-other-installation-changes)
 for protected Installation settings.
 
+The offline plan rejects [preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+because their chart omits the initialization Job. Manage their database upgrades separately.
+
 Create an owner-only JSON profile outside the checkout. Set `context` to the
 name of a kubeconfig context whose cluster has an HTTPS `server` URL. Keep
 the kubeconfig in an owner-only regular file under a directory protected

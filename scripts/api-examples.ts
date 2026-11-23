@@ -428,6 +428,7 @@ export const requestExamples = {
     secrets: source.secrets,
   },
   updateCredentialSource: { adoption: "live", secrets: source.secrets },
+  pushAgentCredentials: { sources: [source.id] },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
   updateServiceAccountCredential: {
@@ -774,6 +775,7 @@ export const responseExamples = {
   validateAgentSandboxPolicy: { success: true, data: [] },
   getAgentSandboxRecommendations: { recommendations: [], truncated: false },
   withdrawAgentCredentialSource: withdrawal,
+  pushAgentCredentials: { results: [{ sourceId: source.id, outcome: "succeeded" }] },
   getAgentCredentialWithdrawal: withdrawal,
   getAgentWorkspaceFile: {
     name: "AGENTS.md",

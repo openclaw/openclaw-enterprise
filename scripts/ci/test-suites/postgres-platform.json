@@ -651,6 +651,7 @@
         "scoped deployment channel observes IAM revocation after the writer lock",
         "scoped deployment admission observes IAM revocation after the writer lock",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
+        "live apply saves edits and enqueues their exact snapshot atomically",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]
     },
@@ -813,6 +814,10 @@
     {
       "path": "tests/integration/postgres-readiness-capacity.test.ts",
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
+    },
+    {
+      "path": "tests/integration/postgres-metrics-listener-capacity.test.ts",
+      "expectedTests": ["metrics listener bounds PostgreSQL scrape waiters and pipelined responses"]
     },
     {
       "path": "tests/integration/postgres-private-secret-create.test.ts",

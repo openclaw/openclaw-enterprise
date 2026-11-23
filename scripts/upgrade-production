@@ -677,6 +677,15 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
                     "Supply a passing PostgreSQL compatibility report for the selected controller and retry."
                 )
     before_values = mappings["baseline Helm values"]
+    if operation in ("plan", "apply", "preflight"):
+        namespace = before_values.get("preprovisionedNamespace")
+        # Match the native helper's `// {} | length` check, including scalars.
+        if namespace is not False and namespace not in (None, {}, [], ""):
+            parser.error(
+                "production image upgrades require the chart initialization Job; "
+                "preprovisioned Namespace canaries manage database upgrades separately. "
+                "See docs/reference/drivers/kubernetes-compute/preprovisioned-namespace.md."
+            )
     values = mappings.get("candidate Helm values", before_values)
     before_installation = mappings["baseline Installation"]
     installation = mappings.get("candidate Installation", before_installation)

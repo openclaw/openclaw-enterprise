@@ -63,6 +63,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   ) => requirement(iamAction, resourceKind, scope, condition);
 
   switch (operationId) {
+    case "pushAgentCredentials":
+      return [
+        primary(),
+        requirement("update", "credential_source", "requested", "bound_credential_source"),
+      ];
     case "recoverAgentFirstDeployment":
       return [requirement("deploy", "agent"), requirement("read", "configuration")];
     case "disconnectNamespaceConnection":
@@ -373,6 +378,9 @@ function permissionDescription(
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
       if (condition === "bound_credential_source") {
+        if (operationId === "pushAgentCredentials") {
+          return `Requires ${action} permission on each selected ${name} with an unwithdrawn Credential Proxy binding in the deployed Agent revision. OCC authorizes every selected Source before it begins delivery.`;
+        }
         if (operationId === "createAgent") {
           return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
         }
@@ -431,6 +439,9 @@ function permissionDescription(
         ? "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. "
         : "";
     return `${prefix}${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
+  }
+  if (operationId === "pushAgentCredentials") {
+    return `${description} The Agent service principal must still have operate permission on every selected CredentialSource.`;
   }
   return description;
 }

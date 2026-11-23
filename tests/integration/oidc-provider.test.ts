@@ -10,8 +10,8 @@ import type { IncomingHttpHeaders } from "node:http";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { verifyIdToken } from "../../apps/controller/src/auth/id-token.ts";
-import { createOidcProviderMaterial } from "../helpers/oidc-provider-material.mjs";
-import { startOidcProvider } from "../helpers/oidc-provider-server.mjs";
+import { createOidcProviderMaterial } from "../helpers/oidc-provider-material.ts";
+import { startOidcProvider } from "../helpers/oidc-provider-server.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
@@ -81,6 +81,11 @@ async function exerciseProvider(port: number, fixture: Awaited<ReturnType<typeof
   const duplicate = new URLSearchParams(parameters);
   duplicate.append("redirect_uri", "https://other.oce.example.test/callback");
   assert.equal((await httpsRequest(port, ca, `/authorize?${duplicate}`)).status, 400);
+  for (const malformed of ["", "short", `${state.slice(1)}=`]) {
+    const badState = new URLSearchParams(parameters);
+    badState.set("state", malformed);
+    assert.equal((await httpsRequest(port, ca, `/authorize?${badState}`)).status, 400);
+  }
   const authorize = async () => {
     const response = await httpsRequest(port, ca, `/authorize?${parameters}`);
     assert.equal(response.status, 302);
@@ -162,7 +167,7 @@ test("OIDC issuer starts from projected-volume links and remains importable", as
   const projection = join(parent, "projected");
   const snapshot = join(projection, "..snapshot");
   await mkdir(snapshot, { recursive: true });
-  const modules = ["oidc-provider-server.mjs", "oidc-provider.mjs", "id-token.mjs"];
+  const modules = ["oidc-provider-server.ts", "oidc-provider.ts", "id-token.mjs"];
   for (const name of modules) {
     await copyFile(new URL(`../helpers/${name}`, import.meta.url), join(snapshot, name));
   }
@@ -177,8 +182,8 @@ test("OIDC issuer starts from projected-volume links and remains importable", as
     await symlink(`..data/${name}`, join(projection, name));
   }
   for (const entrypoint of [
-    join(snapshot, "oidc-provider-server.mjs"),
-    join(projection, "oidc-provider-server.mjs"),
+    join(snapshot, "oidc-provider-server.ts"),
+    join(projection, "oidc-provider-server.ts"),
   ]) {
     const child = spawn(process.execPath, [entrypoint, projection], {
       env: { PATH: process.env.PATH, OIDC_LISTEN_HOST: "127.0.0.1", OIDC_LISTEN_PORT: "0" },
@@ -237,7 +242,7 @@ test("OIDC issuer starts from projected-volume links and remains importable", as
   const importer = join(projection, "import.mjs");
   await writeFile(
     importer,
-    'import { startOidcProvider } from "./oidc-provider-server.mjs"; if (typeof startOidcProvider !== "function") process.exit(1);',
+    'import { startOidcProvider } from "./oidc-provider-server.ts"; if (typeof startOidcProvider !== "function") process.exit(1);',
   );
   const imported = await execute(process.execPath, [importer], { timeout: 5_000 });
   assert.equal(imported.stdout, "");

@@ -2426,7 +2426,10 @@ async function prepareFileWithState({
     ) {
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile === "tests/integration/occ-metrics.test.ts") {
+    if (
+      relativeFile === "tests/integration/occ-metrics.test.ts" ||
+      relativeFile === "tests/integration/postgres-metrics-listener-capacity.test.ts"
+    ) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {

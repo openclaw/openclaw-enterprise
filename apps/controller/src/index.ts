@@ -3684,10 +3684,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.setErrorHandler(async (error, request, reply) => {
     // A caller's own denial names a resource ID only when this request carried it or the caller
     // may already read that resource.
-    const actorId = contexts.get(request)?.actorId;
+    const requestContext = contexts.get(request);
+    const actorId = requestContext?.actorId;
+    const credentialRetry = requestContext?.operation.operationId === "pushAgentCredentials";
+    const sent = requestedValues(request);
+    const sources = credentialRetry
+      ? (request.body as { readonly sources?: unknown } | undefined)?.sources
+      : undefined;
+    // This operation's explicit Source selection is a reference list. "all" does not name IDs.
+    const requested = Array.isArray(sources)
+      ? (value: string) => sent(value) || sources.includes(value)
+      : sent;
     let mapped = requestFailure(error, {
-      requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
+      requested: await nameableIds(error, actorId, requested, routeOwners(request)),
       ...(actorId === undefined ? {} : { actorId }),
+      ...(credentialRetry ? { agentPrincipalRecovery: "retry_credential_delivery" as const } : {}),
       ...((await administratorRestricted(error, actorId)) ? { administratorRestricted: true } : {}),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
@@ -3738,7 +3749,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               undefined,
               undefined,
               {
-                decisionReason: error.message,
+                decisionReason: credentialRetry
+                  ? "Grant the Agent service principal credential_source:operate on the Source, then retry credential delivery."
+                  : error.message,
                 reasonCode: "AGENT_PRINCIPAL_NOT_AUTHORIZED",
                 details: {
                   servicePrincipalId: error.principalId,
