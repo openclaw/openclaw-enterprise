@@ -4666,6 +4666,32 @@ test("native Git writes a lent Source only after the holding session confirms it
   assert.equal(f.runtime.route(revision.id).state, "installed");
 });
 
+test("native Git dispatches a lent Source only while its hold holds, and settles the hold after the write", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { holds, session, allReleased } = lentSourceHolds(f);
+  // The hold limit passes between the session's answer and the dispatch.
+  session.afterConfirm = (hold) => {
+    hold.open = false;
+  };
+  await reconcile();
+  assert.equal(activity.updates, 0, "an ended hold dispatches nothing");
+  assert.ok(holds.some(({ confirms }) => confirms > 0));
+  assert.ok(allReleased());
+
+  session.afterConfirm = () => {};
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.ok(allReleased(), "the Provider settles the hold once its write returned");
+  assert.equal(holds.at(-1)?.releases, 1);
+});
+
 test("native Git releases a lent Source's hold on every path that writes nothing", async (t) => {
   const { f, reconcile, activity, setExclusiveGitRecipient } = await heldGit(
     t,
