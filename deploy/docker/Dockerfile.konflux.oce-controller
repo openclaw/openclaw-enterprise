@@ -148,6 +148,14 @@ EOF
 
 COPY --from=controller-tree --chown=1000:1000 /app/ /app/
 
+# Upstream bakes the inspected Workspace release pin from optional build
+# arguments. Konflux builds leave both unset, so the pin stays disabled and
+# the script rewrites nothing.
+ARG OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST
+ARG OCC_INSPECTED_WORKSPACE_AGENT_DIGEST
+RUN --mount=type=bind,source=scripts/write-inspected-workspace-image-pin.ts,target=/tmp/write-inspected-workspace-image-pin.ts \
+    node /tmp/write-inspected-workspace-image-pin.ts "$OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST" "$OCC_INSPECTED_WORKSPACE_AGENT_DIGEST"
+
 # Every entry point loads the production composition and its dependencies.
 RUN node --input-type=module -e 'await import("/app/apps/controller/src/composition/production.ts");'
 # Upstream precompiles the route validators and serializers with this image's
