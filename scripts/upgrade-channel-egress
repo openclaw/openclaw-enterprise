@@ -294,17 +294,19 @@ def lifecycle(action, args):
         return
     for target in state["targets"]:
         require(target[action] != "sending", f"{action} outcome is unknown for Agent {target['agentId']}; inspect Agent revision history, deployment status and audit records. Do not resubmit automatically. Preserve this journal for manual recovery.")
+    def check_retained_overrides(target):
+        ns, agent_id, revision_id = target["namespaceId"], target["agentId"], target["originalRevisionId"]
+        receipt = occ("--namespace", ns, "agent", "revision", agent_id, revision_id, "--check-retain-harness-overrides",
+                      failure_hint=f". Harness override retention check failed for Agent {agent_id} revision {revision_id}; verify access to the original revision and use an OCC CLI that supports the check")
+        require(isinstance(receipt, dict) and receipt.get("canRetainHarnessOverrides") is True and
+                receipt.get("namespaceId") == ns and receipt.get("agentId") == agent_id and receipt.get("id") == revision_id,
+                f"Harness override retention was not confirmed for Agent {agent_id} revision {revision_id}")
+
     if action == "stop":
         # An earlier completed Stop can still need its original revision for Deploy.
         for target in state["targets"]:
-            if target["deploy"] == "complete":
-                continue
-            ns, agent_id, revision_id = target["namespaceId"], target["agentId"], target["originalRevisionId"]
-            receipt = occ("--namespace", ns, "agent", "revision", agent_id, revision_id, "--check-retain-harness-overrides",
-                          failure_hint=f". Harness override retention check failed for Agent {agent_id} revision {revision_id}; verify access to the original revision and use an OCC CLI that supports the check")
-            require(isinstance(receipt, dict) and receipt.get("canRetainHarnessOverrides") is True and
-                    receipt.get("namespaceId") == ns and receipt.get("agentId") == agent_id and receipt.get("id") == revision_id,
-                    f"Harness override retention was not confirmed for Agent {agent_id} revision {revision_id}")
+            if target["deploy"] != "complete":
+                check_retained_overrides(target)
     for target in state["targets"]:
         ns, agent_id = target["namespaceId"], target["agentId"]
         if target[action] == "complete":
@@ -317,6 +319,9 @@ def lifecycle(action, args):
                 require(agent.get("activeRevisionId") == target["originalRevisionId"] and agent["desiredRuntimeState"] == "running", "Agent changed since inventory; Stop was not submitted")
             else:
                 require(agent["desiredRuntimeState"] == "stopped" and not agent.get("activeRevisionId"), "recorded Agent is not fully stopped; Deploy was not submitted")
+                # Deploy reads the original revision before its request. Check that read
+                # first, so a read failure leaves this Deploy unsent and resumable.
+                check_retained_overrides(target)
             target[action] = "sending"
             save(journal, state)
             revision_flag = "--if-active-revision" if action == "stop" else "--retain-harness-overrides"

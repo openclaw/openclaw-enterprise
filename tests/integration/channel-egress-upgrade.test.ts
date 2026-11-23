@@ -393,6 +393,7 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
     unavailable?: { index: number; kind: "missing-overrides" | "missing-revision" },
     recordedStops?: readonly ["complete" | "unsent", "unsent" | "sending"],
   ) {
+    let missing = unavailable;
     const directory = await mkdtemp(join(build, "operations-"));
     const inventory = join(directory, "inventory");
     const target = (index: 0 | 1) => {
@@ -472,7 +473,7 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
           agent.activeRevisionId = "";
           return send({ ...agent, activeRevisionId: originalRevisionId }, 202);
         case selected.revisionRead:
-          if (unavailable?.index === index && unavailable.kind === "missing-revision") {
+          if (missing?.index === index && missing.kind === "missing-revision") {
             return outgoing.writeHead(404).end();
           }
           return send({
@@ -484,7 +485,7 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
               id: "codex",
               version: "fixture",
               mode: "dedicated",
-              overrides: unavailable?.index === index ? undefined : index === 0 ? overrides : {},
+              overrides: missing?.index === index ? undefined : index === 0 ? overrides : {},
             },
           });
         case selected.deployWrite: {
@@ -527,7 +528,10 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
       ];
       return execute("python3", args, { env, timeout: 15_000 });
     };
-    return { requests, deployBodies, journal, run, targets };
+    const setUnavailable = (value: typeof unavailable) => {
+      missing = value;
+    };
+    return { requests, deployBodies, journal, run, setUnavailable, targets };
   }
 
   await t.test(
@@ -545,7 +549,9 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
           first.stopWrite,
           second.stopWrite,
           first.revisionRead,
+          first.revisionRead,
           first.deployWrite,
+          second.revisionRead,
           second.revisionRead,
           second.deployWrite,
         ],
@@ -575,6 +581,35 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
       );
     });
   }
+
+  await t.test("a failed revision read before Deploy leaves that Deploy unsent", async (t) => {
+    const f = await lifecycleFixture(t);
+    const [first, second] = f.targets;
+    await f.run("stop");
+    f.setUnavailable({ index: 1, kind: "missing-revision" });
+    f.requests.length = 0;
+    await assert.rejects(f.run("deploy"), /Harness override retention/);
+    assert.deepEqual(
+      f.requests.filter((wire) => wire.startsWith("POST") || wire.includes("/revisions/")),
+      [first.revisionRead, first.revisionRead, first.deployWrite, second.revisionRead],
+    );
+    const journal = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.deepEqual(
+      journal.targets.map(({ stop, deploy }: { stop: string; deploy: string }) => [stop, deploy]),
+      [
+        ["complete", "complete"],
+        ["complete", "unsent"],
+      ],
+    );
+    // Once the original revision is readable again, the same run resumes.
+    f.setUnavailable(undefined);
+    f.requests.length = 0;
+    await f.run("deploy");
+    assert.deepEqual(
+      f.requests.filter((wire) => wire.startsWith("POST") || wire.includes("/revisions/")),
+      [second.revisionRead, second.revisionRead, second.deployWrite],
+    );
+  });
 
   await t.test("resume checks an already completed Stop before sending another", async (t) => {
     const f = await lifecycleFixture(t, { index: 0, kind: "missing-revision" }, [

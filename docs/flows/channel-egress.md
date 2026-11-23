@@ -138,7 +138,9 @@ Each Stop still compares the original active revision. Completion requires the
 Agent to be stopped with no active revision. `stopped_inventory` checks the
 expected selection changes before OCC writer shutdown. While both writers are
 quiesced, resume verifies the recorded inventory offline. After access to the
-same Installation and channel fleet recovers, Deploy rereads each original
+same Installation and channel fleet recovers, Deploy repeats that check for each
+Agent before recording `sending`, so a failed read leaves that Deploy unsent and a
+later run resumes it. Deploy then rereads each original
 revision through `--retain-harness-overrides` and submits its requested overrides
 with the current saved draft. An empty object uses current Installation defaults.
 The script waits for each accepted deployment and checks the recorded new
@@ -242,7 +244,9 @@ and remaining acceptance evidence.
 
 ## Changelog
 
-- 2026-11-21 04:15: Check every required original revision before a new one-off Stop in the accompanying uncommitted changes (authoring-run/b9e0b8fc-0057-44bd-b184-c3de7be3267b - 67ecfd947c8969dec25777d7caebf77459ac978f)
+- 2026-11-23 16:55: Check the original revision again before recording each one-off Deploy as sending.
+
+- 2026-11-21 04:15: Check every required original revision before a new one-off Stop (authoring-run/b9e0b8fc-0057-44bd-b184-c3de7be3267b - 67ecfd947c8969dec25777d7caebf77459ac978f)
 
 - 2026-11-20 18:02: Forecast the Worker's direct-egress guard before Stop and verify execution and Gateway namespace ownership (authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2 - 499592f85223d2a36369d6e230915c549ff09864)
 
