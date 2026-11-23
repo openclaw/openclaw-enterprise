@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sshBrowserDelegation } from "../../apps/controller/src/drivers/compute/ssh/browser-route.ts";
+import {
+  sshBrowserDelegation,
+  sshBrowserRequest,
+} from "../../apps/controller/src/drivers/compute/ssh/browser-route.ts";
 
 const target = { installationId: "i", namespaceId: "n", agentId: "a", revisionId: "r" };
 
@@ -22,4 +25,23 @@ test("chat and admin use the same principal but distinct authority", () => {
   assert.equal(admin.scope, "operator.admin");
   assert.notEqual(chat.subject, sshBrowserDelegation(target, target, "q", "chat")?.subject);
   assert.equal(sshBrowserDelegation(target, target, " ", "admin"), undefined);
+});
+
+test("browser requests require a matching private listener; no shared endpoint fallback", () => {
+  const requested = { ...target, port: 18000 };
+  const listener = { ...requested, localTlsPort: 28000, credential: "a".repeat(64) };
+  const call = (value: typeof listener | undefined) =>
+    sshBrowserRequest(requested, value, "p", "chat");
+  assert.equal(call(undefined), undefined);
+  for (const change of [
+    { port: 18001 },
+    { revisionId: "other" },
+    { localTlsPort: 0 },
+    { credential: "" },
+  ]) {
+    assert.equal(call({ ...listener, ...change }), undefined);
+  }
+  const request = call(listener);
+  assert.equal(request?.endpoint, "wss://127.0.0.1:28000/");
+  assert.equal(request?.headers["x-openclaw-scopes"], "operator.sessions.write");
 });
