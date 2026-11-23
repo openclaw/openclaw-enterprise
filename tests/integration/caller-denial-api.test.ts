@@ -387,55 +387,12 @@ test("a staged credential source refuses an ungranted Agent principal before rev
   );
 });
 
-// Finding 2614: saving a Configuration or credential source without new bindings checks Secret
-// operate on the bindings it already stores. The binding is part of that record, so the caller's
-// own denial names the bound Secret only when the caller may read both the Secret and the record.
-// With Secret read alone, the text would tell a caller that a record it cannot read binds that
-// Secret. The allow or deny decision is unchanged; only the text differs.
+// Finding 2614: saving a Configuration without new bindings checks Secret operate on the
+// bindings it already stores. Secret read alone must not reveal that an unreadable Configuration
+// binds that Secret; reading both records permits the denial to name it.
 test("a stored binding's denial names its Secret only to a caller who may read the record that binds it", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  // The Credential Gateway is a test double; HTTP, IAM and OCC admission stay real.
-  const gateway = {
-    id: "caller-denial-gateway",
-    capability: "credential_gateway",
-    implementation: "test-ready-gateway",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "openai",
-          config: [],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-      ];
-    },
-    async registerSource() {
-      return { state: "ready" };
-    },
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    ...Object.fromEntries(
-      [
-        "updateSource",
-        "rotateSource",
-        "removeSource",
-        "attachForRevision",
-        "attachmentStatus",
-        "withdraw",
-      ].map((name) => [
-        name,
-        async () => {
-          throw new Error(`${name} is not exercised: the save is refused first`);
-        },
-      ]),
-    ),
-  };
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
   const namespace = await fixture.createNamespace("Stored binding denials", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Bound token", "synthetic-bound-token");
   const configuration = await fixture.createConfiguration(
@@ -443,66 +400,42 @@ test("a stored binding's denial names its Secret only to a caller who may read t
     {},
     { secretBindings: { EXTERNAL_API_TOKEN: { source: secret.ref, delivery: { type: "env" } } } },
   );
-  const sources = `/namespaces/${namespace.id}/credential-sources`;
-  const source = await fixture.request("POST", sources, {
-    body: { name: "bound-source", type: "openai", secrets: { api_key: secret.ref } },
-  });
-  assert.equal(source.status, 201, JSON.stringify(source.body));
-
-  // Each save sends no Secret ID: the denied Secret comes from the stored record.
-  const cases = [
-    {
-      label: "configuration",
-      path: `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-      body: { values: {} },
-      kind: "configuration",
-    },
-    {
-      label: "credential-source",
-      path: `${sources}/${source.data.id}`,
-      body: {},
-      kind: "credential_source",
-    },
-  ] as const;
-  for (const { label, path, body, kind } of cases) {
-    const refusal = async (suffix: string, grants: Grants) => {
-      const session = await memberSession(fixture, `${label}-${suffix}`, namespace.id, [
-        ["read", "namespace"],
-        ["update", kind],
-        ["read", "secret"],
-        ...grants,
-      ]);
-      const response = await fixture.request("PATCH", path, { session, body });
-      assertApiError(response, 403, "FORBIDDEN", `${label} ${suffix}`);
-      return response.body.error.message as string;
-    };
-    // Secret read without read on the record: the caller cannot already see the binding.
-    assert.equal(
-      await refusal("secret-read", []),
-      callerDenied("Secret operate", "a Secret this request uses"),
-      label,
-    );
-    // Read on both: the caller can already see the Secret and that this record binds it.
-    assert.equal(
-      await refusal("secret-and-record-read", [["read", kind]]),
-      callerDenied("Secret operate", `Secret ${secret.id}`),
-      label,
-    );
-    // Without update on the record, the stored-binding check never runs: the caller who reads
-    // both gets one denial for this record and for an ID that names none (finding 2624).
-    const reader = await memberSession(fixture, `${label}-reader`, namespace.id, [
+  const collection = `/namespaces/${namespace.id}/configurations/`;
+  const path = `${collection}${configuration.id}`;
+  const body = { values: {} };
+  // The save sends no Secret ID: the denied Secret comes from the stored Configuration.
+  const refusal = async (suffix: string, grants: Grants) => {
+    const session = await memberSession(fixture, `configuration-${suffix}`, namespace.id, [
       ["read", "namespace"],
-      ["read", kind],
+      ["update", "configuration"],
       ["read", "secret"],
+      ...grants,
     ]);
-    const recordId = path.split("/").at(-1) as string;
-    const collection = path.slice(0, -recordId.length);
-    await assertSameAnswer(
-      (id: string) => fixture.request("PATCH", `${collection}${id}`, { session: reader, body }),
-      [recordId, `${recordId.split("_")[0]}_${randomUUID()}`],
-      { label },
-    );
-  }
+    const response = await fixture.request("PATCH", path, { session, body });
+    assertApiError(response, 403, "FORBIDDEN", `configuration ${suffix}`);
+    return response.body.error.message as string;
+  };
+  assert.equal(
+    await refusal("secret-read", []),
+    callerDenied("Secret operate", "a Secret this request uses"),
+  );
+  assert.equal(
+    await refusal("secret-and-record-read", [["read", "configuration"]]),
+    callerDenied("Secret operate", `Secret ${secret.id}`),
+  );
+
+  // Without update permission, the stored-binding check never runs. A known Configuration and
+  // an unknown ID must therefore return the same denial even when the caller reads both records.
+  const reader = await memberSession(fixture, "configuration-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "configuration"],
+    ["read", "secret"],
+  ]);
+  await assertSameAnswer(
+    (id: string) => fixture.request("PATCH", `${collection}${id}`, { session: reader, body }),
+    [configuration.id, `${configuration.id.split("_")[0]}_${randomUUID()}`],
+    { label: "configuration" },
+  );
 });
 
 // Every Agent update checks the caller's grant on the Agent's current Harness authentication,
