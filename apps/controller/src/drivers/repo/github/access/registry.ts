@@ -405,6 +405,21 @@ function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"
   };
 }
 
+/**
+ * Pull request routes follow the registration's `pull_requests` permission. The grant identity
+ * already covers that permission and the REST version, so these flags stay out of its hash and
+ * a binding saved before pull request routes existed remains current.
+ */
+function scopedPullRequestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
+  const pullRequests = policy.permissions?.pull_requests;
+  return {
+    ...((pullRequests === "read" || pullRequests === "write") && {
+      readPullRequests: true as const,
+    }),
+    ...(pullRequests === "write" && { createPullRequests: true as const }),
+  };
+}
+
 function registryGrantId(
   registry: GitHubRepositoryRegistry,
   fields: Readonly<Record<string, unknown>>,
@@ -624,6 +639,12 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
+      // The credential covers every bound repository, and a pull request can name any of them
+      // in the target's fork network as its head. Creation therefore needs a saved grant on each.
+      const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
+      const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
+        ? scope.scopedRest
+        : scope.scopedRest.map(({ createPullRequests, ...rest }) => Object.freeze(rest));
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
@@ -632,7 +653,7 @@ export function createGitHubRepositoryDeliveryResolver(
           repositories: scope.repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
-          ...(nativeGit && scope.scopedRest.length > 0 && { scopedRest: scope.scopedRest }),
+          ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
         }),
       });
     }
@@ -706,7 +727,8 @@ export function resolveSelectedRepositoryScope(
   }
   const scopedRest: ({ repository: string } & NonNullable<
     ReturnType<typeof scopedRestPermissions>
-  >)[] = [];
+  > &
+    ReturnType<typeof scopedPullRequestPermissions>)[] = [];
   const nativeGitModes = new Set<"v1" | undefined>();
   let permissions: Readonly<Record<string, string>> | undefined;
   const repositories = bindings
@@ -727,7 +749,13 @@ export function resolveSelectedRepositoryScope(
       }
       const rest = scopedRestPermissions(policy);
       if (rest) {
-        scopedRest.push(Object.freeze({ repository: repo.repository, ...rest }));
+        scopedRest.push(
+          Object.freeze({
+            repository: repo.repository,
+            ...rest,
+            ...scopedPullRequestPermissions(policy),
+          }),
+        );
       }
       nativeGitModes.add(policy.nativeGit);
       permissions = policy.permissions;

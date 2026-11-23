@@ -19,9 +19,12 @@ are in the [canonical matrix data](../../assets/compute-driver-matrix.json).
 | [SSH](ssh-compute.md)               | Supports embedded OpenClaw with `harnessAuth.method: runtime`; an operator must supply the model credential on the Linux host. No OCC-managed model credentials or dedicated Codex. |
 | [Docker/Podman](docker-compute.md)  | Runs the local control plane, but rejects all current model-authentication bindings. A newly admitted Agent cannot be deployed through this Driver.                                 |
 
-An optional [OpenShell Sandbox Driver](openshell-sandbox.md) can be selected
-with Kubernetes, but stock OpenShell lacks required credential and
-workload-identity projection. It is not a supported Agent deployment path.
+For development, Kubernetes Compute can use the [OpenShell Sandbox Driver](openshell-sandbox.md)
+with dedicated Codex or native OpenClaw in dedicated mode. Embedded OpenClaw is
+unsupported. Set `servicePrincipalCredentials.mode` to `disabled`.
+For model inference, check the [supported Credential Sources](../credential-sources.md#implementation-status).
+Production qualification remains open.
+
 The bundled Compute Drivers expose the current gateway authentication contracts:
 
 | Driver                                                                              | Gateway authentication                                                                                                                              |
