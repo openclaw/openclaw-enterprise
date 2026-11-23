@@ -56,7 +56,10 @@ export function createRepositorySourceCustody(options: {
   const { lockPool, state, tokenServiceDriverId, tokenService, iam } = options;
   const holdLimitMs = options.holdLimitMs ?? HOLD_LIMIT_MS;
   const custody: RepositorySourceCustody = {
-    async lock({ namespaceId, sourceId }) {
+    async lock({ namespaceId, sourceId }, caller) {
+      // The caller's transaction holds the Namespace row, which replacement and retirement lock
+      // before this one: without the same limit a frozen Worker would hold them past the hold.
+      await caller?.limitIdle(holdLimitMs);
       const client: HoldingClient = await lockPool.connect();
       const deadline = performance.now() + holdLimitMs;
       let open = true;
