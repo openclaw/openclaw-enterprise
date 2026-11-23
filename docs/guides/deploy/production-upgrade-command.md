@@ -105,6 +105,11 @@ before you approve. Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
 
+With `--controller-compatibility-results FILE`, `plan` and a new `apply` check
+the PostgreSQL report and the selected controller digest before approval.
+Live preflight must still match the report to the installed controller.
+Qualify [recovery](production-upgrade-recovery.md) separately.
+
 Before the first `apply` or `preflight`,
 [bind the Installation Secret](production-upgrade.md#bind-the-installation-once).
 For an optional advance rehearsal, run:
