@@ -1,7 +1,6 @@
 import {
   intersectCredentialRequests,
   type ConnectionTemplateVersion,
-  type OAuthConnectionTemplateVersion,
   type StoredCredentialSource,
   type CredentialSourceReference,
   type DeploymentRequestMatch,
@@ -11,14 +10,6 @@ import {
   type PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { ResourceStateConflictError } from "./errors.ts";
-
-/** The current Template bounds admission. An OAuth Source also retains the original grant's bounds. */
-export type PluginSourceTemplate =
-  | { readonly current: Extract<ConnectionTemplateVersion, { mode: "static_bearer" }> }
-  | {
-      readonly current: OAuthConnectionTemplateVersion;
-      readonly consent: OAuthConnectionTemplateVersion;
-    };
 
 export interface SelectedPluginBinding {
   readonly pluginId: string;
@@ -113,7 +104,7 @@ export async function describePluginBindings(
 export function pluginCredentialRequests(
   description: PluginDeploymentDescription,
   account: PluginCredentialConnection,
-  template: PluginSourceTemplate | undefined,
+  template: ConnectionTemplateVersion | undefined,
 ): readonly DeploymentRequestMatch[] {
   const roles = new Map(description.tools.map(({ id, role }) => [id, role]));
   if (account.toolIds.some((id) => roles.get(id) !== "harness")) {
@@ -142,15 +133,10 @@ export function pluginCredentialRequests(
   if (!template) {
     throw new ResourceStateConflictError("The Plugin Source has no approved Connection Template.");
   }
-  const { current } = template;
-  const approved = intersectCredentialRequests(reviewed, current.destinations);
-  const allowed =
-    "consent" in template
-      ? intersectCredentialRequests(approved, template.consent.destinations)
-      : approved;
+  const allowed = intersectCredentialRequests(reviewed, template.destinations);
   if (allowed.length === 0) {
     throw new ResourceStateConflictError(
-      "The Plugin connection has no request approved by its Connection Template and Source.",
+      "The Connection Template permits none of the Plugin connection's reviewed requests.",
     );
   }
   return allowed;
@@ -158,7 +144,7 @@ export function pluginCredentialRequests(
 
 export function validatePluginRequestAuthority(
   descriptions: ReadonlyMap<string, PluginDeploymentDescription>,
-  templates: ReadonlyMap<string, PluginSourceTemplate>,
+  templates: ReadonlyMap<string, ConnectionTemplateVersion>,
 ): void {
   for (const description of descriptions.values()) {
     for (const accounts of Object.values(description.credentials)) {

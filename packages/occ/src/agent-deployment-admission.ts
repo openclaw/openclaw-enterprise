@@ -1,8 +1,4 @@
-import {
-  pluginCredentialRequests,
-  selectedPluginBindings,
-  type PluginSourceTemplate,
-} from "./plugin-credential-bindings.ts";
+import { pluginCredentialRequests, selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import { assertAgentConfiguration } from "./deployment-policy.ts";
 import { unchangedDriver, type RegisteredDriver } from "./driver-registry.ts";
 import {
@@ -33,6 +29,7 @@ import {
   type ComputeDriver,
   type Configuration,
   type ConfigurationDriver,
+  type ConnectionTemplateVersion,
   type CredentialProxyDriver,
   type StaticCredentialSource,
   type CredentialInjectionPolicy,
@@ -348,7 +345,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     delivery: ReturnType<typeof prepareCredentialDelivery>,
     stagedModel: PreparedModelCredentialDeployment | undefined,
     descriptions: ReadonlyMap<string, PluginDeploymentDescription>,
-    templates: ReadonlyMap<string, PluginSourceTemplate>,
+    templates: ReadonlyMap<string, ConnectionTemplateVersion>,
     additions: readonly SandboxNetworkGrant[],
   ): NonNullable<AgentRevision["credentialDeployment"]> {
     const network: DeploymentRequestMatch[] = additions.map(({ binary, host, ports }) => ({

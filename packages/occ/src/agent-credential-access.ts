@@ -4,7 +4,6 @@ import {
   describePluginBindings,
   pluginSourceIds,
   type SelectedPluginBinding,
-  type PluginSourceTemplate,
 } from "./plugin-credential-bindings.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
@@ -14,6 +13,7 @@ import {
   type Agent,
   type AgentCredentialSourceBinding,
   type ComputeDriver,
+  type ConnectionTemplateVersion,
   type StoredCredentialSource,
   type CredentialSourceReference,
   type CredentialSourceSnapshot,
@@ -221,7 +221,7 @@ export function createAgentCredentialAccess({
     attached: readonly StoredCredentialSource[] = [],
   ) {
     const sources = new Map(attached.map((source) => [source.id, source]));
-    const templates = new Map<string, PluginSourceTemplate>();
+    const templates = new Map<string, ConnectionTemplateVersion>();
     for (const sourceId of pluginSourceIds(bindings)) {
       let source = sources.get(sourceId);
       if (source === undefined) {
@@ -257,7 +257,6 @@ export function createAgentCredentialAccess({
             "The static Plugin Source requires a static bearer Connection Template.",
           );
         }
-        templates.set(sourceId, { current });
       } else {
         if (
           current.mode !== "manual" ||
@@ -286,8 +285,8 @@ export function createAgentCredentialAccess({
             "Reconnect the Plugin Source after its Connection Template issuer changes.",
           );
         }
-        templates.set(sourceId, { current, consent });
       }
+      templates.set(sourceId, current);
       sources.set(sourceId, source);
     }
     return { sources: [...sources.values()], templates };
@@ -347,7 +346,7 @@ export function createAgentCredentialAccess({
       });
       compute.validateHarnessCredentialSources?.(harness, [source]);
       if (isManagedTokenServiceSource(source)) {
-        const current = plugin.templates.get(sourceId)?.current;
+        const current = plugin.templates.get(sourceId);
         snapshots.push({
           sourceId,
           tokenServiceInstanceId: source.tokenServiceInstanceId,

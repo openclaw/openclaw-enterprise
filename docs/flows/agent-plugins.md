@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-23
-last_updated_session: authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536
+last_updated_session: authoring-run/dd61beab-f923-4970-a46a-5bfc34f8a38b
 ---
 
 # Agent Plugin Deployment Flow
@@ -147,9 +147,9 @@ remain browsable.
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.ts) reports each connection’s Source. OCC checks exact `operate`, the current Template and slot. Deployment rechecks caller and Agent authority and intersects reviewed requests with Template and consent limits.
+On save, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.ts) reports selected Sources. OCC checks exact `operate`, Template and slot. Deployment rechecks caller and Agent authority and intersects reviewed requests with current Template destinations.
 
-OCC qualifies the complete policy before saving bindings, injection rules and Template versions. Managed Google and MCP slots reject TokenService Sources. See [delivery limits](../reference/credential-sources.md#bind-a-source-to-an-agent).
+OCC qualifies and freezes the policy and Template versions. Managed Google and MCP slots reject TokenService Sources. See [delivery limits](../reference/credential-sources.md#bind-a-source-to-an-agent).
 
 Worker checks Driver–Harness compatibility. Gateway and Worker verify Compute descriptors.
 
@@ -345,6 +345,7 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-23 09:56: Clarify current Template destinations. (authoring-run/dd61beab-f923-4970-a46a-5bfc34f8a38b - c0f1cf9e9)
 - 2026-11-23 08:39: Resolve current Plugin Templates. (authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536 - 5dcfdf664)
 - 2026-11-23 08:12: Qualify complete policies. (authoring-run/338bac1c-8735-4511-bc75-825589e83705 - 0d46243a3)
 - 2026-11-22 22:57: Clarify preflight outcomes and qualification limits; restore contributor history. (authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768 - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
