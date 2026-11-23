@@ -8,8 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Use official OpenShell `v0.1.8` from the repository root. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
-for versions and qualification limits.
+From the repository root, use official OpenShell `v0.1.9`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
 
 ## Start a reusable development environment
 
@@ -37,8 +36,8 @@ Stop, including after partial startup:
 ```
 
 This deletes only the owned cluster and database. For Compose, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; otherwise the control
-plane follows the Compute Driver, selecting Kubernetes here.
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; the default follows the
+Compute Driver (Kubernetes here).
 
 ## Finite repository removal
 
@@ -165,12 +164,11 @@ needs no model credential or call. Docker is default; set
 
 For prepared Docker Compose images, set `OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE`
 to an immutable development-controller reference under
-`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller`, and
-`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Both must be
-locally inspectable, built from this checkout, and labeled with its revision.
-Retain provenance; never relabel images. The extra Compose file replaces
-all five services' builds, excluding build coverage but preserving assertions.
-Unset both image variables for full source-build coverage.
+`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller` and
+`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Use locally
+inspectable images built from and labeled with this checkout's revision. Never
+relabel images. Retain provenance. The override replaces all five builds and preserves assertions.
+Unset both variables for source-build coverage.
 
 For Kubernetes, `OCC_TEST_NATIVE_BROWSER_RECEIPT` selects a new file in an existing
 directory for source, image identities, and assertions; otherwise a temporary
@@ -265,8 +263,7 @@ checks finite-grant expiry and worker restart after installation.
 
 Codex Sandbox and guided native OpenClaw first-Agent tests use production
 Drivers. Neither qualifies a production installation. Run the separate native
-Sandbox test with the k3d helper below. It uses a test-only compatibility
-bridge. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
+Sandbox test with the k3d helper below. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
 
 Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
 across a worker restart, isolation from another Agent, and disabling edits while
@@ -275,8 +272,8 @@ preserving access. Suggestions and decorated logs are read through OCC.
 ### Native OpenClaw with k3d
 
 The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) prepares
-the native test and builds the sibling `../openclaw` checkout. Set
-`OCC_K3D_OPENCLAW_SOURCE` to use another absolute checkout path.
+the native test with the [pinned runtime image](../../deploy/runtime/README.md),
+the only image the dedicated Gateway accepts. It needs no OpenClaw checkout.
 
 ```sh
 ./scripts/k3d test --harness openclaw
@@ -302,8 +299,8 @@ In CI, custom endpoints require focused upstream, refresh, withdrawal, or Gatewa
 tool-policy tests; native provider files require a guided first-Agent test.
 Whole-lane CI preparation rejects either override before setup.
 
-Both commands use the test-only bridge. `test` requires an authorized
-`OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
+Both commands disable ServiceAccount token projection for the OpenShell Harness.
+`test` requires an authorized `OPENAI_API_KEY`. `demo` prompts for one if it is unset. `demo` leaves the
 proven environment running and opens the Control UI and OCE console on loopback.
 It leaves the dedicated worker slot free for the first browser session.
 Run `./scripts/k3d down --harness openclaw` to remove it. Codex and native OpenClaw
@@ -343,7 +340,7 @@ retain stage timings.
 After checking Local Setup's ready default Namespace, the test runs distinct
 Codex and native Agents concurrently with separate `openai` sources using
 `OPENAI_API_KEY`. Native OpenClaw uses the pinned runtime,
-and production Drivers without the k3d helper's compatibility bridge. Both
+and production Drivers. Both
 operations drain before shared denial checks and teardown.
 
 For a custom service, set
@@ -379,6 +376,11 @@ for the merged images, guided Codex, or ChatGPT OAuth.
 For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
 an API-key Secret; the Codex PAT used by the starter is a separate credential.
+
+<a id="managed-compute-prototype"></a>
+<a id="provider-replacement"></a>
+
+[Managed OpenShell and Provider replacement tests](openshell-managed.md).
 
 ## Troubleshooting
 

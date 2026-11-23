@@ -17,11 +17,11 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
 import {
-  refusedAnswer,
   credentialSourceFieldRequired,
   credentialSourceFieldUnknown,
   registrationFenceRetry,
-} from "./credential-source-occ-refusals.ts";
+} from "../helpers/refusal-credential-admission.ts";
+import { refusedAnswer } from "../helpers/refusal-answers.ts";
 import {
   administrator,
   auditActions,

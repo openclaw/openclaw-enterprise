@@ -1,5 +1,7 @@
 # Upgrade production images
 
+See [One Off Upgrades](one-off-upgrades.md).
+
 Upgrade [Kubernetes Compute releases](production-installation.md) with
 `scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
 and the [OCC CLI](../cli.md#connect-to-your-installation).
@@ -252,13 +254,13 @@ acknowledged candidate write.
 
 Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 
-Add `--controller-compatibility-results /secure/occ/controller-results.json` with
-`--controller-image` to require the native PostgreSQL `run` result from
-[controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before shutdown, database-write, configured IAM activation and cleanup must pass for the
-exact image digests; index, manifest and config digests differ. [Recovery retains the receipt](production-upgrade-recovery.md).
-`sourceSha` identifies the test checkout, not image revisions or cleanliness.
-Writers stop; online migration and rollback remain unqualified.
+With `--controller-image`, add `--controller-compatibility-results FILE` to require
+[native PostgreSQL qualification](../../testing/postgresql.md#released-controller-compatibility).
+Before shutdown, writes, configured IAM activation and cleanup must pass for both exact
+image digests (index, manifest and config differ). [Recovery retains the receipt](production-upgrade-recovery.md).
+`sourceSha` identifies only the test commit.
+If warned of incompatible history, qualify another recovery controller before maintenance.
+Writers stop. Online migration and rollback remain unqualified.
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
@@ -268,18 +270,16 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-Output:
-
 ```text
-Upgrade: Preparing the upgrade.
+Upgrade: Preparing the upgrade. [2026-11-20T10:00:00Z]
 ...
-Upgrade: Verifying upgrade completion.
+Upgrade: Verifying upgrade completion. [2026-11-20T10:05:12Z]
 Upgraded controller image; no Agent deployments were requested.
 ```
 
-Phases use stderr; completion uses stdout. Use `--verbose` for native output.
-Otherwise, private evidence retains scale/rollout logs. Reconcile uncertain writes;
-progress does not prove completion.
+Stderr shows phases with UTC timestamps when available. Stdout reports
+completion. `--verbose` shows native output. Private evidence retains
+scale/rollout logs. Reconcile uncertain writes.
 
 Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
 Keep protected values equal to live values. The helper preserves the broker hostname,

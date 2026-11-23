@@ -34,7 +34,7 @@ import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
 } from "../helpers/request-admission-expectations.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type DriverSelection = {
   id: string;
@@ -466,7 +466,7 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const sandbox = record(record(descriptors.get("sandbox")).startupConfiguration);
   const gateway = record(sandbox.gateway);
   const networkPolicy = record(records(record(sandbox.policy).networkPolicies)[0]);
-  assert.equal(gateway.workspaceMode, "operator");
+  assert.equal(sandbox.integrationMode, "legacy");
   assert.equal(gateway.operatorWorkspaceResources, "[redacted]");
   assert.equal(gateway.networkPolicyResources, "[redacted]");
   assert.deepEqual(networkPolicy.binaries, [{ path: "/usr/bin/model-client" }]);

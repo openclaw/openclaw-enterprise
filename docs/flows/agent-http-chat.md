@@ -17,7 +17,7 @@ completes or the relay closes; disconnect does not undo tool effects.
 ## Entry Points
 
 - Source: `apps/controller/src/index.ts:perform`
-- Source: `packages/occ/src/index.ts:resolveAgentChat`
+- Source: `packages/occ/src/agent-queries.ts:resolveAgentChat`
 - Source: `apps/controller/src/http/agent-chat.ts:relayAgentChat`
 - Assumptions: selected IAM and Compute Drivers, an authenticated session or
   service key, exact-Agent `operate`, and an enabled private runtime route.
@@ -58,7 +58,7 @@ graph TD
 
 `apps/controller/src/index.ts:admit` and `resolveIdentity` use the existing
 session/CSRF or service-key verifier and selected IAM Driver. The HTTP route has
-no Namespace input. `packages/occ/src/index.ts:resolveAgentChat` finds stored
+no Namespace input. `packages/occ/src/agent-queries.ts:resolveAgentChat` finds stored
 ownership once per check, enforces a service key's Namespace scope and authorizes `operate`.
 Denial audit uses the error's authoritative resource; the route does not copy
 stored ownership into request parameters.
@@ -66,7 +66,7 @@ A caller with only `read` gets `403`; a hidden or absent Agent gets `404`.
 
 ### 2. Select the running revision and private route
 
-`packages/occ/src/index.ts:resolveAgentChat` checks capability absence before
+`packages/occ/src/agent-queries.ts:resolveAgentChat` checks capability absence before
 lifecycle availability, then checks the saved Compute owner before invoking the
 Driver. It returns the selected revision with the endpoint result.
 

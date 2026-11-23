@@ -335,6 +335,68 @@ test("source API rejects routing inputs and registers independently authorized d
   ]);
 });
 
+test("managed Source requests fail closed without an owner and preserve Gateway routing", async (t) => {
+  const f = await fixture(t);
+  const material = "synthetic-managed-material";
+  const refused = await f.request("POST", f.path, {
+    body: { name: "Managed", type: "static", secret: { opaque: material } },
+  });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(JSON.stringify(refused.body).includes(material), false);
+  await f.assertNothingSaved();
+
+  // The Gateway may offer its own type named static; without raw secret this must reach its catalog.
+  const gatewayStatic = await f.request("POST", f.path, {
+    body: { name: "Gateway static", type: "static" },
+  });
+  assert.equal(gatewayStatic.status, 409);
+
+  const legacy = await f.create("Legacy");
+  assert.equal(legacy.status, 201);
+  const mutationsBefore = f.mutations.length;
+  for (const body of [
+    { secret: { opaque: material } },
+    { config: { provider_preset: "openai" } },
+  ]) {
+    const updated = await f.request("PATCH", `${f.path}/${legacy.data.id}`, { body });
+    assert.equal(updated.status, 409);
+    assert.equal(JSON.stringify(updated.body).includes(material), false);
+  }
+  assert.equal(f.mutations.length, mutationsBefore);
+
+  // Each request still requires the exact Source operation and attributable denial evidence.
+  const member = await f.createNamespaceMember("source-reader", f.namespace.id, [
+    ["read", "namespace"],
+  ]);
+  const session = await f.signIn(member.credentials);
+  const before = f.auditSink.events.length;
+  for (const [method, path, body] of [
+    ["POST", f.path, { name: "Denied", type: "static", secret: { opaque: material } }],
+    ["PATCH", `${f.path}/${legacy.data.id}`, { config: { provider_preset: "openai" } }],
+  ]) {
+    assert.equal((await f.request(method, path, { session, body })).status, 403);
+  }
+  const denials = f.auditSink.events
+    .slice(before)
+    .filter((event) => event.kind === "authorization_denial");
+  assert.deepEqual(
+    denials.map((event) => event.authorization),
+    [
+      {
+        principalId: member.principal.id,
+        action: "create",
+        resource: { kind: "credential_source", id: f.namespace.id, namespaceId: f.namespace.id },
+      },
+      {
+        principalId: member.principal.id,
+        action: "update",
+        resource: { kind: "credential_source", id: legacy.data.id, namespaceId: f.namespace.id },
+      },
+    ],
+  );
+});
+
 test("credential source deletion identifies its registration fence without parsing the message", async (t) => {
   const f = await fixture(t);
   const created = await f.create("recent source");

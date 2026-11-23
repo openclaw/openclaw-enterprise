@@ -2,6 +2,7 @@ import type {
   KubernetesComputeDriverOptions,
   KubernetesGatewayRoutingOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { conformanceKubernetesOptions } from "./kubernetes-compute.ts";
 
 type OptionsOverrides = Partial<KubernetesComputeDriverOptions>;
@@ -15,6 +16,21 @@ export const gatewayRouting = {
   gatewayNamespace: "openclaw-system",
   envoyNamespace: "envoy-gateway-system",
 } satisfies KubernetesGatewayRoutingOptions;
+
+export function routedGatewayConfiguration() {
+  return {
+    trustedProxies: ["10.42.0.0/16"],
+    allowRealIpFallback: true,
+    auth: {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-occ-identity",
+        allowUsers: ["occ-workspace-files"],
+      },
+      identityScopes: { "occ-workspace-files": ["operator.admin"] },
+    },
+  } satisfies OpenClawConfigurationDocument["gateway"];
+}
 
 export function options(): ReturnType<typeof conformanceKubernetesOptions>;
 export function options(overrides: OptionsOverrides): KubernetesComputeDriverOptions;

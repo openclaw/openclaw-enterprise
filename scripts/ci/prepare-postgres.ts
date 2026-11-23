@@ -18,15 +18,17 @@ const databasePrefixes = {
 
 type DatabaseKind = keyof typeof databasePrefixes;
 type DatabasePreparationOptions = {
+  initialization?: "migrate" | "schema-only";
   kind?: DatabaseKind;
   label: string;
   requireExistingServer?: boolean;
   template?: string | undefined;
 };
 type DatabaseCreationOptions = {
+  schemaOnly?: boolean;
   kind: DatabaseKind;
   label: string;
-  source?: string;
+  source?: string | undefined;
   laneTemplate?: DatabaseKind;
 };
 type PreparedDatabase = {
@@ -42,6 +44,8 @@ type PostgresAdminStep = {
   statements: readonly string[];
   stage: "postgres-settings" | "database-create" | "database-schema";
 };
+export type PostgresPreparationFailureReason =
+  "docker-subnet-exhausted" | "postgres-connection-refused";
 
 function databaseName(kind: DatabaseKind, label: string) {
   return ownedName(databasePrefixes[kind], label, { maxLength: 63, separator: "_" });
@@ -95,8 +99,18 @@ async function postgresAdmin(
       statements,
     });
   } catch (error) {
-    if (error instanceof Error && stage !== "postgres-settings") {
-      Object.assign(error, { code: "CI_PREPARATION_COMMAND_FAILED", stage });
+    if (error instanceof Error) {
+      if (stage !== "postgres-settings") {
+        Object.assign(error, { code: "CI_PREPARATION_COMMAND_FAILED", stage });
+      } else if (
+        asRecord(error)?.failure === "connect" &&
+        asRecord(error.cause)?.code === "ECONNREFUSED"
+      ) {
+        Object.assign(error, {
+          prepareFailureReason:
+            "postgres-connection-refused" satisfies PostgresPreparationFailureReason,
+        });
+      }
     }
     throw error;
   }
@@ -219,6 +233,10 @@ export function createPostgresPreparation(
           `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
           `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
           `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
+        Object.assign(error, {
+          prepareFailureReason:
+            "docker-subnet-exhausted" satisfies PostgresPreparationFailureReason,
+        });
       }
       throw error;
     }
@@ -303,7 +321,13 @@ export function createPostgresPreparation(
   async function createAndMigrateDatabase(
     statePath: string,
     state: PreparationState,
-    { kind = "ci", label, requireExistingServer = false, template }: DatabasePreparationOptions,
+    {
+      kind = "ci",
+      label,
+      requireExistingServer = false,
+      template,
+      initialization = "migrate",
+    }: DatabasePreparationOptions,
   ): Promise<PreparedDatabase> {
     const existingServer = postgresResource(state);
     if (requireExistingServer && !existingServer) {
@@ -320,11 +344,22 @@ export function createPostgresPreparation(
       throw new Error("Invalid ready PostgreSQL server in CI state.");
     }
     const server = { name: record.name, port: record.port };
-    const source =
-      template === undefined
-        ? await laneTemplateDatabase(statePath, state, server, kind)
-        : templateDatabase(state, server, template);
-    return createDatabase(statePath, state, server, { kind, label, source });
+    if (initialization === "schema-only" && template !== undefined) {
+      throw new Error("A baseline-owned migration cannot copy a current schema template.");
+    }
+    let source: string | undefined;
+    if (initialization !== "schema-only") {
+      source =
+        template === undefined
+          ? await laneTemplateDatabase(statePath, state, server, kind)
+          : templateDatabase(state, server, template);
+    }
+    return createDatabase(statePath, state, server, {
+      kind,
+      label,
+      source,
+      schemaOnly: initialization === "schema-only",
+    });
   }
 
   // The server's migrated database, one per kind, that each file's database of that kind
@@ -359,7 +394,7 @@ export function createPostgresPreparation(
     statePath: string,
     state: PreparationState,
     server: PostgresServer,
-    { kind, label, source, laneTemplate }: DatabaseCreationOptions,
+    { kind, label, source, laneTemplate, schemaOnly = false }: DatabaseCreationOptions,
   ): Promise<PreparedDatabase> {
     const name = databaseName(kind, label);
     const resource = addResource(state, "postgres-database", {
@@ -391,10 +426,12 @@ export function createPostgresPreparation(
         ],
         stage: "database-schema",
       });
-      await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
-        env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
-        stage: "database-migrate",
-      });
+      if (!schemaOnly) {
+        await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
+          env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
+          stage: "database-migrate",
+        });
+      }
     }
     await markResourceReady(statePath, state, resource);
     return {

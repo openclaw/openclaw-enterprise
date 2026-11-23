@@ -22,6 +22,7 @@ import {
 } from "./model-providers.ts";
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
+import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -618,7 +619,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rename a connection template, or create a version with new approved values",
+    summary: "Rename a connection template or create a version with updated settings",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1218,7 +1219,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "List connection templates the caller may connect in this Namespace",
+    summary: "List connection templates available in this Namespace",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1283,13 +1284,13 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Register a credential source with the selected Credential Gateway",
+    summary: "Register a credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors },
+      body: Type.Union([CreateCredentialSourceBody, Type.Ref("RegisterTokenServiceSourceBody")]),
+      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1316,7 +1317,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Get one credential source and its live Credential Gateway status",
+    summary: "Get one readable credential source and its available status",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -1332,12 +1333,12 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Push current or replacement Secret values to the Credential Gateway copy",
+    summary: "Update a Source through its recorded owner",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: UpdateCredentialSourceBody,
+      body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
@@ -1365,7 +1366,7 @@ export const occApiRoutes = [
     iamAction: "delete",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Remove an unreferenced credential source from the Credential Gateway",
+    summary: "Remove an unreferenced credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -1386,6 +1387,23 @@ export const occApiRoutes = [
           },
         },
       },
+    },
+  },
+  {
+    operationId: "pushAgentCredentials",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/credentials/push",
+    action: "openclaw.agents.credentials.push",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Retry delivery for selected deployed Agent credential sources",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: Type.Ref("PushAgentCredentialsBody"),
+      response: { 200: PushAgentCredentialsResponse, ...createErrors },
     },
   },
   {

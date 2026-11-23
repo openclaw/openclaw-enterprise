@@ -92,10 +92,13 @@ func (app *application) installationInstallCommand() *cobra.Command {
 					return err
 				}
 			}
-			// Reading all release states catches failed and pending installs too. Helm
-			// itself still arbitrates a concurrent install after this point-in-time read.
+			// Select every release state on both Helm 3 and 4. Helm 4 removed --all,
+			// but the Helm 3 default would omit pending and retained releases.
+			// Helm still arbitrates a concurrent install after this read.
 			var releases doctorBuffer
-			list := exec.CommandContext(preflight, "helm", "list", "--all", "--filter", "^"+regexp.QuoteMeta(release)+"$", "--output=json", "--namespace", namespace, "--kubeconfig", frozenConfig, "--kube-context", kctx)
+			list := exec.CommandContext(preflight, "helm", "list",
+				"--deployed", "--failed", "--pending", "--superseded", "--uninstalled", "--uninstalling",
+				"--filter", "^"+regexp.QuoteMeta(release)+"$", "--output=json", "--namespace", namespace, "--kubeconfig", frozenConfig, "--kube-context", kctx)
 			list.Stdout = &releases
 			list.WaitDelay = time.Second
 			if err = list.Run(); err != nil {
@@ -197,6 +200,9 @@ func (app *application) installationInstallCommand() *cobra.Command {
 					}
 				}
 				return &ExitStatusError{Code: 1}
+			}
+			if outputErr == nil && result.state == initializationComplete && result.original != nil {
+				_, outputErr = fmt.Fprintln(cmd.OutOrStdout(), "After verifying the API and worker rollouts, follow “Authenticate to the production API” in docs/guides/deploy/production-installation.md to sign in and prepare your first Namespace.")
 			}
 			return outputErr
 		},

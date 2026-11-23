@@ -149,8 +149,8 @@ function safeKubectlFailure(error, child, signal, nativeTag) {
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell f3d976590d3eb1379690a2abaf0f0e26c21d487d
-// crates/openshell-driver-kubernetes/src/config.rs:476,754-785.
+// NVIDIA/OpenShell ce58cf8e9b953281352d98a637e41616295b1318
+// crates/openshell-driver-kubernetes/src/config.rs:487,789-824.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -694,8 +694,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
+      integrationMode: "legacy",
       gateway: {
-        workspaceMode: "operator",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
@@ -966,7 +966,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.8",
+  openShellChartVersion = "0.1.9",
   commandTimeoutMs,
   signal,
 }) {
@@ -1810,6 +1810,7 @@ export function createOpenShellKubernetesFixture({
     // so Node's own startup diagnostics cannot accidentally contain a valid frame.
     const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
+      const WebSocket = require("ws");
       const nativeTag = ${JSON.stringify(nativeTag)};
       let timeout, socket;
       let urlShape = "unknown", tokenPresent = null;
@@ -2132,7 +2133,12 @@ export function createOpenShellKubernetesFixture({
             entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
-          if (item?.type === "agentMessage") assistant = item.text ?? "";
+          if (item?.type === "agentMessage" && (!${gatewayTurn} ||
+              (message.id === undefined && typeof threadId === "string" && threadId &&
+               turnId && lastAcknowledged === "turn/start" &&
+               params.threadId === threadId && params.turnId === turnId))) {
+            assistant = item.text ?? "";
+          }
         } else if (message.method === "turn/completed") {
           if (${gatewayTurn && observeFailure} &&
               (message.id !== undefined || typeof threadId !== "string" || !threadId ||
@@ -2184,7 +2190,7 @@ export function createOpenShellKubernetesFixture({
           fail(error);
         }
       });
-      socket.addEventListener("error", () => {
+      socket.addEventListener("error", (event) => {
         if (finished) return;
         if (commandDeadline) return unknownCommandOutcome("websocket-error");
         fail(new Error("Codex harness connection failed"), "websocket-error");

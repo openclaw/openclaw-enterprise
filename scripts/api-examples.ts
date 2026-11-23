@@ -193,23 +193,6 @@ const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
 const inferenceConnectionTemplateId = "ctp_223e4567-e89b-42d3-a456-426614174000";
-const inferenceConnectionTemplateValues = {
-  mode: "static_bearer",
-  destinations: [
-    { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
-  ],
-};
-const inferenceConnectionTemplate = {
-  id: inferenceConnectionTemplateId,
-  displayName: "Research inference",
-  createdAt: time,
-  current: {
-    ...inferenceConnectionTemplateValues,
-    templateId: inferenceConnectionTemplateId,
-    version: 1,
-    createdAt: time,
-  },
-};
 const modelProviderSettings = {
   displayName: "Research inference",
   baseUrl: "https://inference.example.com/v1",
@@ -261,6 +244,7 @@ const oauthClient = {
   issuer: "https://accounts.example.com",
   tokenUrl: "https://accounts.example.com/token",
   id: oauthClientId,
+  namespaceId,
   createdAt: time,
 };
 const connectionTemplateInput = {
@@ -268,11 +252,10 @@ const connectionTemplateInput = {
   issuer: oauthClient.issuer,
   authorizationUrl: "https://accounts.example.com/authorize",
   tokenUrl: oauthClient.tokenUrl,
-  oauthClientId,
   scopes: ["profile.read"],
   destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
 };
-const connectionTemplate = {
+const createdConnectionTemplate = {
   id: connectionTemplateId,
   namespaceId,
   displayName: "Example account",
@@ -284,6 +267,10 @@ const connectionTemplate = {
     version: 1,
     createdAt: time,
   },
+};
+const connectionTemplate = {
+  ...createdConnectionTemplate,
+  current: { ...createdConnectionTemplate.current, version: 2, oauthClientId },
 };
 const mcpServerUrl = "https://tools.example.com/mcp";
 const discovered = {
@@ -310,7 +297,7 @@ const savedAccount = {
   credentialSourceId: source.id,
   ownerPrincipalId: userId,
   connectionTemplateId,
-  connectionTemplateVersion: 1,
+  connectionTemplateVersion: 2,
   createdAt: time,
 };
 
@@ -378,8 +365,9 @@ export const requestExamples = {
     expectedSettingsFingerprint: modelProvider.settingsFingerprint,
   },
   createConnectionTemplate: {
-    ...inferenceConnectionTemplateValues,
-    displayName: inferenceConnectionTemplate.displayName,
+    ...connectionTemplateInput,
+    namespaceId,
+    displayName: connectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
@@ -429,6 +417,7 @@ export const requestExamples = {
     secrets: source.secrets,
   },
   updateCredentialSource: { adoption: "live", secrets: source.secrets },
+  pushAgentCredentials: { sources: [source.id] },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
   updateServiceAccountCredential: {
@@ -519,7 +508,7 @@ export const responseExamples = {
   },
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
-  createConnectionTemplate: inferenceConnectionTemplate,
+  createConnectionTemplate: createdConnectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
   discoverConnectionTemplate: discovered,
   listOAuthClients: [oauthClient],
@@ -730,6 +719,8 @@ export const responseExamples = {
     editingEnabled: true,
     protectedExecution: false,
     ceiling: [],
+    repositoryNetworkPolicyCeiling: [],
+    repositoryNetworkPolicySaveSupported: false,
     defaults: null,
     capability: null,
   },
@@ -749,6 +740,7 @@ export const responseExamples = {
   validateAgentSandboxPolicy: { success: true, data: [] },
   getAgentSandboxRecommendations: { recommendations: [], truncated: false },
   withdrawAgentCredentialSource: withdrawal,
+  pushAgentCredentials: { results: [{ sourceId: source.id, outcome: "succeeded" }] },
   getAgentCredentialWithdrawal: withdrawal,
   getAgentWorkspaceFile: {
     name: "AGENTS.md",

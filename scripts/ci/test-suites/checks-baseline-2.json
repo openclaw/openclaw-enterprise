@@ -7,6 +7,7 @@
     "tests/conformance/strands-box-transport.test.ts",
     "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
+    "tests/integration/controller-endpoint-observation.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
@@ -29,7 +30,7 @@
     "tests/integration/repository-credentials-control.test.ts",
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
-    "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/codex-plugin-startup-reads.test.ts",
     "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.ts",
     "tests/integration/password-sign-in-audit.test.ts",
@@ -85,6 +86,8 @@
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.ts",
+    "tests/integration/qa-fixture-credentials-diagnostics.test.ts",
+    "tests/integration/qa-fixture-results.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
@@ -213,6 +216,9 @@
       ]
     },
     {
+      "path": "tests/integration/controller-endpoint-observation.test.ts"
+    },
+    {
       "path": "tests/integration/controlled-tls-origin.test.ts"
     },
     {
@@ -223,6 +229,12 @@
     },
     {
       "path": "tests/helpers/socket-relay.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-credentials-diagnostics.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-results.test.ts"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -759,7 +771,7 @@
       "path": "tests/integration/repository-runtime-materialization.test.ts"
     },
     {
-      "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
+      "path": "tests/integration/codex-plugin-startup-reads.test.ts"
     },
     {
       "path": "tests/integration/codex-plugin-preparation.test.ts",
@@ -886,6 +898,13 @@
       "path": "tests/integration/openshell-full-integration.test.ts"
     },
     {
+      "path": "tests/integration/openshell-stock-destination-ca.test.ts",
+      "expectedTests": [
+        "OpenShell destination CA fixture accepts a single CA and refuses a substituted ConfigMap",
+        "OpenShell stock Supervisor fixture refuses a substituted imported image"
+      ]
+    },
+    {
       "path": "tests/integration/oidc-provider.test.ts"
     },
     {
@@ -934,6 +953,7 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway TLS readiness fails when its forwarder exits after loopback readiness",
         "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
         "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]
