@@ -1,3 +1,4 @@
+import { asRecord } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -4156,11 +4157,11 @@ async function verifyRestSelector(t: TestContext, writes: boolean) {
   assert.deepEqual(prepared.proxyWiring.configuration.network_policies, {
     [bound.name]: bound,
   });
-  assert.equal(
-    JSON.stringify(prepared.proxyWiring.configuration.network_middlewares).includes(
-      writes ? "api.github.com" : "deny-egress.invalid",
-    ),
-    true,
+  const middlewares = asRecord(prepared.proxyWiring.configuration.network_middlewares);
+  const selector = asRecord(middlewares?.["oce-prepared-git"]);
+  assert.deepEqual(
+    asRecord(selector?.endpoints)?.include,
+    [writes ? "api.github.com" : "deny-egress.invalid"],
     "only API write-enabled revisions select the host-wide callback",
   );
   assert.deepEqual(

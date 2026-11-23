@@ -1078,7 +1078,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
           const routes = Object.values(middlewares ?? {}).flatMap((entry) => {
             const middleware = asRecord(entry);
             const include = asRecord(middleware?.endpoints)?.include;
-            return Array.isArray(include) && include.includes("api.github.com")
+            return Array.isArray(include) && include.some((host) => host === "api.github.com")
               ? [{ middleware: middleware?.middleware, onError: middleware?.on_error, include }]
               : [];
           });
