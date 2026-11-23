@@ -72,6 +72,9 @@ repository grant:
 | List pull requests or read one of them | `pull_requests`: `read` or `write` | Read or Write |
 | Create a pull request                  | `pull_requests`: `write`           | Write         |
 
+GitHub's issue routes also return pull requests as issue records, so the issue
+permission alone lets an Agent read pull request titles and descriptions.
+
 Complete the compatible Worker rollout before enabling these settings. After
 changing the registration, rebind existing repository access under the usual
 credential approval and deploy or redeploy the Agent. A Worker upgrade does not
