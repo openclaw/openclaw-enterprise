@@ -450,12 +450,15 @@ export function createPresetOperations(options: PresetDefaults, dependencies: Pr
     }
     namespaceIdentity(input.namespaceId);
     return transact(async (state) => {
-      await authorize(principalId, "update", {
+      const target: ResourceRef = {
         kind: "preset",
         id: input.presetId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await authorize(principalId, "update", target);
       const namespace = await lockNamespace(state, input.namespaceId);
+      // Recheck under the same lock used by AccessBinding deletes.
+      await authorize(principalId, "update", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }

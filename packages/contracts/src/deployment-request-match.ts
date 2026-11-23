@@ -3,6 +3,7 @@ import { Check } from "typebox/value";
 import type { ErrorDetail } from "./api/common.ts";
 import type { DeploymentRequestMatch, DeploymentRequestPolicy } from "./credential-deployment.ts";
 import { networkMatchDetails, SandboxNetworkGrantSchema } from "./sandbox-policy.ts";
+import { validRequestPath } from "./request-path.ts";
 
 type Destination = Pick<DeploymentRequestMatch, "host" | "ports">;
 type PortRanges = DeploymentRequestMatch["ports"];
@@ -72,31 +73,9 @@ export function portsCovered(ports: PortRanges, allowed: PortRanges): boolean {
   });
 }
 
-// Match the original wire path. Only spaces and non-ASCII UTF-8 bytes may be escaped.
-function validPath(path: unknown, allowSubtree: boolean): path is string {
-  if (typeof path !== "string" || !path.startsWith("/") || path.includes("//")) {
-    return false;
-  }
-  const base = allowSubtree && path.endsWith("/**") ? path.slice(0, -3) : path;
-  if (!/^(?:[A-Za-z0-9._~!$&'()+,:=@/-]|%20|%[89A-F][0-9A-F])*$/.test(base)) {
-    return false;
-  }
-  try {
-    return decodeURIComponent(base)
-      .split("/")
-      .every((segment) => {
-        // A segment must remain one ordinary segment even if the origin normalizes Unicode.
-        const normalized = segment.normalize("NFKC");
-        return normalized !== "." && normalized !== ".." && !/[/%\\?#;*\p{Cc}]/u.test(normalized);
-      });
-  } catch {
-    return false;
-  }
-}
-
 /** A terminal subtree includes its base and descendants separated by a slash. */
 export function pathCovered(path: string, allowedPath: string): boolean {
-  if (!validPath(path, true) || !validPath(allowedPath, true)) {
+  if (!validRequestPath(path, true) || !validRequestPath(allowedPath, true)) {
     return false;
   }
   if (path === allowedPath) {
@@ -199,7 +178,7 @@ export function validateMatches(
     }
     details.push(...networkMatchDetails(rule, path));
     const policy = rule.requestPolicy;
-    if (policy && !validPath(policy.path, policy.type === "http")) {
+    if (policy && !validRequestPath(policy.path, policy.type === "http")) {
       details.push({
         path,
         code: "INVALID_VALUE",

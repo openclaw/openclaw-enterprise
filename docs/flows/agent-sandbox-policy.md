@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-22"
-last_updated_session: "authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae"
+last_updated_session: "authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa"
 ---
 
 # Agent sandbox policy flow
@@ -29,6 +29,8 @@ graph TD
   Draft --> Preview["Preview draft<br/>without writes"]
   Preview -->|errors| Draft
   Preview -->|valid| U2["Review proposal"]
+  Cfg --> Grants["Choose repository grants<br/>or confirm deny all"]
+  Grants --> A
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
@@ -63,32 +65,30 @@ Installation ceiling and Sandbox wildcard and range support. Preview writes noth
 Validation names failed fields and checks. Stale or denied requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
 
-Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
-projections using trusted binding, source and consumer authority. Only proposed proxy configuration
-receives a source-bound resolver. The proxy qualifies bindings and requests. Static approvals match
-method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
-MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
+`packages/occ/src/agent-deployment-admission.ts:admitModelCredentialPolicy` matches
+one grant against the approved inference host/port, checks the ceiling, and
+records separate network and method/path injection policies in the revision ([status](../reference/credential-sources.md#implementation-status)).
 
-`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` checks Agent
-`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
-and checks editing, version, pending work, ceiling and Driver admission.
-OCC saves the admitted additions. A protected active or next revision
-refuses ordinary additions with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`.
-Protected deployment and live application also refuse them. A protected,
-dedicated Codex revision can carry the Sandbox Driver's acknowledged
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
+`manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
+Legacy protected execution rejects nonempty additions at save, deploy, and
+live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
+A repository-only Proxy permits a model exception with no repositories and one ready
+Gateway static Harness Source. Managed revisions block nonempty
+edits and live apply. Protected dedicated Codex admits the Sandbox-approved
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
 version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
-For saved or deployed repository bindings, admission passes `repositoryCredentials`.
+Both protected Codex compilers validate the complete revision artifact map.
+`openshell-codex-artifacts.ts` excludes ambient defaults. The Sandbox checks
+workspace enrollment against the validated Agent-owned setup binding and returns
+the immutable policy in `SandboxResourceRef.proxyWiring`. The proxy checks
+the artifact map, bounded auxiliary rule and complete loaded policy.
+[Issue reads](../reference/repository-credentials/access-levels.md#native-git-delivery)
+require a separate grant.
+Admission passes saved or deployed `repositoryCredentials`.
 OpenShell Git refuses additions and defaults targeting `github.com`, its
 subdomains, or IP addresses. Binding, deploy, and provisioning repeat that
 check. Deploy and binding-preserving updates authorize SandboxPolicy `read`
@@ -108,7 +108,8 @@ removes its policy and exact IAM access.
 
 The [repository policy editor](../reference/sandbox-policies.md#repository-network-policy)
 shows the saved grants and Namespace ceiling. Save the first list before
-deploying. The protected topology must admit the proposed list. Omission
+deploying. The protected topology must admit the proposed list, including
+an initial `[]` to deny all repositories. Omission
 retains the list and omits it from the response. For an explicit `[]`, OCC
 checks SandboxPolicy read before checking for a saved list. A reader can
 send empty lists in both fields to withdraw grants after Driver loss.
@@ -116,6 +117,15 @@ send empty lists in both fields to withdraw grants after Driver loss.
 PostgreSQL saves an explicit list at Read Committed. The PUT starts that
 transaction before OCC waits for the IAM configuration lock, and the
 authorization checks see revocations committed during the wait.
+
+`apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
+uses the GET hint and Namespace limits. Refresh updates version and limits.
+Refresh and rejected saves preserve the draft while saved grants match its
+starting list. If they change, discard the draft to edit the current list.
+PUT validates the list. The editor checks the returned Agent, Namespace,
+version and grants. Confirm deny-all and withdrawal. After an unscoped
+deployment, save policy on a new Agent before deploying. Use a compatible
+controller and Worker to stop an unreadable revision.
 
 Deployment rechecks the selected Repo scope, proxy and Driver identities across
 asynchronous validation before accessing credentials and inserting a revision.
@@ -265,11 +275,23 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-22 13:25: Explain draft retention and recovery after a concurrent repository grant change. (authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa - 19ce90f1761a9da44d9a972c42d49686732a604a)
+
+- 2026-11-22 12:08: Reconcile managed model admission with current IAM handoff and repository grants. (authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f - a6b923bad)
+
+- 2026-11-22 10:36: Reconcile repository grants and managed model admission. (authoring-run/5fd71b49-d9db-436b-8ae0-2157ae7ca64a - 5a30353ef9a8f0388b857612c3b31624c810209d)
+
+- 2026-11-22 10:23: Trace managed model admission and legacy protected egress. (authoring-run/afd8fac9-f5bf-4366-9cd1-d3ff0c00ba14 - 6747afc21abe61933b5e5222cacb79141c2a692f)
+
 - 2026-11-22 10:05: Document IAM currentness during Channel handoff and deployment admission. (authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae - 00a5b1d2edc6de425e2e9d197bb0841a02f439e8)
 
 - 2026-11-22 09:55: Document transaction isolation for explicit repository policy saves. (authoring-run/0eda0b23-705a-489b-833d-3cde8916b691 - 42f0df7230de059d4a96da27298c911e22993cab)
 
 - 2026-11-22 09:28: Document the read check for explicit empty repository lists and omission from save responses. (authoring-run/df899b2b-1188-46fb-a341-5c7068e9208a - 8d738163780171c639367dbbccd9d9bb3a0ee63c)
+
+- 2026-11-21 11:25: Issue reads. (authoring-run/0bcc1e9a-07b4-4e62-84f3-5c8d8204522e - 64c5b34ff03f7b17aaa69af21aa75af0a91b1d56)
+
+- 2026-11-21 08:16: Document Console repository choices, first-deployment eligibility and active revision recovery. (authoring-run/6ef4f22d-ce36-4d4c-941f-cb7a21afbb49 - 9cd9c344f9c57cd158dd74b87029a8266ca7cac2)
 
 - 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
 

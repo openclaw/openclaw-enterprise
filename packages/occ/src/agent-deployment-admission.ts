@@ -966,6 +966,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
               repositoryCredentials,
               harnessAuth,
               revisionHarness.configuration,
+              policy?.repositoryNetworkPolicy === undefined
+                ? undefined
+                : admittedRepository?.nativeGit,
             )
           : undefined;
       const egressPlan = proxyAdmission?.plan;

@@ -141,6 +141,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 87 && completedCount > 87) {
     return "preStandaloneCredentialDeployment";
   }
+  if (count === 88 && completedCount > 88) {
+    return "preStaticConnectionTemplates";
+  }
+  if (count === 89 && completedCount > 89) {
+    return "preNativeGitDelivery";
+  }
   if (count === completedCount) {
     return "completed";
   }

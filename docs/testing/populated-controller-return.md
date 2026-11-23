@@ -7,9 +7,9 @@ last_verified: "2026-11-04"
 # Rehearse a populated controller return
 
 Use this local test to check whether the previous OpenClaw Control Plane (OCC)
-controller can serve a draft that the candidate saved after recovering an
-interrupted upgrade. The test creates a new
-installation and PostgreSQL instance, then uses the
+controller can serve a draft that the candidate saved after an ordinary upgrade
+or recovery of an interrupted upgrade. The test creates a new installation and
+PostgreSQL instance, then uses the
 [local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md)
 to change the controller image.
 
@@ -73,21 +73,28 @@ OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Require the rehearsal to pass without a skip. During the forward upgrade, the
-test suspends the exact Helm client after observing its attempt-bound initializer
-Job. Kubernetes finishes the real initialization while Helm remains pending.
-The test terminates and reaps that client, checks the committed PostgreSQL
-history with the candidate's migrator, and runs the supported
-`--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
-The baseline selects an unused documentation-range directory proxy; the candidate
-clears it. Recovery must first refuse the retained egress NetworkPolicy, then
-refuse the retained API environment entry. The fixture explicitly reconciles
-those two removals with UID/resource-version guards while writers remain stopped,
-then retries the same recovery command. Product recovery performs no deletion.
-Recovery must advance exactly one revision without replacing the completed
-initializer Job or Pod or changing the committed migration history. The test
-does not edit Helm storage or disable hooks. If Helm finishes before the
-interruption, the rehearsal fails rather than claiming recovery coverage.
+Require a pass without skips. For ordinary upgrade timing, set
+`OCC_TEST_PRODUCTION_TUI_REHEARSAL=ordinary`. After preflight, the test requires
+one new deployed Helm revision and verifies the Installation.
+
+With `OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`, the test suspends the Helm client
+after observing its attempt's initializer Job. Kubernetes finishes initialization
+while Helm remains pending. The test terminates and reaps that client, checks
+committed PostgreSQL history with the candidate migrator, and runs
+`--resume --recover-helm --migration-history-checked --recovery-reviewed`.
+Recovery must advance exactly one revision and preserve the completed initializer
+Job, Pod, and committed migration history. The test leaves Helm storage and hooks
+intact. It fails if Helm finishes before interruption.
+
+Both return modes use chart resource defaults. Compare timings on fresh clusters
+with matching image digests and resource limits. Earlier fixture limits were
+1 CPU and 1 GiB. `proof.json` records CPU and memory limits from Kubernetes for
+the previous, candidate, and returned API and worker containers, with `null`
+for absent limits.
+
+After the candidate acknowledges the new Agent, the previous image’s migrator
+must report completed history on the candidate database. If this check fails,
+the rehearsal stops before the return measurement or writer shutdown.
 
 The archive taken before the upgrade
 must omit the candidate's acknowledged draft. The archive taken after the write
@@ -154,10 +161,25 @@ the interval between starts. `maxStartGapMs` includes the boundary reads.
 All offsets use the same monotonic clock. Wall-clock timestamps support log
 correlation.
 
-For each window, count unsuccessful observations and report the largest interval
-between successive successful responses. Estimate each finish offset with
-`startOffsetMs + elapsedMs`. Durations are rounded to milliseconds. With fewer
-than two successes, the interval is unknown. Report failures before the first success or after the last separately.
+In the interrupted rehearsal's forward receipt, `guardedResume.startOffsetMs`
+marks the start of the resume attempt after the migration history check. It
+includes the fixture's cluster, database and release checks before the command
+runs.
+`guardedResume.endOffsetMs` marks when the attempt finishes, even on failure.
+A checkpoint can omit the end offset or the whole interval. Missing timing cannot establish
+whether the command ran or succeeded. Compare this interval with probe times
+to locate overlapping failures. Timing alone cannot establish their cause.
+
+For each window, use `responseSummary` to report `successful` and `unsuccessful`
+observation counts, `unsuccessfulBeforeFirstSuccess`,
+`unsuccessfulAfterLastSuccess`, and `maxSuccessfulResponseIntervalMs`. The
+before and after counts are `null` when no observation succeeded. The maximum
+interval estimates the longest gap between consecutive successful responses, in
+whole milliseconds. It is `null` with fewer than two successes.
+
+For older schema v2 receipts without `responseSummary`, use `samples`. Count
+outcomes other than `ok` as unsuccessful and estimate each successful finish
+with `startOffsetMs + elapsedMs`.
 
 An interrupted receipt covers completed observations through `throughOffsetMs`.
 An open slot can still receive a probe. On settlement, `cadence.endOffsetMs`
@@ -181,6 +203,48 @@ compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
 
+## Qualify distinct controller and runtime images
+
+For this separate test, use the [ordinary TUI upgrade inputs](kubernetes.md#run-an-isolated-upgrade-qualification-lane).
+Unset the sign-in, controller return and online migration rehearsal flags. From
+the repository root, run the following in a shell you can reuse for cleanup.
+The last command checks that one fresh proof records both upgrades and the final
+handoff, in order.
+
+```sh
+run_dir="$(mktemp -d)" && (
+  node --env-file="$TEST_ENV_FILE" --input-type=module-typescript -e '
+    for (const role of ["CONTROLLER", "RUNTIME"]) {
+      const key = `OCC_TEST_PRODUCTION_UPGRADE_${role}_IMAGE`;
+      if (!process.env[key]?.trim()) throw new Error(`Missing ${key}`);
+    }' || exit
+  node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" || exit
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
+    --state "$run_dir/state.json" --results "$run_dir/results.json" || exit
+  set -- "$run_dir"/oce-production-tui-*/proof.json
+  test "$#" -eq 1 && test -f "$1" || exit 1
+  jq -es '
+    ["Independent controller upgrade retained Agent revisions",
+     "Independent runtime image upgrade and fresh model reply",
+     "Final production setup attachable"] as $required |
+    length == 1 and ([.[0].rows[].row | select(. as $r | $required | index($r))] == $required)
+  ' "$1"
+)
+```
+
+Require exit zero and `true`. [Retain the private observations](#retain-ordinary-upgrade-observations).
+After either outcome, save the image mapping and clean up if state exists.
+
+```sh
+if [ -n "$run_dir" ] && [ -f "$run_dir/state.json" ]; then
+  install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
+  node scripts/ci/cleanup.ts --state "$run_dir/state.json"
+fi
+```
+
+Keep the environment file and run directory private. Retain state if cleanup fails. Local
+imports can change digests. This lane cannot qualify registry deployment or live EKS.
+
 ## Retain ordinary upgrade observations
 
 The [ordinary TUI upgrade lane](kubernetes.md#run-an-isolated-upgrade-qualification-lane) samples authenticated `GET /installation` through the operator Pod’s
@@ -188,6 +252,8 @@ HTTPS proxy. The runtime window starts before the deliberate interruption and
 includes the checks while both controllers are stopped and the single resume.
 Its success flag covers that sequence. Later fleet checks and model replies have
 their own results. Both receipts use the sample outcomes and cadence described above.
+
+In the distinct-image production TUI upgrade test, the independent controller-only phase selects the primary running Agent using `--verify-agent` and `--verify-agent-namespace`. It compares `agent-continuity.json` and `agent-continuity-after.json` to verify that the Agent remains in the same namespace with the same identity and saved active revision. The test reports whether the Gateway Pod was replaced and records the Gateway container’s restart count (`null` if unknown) before and after the upgrade. A healthy Pod replacement is allowed. The two observations cannot establish uninterrupted service during the upgrade.
 
 The ordinary controller upgrade also writes `controller-api-endpoints.json`.
 This read-only observer surrounds the unchanged HTTP sampler. It binds the API
