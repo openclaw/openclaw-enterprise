@@ -172,9 +172,6 @@ try {
       `Expected attributable ${action} audit evidence.`,
     );
   }
-  process.stdout.write(
-    JSON.stringify({ nativeCronCrud: true, deniedBeforeTransport: true }) + "\n",
-  );
 } finally {
   for (const cleanup of cleanups.reverse()) {
     await cleanup();
