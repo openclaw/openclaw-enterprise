@@ -2140,7 +2140,7 @@ export const occApiRoutes = [
       params: AgentAutomationParams,
       querystring: EmptyQuery,
       body: UpdateAgentAutomationBody,
-      response: { 200: AgentAutomationResponse, ...mutationErrors },
+      response: { 200: AgentAutomationResponse, ...createErrors },
     },
   },
   {
