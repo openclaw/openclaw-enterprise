@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
-import { nativeProofFailureStage } from "../../scripts/ci/runner-reporter-output.ts";
+import { nativeProofFailure } from "../../scripts/ci/runner-reporter-output.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -292,6 +292,28 @@ test(
     assert.ok(installerFailure?.expectedTests);
     const [parentCase, nativeCase] = installerFailure.expectedTests;
     assert.ok(parentCase && nativeCase);
+    const credentialsFailure = canonical.files.find(
+      ({ path }) => path === "tests/integration/openshell-credentials-real.test.ts",
+    );
+    const credentialsCase = credentialsFailure?.expectedTests?.[0];
+    assert.ok(credentialsFailure && credentialsCase);
+    const credentialsPath = credentialsFailure.path;
+    const policyDeclaration = join(root, "tests/helpers/openshell-sandbox-workflows.mjs");
+    const stageModule = new URL("../helpers/openshell-stage.ts", import.meta.url).href;
+    await mkdir(join(root, "tests/helpers"));
+    await writeFile(
+      join(root, credentialsPath),
+      'await import("../helpers/openshell-sandbox-workflows.mjs");\n',
+    );
+    const policyImports = `import test from "node:test";
+import { runOpenShellStage } from ${JSON.stringify(stageModule)};
+`;
+    const policyFailure = `test(${JSON.stringify(credentialsCase)}, async (context) => {
+  await runOpenShellStage(context, "exposure-auth", () => {
+    throw new Error("::warning::private-credentials-case");
+  });
+});\n`;
+    await writeFile(policyDeclaration, policyImports + policyFailure);
     const installers = canonical.files
       .filter(({ path }) => isOpenShellInstallerFile(path))
       .map((file) =>
@@ -300,14 +322,17 @@ test(
           : { path: file.path },
       );
     await writeRunnerManifest(root, {
-      lanes: { openshell: { files: [...installers, { path: first }] } },
+      lanes: {
+        openshell: {
+          files: [...installers, { path: credentialsPath, expectedTests: [credentialsCase] }],
+        },
+      },
       groups: { full: ["openshell"] },
     });
     const splitEnv = { ...env, OCC_CI_SUITE_VIEW: "full-integration" };
     const splitHint =
       "::notice title=Test lane first failed split file hint::Split-lane file position";
     const unknownOrdinalCommands = [failureCommand, `${ordinalHint} UNKNOWN.`];
-    await writeFile(join(root, first), failingCase);
     const splitResults = join(root, "results/split.json");
     const split = await runRunnerAsync(
       laneArgs(root, "openshell-policy", "state/split.jsonl", splitResults),
@@ -318,9 +343,13 @@ test(
     const splitSummary = await readSummary(splitResults);
     assert.equal(splitSummary.counts.failed, 1);
     const failedPolicy = onlyFile(splitSummary);
-    assert.equal(failedPolicy.path, first);
+    assert.equal(failedPolicy.path, credentialsPath);
     assert.equal(failedPolicy.cleanup.status, "passed");
-    assert.deepEqual(commands(split.stderr), [...unknownOrdinalCommands, `${splitHint} 1.`]);
+    assert.deepEqual(commands(split.stderr), [
+      ...unknownOrdinalCommands,
+      `${splitHint} 1.`,
+      "::notice title=OpenShell credential replacement failure::The registered credential replacement case reported a failure at stage exposure-auth.",
+    ]);
 
     // Even selecting the only policy file explicitly is a focused run.
     const focusedSplit = await runRunnerAsync(
@@ -332,13 +361,46 @@ test(
           "results/split-focused.json",
         ),
         "--file",
-        first,
+        credentialsPath,
       ],
       splitEnv,
     );
     assert.ifError(focusedSplit.error);
     assert.equal(focusedSplit.status, 1, focusedSplit.stderr);
     assert.deepEqual(commands(focusedSplit.stderr), unknownOrdinalCommands);
+
+    const policyWithoutStage = `test(${JSON.stringify(credentialsCase)}, () => {
+  throw new Error("unclassified failure");
+});\n`;
+    const policySibling = `test("withdrawal fixture", () => {
+  throw Object.assign(new Error("::warning::private-sibling-failure"), {
+    openclawCiDiagnostic: { kind: "openshell-credential-replacement", stage: "replacement" },
+  });
+});\n`;
+    const policyInvalid = `test(${JSON.stringify(credentialsCase)}, () => {
+  throw Object.assign(new Error("unclassified stage"), {
+    openclawCiDiagnostic: { kind: "openshell-credential-replacement", stage: "replacement\\n::warning::private-stage" },
+  });
+});\n`;
+    for (const [label, cases] of [
+      ["no-stage", policyWithoutStage],
+      ["sibling-stage", policyWithoutStage + policySibling],
+      ["duplicate-case", policyFailure + policyFailure],
+      ["invalid-stage", policyInvalid],
+    ] as const) {
+      await writeFile(policyDeclaration, policyImports + cases);
+      const result = await runRunnerAsync(
+        laneArgs(root, "openshell-policy", `state/${label}.jsonl`, `results/${label}.json`),
+        splitEnv,
+      );
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.deepEqual(
+        commands(result.stderr),
+        [...unknownOrdinalCommands, `${splitHint} 1.`],
+        label,
+      );
+    }
 
     for (const { path } of installers) {
       await writeFile(join(root, path), passingCase);
@@ -350,18 +412,45 @@ test(
       'await import("./local-first-agent-real.test.mjs");\n',
     );
     const nativeDeclaration = join(root, "tests/integration/local-first-agent-real.test.mjs");
+    const proofModule = new URL("../helpers/local-first-agent-native.mjs", import.meta.url).href;
+    const controller = join(root, "controller-proof");
+    await writeFile(
+      controller,
+      `#!${process.execPath}
+process.stdout.write('OCE_NATIVE_FIRST_AGENT_PROOF {"verified":false,"stage":"model-outcome","modelPhase":"initial","detail":"private-controller-proof"}\\n');
+process.exitCode = 1;
+`,
+      { mode: 0o700 },
+    );
     await writeFile(
       nativeDeclaration,
       `
 import test from "node:test";
+import { assertNativeWorkerProofInController } from ${JSON.stringify(proofModule)};
 function reportFailure(failureStage) {
   throw Object.assign(new Error("::warning::private-proof-canary"), {
     openclawCiDiagnostic: { kind: "native-first-agent-proof", failureStage },
   });
 }
 test(${JSON.stringify(parentCase)}, async (t) => {
-  await t.test("sibling proof", () => reportFailure("exec-proof"));
-  await t.test(${JSON.stringify(nativeCase)}, () => reportFailure("model-outcome"));
+  const options = {
+    stateDirectory: ${JSON.stringify(root)},
+    state: {
+      containerEngine: ${JSON.stringify(controller)},
+      repository: ${JSON.stringify(root)},
+      composeProject: "test-only",
+    },
+    environment: {},
+  };
+  await t.test("different proof stage", () => reportFailure("exec-proof"));
+  await t.test("initial proof sibling", (context) =>
+    assertNativeWorkerProofInController(context, options));
+  await t.test(${JSON.stringify(nativeCase)}, (context) =>
+    assertNativeWorkerProofInController(context, {
+      ...options,
+      session: { key: "private-session-key", sessionId: "private-session-id" },
+    }),
+  );
 });`,
     );
     const installerResults = join(root, "results/split-installers.json");
@@ -383,26 +472,44 @@ test(${JSON.stringify(parentCase)}, async (t) => {
     assert.ok(installerOutcome);
     assert.equal(installerOutcome.nodeExitCode, 1);
     assert.deepEqual(installerOutcome.cleanup, { status: "passed" });
-    assert.deepEqual(
-      installerOutcome.tests.map(({ name, status, error }) => [name, status, error?.diagnostic]),
-      [
-        [
-          "sibling proof",
-          "failed",
-          { kind: "native-first-agent-proof", failureStage: "exec-proof" },
-        ],
-        [nativeCase, "failed", { kind: "native-first-agent-proof", failureStage: "model-outcome" }],
-        [parentCase, "failed", undefined],
-      ],
-    );
     assert.deepEqual(commands(installerSplit.stderr), [
       ...unknownOrdinalCommands,
       `${splitHint} 2.`,
       "::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage model-outcome.",
+      "::notice title=Native first-Agent model-outcome phase::The registered native redeployment case reported a model-outcome failure during its resumed proof.",
     ]);
+    assert.deepEqual(
+      installerOutcome.tests.map(({ name, status, error }) => [name, status, error?.diagnostic]),
+      [
+        [
+          "different proof stage",
+          "failed",
+          { kind: "native-first-agent-proof", failureStage: "exec-proof" },
+        ],
+        [
+          "initial proof sibling",
+          "failed",
+          {
+            kind: "native-first-agent-proof",
+            failureStage: "model-outcome",
+            modelPhase: "initial",
+          },
+        ],
+        [
+          nativeCase,
+          "failed",
+          {
+            kind: "native-first-agent-proof",
+            failureStage: "model-outcome",
+            modelPhase: "resumed",
+          },
+        ],
+        [parentCase, "failed", undefined],
+      ],
+    );
 
-    // The same real sibling remains first. Removing or corrupting the named
-    // case's normalized stage must suppress the hint, never select exec-proof.
+    // The same siblings remain first. Only the named case supplies the notice.
+    const siblingOutcomes = installerOutcome.tests.slice(0, 2);
     for (const diagnostic of [
       undefined,
       {
@@ -411,15 +518,33 @@ test(${JSON.stringify(parentCase)}, async (t) => {
       },
     ]) {
       assert.equal(
-        nativeProofFailureStage([
-          installerOutcome.tests[0]!,
-          { name: nativeCase, error: { diagnostic } },
-        ]),
+        nativeProofFailure([...siblingOutcomes, { name: nativeCase, error: { diagnostic } }]),
         undefined,
       );
     }
+    for (const modelPhase of [undefined, "resumed\n::warning::private-phase-canary"]) {
+      assert.deepEqual(
+        nativeProofFailure([
+          ...siblingOutcomes,
+          {
+            name: nativeCase,
+            error: {
+              diagnostic: {
+                kind: "native-first-agent-proof",
+                failureStage: "model-outcome",
+                modelPhase,
+              },
+            },
+          },
+        ]),
+        { kind: "native-first-agent-proof", failureStage: "model-outcome" },
+      );
+    }
 
-    await writeFile(join(root, first), passingCase);
+    await writeFile(
+      policyDeclaration,
+      `import test from "node:test";\ntest(${JSON.stringify(credentialsCase)}, () => {});\n`,
+    );
     const greenSplit = await runRunnerAsync(
       laneArgs(root, "openshell-policy", "state/split-green.jsonl", "results/split-green.json"),
       splitEnv,

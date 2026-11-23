@@ -1,3 +1,4 @@
+import { credentialReplacementStage } from "./openshell-progress.ts";
 import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import { isRecord } from "./records.ts";
 
@@ -69,10 +70,12 @@ const safeRuntimeImageStockBrokerStages = new Set([
 type NativeProofProjection = (
   failureStage: unknown,
   worker: unknown,
+  modelPhase?: unknown,
 ) =>
   | {
       kind: "native-first-agent-proof";
       failureStage: string;
+      modelPhase?: "initial" | "resumed";
       worker?: Record<string, string | number | boolean>;
     }
   | undefined;
@@ -432,7 +435,15 @@ export function projectFailureDiagnostic(
       : undefined;
   }
   if (diagnostic.kind === "native-first-agent-proof") {
-    return projectNativeFirstAgentProof(diagnostic.failureStage, diagnostic.worker);
+    return projectNativeFirstAgentProof(
+      diagnostic.failureStage,
+      diagnostic.worker,
+      diagnostic.modelPhase,
+    );
+  }
+  if (diagnostic.kind === "openshell-credential-replacement") {
+    const stage = credentialReplacementStage(diagnostic.stage);
+    return stage === undefined ? undefined : { kind: diagnostic.kind, stage };
   }
   if (diagnostic.kind === "runtime-model-probe") {
     if (

@@ -64,8 +64,10 @@ import {
 } from "./runner-preparation.ts";
 import { jobCancelling, killDescendants, runNode, type NodeResult } from "./runner-process.ts";
 import {
+  failedCredentialReplacementStage,
+  nativeFirstAgentComposeEntry,
   nativeProofCaseFailed,
-  nativeProofFailureStage,
+  nativeProofFailure,
   readFileEvidence,
   validateExpectedTests,
   type FileEvidence,
@@ -103,6 +105,7 @@ function emptyFileResult(path: string, issues: RunnerIssue[]) {
     issues,
     cleanup: null,
     [nativeProofCaseFailed]: false,
+    [failedCredentialReplacementStage]: undefined,
   };
 }
 
@@ -553,6 +556,7 @@ async function runFile(
       : {}),
     ...(openShellReplacement ? { openShellReplacement } : {}),
     [nativeProofCaseFailed]: evidence[nativeProofCaseFailed],
+    [failedCredentialReplacementStage]: evidence[failedCredentialReplacementStage],
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -667,17 +671,29 @@ async function runLane(
           process.stderr.write(
             `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
           );
-          const proofStage =
-            result[nativeProofCaseFailed] &&
+          if (
             result.cleanup?.status === "passed" &&
             result.issues.every(
               ({ code, status }) => code === "expected-test-not-passed" && status === "failed",
-            ) &&
-            nativeProofFailureStage(result.tests);
-          if (proofStage) {
-            process.stderr.write(
-              `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${proofStage}.\n`,
-            );
+            )
+          ) {
+            const proof = result[nativeProofCaseFailed] && nativeProofFailure(result.tests);
+            if (proof) {
+              process.stderr.write(
+                `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${proof.failureStage}.\n`,
+              );
+              if (result.path === nativeFirstAgentComposeEntry && proof.modelPhase) {
+                process.stderr.write(
+                  `::notice title=Native first-Agent model-outcome phase::The registered native redeployment case reported a model-outcome failure during its ${proof.modelPhase} proof.\n`,
+                );
+              }
+            }
+            const credentialStage = result[failedCredentialReplacementStage];
+            if (credentialStage) {
+              process.stderr.write(
+                `::notice title=OpenShell credential replacement failure::The registered credential replacement case reported a failure at stage ${credentialStage}.\n`,
+              );
+            }
           }
         }
       }
