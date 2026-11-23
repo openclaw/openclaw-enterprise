@@ -63,6 +63,24 @@ async function readDiagnostics(commands: ImageCommands) {
   return diagnosticsReport(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
 }
 
+async function cleanupUnpublishedCluster(commands: ImageCommands, directory: string | undefined) {
+  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+  await commands.cleanupSuccessfully();
+  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+  assert.ok(directory, "expected the owned cluster directory");
+  await assert.rejects(() => stat(directory), { code: "ENOENT" });
+}
+
+async function assertFixtureProbeSkipped(commands: ImageCommands) {
+  const state = await commands.readState();
+  assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
+  assert.equal(state.env, undefined);
+  const calls = await commands.commands();
+  const probes = calls.filter(({ command, args }) => command === "docker" && args[0] === "version");
+  // The only version probe belongs to concurrent PostgreSQL preparation.
+  assert.equal(probes.length, 1);
+}
+
 export function registerFixtureBuildDeadlineCases() {
   // Only external commands are substituted: the preparation CLI owns child deadlines,
   // cleanup inventory, and publication. These cases do not exercise Docker or Kubernetes.
@@ -391,16 +409,7 @@ export function registerFixtureBuildDeadlineCases() {
       /Fixture image preparation fixture-engine-version was not started: the lane keeps 180000 ms/,
     );
     assert.doesNotMatch(result.stderr + result.stdout, /did not finish building|20 min|cache miss/);
-    const state = await commands.readState();
-    assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
-    assert.equal(state.env, undefined);
-    // The only version probe belongs to concurrent PostgreSQL preparation.
-    assert.equal(
-      (await commands.commands()).filter(
-        ({ command, args }) => command === "docker" && args[0] === "version",
-      ).length,
-      1,
-    );
+    await assertFixtureProbeSkipped(commands);
     await commands.cleanupSuccessfully();
   });
 
@@ -416,16 +425,7 @@ export function registerFixtureBuildDeadlineCases() {
         result.stderr,
         /fixture-engine-version requires a valid finite command timeout/,
       );
-      const state = await commands.readState();
-      assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
-      assert.equal(state.env, undefined);
-      // Concurrent PostgreSQL still owns its existing version probe.
-      assert.equal(
-        (await commands.commands()).filter(
-          ({ command, args }) => command === "docker" && args[0] === "version",
-        ).length,
-        1,
-      );
+      await assertFixtureProbeSkipped(commands);
       await commands.cleanupSuccessfully();
     });
   }
@@ -733,12 +733,7 @@ export function registerClusterBootstrapCases() {
       assert.equal(evidence.cluster, cluster.name);
       assert.equal(cluster.status, "planned");
       assert.equal(state.env, undefined);
-      await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-      await commands.cleanupSuccessfully();
-      await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-      const directory = cluster.directory;
-      assert.ok(directory, "expected the owned cluster directory");
-      await assert.rejects(() => stat(directory), { code: "ENOENT" });
+      await cleanupUnpublishedCluster(commands, cluster.directory);
       assert.equal(await readFile(artifactPath, "utf8"), artifactText);
     });
   }
@@ -1001,12 +996,7 @@ export function registerClusterCreateCases() {
     assert.ok(cluster, "expected the k3d cluster cleanup receipt");
     assert.equal(cluster.status, "planned");
     assert.equal(state.env, undefined);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    await commands.cleanupSuccessfully();
-    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-    const directory = cluster.directory;
-    assert.ok(directory, "expected the owned cluster directory");
-    await assert.rejects(() => stat(directory), { code: "ENOENT" });
+    await cleanupUnpublishedCluster(commands, cluster.directory);
   });
 }
 
