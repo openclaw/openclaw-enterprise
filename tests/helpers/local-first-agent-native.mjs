@@ -791,9 +791,14 @@ export async function assertNativeWorkerProofInController(
   if (result.code !== 0) {
     // Only the proof's explicit failure record and exit 1 identify its stage.
     // A controller exit without that evidence leaves the stage unknown.
+    const modelPhase = session === undefined ? "initial" : "resumed";
     const diagnostic =
       result.code === 1 && result.proof?.verified === false
-        ? nativeFirstAgentProofDiagnostic(result.proof.stage, result.proof.worker)
+        ? nativeFirstAgentProofDiagnostic(
+            result.proof.stage,
+            result.proof.worker,
+            state.deploymentMode === "k3d" ? undefined : modelPhase,
+          )
         : undefined;
     const at = diagnostic
       ? `during ${diagnostic.failureStage}`

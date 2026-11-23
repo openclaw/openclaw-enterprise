@@ -196,6 +196,12 @@ func (app *application) namespaceCommand() *cobra.Command {
 			}
 			namespace, err := client.CreateNamespace(args[0], existingNamespace)
 			if err != nil {
+				if lostMutationReply(err) {
+					notices := command.ErrOrStderr()
+					fmt.Fprintln(notices, "Namespace creation outcome is unconfirmed. Do not resend the create request.")
+					fmt.Fprintln(notices, "Keep the same connection options. Run occ namespace list, then use occ namespace get ID with the ID of a matching Namespace.")
+					fmt.Fprintln(notices, "The request may still commit, and permissions may hide the Namespace. If you cannot confirm the outcome, ask an Installation administrator to check the audit log.")
+				}
 				return err
 			}
 			return app.printNamespace(namespace, false)
@@ -826,7 +832,7 @@ func (app *application) agentCommand() *cobra.Command {
 			}
 			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
-				if lostDeploymentReply(err) {
+				if lostMutationReply(err) {
 					notices := command.ErrOrStderr()
 					fmt.Fprintln(notices, "Deployment outcome is unconfirmed. Another deploy can create a second revision.")
 					fmt.Fprintf(notices, "Keep the same connection options and use these read-only commands, replacing REVISION_ID with the matching revision ID.\n  occ --namespace %s agent revisions %s\n  occ --namespace %s agent deployment-status %s REVISION_ID\n", namespace, args[0], namespace, args[0])
@@ -1187,9 +1193,9 @@ func revisionSummary(client *occclient.Client, namespace, agentID, revisionID st
 	}
 }
 
-// Ordinary deploy has no keyed receipt. Give read-only guidance after a lost
-// connection or interrupted request. Keep HTTP and certificate errors intact.
-func lostDeploymentReply(err error) bool {
+// A lost connection or interrupted request can leave a mutation unconfirmed.
+// HTTP responses and certificate errors do not trigger recovery guidance.
+func lostMutationReply(err error) bool {
 	var op *net.OpError
 	if errors.As(err, &op) {
 		return op.Op == "read" || op.Op == "write"

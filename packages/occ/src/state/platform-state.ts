@@ -1,3 +1,4 @@
+import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -46,6 +47,7 @@ import { cancelledDeviceAuthorization } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  isCanonicalRepositoryGrantList,
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
@@ -80,7 +82,7 @@ import {
 } from "../repository-credential-validation.ts";
 import type {
   ConnectionTemplate,
-  OAuthConnectionTemplateVersion,
+  ConnectionTemplateVersion,
   SavedConnection,
   AccessBinding,
   Agent,
@@ -212,11 +214,19 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
+      if (
+        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) === null ||
+        !isNonEmptyString(value.sourceType)
+      ) {
+        return false;
+      }
+      const keys = Object.keys(value).sort().join(",");
+      if (keys === "method,sourceId,sourceType,tokenServiceInstanceId") {
+        return isNonEmptyString(value.tokenServiceInstanceId);
+      }
       return (
-        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
+        keys === "credentialGatewayId,loginMode,method,sourceId,sourceType" &&
         isNonEmptyString(value.credentialGatewayId) &&
-        isNonEmptyString(value.sourceType) &&
         (value.loginMode === "api_key" ||
           value.loginMode === "codex_pat" ||
           value.loginMode === "chatgptAuthTokens")
@@ -354,10 +364,10 @@ export async function assertRevisionAuthAvailable(
   loadSources: (
     ids: readonly string[],
   ) => Promise<
-    readonly Pick<
+    readonly (Pick<
       CredentialSource,
       "id" | "namespaceId" | "type" | "state" | "ownerCapability" | "driverId"
-    >[]
+    > & { readonly tokenServiceInstanceId?: string })[]
   >,
 ): Promise<void> {
   const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
@@ -393,11 +403,19 @@ export async function assertRevisionAuthAvailable(
     }
     const ownerMatches =
       (source.ownerCapability === "credential_gateway" &&
+        snapshot.tokenServiceInstanceId === undefined &&
         snapshot.credentialProxyId === undefined &&
         snapshot.credentialGatewayId === source.driverId) ||
       (source.ownerCapability === "credential_proxy" &&
+        snapshot.tokenServiceInstanceId === undefined &&
         snapshot.credentialGatewayId === undefined &&
-        snapshot.credentialProxyId === source.driverId);
+        snapshot.credentialProxyId === source.driverId) ||
+      (source.ownerCapability === "token_service" &&
+        source.driverId === undefined &&
+        isNonEmptyString(source.tokenServiceInstanceId) &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId);
     if (source.type !== snapshot.sourceType || !ownerMatches) {
       throw new ScopeViolationError(
         "The AgentRevision credential source snapshot does not match its current owner or type.",
@@ -464,16 +482,64 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     const keys = Object.keys(entry).sort();
     const snapshot = entry as Record<string, unknown>;
     const valid =
-      ["credentialGatewayId,sourceId,sourceType", "credentialProxyId,sourceId,sourceType"].includes(
-        keys.join(","),
-      ) &&
+      [
+        "credentialGatewayId,sourceId,sourceType",
+        "credentialProxyId,sourceId,sourceType",
+        "sourceId,sourceType,tokenServiceInstanceId",
+      ].includes(keys.join(",")) &&
       isNonEmptyString(snapshot.sourceId) &&
-      isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
+      isNonEmptyString(
+        snapshot.credentialGatewayId ??
+          snapshot.credentialProxyId ??
+          snapshot.tokenServiceInstanceId,
+      ) &&
       isNonEmptyString(snapshot.sourceType) &&
       !seen.has(snapshot.sourceId);
     seen.add(snapshot.sourceId as string);
     return valid;
   });
+}
+
+/** Full-revision invariant; the execution fence also runs on partial Driver admission inputs. */
+export function validStandaloneCredentialDeployment(
+  revision: Pick<
+    AgentRevision,
+    | "namespaceId"
+    | "executionAdmission"
+    | "credentialDeployment"
+    | "harnessAuth"
+    | "credentialSources"
+  >,
+): boolean {
+  if (revision.executionAdmission.mode !== "standalone") {
+    return true;
+  }
+  const auth = revision.harnessAuth;
+  const policy = revision.credentialDeployment;
+  if (
+    auth.method !== "credential_source" ||
+    !isNonEmptyString(auth.tokenServiceInstanceId) ||
+    policy === undefined
+  ) {
+    return false;
+  }
+  const snapshot = revision.credentialSources?.find(({ sourceId }) => sourceId === auth.sourceId);
+  if (
+    snapshot === undefined ||
+    snapshot.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+    snapshot.sourceType !== auth.sourceType
+  ) {
+    return false;
+  }
+  const binding = policy.bindings[0];
+  return (
+    revision.credentialSources?.length === 1 &&
+    policy.bindings.length === 1 &&
+    binding?.consumer.kind === "model" &&
+    binding.sourceRef.kind === "credential_source" &&
+    binding.sourceRef.namespaceId === revision.namespaceId &&
+    binding.sourceRef.id === auth.sourceId
+  );
 }
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
@@ -518,10 +584,14 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
       (typeof revision.compute.runtimeInputs !== "string" ||
         !/^[\x20-\x7e]{1,4096}$/.test(revision.compute.runtimeInputs))) ||
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
+    (revision.executionAdmission.mode === "standalone" && revision.sandboxDriverId === undefined) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
+    !validStandaloneCredentialDeployment(revision) ||
+    (revision.executionAdmission.mode === "standalone" &&
+      revision.repositoryCredentials !== undefined) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&
@@ -574,7 +644,7 @@ interface PlatformSnapshot {
     string,
     Readonly<StoredOAuthClient> & { cleanupAfter?: string }
   >;
-  readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
+  readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly presets: Map<string, Readonly<Preset>>;
@@ -738,7 +808,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
     clientRegistrations: new Map(snapshot.clientRegistrations),
-    oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
+    connectionTemplateVersions: new Map(snapshot.connectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     presets: copyStoredMap(snapshot.presets),
@@ -1379,10 +1449,18 @@ function repositories(
   };
   const assertTemplateVersion = (
     template: ConnectionTemplate,
-    version: OAuthConnectionTemplateVersion,
+    version: ConnectionTemplateVersion,
   ) => {
     validateConnectionTemplateDestinations(version);
-    if (!version.oauthClientId) {
+    if (
+      version.templateId !== template.id ||
+      (version.mode === "static_bearer") !== (template.current.mode === "static_bearer")
+    ) {
+      throw new ResourceStateConflictError(
+        "The version must match the template identity and authentication method.",
+      );
+    }
+    if (version.mode === "static_bearer" || !version.oauthClientId) {
       return;
     }
     const registration = snapshot.clientRegistrations.get(version.oauthClientId);
@@ -1393,9 +1471,7 @@ function repositories(
         registration.namespaceId !== template.namespaceId) ||
       registration.issuer !== version.issuer ||
       registration.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined &&
-        registration.revocationUrl !== version.revocationUrl) ||
-      version.templateId !== template.id
+      (version.revocationUrl !== undefined && registration.revocationUrl !== version.revocationUrl)
     ) {
       throw new ResourceStateConflictError(
         "The OAuth client registration must match the template scope and client.",
@@ -1409,8 +1485,11 @@ function repositories(
         (template) => template.namespaceId === namespaceId,
       ).length,
     hasOtherConnectionIssuer: async (issuer) =>
-      [...snapshot.oauthConnectionTemplateVersions.values()].some(
-        (version) => version.oauthClientId !== undefined && version.issuer !== issuer,
+      [...snapshot.connectionTemplateVersions.values()].some(
+        (version) =>
+          version.mode !== "static_bearer" &&
+          version.oauthClientId !== undefined &&
+          version.issuer !== issuer,
       ),
     listConnectionTemplates: async () =>
       Object.freeze(
@@ -1419,8 +1498,10 @@ function repositories(
           .map((template) => immutableCopy(template)),
       ),
     findOAuthConnectionTemplateVersion: async (templateId, version) => {
-      const found = snapshot.oauthConnectionTemplateVersions.get(versionKey(templateId, version));
-      return found === undefined ? undefined : immutableCopy(found);
+      const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
+      return found === undefined || found.mode === "static_bearer"
+        ? undefined
+        : immutableCopy(found);
     },
     listOAuthClients: async () =>
       Object.freeze(
@@ -1499,8 +1580,8 @@ function repositories(
     },
     deleteOAuthClient: async (registrationId, retainForCleanup) => {
       if (
-        Array.from(snapshot.oauthConnectionTemplateVersions.values()).some(
-          (version) => version.oauthClientId === registrationId,
+        Array.from(snapshot.connectionTemplateVersions.values()).some(
+          (version) => version.mode !== "static_bearer" && version.oauthClientId === registrationId,
         )
       ) {
         return false;
@@ -1521,7 +1602,7 @@ function repositories(
       assertTemplateVersion(template, template.current);
       const saved = immutableCopy(template);
       snapshot.connectionTemplates.set(saved.id, saved);
-      snapshot.oauthConnectionTemplateVersions.set(
+      snapshot.connectionTemplateVersions.set(
         versionKey(saved.id, saved.current.version),
         saved.current,
       );
@@ -1538,7 +1619,7 @@ function repositories(
         if (changes.version.version !== current.current.version + 1) {
           throw new ResourceStateConflictError("Connection template versions advance by one.");
         }
-        snapshot.oauthConnectionTemplateVersions.set(
+        snapshot.connectionTemplateVersions.set(
           versionKey(templateId, changes.version.version),
           immutableCopy(changes.version),
         );
@@ -1566,9 +1647,9 @@ function repositories(
         throw new ResourceStateConflictError("The connection template is in use.");
       }
       snapshot.connectionTemplates.delete(templateId);
-      for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
+      for (const key of Array.from(snapshot.connectionTemplateVersions.keys())) {
         if (key.startsWith(`${templateId}\u0000`)) {
-          snapshot.oauthConnectionTemplateVersions.delete(key);
+          snapshot.connectionTemplateVersions.delete(key);
         }
       }
       return true;
@@ -1579,13 +1660,15 @@ function repositories(
     const { namespaceId, credentialSourceId, connectionTemplateId, connectionTemplateVersion } =
       record;
     const template = snapshot.connectionTemplates.get(connectionTemplateId);
+    const version = snapshot.connectionTemplateVersions.get(
+      versionKey(connectionTemplateId, connectionTemplateVersion),
+    );
     if (
       !snapshot.credentialSources.has(agentKey(namespaceId, credentialSourceId)) ||
       !template ||
       (template.namespaceId !== undefined && template.namespaceId !== namespaceId) ||
-      !snapshot.oauthConnectionTemplateVersions.has(
-        versionKey(connectionTemplateId, connectionTemplateVersion),
-      )
+      !version ||
+      version.mode === "static_bearer"
     ) {
       throw new ResourceStateConflictError(
         "The connection must use a source and template in its scope.",
@@ -1706,12 +1789,13 @@ function repositories(
     createSavedConnection: async (connection) => {
       assertInitialized(snapshot);
       assertConnectionScope(connection);
-      const version = snapshot.oauthConnectionTemplateVersions.get(
+      const version = snapshot.connectionTemplateVersions.get(
         versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
       );
       const client = snapshot.clientRegistrations.get(connection.oauthClientId);
       if (
         !version ||
+        version.mode === "static_bearer" ||
         !isDeepStrictEqual(version.destinations, connection.destinations) ||
         version.issuer !== connection.issuer ||
         version.tokenUrl !== connection.tokenUrl ||
@@ -2719,6 +2803,7 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    supportsRepositoryNetworkPolicy: true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
@@ -2741,6 +2826,17 @@ function repositories(
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy ownership or version.");
       }
+      const grants = policy.repositoryNetworkPolicy;
+      if (grants !== undefined && !isCanonicalRepositoryGrantList(grants)) {
+        throw new ScopeViolationError("Repository network policy grants must be canonical.");
+      }
+      if (
+        (existing.repositoryNetworkPolicy !== undefined && grants === undefined) ||
+        (policy.version === existing.version &&
+          !isDeepStrictEqual(grants, existing.repositoryNetworkPolicy))
+      ) {
+        throw new ScopeViolationError("Invalid repository network policy transition.");
+      }
       const application = policy.application;
       const previousApplication = existing.application;
       if (
@@ -2756,6 +2852,13 @@ function repositories(
         const revision = (snapshot.revisions.get(key) ?? []).find(
           ({ id }) => id === application.revisionId,
         );
+        if (
+          grants !== undefined ||
+          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+          application.snapshot.repositoryNetworkPolicy !== undefined
+        ) {
+          throw new ScopeViolationError("Repository network policy requires a new deployment.");
+        }
         if (
           revision === undefined ||
           application.policyVersion !== policy.version ||
@@ -3361,6 +3464,17 @@ function repositories(
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
       await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
       const key = agentKey(revision.namespaceId, revision.agentId);
+      const policy = snapshot.sandboxPolicies.get(key);
+      const grants = policy?.repositoryNetworkPolicy;
+      const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      if (
+        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
+      ) {
+        throw new ScopeViolationError(
+          "Revision repository network policy must match the saved policy.",
+        );
+      }
       const previous = snapshot.revisions.get(key) ?? [];
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
@@ -4103,7 +4217,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     configurations: new Map(),
     connectionTemplates: new Map(),
     clientRegistrations: new Map(),
-    oauthConnectionTemplateVersions: new Map(),
+    connectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
     presets: new Map(),

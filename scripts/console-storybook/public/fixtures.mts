@@ -8,6 +8,7 @@ import type {
   SecretMetadata,
   AgentRuntimeContainerStatus,
   AgentRuntimePodStatus,
+  AgentRuntimeHarnessStatus,
   AgentRuntimeEvent,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
@@ -43,6 +44,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     navigationAgentHistory?: true;
+    navigationAgentLookupMismatch?: true;
     namespaceStatus?: string;
     sessionUser?: unknown;
     extraSecrets?: readonly { id: string; name: string }[];
@@ -72,6 +74,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     nativeAdminUrl?: string;
     harness?: unknown;
+    harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
     runtimeImages?: unknown;
     runtimePod?: string;
     diagnosticsState?: string;
@@ -92,6 +95,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     expiredSession?: boolean;
     pendingGoogleAttempt?: boolean;
     emptyNamespaces?: boolean;
+    additionalNamespaceNames?: readonly string[];
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
     oidcEnabled?: boolean;
@@ -184,6 +188,7 @@ function installationScenario(
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+const lookupSiblingNamespaceId = "ns_00000000-0000-4000-8000-000000000003";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const secretRef = (id: string): SecretReference => ({ kind: "secret", namespaceId, id });
 const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_demo_model") };
@@ -193,6 +198,7 @@ const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_dem
 export function installFixture(scenario: FixtureScenario, evidence: FixtureEvidence) {
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
+  let harnessStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
   if (scenario.pendingOidcAttempt) {
@@ -231,6 +237,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       email: "operator@example.com",
     },
   };
+  const navigationAgentLookup =
+    scenario.navigationAgentHistory || scenario.navigationAgentLookupMismatch;
   const namespaces: { id: string; name: string; status: string; createdAt: string }[] =
     scenario.emptyNamespaces
       ? []
@@ -243,11 +251,22 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
           {
             id: "ns_00000000-0000-4000-8000-000000000002",
-            name: scenario.navigationAgentHistory ? "A history default" : "Research",
-            status: scenario.navigationAgentHistory ? "ready" : "provisioning",
+            name: navigationAgentLookup ? "A history default" : "Research",
+            status: navigationAgentLookup ? "ready" : "provisioning",
             createdAt,
           },
         ];
+  for (const name of scenario.additionalNamespaceNames ?? []) {
+    namespaces.push({ id: nextId("ns"), name, status: "ready", createdAt });
+  }
+  if (scenario.navigationAgentLookupMismatch) {
+    namespaces.push({
+      id: lookupSiblingNamespaceId,
+      name: "C sibling",
+      status: "ready",
+      createdAt,
+    });
+  }
   const namespaceDeletionReads = new Map<string, number>();
   let namespaceDeleteRetryStatusFailed = false;
   const backends = scenario.emptyBackends
@@ -405,6 +424,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
   let delayHistoryLookup = scenario.navigationAgentHistory === true;
+  let misrouteLookup = scenario.navigationAgentLookupMismatch === true;
   const templates = createConnectionTemplateFixture(
     scenario.oauthCatalog,
     createdAt,
@@ -597,14 +617,26 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     const match = path.match(/^\/namespaces\/([^/]+)\/(.*)$/);
     if (match) {
       const [, ns, resource = ""] = match;
+      if (
+        scenario.navigationAgentLookupMismatch &&
+        ns === lookupSiblingNamespaceId &&
+        method === "GET" &&
+        resource === "agents/agt_00000000-0000-4000-8000-000000000001"
+      ) {
+        if (!misrouteLookup) {
+          return error(404, "NOT_FOUND");
+        }
+        misrouteLookup = false;
+        // The sibling returns the holder’s Agent once, with its original Namespace ID.
+        return response(lifecycle.seedAgent());
+      }
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({
             delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
             agents: { create: true },
             secrets: { create: true },
-            // A member refused delete is no Installation administrator; an administrator is
-            // refused it only by a Restriction.
+            // The fixtures model a member or administrator with an advisory delete refusal.
             installation: {
               administer: !scenario.observabilityDenied && !scenario.namespaceDeleteDenied,
             },
@@ -908,13 +940,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (suffix === "/harness-status" && method === "GET") {
           // A scenario's harness answers for the current version, as OCC reads it.
+          const harness =
+            harnessStatusReads++ > 0
+              ? (scenario.harnessAfterFirstRead ?? scenario.harness)
+              : scenario.harness;
           return response(
-            scenario.harness === undefined || !saved.activeRevisionId
+            harness === undefined || !saved.activeRevisionId
               ? { status: "unobserved" }
               : {
                   status: "observed",
                   revisionId: saved.activeRevisionId,
-                  harness: scenario.harness,
+                  harness,
                 },
           );
         }

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { Locator } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -46,7 +46,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { callerDenied, SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
 import { refusedNamed, SLACK_LOOKUP_DENIED } from "../helpers/refusal-access.ts";
-import { restrict } from "../helpers/iam-grants.ts";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { within } from "../helpers/wait-for.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -248,7 +248,7 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .waitFor({ state: "visible" });
 });
 
-test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
+async function savedCodexPluginFixture(t: TestContext) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hosted plugin discovery");
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
@@ -263,8 +263,24 @@ test("Agent plugin discovery refuses mismatched details and retries the selected
   await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const catalogUrl = new URL(`${path}/plugins`, fixture.origin).href;
-  const detailsUrl = `${catalogUrl}/details`;
   const { page } = await newPage(t, fixture, { browser });
+  return { fixture, namespace, driver, agent, secret, path, page, catalogUrl };
+}
+
+async function discoveryResponse(
+  page: Page,
+  url: string,
+  action: () => Promise<void>,
+  status = 200,
+) {
+  const [response] = await Promise.all([responseTo(page, "POST", url), action()]);
+  assert.equal(response.status(), status);
+  return response;
+}
+
+test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
+  const { fixture, namespace, agent, path, page, catalogUrl } = await savedCodexPluginFixture(t);
+  const detailsUrl = `${catalogUrl}/details`;
   const requests = apiRequests(page, fixture.origin);
 
   // Both catalog entries share a remote locator but have different canonical IDs.
@@ -330,7 +346,461 @@ test("Agent plugin discovery refuses mismatched details and retries the selected
   assert.deepEqual(JSON.parse(await input.inputValue()), { [alpha.id]: { enabled: true } });
 });
 
-test("Managed MCP tool approval is saved per selected tool and removed when the tool is disabled", async (t) => {
+const conflictDraft = '{\n  "codex-plugin:draft@openai-curated-remote": { "enabled": false }\n}';
+
+async function savedPluginConflictFixture(t: TestContext) {
+  const { fixture, namespace, agent, driver, secret, path, page, catalogUrl } =
+    await savedCodexPluginFixture(t);
+  const requests = apiRequests(page, fixture.origin);
+  const input = page.locator("#agent-plugins");
+  const approvers = page.getByLabel("Default plugin approvers mode", { exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const replacement = await fixture.createSecret(namespace.id, "Replacement token", "fixture-next");
+  await fixture.grantAgentSecretOperate(agent, replacement.ref, { listed: false });
+  const entries = ["Alpha", "Beta"].map((name) => {
+    const slug = name.toLowerCase();
+    return {
+      id: `codex-plugin:${slug}@openai-curated-remote`,
+      name,
+      remoteId: `remote-${slug}`,
+      tools: null,
+    };
+  });
+  let race: "catalog" | "details" | undefined;
+  let holdNextDetails: (() => Promise<void>) | undefined;
+  let rotated = false;
+  let catalogCalls = 0;
+
+  // Change the persisted binding during a provider read. The real API decides whether the
+  // response is still current before the Console can use it.
+  async function rotateDuring(read: "catalog" | "details") {
+    if (race === read) {
+      race = undefined;
+      const { status } = await fixture.request("PATCH", path, {
+        body: {
+          configurationId: agent.configurationId,
+          harnessAuth: { method: "codex_pat", source: replacement.ref },
+        },
+      });
+      assert.equal(status, 200, "the competing update must replace the saved binding");
+      rotated = true;
+    }
+  }
+
+  driver.discoverCatalog = async () => {
+    catalogCalls += 1;
+    const plugins = rotated ? entries.filter(({ name }) => name === "Beta") : entries;
+    await rotateDuring("catalog");
+    return { plugins, nextCursor: null };
+  };
+  driver.getCatalogPlugin = async ({ pluginId }) => {
+    const entry = entries.find(({ remoteId }) => remoteId === pluginId);
+    assert.ok(entry, "details must use a known remote locator");
+    const hold = holdNextDetails;
+    holdNextDetails = undefined;
+    const origin = rotated ? "Current" : "Original";
+    const name = `${hold ? "Canceled" : origin} ${entry.name} tool`;
+    await hold?.();
+    await rotateDuring("details");
+    return { ...entry, tools: [{ id: "app_hosted/search", name, ownerId: "app_hosted" }] };
+  };
+
+  async function readSavedSelections() {
+    const response = await fixture.request("GET", path);
+    assert.equal(response.status, 200);
+    const { plugins, pluginApprovers } = responseData(response);
+    return { plugins, pluginApprovers };
+  }
+
+  const savedSelections = await readSavedSelections();
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await approvers.selectOption("none");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await input.fill(conflictDraft);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const button = (name: string) => dialog.getByRole("button", { name, exact: true });
+  await button("Alpha").waitFor();
+
+  const isDiscoveryRead = ({ method, path: target }: (typeof requests)[number]) =>
+    method === "POST" && (target === `${path}/plugins` || target === `${path}/plugins/details`);
+
+  return {
+    fixture,
+    agent,
+    secret,
+    path,
+    page,
+    catalogUrl,
+    dialog,
+    button,
+    catalogCalls: () => catalogCalls,
+    tool: (name: string) => dialog.locator("summary").getByText(name, { exact: true }),
+    loadCatalog: (status = 200) =>
+      discoveryResponse(page, catalogUrl, () => button("Load plugins").click(), status),
+    loadDetails: (label: string, status = 200) =>
+      discoveryResponse(page, `${catalogUrl}/details`, () => button(label).click(), status),
+    reads: () => requests.filter(isDiscoveryRead).map(({ body }) => body),
+    holdNextDetails() {
+      const started = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      t.after(() => released.resolve());
+      holdNextDetails = () => {
+        started.resolve();
+        return released.promise;
+      };
+      return { started: started.promise, release: released.resolve };
+    },
+    rotateOn(read: "catalog" | "details") {
+      race = read;
+    },
+    async checkDraft({ readSaved = true } = {}) {
+      assert.equal(await input.inputValue(), conflictDraft);
+      assert.equal(await approvers.inputValue(), "none");
+      if (readSaved) {
+        assert.deepEqual(await readSavedSelections(), savedSelections);
+      }
+      const writes = requests.filter(
+        (request) =>
+          /^(POST|PUT|PATCH|DELETE)$/.test(request.method) &&
+          (request.path === path || request.path.startsWith(`${path}/`)) &&
+          !isDiscoveryRead(request),
+      );
+      assert.deepEqual(writes, [], "discovery and recovery must not write the Agent");
+    },
+  };
+}
+
+async function conflictFeedback(response: Response, dialog: Locator) {
+  const body = record(await response.json());
+  const error = record(body.error);
+  assert.equal(error.code, "RESOURCE_CONFLICT");
+  const message = text(error.message);
+  assert.equal(message, "The Agent's plugin credential or catalog changed. Refresh and retry.");
+  const id = text(record(body.meta).requestId);
+  assert.ok(id);
+  assert.equal(response.headers()["x-request-id"], id);
+  const feedback = dialog.getByText(`Request ID: ${id}`);
+  await feedback.waitFor();
+  const advice = await feedback.innerText();
+  assert.ok(!advice.includes(message), "do not render server error detail as Console advice");
+  return { advice, feedback };
+}
+
+test("Saved plugin details conflict offers manual retry and keeps the draft", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  await ui.loadDetails("Beta");
+  await ui.tool("Original Beta tool").waitFor();
+  await ui.button("Add Beta").click({ trial: true });
+
+  ui.rotateOn("details");
+  const { advice, feedback } = await conflictFeedback(
+    await ui.loadDetails("Alpha", 409),
+    ui.dialog,
+  );
+  assert.equal(await ui.button("Alpha").getAttribute("aria-current"), "true");
+  assert.equal(await ui.button("Retry tools for Alpha").isEnabled(), true);
+  assert.equal(await ui.button("Add Alpha").isDisabled(), true);
+  assert.equal(await ui.tool("Original Alpha tool").count(), 0);
+
+  // Reopening a warmed sibling must neither resurrect its old tools nor send a new read.
+  await ui.button("Beta").click();
+  const addBeta = ui.button("Add Beta");
+  const staleBetaAdd = (await addBeta.isVisible()) && (await addBeta.isEnabled());
+  const staleBetaTool = await ui.tool("Original Beta tool").isVisible();
+  await ui.button("Alpha").click();
+  await ui.checkDraft();
+  const reads = [{}, { pluginId: "remote-beta" }, { pluginId: "remote-alpha" }];
+  assert.deepEqual(ui.reads(), reads, "switching rows must not retry");
+
+  assert.deepEqual([staleBetaAdd, staleBetaTool], [false, false], "a sibling must lose stale Add");
+  assert.match(advice, /retry tools/i, "details conflict must give actionable retry advice");
+  assert.doesNotMatch(advice, /check the credential/i);
+
+  // Hold the real provider result until after the browser cancels the retry.
+  const detailsUrl = `${ui.catalogUrl}/details`;
+  const delivery = await holdRequests(t, ui.page, detailsUrl, {
+    method: "POST",
+    once: true,
+    afterServer: true,
+  });
+  const retry = ui.button("Retry tools for Alpha");
+  const provider = ui.holdNextDetails();
+  const alphaRead = { pluginId: "remote-alpha" };
+  const readsAfterCancel = [...reads, alphaRead];
+  try {
+    await retry.click();
+    await within(provider.started, "the explicit Alpha retry");
+    await ui.dialog.getByText("Loading tools…", { exact: true }).waitFor();
+    assert.equal(await feedback.count(), 0, "hide the prior refusal while the retry is pending");
+    const [request] = await Promise.all([
+      ui.page.waitForEvent("requestfailed", {
+        predicate: (failed) => failed.url() === detailsUrl && failed.method() === "POST",
+      }),
+      ui.button("Configured plugins").click(),
+    ]);
+    assert.deepEqual(request.postDataJSON(), alphaRead);
+    await ui.button("Available plugins").click();
+    await ui.button("Alpha").click();
+    assert.equal(
+      await feedback.isVisible(),
+      true,
+      "cancellation preserves the original request ID",
+    );
+    assert.equal(await retry.isEnabled(), true);
+    assert.deepEqual(ui.reads(), readsAfterCancel, "reopening after cancellation must not retry");
+
+    provider.release();
+    const late = await delivery.requested;
+    assert.ok(late);
+    assert.equal(late.status(), 200);
+    const lateTools = responseData(await late.json()).tools;
+    assert.deepEqual(lateTools, [
+      { id: "app_hosted/search", name: "Canceled Alpha tool", ownerId: "app_hosted" },
+    ]);
+    delivery.release();
+    await nextFrames(ui.page);
+    assert.equal(await ui.tool("Canceled Alpha tool").count(), 0);
+    assert.equal(await feedback.isVisible(), true);
+  } finally {
+    provider.release();
+    delivery.release();
+  }
+
+  await ui.loadDetails("Retry tools for Alpha");
+  await ui.tool("Current Alpha tool").waitFor();
+  assert.equal(await ui.tool("Canceled Alpha tool").count(), 0);
+  await ui.button("Add Alpha").click({ trial: true });
+  assert.equal(await feedback.count(), 0);
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), [...readsAfterCancel, alphaRead]);
+});
+
+test("Saved plugin catalog conflict revokes previously loaded Add authority", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  const search = ui.dialog.getByRole("searchbox", { name: "Search plugins" });
+  const query = { q: "a" };
+  await discoveryResponse(ui.page, ui.catalogUrl, () => search.fill(query.q));
+  await ui.loadDetails("Alpha");
+  await ui.tool("Original Alpha tool").waitFor();
+  const addAlpha = ui.button("Add Alpha");
+  await addAlpha.click({ trial: true });
+
+  ui.rotateOn("catalog");
+  const { advice, feedback } = await conflictFeedback(await ui.loadCatalog(409), ui.dialog);
+  assert.equal(await ui.button("Load plugins").isEnabled(), true);
+  assert.equal(await search.inputValue(), query.q);
+
+  // Refresh closes the card. Try the user's path back to the warmed row before reloading.
+  const alpha = ui.button("Alpha");
+  if ((await alpha.isVisible()) && (await alpha.isEnabled())) {
+    await alpha.click();
+  }
+  const staleAddEnabled = (await addAlpha.isVisible()) && (await addAlpha.isEnabled());
+  if (staleAddEnabled) {
+    await addAlpha.click({ trial: true });
+  }
+  assert.equal(
+    staleAddEnabled,
+    false,
+    "the warmed row must lose stale Add before leaving Available",
+  );
+  const reads = [{}, query, { pluginId: "remote-alpha" }, query];
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), reads, "no automatic discovery after refusal");
+  assert.match(advice, /load plugins/i, "catalog conflict must give actionable reload advice");
+  assert.doesNotMatch(advice, /check the credential/i);
+
+  const configured = ui.button("Configured plugins");
+  await configured.click();
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  await feedback.waitFor();
+  assert.equal(await feedback.innerText(), advice);
+  assert.equal(await ui.button("Load plugins").isEnabled(), true);
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), reads, "switching to Configured must not retry");
+
+  await ui.loadCatalog();
+  await feedback.waitFor({ state: "hidden" });
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  const available = ui.button("Available plugins");
+  await available.click();
+  assert.equal(await available.getAttribute("aria-pressed"), "true");
+  assert.equal(await search.inputValue(), query.q);
+  assert.equal(await feedback.count(), 0);
+  await ui.button("Beta").waitFor();
+  assert.equal(await alpha.count(), 0, "the fresh catalog dropped Alpha");
+  await ui.loadDetails("Beta");
+  await ui.tool("Current Beta tool").waitFor();
+  await ui.button("Add Beta").click({ trial: true });
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), [...reads, query, { pluginId: "remote-beta" }]);
+});
+
+const googlePluginId = "occ-plugin:google@1.0.0";
+const slackPluginId = "occ-plugin:slack@1.0.0";
+const managedTool = "Controlled Slack tool";
+const accessDenied = { status: 403, code: "FORBIDDEN" } as const;
+const agentDeleting = { status: 409, code: "AGENT_DELETING" } as const;
+
+async function refusedDiscovery(response: Pick<Response, "json" | "headers">, code: string) {
+  const body = record(await within(response.json(), `the ${code} response body`));
+  const error = record(body.error);
+  assert.equal(error.code, code);
+  const id = text(record(body.meta).requestId);
+  assert.match(id, /^req_/);
+  assert.equal(response.headers()["x-request-id"], id);
+  const message = text(error.message);
+  assert.ok(message.length > 0);
+  return { id, message };
+}
+
+type DiscoveryRefusal = Awaited<ReturnType<typeof refusedDiscovery>>;
+
+function pluginRow(dialog: Locator, id: string) {
+  return dialog.locator(`[data-plugin-id="${id}"] .plugin-list-item`);
+}
+
+function pluginCard(dialog: Locator, id: string) {
+  return dialog.locator(`[data-plugin="${id}"]`);
+}
+
+async function expectRetiredPlugin(page: Page, dialog: Locator, id: string, name: string) {
+  // Check the warmed row before waiting for new guidance, so the baseline fails on stale Add.
+  await within(nextFrames(page), "the plugin refusal to render");
+  const row = pluginRow(dialog, id);
+  if ((await row.isVisible()) && (await row.getAttribute("aria-current")) !== "true") {
+    await row.click();
+  }
+  const add = pluginCard(dialog, id).getByRole("button", { name: `Add ${name}`, exact: true });
+  assert.equal((await add.isVisible()) && (await add.isEnabled()), false, `stale Add for ${name}`);
+  assert.equal(await row.count(), 0, `${name} must be retired from Available plugins`);
+}
+
+function discoveryNotice(dialog: Locator, refusal: DiscoveryRefusal, guidance: string) {
+  return dialog
+    .getByRole("status", { includeHidden: true })
+    .filter({ hasText: guidance })
+    .filter({ hasText: `Request ID: ${refusal.id}` });
+}
+
+async function expectDiscoveryNotice(dialog: Locator, refusal: DiscoveryRefusal, guidance: string) {
+  await discoveryNotice(dialog, refusal, guidance).waitFor();
+  assert.equal(await dialog.getByText(refusal.message).count(), 0);
+}
+
+const deletionAdvice = "Plugin discovery is unavailable while this Agent is being deleted.";
+const hostedAccessAdvice =
+  "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.";
+const managedAccessAdvice =
+  "Tool discovery requires Agent edit access and permission to use the selected credential.";
+
+for (const read of ["catalog", "hosted details"] as const) {
+  for (const { status, code } of [accessDenied, agentDeleting]) {
+    test(`Saved ${read} retires cached plugins on ${code}`, async (t) => {
+      const ui = await savedPluginConflictFixture(t);
+      const { fixture, agent, secret, page, dialog } = ui;
+      const betaId = "codex-plugin:beta@openai-curated-remote";
+      const search = dialog.getByRole("searchbox", { name: "Search plugins" });
+      const query = { q: "a" };
+      const betaRead = { pluginId: "remote-beta" };
+      await discoveryResponse(page, ui.catalogUrl, () => search.fill(query.q));
+      await ui.loadDetails("Beta");
+      await ui.tool("Original Beta tool").waitFor();
+      const betaHeading = pluginCard(dialog, betaId).getByRole("heading", { level: 3 });
+      assert.equal(await betaHeading.evaluate((node) => node === document.activeElement), true);
+      await ui.button("Add Beta").click({ trial: true });
+
+      if (status === 403) {
+        const index = fixture.policy.bindings.findIndex(
+          (binding) =>
+            binding.subjectId === agent.servicePrincipalId &&
+            binding.resourceKind === "secret" &&
+            binding.resourceId === secret.id,
+        );
+        assert.ok(index >= 0, "the Agent must start with the credential grant");
+        fixture.policy.bindings.splice(index, 1);
+      } else {
+        assert.equal((await fixture.request("DELETE", ui.path)).status, 202);
+      }
+      const alphaCard = pluginCard(dialog, "codex-plugin:alpha@openai-curated-remote");
+      const loading = alphaCard.getByText("Loading tools…", { exact: true });
+      let response: Response;
+      if (read === "catalog") {
+        response = await ui.loadCatalog(status);
+      } else {
+        const detailsUrl = `${ui.catalogUrl}/details`;
+        const delivery = await holdRequests(t, page, detailsUrl, {
+          once: true,
+          method: "POST",
+          afterServer: true,
+        });
+        try {
+          await ui.button("Alpha").click();
+          await loading.waitFor();
+          const captured = await within(delivery.requested, "the Controller's hosted refusal");
+          assert.ok(captured);
+          assert.equal(captured.status(), status);
+          const heading = alphaCard.getByRole("heading", { level: 3 });
+          assert.equal(await heading.evaluate((node) => node === document.activeElement), true);
+          const reply = responseTo(page, "POST", detailsUrl);
+          delivery.release();
+          response = await reply;
+          assert.equal(response.status(), status);
+          await loading.waitFor({ state: "detached" });
+        } finally {
+          delivery.release();
+        }
+      }
+
+      const refusal = await refusedDiscovery(response, code);
+      const guidance = status === 403 ? hostedAccessAdvice : deletionAdvice;
+      const notice = discoveryNotice(dialog, refusal, guidance);
+      // Capture focus before the stale-Add check can select a surviving Beta row.
+      const refusalHasFocus =
+        read === "hosted details" &&
+        (await notice.evaluateAll((nodes) =>
+          nodes.some((node) => node === document.activeElement),
+        ));
+      await expectRetiredPlugin(page, dialog, betaId, "Beta");
+      await expectDiscoveryNotice(dialog, refusal, guidance);
+      if (read === "hosted details") {
+        assert.equal(
+          refusalHasFocus,
+          true,
+          "the current refusal takes the retired heading's focus",
+        );
+      }
+      assert.equal(await ui.tool("Original Beta tool").count(), 0);
+      assert.equal(await search.inputValue(), query.q);
+      await ui.checkDraft({ readSaved: status === 403 });
+      const reads = [
+        {},
+        query,
+        betaRead,
+        read === "catalog" ? query : { pluginId: "remote-alpha" },
+      ];
+      assert.deepEqual(ui.reads(), reads);
+      assert.equal(ui.catalogCalls(), 2, "a refused catalog must not reach the Plugin Driver");
+
+      if (status === 403) {
+        await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
+        await ui.loadCatalog();
+        await ui.button("Beta").waitFor();
+        assert.equal(await ui.tool("Original Beta tool").count(), 0);
+        await ui.loadDetails("Beta");
+        await ui.tool("Original Beta tool").waitFor();
+        await ui.button("Add Beta").click({ trial: true });
+        assert.deepEqual(ui.reads(), [...reads, query, betaRead]);
+        await ui.checkDraft();
+      } else {
+        const load = ui.button("Load plugins");
+        assert.equal((await load.isVisible()) && (await load.isEnabled()), false);
+      }
+    });
+  }
+}
+
+async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
     await createReadyConsoleNamespace(t, "MCP tool approval");
   const namespace = entity(namespaceValue);
@@ -384,33 +854,956 @@ test("Managed MCP tool approval is saved per selected tool and removed when the 
     credentialGatewayDriver: gateway,
   });
   compute.resolveSandboxNamespace = async (namespace) => namespace;
-  for (const driver of [gateway, sandbox, new OCCPluginDriver(), compute]) {
+  const pluginDriver = new OCCPluginDriver();
+  for (const driver of [gateway, sandbox, pluginDriver, compute]) {
     controller(fixture).registerDriver(driver);
     controller(fixture).selectDriver(driver.capability, driver.id);
   }
   const secret = secretEntity(
     await fixture.createSecret(namespace.id, "MCP token", "controlled-token"),
   );
-  const createdSource = record(
-    await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-      body: {
-        name: "Controlled account",
-        type: "bearer-token",
-        config: sourceConfig,
-        secrets: { token: secret.ref },
+  async function createAccount(name: string) {
+    const response = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name,
+          type: "bearer-token",
+          config: sourceConfig,
+          secrets: { token: secret.ref },
+        },
       },
-    }),
-  );
-  assert.equal(createdSource.status, 201, JSON.stringify(createdSource.body));
-  const sourceId = text(responseData(createdSource).id);
+    );
+    assert.equal(response.status, 201, JSON.stringify(response.body));
+    return text(responseData(response).id);
+  }
+  const sourceId = await createAccount("Controlled account");
+  const siblingId = withSibling ? await createAccount("Independent account") : undefined;
   const agent = agentEntity(
     await fixture.createAgent(namespace.id, "MCP Agent", nativeValues("mcp"), {
       executionMode: "dedicated",
       harnessAuth: null,
-      credentialSources: [{ sourceId }],
+      credentialSources: siblingId ? [{ sourceId }, { sourceId: siblingId }] : [{ sourceId }],
     }),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  return { fixture, namespace, agent, path, sourceId, siblingId, pluginDriver };
+}
+
+function managedDetailsBody(sourceId: string) {
+  return { pluginId: slackPluginId, managedConnection: { slot: "account", sourceId } };
+}
+
+function accountSlot(body: unknown) {
+  const slots: unknown = responseData(body).credentialSlots;
+  assert.ok(Array.isArray(slots));
+  const slot = slots
+    .map(record)
+    .find(({ pluginId, id }) => pluginId === slackPluginId && id === "account");
+  assert.ok(slot);
+  assert.equal(slot.toolDiscovery, true);
+  assert.ok(Array.isArray(slot.sources));
+  return { slot, sources: slot.sources.map(record) };
+}
+
+async function managedAccessBrowser(t: TestContext) {
+  const { fixture, namespace, agent, pluginDriver, path, sourceId, siblingId } =
+    await managedSlackPluginFixture(t, true);
+  assert.ok(siblingId);
+  const principalId = text(record(agent).servicePrincipalId);
+  fixture.policy.identities.push({
+    kind: "service_principal",
+    id: principalId,
+    namespaceId: namespace.id,
+    agentId: agent.id,
+  });
+  function grantAccount(id: string) {
+    return grantRole(fixture.policy, principalId, {
+      id: `managed-discovery-${id}`,
+      namespaceId: namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id },
+    }).binding;
+  }
+  const selectedGrant = grantAccount(sourceId);
+  grantAccount(siblingId);
+  pluginDriver.getCatalogPlugin = async () =>
+    assert.fail("An IAM refusal reached the Plugin Driver");
+
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const catalogUrl = new URL(`${path}/plugins`, fixture.origin).href;
+  const detailsUrl = `${catalogUrl}/details`;
+  const capabilitiesUrl = `${catalogUrl}/capabilities`;
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const button = (name: string) => dialog.getByRole("button", { name, exact: true });
+  const account = dialog.getByRole("combobox", { name: "Slack user account", exact: true });
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const input = page.locator("#agent-plugins");
+  const approvers = page.getByLabel("Default plugin approvers mode", { exact: true });
+  const initialCapabilities = responseTo(page, "GET", capabilitiesUrl);
+  const initialCatalog = responseTo(page, "POST", catalogUrl);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const capabilities = await initialCapabilities;
+  assert.equal(capabilities.status(), 200);
+  const { sources } = accountSlot(await capabilities.json());
+  assert.deepEqual(new Set(sources.map(({ id }) => id)), new Set([sourceId, siblingId]));
+  await approvers.selectOption("none");
+  await configure.click();
+  const catalog = await initialCatalog;
+  assert.equal(catalog.status(), 200);
+  const entries: unknown = responseData(await catalog.json()).plugins;
+  assert.ok(Array.isArray(entries));
+  const slack = entries.map(record).find(({ id }) => id === slackPluginId);
+  assert.ok(slack);
+  await button("Google Workspace").click();
+  await button("Add Google Workspace").click({ trial: true });
+  await button("Slack").click();
+  await button("Add Slack").click();
+  await account.selectOption(sourceId);
+  const draft = await input.inputValue();
+  const selection = record(record(JSON.parse(draft))[slackPluginId]);
+  assert.deepEqual(record(record(selection.driverPolicy).credentials), { account: sourceId });
+
+  const isDiscovery = ({ method, path: target }: (typeof requests)[number]) =>
+    method === "POST" && [`${path}/plugins`, `${path}/plugins/details`].includes(target);
+
+  return {
+    fixture,
+    namespace,
+    agent,
+    page,
+    dialog,
+    button,
+    account,
+    input,
+    approvers,
+    sourceId,
+    siblingId,
+    selectedGrant,
+    principalId,
+    path,
+    capabilitiesUrl,
+    detailsUrl,
+    catalogUrl,
+    draft,
+    loadTools: button("Load tools for Slack"),
+    tool: dialog.locator("summary").getByText(managedTool, { exact: true }),
+    toolReply: {
+      data: {
+        ...slack,
+        tools: [{ id: "slack_search_public", name: managedTool, ownerId: slackPluginId }],
+      },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000501" },
+    },
+    denyAgent: (action: "read" | "update") =>
+      restrict(fixture.policy, action, "agent", {
+        namespaceId: namespace.id,
+        resourceId: agent.id,
+      }),
+    denySource: (id: string) =>
+      restrict(fixture.policy, "operate", "credential_source", {
+        namespaceId: namespace.id,
+        resourceId: id,
+      }),
+    async checkDraft(expected = draft) {
+      assert.equal(await input.inputValue(), expected);
+      assert.equal(await approvers.inputValue(), "none");
+    },
+    rechecks: () => pathRequests(requests, "GET", `${path}/plugins/capabilities`).length - 1,
+    reads: () => requests.filter(isDiscovery).map(({ body }) => body),
+    checkNoWrites() {
+      const writes = requests.filter(
+        (request) =>
+          /^(POST|PUT|PATCH|DELETE)$/.test(request.method) &&
+          (request.path === path || request.path.startsWith(`${path}/`)) &&
+          !isDiscovery(request),
+      );
+      assert.deepEqual(writes, [], "plugin discovery must not write the Agent");
+    },
+  };
+}
+
+type ManagedAccessBrowser = Awaited<ReturnType<typeof managedAccessBrowser>>;
+
+async function expectManagedBlocked(
+  ui: ManagedAccessBrowser,
+  refusal: DiscoveryRefusal,
+  guidance = managedAccessAdvice,
+) {
+  await ui.button("Available plugins").click();
+  await expectRetiredPlugin(ui.page, ui.dialog, googlePluginId, "Google Workspace");
+  const load = ui.button("Load plugins");
+  assert.equal(
+    (await load.isVisible()) && (await load.isEnabled()),
+    false,
+    "catalog reload must stay blocked",
+  );
+  await expectDiscoveryNotice(ui.dialog, refusal, guidance);
+  await ui.button("Configured plugins").click();
+  // The fallback row is still selectable. Its display label changes when the catalog is retired.
+  await pluginRow(ui.dialog, slackPluginId).click();
+  const card = pluginCard(ui.dialog, slackPluginId);
+  await card.waitFor();
+  const actions = await card.getByRole("button", { name: /^(Add |Load tools|Retry tools)/ }).all();
+  for (const action of actions) {
+    assert.equal(await action.isEnabled(), false);
+  }
+  assert.equal(await ui.tool.count(), 0);
+  await expectDiscoveryNotice(ui.dialog, refusal, guidance);
+  await ui.button("Available plugins").click();
+}
+
+async function recheckManaged(
+  ui: ManagedAccessBrowser,
+  status: number,
+  activate = () => ui.button("Recheck access").click(),
+) {
+  const [response] = await Promise.all([
+    responseTo(ui.page, "GET", ui.capabilitiesUrl),
+    activate(),
+  ]);
+  assert.equal(response.status(), status);
+  if (status !== 401) {
+    await ui.button("Checking access…").waitFor({ state: "hidden" });
+  }
+  return response;
+}
+
+async function expectAccounts(response: Response, expected: string[]) {
+  const { sources } = accountSlot(await response.json());
+  assert.deepEqual(
+    sources.map(({ id }) => id),
+    expected,
+  );
+}
+
+async function loadFreshManaged(ui: ManagedAccessBrowser, offered: string[]) {
+  assert.equal(
+    await pluginRow(ui.dialog, googlePluginId).count(),
+    0,
+    "a GET cannot repopulate the catalog",
+  );
+  await discoveryResponse(ui.page, ui.catalogUrl, () => ui.button("Load plugins").click());
+  await ui.button("Google Workspace").click();
+  await ui.button("Add Google Workspace").click({ trial: true });
+  await ui.button("Slack").click();
+  assert.equal(await ui.tool.count(), 0, "the catalog cannot restore cached tools");
+  const choices = await ui.account
+    .locator("option:enabled")
+    .evaluateAll((options: HTMLOptionElement[]) =>
+      options.map(({ value }) => value).filter(Boolean),
+    );
+  assert.deepEqual(choices, offered);
+}
+
+async function loadManagedTools(ui: ManagedAccessBrowser, sourceId: string) {
+  // The browser consumes a controlled success without contacting the MCP provider.
+  await ui.page.route(
+    ui.detailsUrl,
+    (route) => route.fulfill({ status: 200, json: ui.toolReply }),
+    { times: 1 },
+  );
+  const response = await discoveryResponse(ui.page, ui.detailsUrl, () => ui.loadTools.click());
+  assert.deepEqual(response.request().postDataJSON(), managedDetailsBody(sourceId));
+  await ui.tool.waitFor();
+}
+
+async function refuseManaged(ui: ManagedAccessBrowser) {
+  const response = await discoveryResponse(ui.page, ui.detailsUrl, () => ui.loadTools.click(), 403);
+  assert.deepEqual(response.request().postDataJSON(), managedDetailsBody(ui.sourceId));
+  return refusedDiscovery(response, accessDenied.code);
+}
+
+for (const loss of [
+  "Agent read",
+  "Agent update",
+  "Agent source",
+  "caller source",
+  "caller source and Agent read",
+] as const) {
+  test(`Saved managed discovery rechecks after ${loss} loss`, async (t) => {
+    const ui = await managedAccessBrowser(t);
+    const { fixture, sourceId, siblingId } = ui;
+    const action = loss.includes("read") ? "read" : loss === "Agent update" ? "update" : null;
+    const sourceLoss = loss.includes("source");
+    if (action) {
+      ui.denyAgent(action);
+    }
+    if (loss === "Agent source") {
+      const index = fixture.policy.bindings.indexOf(ui.selectedGrant);
+      assert.ok(index >= 0);
+      fixture.policy.bindings.splice(index, 1);
+      const resource = {
+        kind: "credential_source" as const,
+        namespaceId: ui.namespace.id,
+        id: sourceId,
+      };
+      const canOperate = async (principalId: string) =>
+        (await fixture.iamDriver.authorize({ principalId, action: "operate", resource })).allowed;
+      assert.equal(await canOperate(ui.principalId), false);
+      assert.equal(await canOperate(fixture.principal.id), true);
+    }
+    if (loss.startsWith("caller source")) {
+      ui.denySource(sourceId);
+    }
+    const refusal = await refuseManaged(ui);
+    const audit = fixture.auditSink.events.findLast(
+      (event) => event.kind === "authorization_denial" && event.requestId === refusal.id,
+    )?.authorization;
+    assert.equal(audit?.resource.kind, sourceLoss ? "credential_source" : "agent");
+    assert.equal(audit?.resource.id, sourceLoss ? sourceId : ui.agent.id);
+    assert.equal(audit?.action, sourceLoss ? "operate" : action);
+    await expectManagedBlocked(ui, refusal);
+    assert.equal(ui.rechecks(), 0, "the refusal must not trigger an automatic recheck");
+
+    const narrowCard = loss === "Agent source";
+    if (narrowCard) {
+      await ui.button("Configured plugins").click();
+      await pluginCard(ui.dialog, slackPluginId).waitFor();
+      await ui.page.setViewportSize({ width: 390, height: 720 });
+    }
+    const recheck = ui.button("Recheck access");
+    const staleRecheck = await recheck.elementHandle();
+    const checked = await recheckManaged(ui, action ? 403 : 200, async () => {
+      await recheck.focus();
+      await ui.page.keyboard.press("Enter");
+    });
+    assert.deepEqual(
+      ui.reads(),
+      [{}, managedDetailsBody(sourceId)],
+      "the GET must not replay a POST",
+    );
+    if (action) {
+      await refusedDiscovery(checked, accessDenied.code);
+      await expectManagedBlocked(ui, refusal);
+      await ui.checkDraft();
+    } else {
+      await expectAccounts(checked, [siblingId]);
+      assert.equal(await recheck.isVisible(), false);
+      const recovered = ui.dialog.getByRole("status").filter({ hasText: "Access rechecked." });
+      await recovered.waitFor();
+      assert.doesNotMatch(await recovered.innerText(), /Request ID:/);
+      assert.equal(
+        await ui.button("Load plugins").evaluate((node) => node === document.activeElement),
+        true,
+      );
+      if (narrowCard) {
+        await ui.page.setViewportSize({ width: 1280, height: 800 });
+        await ui.button("Available plugins").click();
+      }
+      await loadFreshManaged(ui, [siblingId]);
+      assert.notEqual(
+        await ui.account.inputValue(),
+        siblingId,
+        "do not silently select another source",
+      );
+      assert.equal((await ui.loadTools.isVisible()) && (await ui.loadTools.isEnabled()), false);
+      assert.deepEqual(ui.reads(), [{}, managedDetailsBody(sourceId), {}]);
+      await ui.checkDraft();
+      await ui.account.selectOption(siblingId);
+      const editedDraft = await ui.input.inputValue();
+      await loadManagedTools(ui, siblingId);
+      await staleRecheck.dispatchEvent("click");
+      // A healthy catalog and its loaded tools survive the stale action.
+      assert.equal(await ui.tool.isVisible(), true);
+      assert.equal(await ui.button("Slack").isVisible(), true);
+      assert.equal(await recheck.isVisible(), false);
+      await ui.checkDraft(editedDraft);
+      assert.deepEqual(ui.reads(), [
+        {},
+        managedDetailsBody(sourceId),
+        {},
+        managedDetailsBody(siblingId),
+      ]);
+    }
+    assert.equal(ui.rechecks(), 1);
+    ui.checkNoWrites();
+  });
+}
+
+test("An empty managed account slot rechecks a regrant and requires fresh discovery", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  const { page, sourceId, siblingId } = ui;
+  const restriction = ui.denySource(sourceId);
+  ui.denySource(siblingId);
+  const refusal = await refuseManaged(ui);
+  await expectManagedBlocked(ui, refusal);
+
+  const recheck = ui.button("Recheck access");
+  const held = await holdRequests(t, page, ui.capabilitiesUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const done = ui.button("Done");
+  try {
+    const checked = recheckManaged(ui, 200, async () => {
+      await recheck.focus();
+      await page.keyboard.press("Enter");
+    });
+    await within(held.requested, "the empty capabilities response");
+    await done.focus();
+    held.release();
+    await expectAccounts(await checked, []);
+  } finally {
+    held.release();
+  }
+  assert.equal(await recheck.isVisible(), false);
+  assert.equal(await done.evaluate((node) => node === document.activeElement), true);
+  await loadFreshManaged(ui, []);
+  assert.equal((await ui.loadTools.isVisible()) && (await ui.loadTools.isEnabled()), false);
+  await ui.checkDraft();
+
+  liftRestriction(ui.fixture.policy, restriction);
+  const accountRecheck = ui.button("Recheck accounts for Slack user account");
+  const staleAccountRecheck = await accountRecheck.elementHandle();
+  const reads = ui.reads();
+  const regrant = await holdRequests(t, page, ui.capabilitiesUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  try {
+    const checked = recheckManaged(ui, 200, async () => {
+      await accountRecheck.focus();
+      await page.keyboard.press("Enter");
+    });
+    await within(regrant.requested, "the regranted capabilities response");
+    const checking = ui.button("Checking access…");
+    assert.equal(await checking.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await checking.isEnabled(), false);
+    assert.equal(await ui.button("Load plugins").isEnabled(), false);
+    assert.equal(await pluginRow(ui.dialog, googlePluginId).count(), 0);
+    await staleAccountRecheck.dispatchEvent("click");
+    regrant.release();
+    await expectAccounts(await checked, [sourceId]);
+  } finally {
+    regrant.release();
+  }
+  assert.equal(
+    await ui.button("Load plugins").evaluate((node) => node === document.activeElement),
+    true,
+  );
+  assert.equal(await recheck.isVisible(), false);
+  assert.equal(await accountRecheck.isVisible(), false);
+  assert.equal(await pluginRow(ui.dialog, googlePluginId).count(), 0);
+  assert.deepEqual(ui.reads(), reads, "the GET must retire discovery without a POST");
+  assert.equal(ui.rechecks(), 2);
+  await ui.checkDraft();
+
+  await loadFreshManaged(ui, [sourceId]);
+  assert.equal(await ui.account.inputValue(), sourceId, "the draft still names this account");
+  assert.deepEqual(ui.reads(), [...reads, {}], "only the explicit catalog reload ran");
+  await loadManagedTools(ui, sourceId);
+  ui.checkNoWrites();
+});
+
+test("Canceled managed rechecks keep current refusal guidance across reopen and later failures", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  const { page, dialog, sourceId, siblingId } = ui;
+  const restriction = ui.denySource(sourceId);
+  ui.denySource(siblingId);
+  const original = await refuseManaged(ui);
+  await expectManagedBlocked(ui, original);
+
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const recheck = ui.button("Recheck access");
+  const checking = "Checking plugin access and account eligibility.";
+  const guidance = dialog.getByRole("status").filter({ hasText: "Choose Recheck access." });
+
+  async function cancelHeldRecheck(action: Locator, sources: string[], refusal?: DiscoveryRefusal) {
+    const reads = ui.reads();
+    const count = ui.rechecks();
+    const held = await holdRequests(t, page, ui.capabilitiesUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    try {
+      await action.click();
+      const captured = await within(held.requested, "the real capabilities reply");
+      assert.ok(captured);
+      assert.equal(captured.status(), 200);
+      assert.deepEqual(
+        accountSlot(await captured.json()).sources.map(({ id }) => id),
+        sources,
+      );
+      await dialog.getByText(checking, { exact: true }).waitFor();
+      await Promise.all([
+        page.waitForEvent("requestfailed", {
+          predicate: (request) =>
+            request.url() === ui.capabilitiesUrl && request.method() === "GET",
+        }),
+        ui.button("Done").click(),
+      ]);
+      await dialog.waitFor({ state: "hidden" });
+      await configure.click();
+      await guidance.waitFor();
+      assert.equal(await recheck.isEnabled(), true);
+      assert.equal(await dialog.getByText(checking, { exact: true }).count(), 0);
+      if (refusal) {
+        await expectDiscoveryNotice(dialog, refusal, managedAccessAdvice);
+      } else {
+        assert.doesNotMatch(await guidance.innerText(), /Request ID:/);
+      }
+      held.release();
+      await nextFrames(page);
+      assert.equal(await recheck.isEnabled(), true);
+      assert.equal(await guidance.isVisible(), true);
+      assert.equal(await ui.button("Load plugins").isEnabled(), false);
+      assert.equal(await pluginRow(dialog, googlePluginId).count(), 0);
+      assert.equal(await ui.tool.count(), 0);
+      assert.equal(ui.rechecks(), count + 1, "reopen must not recheck automatically");
+      assert.deepEqual(ui.reads(), reads, "cancellation must not replay discovery");
+      await ui.checkDraft();
+    } finally {
+      held.release();
+    }
+  }
+
+  await cancelHeldRecheck(recheck, [], original);
+  await expectAccounts(await recheckManaged(ui, 200), []);
+  await loadFreshManaged(ui, []);
+  const accountRecheck = ui.button("Recheck accounts for Slack user account");
+  const reads = ui.reads();
+  const restrictionOnEdit = ui.denyAgent("update");
+  const current = await refusedDiscovery(
+    await recheckManaged(ui, 403, () => accountRecheck.click()),
+    accessDenied.code,
+  );
+  assert.notEqual(current.id, original.id);
+  await expectDiscoveryNotice(dialog, current, managedAccessAdvice);
+  const failed = await refusedDiscovery(await recheckManaged(ui, 403), accessDenied.code);
+  assert.notEqual(failed.id, current.id);
+  await expectDiscoveryNotice(dialog, current, managedAccessAdvice);
+  const message = await guidance.innerText();
+  assert.ok(message.includes(`Request ID: ${failed.id}`));
+  assert.ok(!message.includes(original.id));
+  assert.deepEqual(ui.reads(), reads);
+  await ui.checkDraft();
+
+  liftRestriction(ui.fixture.policy, restrictionOnEdit);
+  await expectAccounts(await recheckManaged(ui, 200), []);
+  await loadFreshManaged(ui, []);
+  liftRestriction(ui.fixture.policy, restriction);
+  await cancelHeldRecheck(accountRecheck, [sourceId]);
+  assert.equal(ui.rechecks(), 6);
+  ui.checkNoWrites();
+});
+
+test("A later catalog refusal retires recovered Add and a regranted source still needs Agent update", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  const { fixture, page, dialog, sourceId, siblingId } = ui;
+  const restriction = ui.denySource(sourceId);
+  const initialRefusal = await refuseManaged(ui);
+  await expectManagedBlocked(ui, initialRefusal);
+  await expectAccounts(await recheckManaged(ui, 200), [siblingId]);
+  await loadFreshManaged(ui, [siblingId]);
+
+  liftRestriction(fixture.policy, restriction);
+  const update = ui.denyAgent("update");
+  const held = await holdRequests(t, page, ui.catalogUrl, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  const back = ui.button("Back to plugins");
+  const card = pluginCard(dialog, slackPluginId);
+  let refusal: DiscoveryRefusal;
+  let focusAfterRefusal: boolean;
+  try {
+    await ui.button("Load plugins").click();
+    const captured = await within(held.requested, "the Controller's later catalog refusal");
+    assert.ok(captured);
+    assert.equal(captured.status(), 403);
+    refusal = await refusedDiscovery(captured, accessDenied.code);
+    assert.notEqual(refusal.id, initialRefusal.id);
+
+    await page.setViewportSize({ width: 820, height: 720 });
+    await ui.button("Configured plugins").click();
+    // Configured remembers the open card. Its list is hidden at this width.
+    await card.waitFor({ state: "visible" });
+    await back.waitFor();
+    assert.equal(await ui.account.isEnabled(), true);
+    await ui.account.focus();
+    assert.equal(await ui.account.evaluate((node) => node === document.activeElement), true);
+
+    const reply = responseTo(page, "POST", ui.catalogUrl);
+    held.release();
+    const denied = await reply;
+    assert.equal(denied.status(), 403);
+    assert.deepEqual(await refusedDiscovery(denied, accessDenied.code), refusal);
+    const notice = discoveryNotice(dialog, refusal, managedAccessAdvice);
+    await notice.waitFor();
+    assert.equal(await card.isVisible(), true, "the Configured Slack card survives the refusal");
+    assert.equal(await ui.account.isEnabled(), false, "the refusal disables the account selector");
+    focusAfterRefusal = await notice.evaluate((node) => node === document.activeElement);
+  } finally {
+    held.release();
+  }
+
+  // The block helper uses the Configured list, visible alongside its card at desktop width.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expectManagedBlocked(ui, refusal);
+  assert.equal(
+    focusAfterRefusal,
+    true,
+    "the current catalog refusal takes the disabled selector's focus",
+  );
+  const priorReads = [{}, managedDetailsBody(sourceId), {}, {}];
+  await page.setViewportSize({ width: 820, height: 720 });
+  await ui.button("Configured plugins").click();
+  await card.waitFor({ state: "visible" });
+  await back.waitFor();
+  const latest = discoveryNotice(dialog, refusal, managedAccessAdvice);
+  assert.equal(await latest.isVisible(), true, "the open Configured card shows the later refusal");
+  assert.equal(
+    await discoveryNotice(dialog, initialRefusal, managedAccessAdvice).isVisible(),
+    false,
+  );
+  const recheck = ui.button("Recheck access");
+  assert.equal(await recheck.isVisible(), true, "recheck is visible with the Configured card open");
+  assert.equal(await recheck.isEnabled(), true);
+  const failedRecheck = await refusedDiscovery(await recheckManaged(ui, 403), accessDenied.code);
+  assert.notEqual(failedRecheck.id, refusal.id);
+  assert.deepEqual(ui.reads(), priorReads, "a denied recheck must not replay discovery");
+  assert.equal(await latest.isVisible(), true, "a denied GET must preserve the discovery refusal");
+  await dialog
+    .getByRole("status")
+    .filter({ hasText: `Request ID: ${failedRecheck.id}` })
+    .waitFor();
+  const actions = await card.getByRole("button", { name: /^(Add |Load tools|Retry tools)/ }).all();
+  for (const action of actions) {
+    assert.equal(await action.isEnabled(), false, "a denied recheck keeps tool discovery blocked");
+  }
+  assert.equal(await ui.tool.count(), 0);
+  await back.click();
+  await ui.button("Available plugins").click();
+  await expectRetiredPlugin(page, dialog, googlePluginId, "Google Workspace");
+  assert.equal(await ui.button("Load plugins").isEnabled(), false);
+  await expectDiscoveryNotice(dialog, refusal, managedAccessAdvice);
+  await ui.checkDraft();
+
+  ui.denySource(siblingId);
+  liftRestriction(fixture.policy, update);
+  await expectAccounts(await recheckManaged(ui, 200), [sourceId]);
+  assert.deepEqual(ui.reads(), priorReads, "a compatible recheck must not replay discovery");
+  const search = dialog.getByRole("searchbox", { name: "Search plugins" });
+  const googleQuery = { q: "Google Workspace" };
+  await search.fill(googleQuery.q);
+  const filtered = await discoveryResponse(page, ui.catalogUrl, () =>
+    ui.button("Load plugins").click(),
+  );
+  assert.deepEqual(filtered.request().postDataJSON(), googleQuery);
+  const entries: unknown = responseData(await filtered.json()).plugins;
+  assert.ok(Array.isArray(entries));
+  assert.deepEqual(
+    entries.map((entry: unknown) => record(entry).id),
+    [googlePluginId],
+  );
+  await ui.button("Google Workspace").waitFor();
+  assert.equal(await pluginRow(dialog, slackPluginId).count(), 0);
+  await ui.button("Configured plugins").click();
+  await pluginRow(dialog, slackPluginId).click();
+  await back.waitFor();
+  assert.equal(await ui.account.inputValue(), sourceId);
+  const fallbackLoad = card.getByRole("button", {
+    name: /^Load tools/,
+  });
+  assert.equal(await fallbackLoad.isVisible(), true);
+  assert.equal(
+    await fallbackLoad.isEnabled(),
+    false,
+    "Slack was absent from the recovered catalog",
+  );
+  assert.deepEqual(
+    ui.reads(),
+    [...priorReads, googleQuery],
+    "opening the fallback must not load tools",
+  );
+
+  await back.click();
+  await ui.button("Available plugins").click();
+  await discoveryResponse(page, ui.catalogUrl, () => search.fill(""));
+  await ui.button("Slack").waitFor();
+  await ui.button("Configured plugins").click();
+  await ui.button("Slack").click();
+  await loadManagedTools(ui, sourceId);
+  await back.click();
+  await ui.button("Available plugins").click();
+  await discoveryResponse(page, ui.catalogUrl, () => search.fill(googleQuery.q));
+  await ui.button("Google Workspace").waitFor();
+  assert.equal(await pluginRow(dialog, slackPluginId).count(), 0);
+  await ui.button("Configured plugins").click();
+  await pluginRow(dialog, slackPluginId).click();
+  assert.equal(await ui.tool.isVisible(), true, "the previously loaded Slack tools remain visible");
+  assert.equal(
+    await ui.loadTools.isEnabled(),
+    true,
+    "a previously confirmed Slack entry stays usable",
+  );
+  assert.deepEqual(ui.reads(), [
+    ...priorReads,
+    googleQuery,
+    {},
+    managedDetailsBody(sourceId),
+    googleQuery,
+  ]);
+  assert.equal(ui.rechecks(), 3);
+  await ui.checkDraft();
+  ui.checkNoWrites();
+});
+
+for (const { status, code } of [accessDenied, agentDeleting]) {
+  for (const successFirst of [false, true]) {
+    test(`Superseded managed ${code} fences the replacement reply (${successFirst ? "success first" : "refusal first"})`, async (t) => {
+      const ui = await managedAccessBrowser(t);
+      const { page, dialog, detailsUrl, sourceId, siblingId } = ui;
+      if (successFirst) {
+        await ui.button("Configured plugins").click();
+        await ui.button("Slack").click();
+      }
+      if (status === 403) {
+        ui.denyAgent("update");
+      } else {
+        assert.equal((await ui.fixture.request("DELETE", ui.path)).status, 202);
+      }
+      // A's real refusal is held after Controller/IAM classification. B represents a formerly
+      // authorized tool response already in flight when access changed.
+      const first = await holdRequests(t, page, detailsUrl, {
+        once: true,
+        method: "POST",
+        afterServer: true,
+      });
+      let releaseReplacement: (() => void) | undefined;
+      try {
+        await ui.loadTools.click();
+        const captured = await within(first.requested, "the Controller's managed refusal");
+        assert.ok(captured);
+        assert.equal(captured.status(), status);
+        const refusal = await refusedDiscovery(captured, code);
+        await ui.account.selectOption(siblingId);
+        const draft = await ui.input.inputValue();
+        const second = await holdRequests(t, page, detailsUrl, {
+          once: true,
+          method: "POST",
+          fulfill: { status: 200, json: ui.toolReply },
+        });
+        releaseReplacement = second.release;
+        const [request] = await Promise.all([
+          page.waitForRequest(
+            (request) => request.url() === detailsUrl && request.method() === "POST",
+          ),
+          ui.loadTools.click(),
+        ]);
+        await within(second.requested, "the replacement managed request to be held");
+        assert.deepEqual(request.postDataJSON(), managedDetailsBody(siblingId));
+
+        if (successFirst) {
+          second.release();
+          await ui.tool.waitFor();
+        }
+        // The refusal disables the account selector on the surviving Configured card.
+        // In the other reply order, Done is unaffected and should retain focus.
+        const focused = successFirst ? ui.account : ui.button("Done");
+        assert.equal(await focused.isEnabled(), true);
+        await focused.focus();
+        assert.equal(await focused.evaluate((node) => node === document.activeElement), true);
+        const reply = responseTo(page, "POST", detailsUrl);
+        first.release();
+        const response = await reply;
+        assert.equal(response.status(), status);
+        assert.deepEqual(response.request().postDataJSON(), managedDetailsBody(sourceId));
+        assert.deepEqual(await refusedDiscovery(response, code), refusal);
+        const guidance = status === 403 ? managedAccessAdvice : deletionAdvice;
+        const notice = discoveryNotice(dialog, refusal, guidance);
+        await within(nextFrames(page), "the managed refusal to render");
+        const focusAfterRefusal = await (successFirst ? notice : focused).evaluateAll((nodes) =>
+          nodes.some((node) => node === document.activeElement),
+        );
+        const keptConfiguredCard =
+          successFirst && (await pluginCard(dialog, slackPluginId).isVisible());
+        const canUseAccount =
+          successFirst &&
+          (await ui.account.evaluateAll((nodes) => nodes.some((node) => node.matches(":enabled"))));
+        if (!successFirst) {
+          await expectRetiredPlugin(page, ui.dialog, googlePluginId, "Google Workspace");
+          // Release B before any tab change, which could independently cancel it.
+          second.release();
+          const delivered = await within(
+            request.response(),
+            "the replacement managed request to settle",
+          );
+          if (delivered) {
+            assert.equal(delivered.status(), 200);
+            await within(delivered.finished(), "the replacement managed response to finish");
+          }
+        }
+        await expectManagedBlocked(ui, refusal, guidance);
+        if (successFirst) {
+          assert.equal(keptConfiguredCard, true, "the Configured Slack card survives the refusal");
+          assert.equal(canUseAccount, false, "the refusal disables the account selector");
+        }
+        assert.equal(
+          focusAfterRefusal,
+          true,
+          successFirst
+            ? "the current refusal takes the disabled selector's focus"
+            : "Done retains focus",
+        );
+        assert.equal(await ui.button("Recheck access").isVisible(), status === 403);
+        assert.equal(ui.rechecks(), 0);
+        assert.deepEqual(ui.reads(), [
+          {},
+          managedDetailsBody(sourceId),
+          managedDetailsBody(siblingId),
+        ]);
+        await ui.checkDraft(draft);
+        ui.checkNoWrites();
+      } finally {
+        first.release();
+        releaseReplacement?.();
+      }
+    });
+  }
+}
+
+test("A deleting Agent's access recheck moves keyboard focus to the current refusal", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  ui.denySource(ui.sourceId);
+  const initialRefusal = await refuseManaged(ui);
+  await expectManagedBlocked(ui, initialRefusal);
+  assert.equal(ui.rechecks(), 0);
+
+  // Delete through the fixture API so the signed-in browser observes the lifecycle refusal.
+  assert.equal((await ui.fixture.request("DELETE", ui.path)).status, 202);
+  const recheck = ui.button("Recheck access");
+  await recheck.focus();
+  assert.equal(await recheck.evaluate((node) => node === document.activeElement), true);
+  const [response] = await Promise.all([
+    responseTo(ui.page, "GET", ui.capabilitiesUrl),
+    ui.page.keyboard.press("Enter"),
+  ]);
+  assert.equal(response.status(), agentDeleting.status);
+  const refusal = await refusedDiscovery(response, agentDeleting.code);
+  assert.notEqual(refusal.id, initialRefusal.id);
+  await expectDiscoveryNotice(ui.dialog, refusal, deletionAdvice);
+  const status = discoveryNotice(ui.dialog, refusal, deletionAdvice);
+  assert.equal(await status.evaluate((node) => node === document.activeElement), true);
+  assert.equal(
+    await discoveryNotice(ui.dialog, initialRefusal, managedAccessAdvice).isVisible(),
+    false,
+  );
+  assert.equal(await recheck.isVisible(), false);
+  assert.equal(await ui.button("Load plugins").isEnabled(), false);
+  assert.equal(ui.rechecks(), 1);
+  assert.deepEqual(ui.reads(), [{}, managedDetailsBody(ui.sourceId)]);
+  await ui.checkDraft();
+  ui.checkNoWrites();
+});
+
+test("Incompatible account or policy rechecks keep managed discovery blocked through session expiry", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  ui.denySource(ui.sourceId);
+  const refusal = await refuseManaged(ui);
+  await expectManagedBlocked(ui, refusal);
+  const configure = ui.page.getByRole("button", { name: "Configure plugins", exact: true });
+  // Inspect the editor outside the modal before any incompatible response can hide it.
+  await ui.button("Done").click();
+  await ui.approvers.waitFor({ state: "visible" });
+  assert.equal(await ui.approvers.isEnabled(), true);
+  await ui.checkDraft();
+  await configure.click();
+
+  for (const fault of ["duplicate source", "approver support"] as const) {
+    const delivery = Promise.withResolvers<void>();
+    await ui.page.route(
+      ui.capabilitiesUrl,
+      async (route) => {
+        try {
+          const original = await route.fetch();
+          assert.equal(original.status(), 200);
+          const body: unknown = await original.json();
+          const { slot, sources } = accountSlot(body);
+          assert.deepEqual(
+            sources.map(({ id }) => id),
+            [ui.siblingId],
+          );
+          if (fault === "approver support") {
+            const approvers = record(responseData(body).approvers);
+            assert.equal(approvers.agent, true);
+            approvers.agent = false;
+          } else {
+            slot.sources = [...sources, { ...sources[0], name: "Conflicting account label" }];
+          }
+          await route.fulfill({
+            status: 200,
+            headers: { "x-request-id": text(record(record(body).meta).requestId) },
+            json: body,
+          });
+          delivery.resolve();
+        } catch (error) {
+          delivery.reject(error);
+          await route.abort("failed").catch(() => {});
+        }
+      },
+      { times: 1 },
+    );
+    const [response] = await Promise.all([
+      recheckManaged(ui, 200),
+      within(delivery.promise, `the capabilities response with ${fault} changed`),
+    ]);
+    const body: unknown = await within(response.json(), "the incompatible capabilities body");
+    await expectManagedBlocked(ui, refusal);
+    await ui.button("Done").click();
+    if (fault === "duplicate source") {
+      assert.equal(record(responseData(body).approvers).agent, true);
+      const { sources } = accountSlot(body);
+      assert.deepEqual(
+        sources.map(({ id, name }) => [id, name]),
+        [
+          [ui.siblingId, "Independent account"],
+          [ui.siblingId, "Conflicting account label"],
+        ],
+      );
+      // Invalid account choices still block discovery. The confirmed approver editor stays usable.
+      assert.equal(await ui.approvers.isVisible(), true);
+      assert.equal(await ui.approvers.isEnabled(), true);
+      assert.equal(
+        await ui.approvers.locator("option:checked").textContent(),
+        "No Slack approvers",
+      );
+      await ui.checkDraft();
+    } else {
+      assert.equal(record(responseData(body).approvers).agent, false);
+      assert.equal(await ui.approvers.isVisible(), false);
+      const pending = ui.page
+        .getByRole("heading", { name: "Default plugin approvers", exact: true })
+        .locator("..");
+      const pendingChoice = pending.getByText(/No Slack approvers/);
+      await pendingChoice.waitFor();
+      await pending.getByText(/\bdraft\b/i).waitFor();
+      await ui.checkDraft();
+      await ui.page.getByRole("button", { name: "Discard changes", exact: true }).click();
+      await pendingChoice.waitFor({ state: "hidden" });
+      assert.equal(await ui.approvers.isVisible(), false);
+    }
+    await configure.click();
+    assert.deepEqual(ui.reads(), [{}, managedDetailsBody(ui.sourceId)], fault);
+  }
+
+  await ui.page.route(ui.capabilitiesUrl, (route) => route.fulfill({ status: 401 }), { times: 1 });
+  await recheckManaged(ui, 401);
+  assert.equal(ui.rechecks(), 3);
+  await ui.page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  assert.deepEqual(ui.reads(), [{}, managedDetailsBody(ui.sourceId)]);
+  ui.checkNoWrites();
+});
+
+test("Managed MCP tool approval is saved per selected tool and removed when the tool is disabled", async (t) => {
+  const { fixture, namespace, agent, path, sourceId } = await managedSlackPluginFixture(t);
   const capabilities = responseData(await fixture.request("GET", `${path}/plugins/capabilities`));
   assert.ok(Array.isArray(capabilities.credentialSlots));
   const slot = capabilities.credentialSlots

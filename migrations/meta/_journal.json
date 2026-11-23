@@ -603,6 +603,34 @@
       "when": 1787000000086,
       "tag": "0086_token_service_source_ownership",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1787000000087,
+      "tag": "0087_repository_network_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1787000000088,
+      "tag": "0088_standalone_credential_deployment",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1787000000089,
+      "tag": "0089_static_connection_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1787000000090,
+      "tag": "0090_native_git_delivery",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-21
-last_updated_session: authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083
+updated: 2026-11-22
+last_updated_session: authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095
 ---
 
 # Platform console request flow
@@ -138,6 +138,8 @@ Disabling Debug mode stops new reads. See the
 
 `agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
 Interactive targets, modified clicks, and selected text retain behavior.
+Arrow keys from search visit visible name links. Enter in search follows the
+same link when a nonempty query leaves one row.
 
 `loadPage` reads `GET /api/auth/session`. Opening an Agent shows **Loading agent
 details…** and **Back to Agents**. Back cancels once. Refocus waits. Other Agent
@@ -164,20 +166,19 @@ Refusals remove private content.
 `api-client.mts:createApiClient` preserves abort and socket failures through
 response bodies without replay.
 
-**Back to Agents** awaits admission and collection rows from the newest readable
-versions. `agents/collection.mts:currentRevision` reads current versions off-page.
-`deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
-after 250 ms for at least 150 ms and regain focus. Pending or failed reads resume.
-Search cancels hidden-row reads
-(`collection.mts:retireHidden`). Redisplayed rows read once.
+**Back to Agents** awaits admission and rows for newest readable versions.
+`agents/collection.mts:currentRevision` reads versions off-page. `deniedReadsFor`
+retains 403s. Reused deployment cells show **Reading deployment…** after 250 ms
+for at least 150 ms and regain focus. Pending or failed reads resume. Search
+cancels hidden reads (`collection.mts:retireHidden`). Redisplayed rows read once.
 
-Changed users or session keys clear private state. Missing sessions open login.
-See [sign-in and return](platform-console/sign-in-return.md).
+Changed users or session keys clear private state. Missing sessions
+[open sign-in](platform-console/sign-in-return.md).
 
-After authentication, `GET /namespaces` keeps the URL selection or picks the
-first ready, readable Namespace. Unreadable IDs stay unavailable. Unscoped Agent
-URLs gain Namespace scope only after matching Agent reads. Back can restart
-interrupted lookups.
+`GET /namespaces` selects the URL Namespace or first ready, readable Namespace.
+Unreadable IDs stay unavailable. Unscoped Agent URLs require matching requested
+Agent and selected or probed Namespace IDs plus a nonempty Configuration ID.
+Malformed replies cannot establish absence. Back restarts interrupted lookups.
 `shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
 closes the drawer without focusing its toggle. An open drawer blocks scrolling.
 `createShell` preserves navigation presses across renders. Namespace switches
@@ -191,18 +192,22 @@ return Agent detail and creation to Agents.
 
 Agent and Secret requests use the selected Namespace. OCC filters Installation
 Namespaces and exact Agents by read permission. The Console requests Agents
-only for a readable Namespace.
+only in readable Namespaces.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
-the exact Secret's `consumers` and advisory `callerPermissions` before showing
-actions, as the [Secrets guide](../guides/console/secrets.md) describes. Agent
-names come from the readable Agent list. Known references disable Delete; the
-server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
-until the page shows it. Create and replacement wait for Namespace readiness.
-Mutations use the tracked request client and Secret API, never a Driver.
+[`secrets.mts:renderSecrets`](../guides/console/secrets.md) lists metadata.
+Actions follow reads of the selected Secret's `consumers` and advisory `callerPermissions`.
+Only readable Agents show names. References disable Delete. The server rechecks.
+`console.mts:takeLinkedSecret` retains linked IDs until shown. Creation and
+replacement require Namespace readiness. Writes use the tracked client and Secret API.
+
+After revalidation or Back, `console.mts:loadPage` restores Namespaces and
+Secrets searches within their session and scope. Both filter readable names
+and IDs locally. `focusInShownView` restores the text selection or row focus by ID unless
+the reader moved focus. Missing Secrets return focus to search. Back reveals
+the opened Namespace. **Refresh** clears search.
 
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
 and clears it after the request, dismissal, or view retention
@@ -213,20 +218,20 @@ status read after an uncertain delete; a denial never confirms removal.
 Replacement hands delivery to explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`apps/controller/src/console/namespaces.mts:renderNamespaces` tracks Name-rule-valid
-`POST /namespaces`; `OpenClawController.createNamespace` authorizes and queues
-provisioning; `perform` audits. Open Agents requires relisting. Closing refocuses
-the opener; 403 disables it per account across navigation until Refresh (`fromRefresh`).
-Pending writes prevent dismissal; 400s mark names; conflicts retain input.
-Inspect unconfirmed responses.
+[`namespaces.mts:renderNamespaces`](../guides/console/create-namespace.md) validates names.
+`OpenClawController.createNamespace` authorizes `POST /namespaces` and queues
+provisioning. `perform` audits. After 201, `namespaces.mts:confirmCreation`
+keeps **Done** available. Exact list membership adds **Open Agents**.
+Omission or denial leaves only **Done**. Inconclusive reads allow another GET.
+Closing refocuses the opener. Create 403 disables creation account-wide until Refresh.
 
-`namespace-deletion.mts` blocks navigation/dismissal during writes. OCC rechecks
-IAM/contents (20 blocker IDs/kind). `202`: three-second polling; `404`: remove row,
-repair selection; `403`: lost access. `readStatus` requires exact ID and scalar
-[NamespaceSchema status](../../packages/contracts/src/api/resources.ts). Failed/invalid
-reads close confirmation. Uncertainty shows **Status unknown**;
-[**Refresh status**](../guides/console/delete-namespace.md) restores confirmed status
-and deletion actions.
+`namespace-deletion.mts` blocks navigation and dismissal during writes. OCC
+rechecks IAM and contents (20 blocker IDs per kind). After 202, polling runs
+every three seconds. A 404 removes the row and repairs selection. If the focused
+search toolbar disappears, the result receives focus. A 403 signals lost access.
+`readStatus` requires the exact ID and scalar [NamespaceSchema status](../../packages/contracts/src/api/resources.ts).
+Failed or invalid reads close confirmation. For **Status unknown**,
+[**Refresh status**](../guides/console/delete-namespace.md) restores confirmed actions.
 
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
@@ -292,13 +297,18 @@ rejected cursors clear rows.
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-After full-page navigation settles, `loadPage` focuses the destination heading if
-focus fell to the body, using `preventScroll` to preserve return position. An Agent
-opened from the list focuses its heading when the title renders. Tabs (one Tab
-stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
-reads; generations reject late responses. Refocus coalesces events.
-`revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
-[permissions](platform-console/agent-stop-and-deletion.md#stop-agent) with fresh reads.
+After navigation, `loadPage` moves focus from the body to the destination
+heading with `preventScroll`. Agents opened from the list focus their heading.
+Controls keep focus. Tabs use one Tab stop and arrow keys. Navigation, Namespace
+changes, and logout invalidate reads by generation. Refocus coalesces events.
+`revalidateMountedAgent` rereads session, Namespace, Agent, version, and
+[permissions](platform-console/agent-stop-and-deletion.md#stop-agent).
+`apps/controller/src/console/agents/detail.mts:syncHarnessRead` refreshes Sandbox
+status once when admission confirms the same active, desired-running dedicated
+version. A lifecycle change clears the old status and cancels its read before
+any extra version lookup. Mismatched or unavailable results show unknown. A
+current access refusal retires protected details. The Console sends no serving
+test request.
 Unchanged access keeps controls, input, and saves. Repeated draft 403s preserve
 partial Agents with never-readable drafts. Checks skip versions already proved
 unreadable. Access loss clears protected views. Other pages, including 403s and
@@ -344,20 +354,18 @@ gateway startup and file availability.
 
 ## Debugging and Verification
 
-- Match the displayed request ID to controller logs.
-  A Namespace-only user cannot discover Backends; check Installation authority
-  before treating that denial as a configuration problem.
-- Browser suites use real Fastify, Better Auth, Native IAM, and in-memory storage.
-  They verify navigation, isolation, creation, draft/history/channel editing, and
-  authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
-  worker leases, or Compute effects.
-- `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
-  Agent references, denials, and lost replies with passive test Secret storage.
-  The `console-secrets` [QA scenario](../testing/ci/qa-advisory.md) selects real
-  shipped storage; it requires the documented runtime and credential setup.
-- API tests cover safe discovery, permission boundaries, empty versus missing
-  wiring, static MIME/allowlisting, and unchanged API JSON errors. See
-  [Testing](../testing/README.md) for commands and the image smoke boundary.
+- Match request IDs to Controller logs. For Backend discovery denial, check
+  Installation authority.
+- Browser suites verify navigation, isolation, creation, editing, and sign-in
+  with Fastify, Better Auth, Native IAM, and in-memory storage. PostgreSQL
+  persistence, Backend health, runtime dispatch, worker leases, and Compute
+  effects need runtime tests.
+- `node --test tests/browser/console-secrets.test.ts` covers Secret writes, Agent
+  references, denials, and lost replies with passive test storage. The
+  [`console-secrets` QA scenario](../testing/ci/qa-advisory.md) exercises shipped
+  storage with runtime and credential setup.
+- API tests cover discovery, permissions, wiring, static MIME and allowlisting,
+  and JSON errors. See [Testing](../testing/README.md) for commands and image smoke coverage.
 
 ## Related docs
 
@@ -370,6 +378,20 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-22 11:39: Trace Namespace cleanup and keyboard focus. (authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095 - 5768ebdac724be812904dba59ae1c31f749f6bec)
+
+- 2026-11-22 11:28: Clarify Namespace list results. (authoring-run/d86bdf09-8b77-410f-8646-4feb7a9071cf - 5aa97a22d8d7d1ed8ca31a18d9892ad0313e24c6)
+
+- 2026-11-22 11:22: Trace Namespace search and return focus. (authoring-run/25d72135-b5b4-456b-a1c3-25c6dfee5cb1 - d687874b7213584ff916a22cdfccdce48bfe1fc8)
+
+- 2026-11-22 11:17: Trace Secrets search restoration. (authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e - b4bf1f79813c391977b4f58eb92e5241a8eaa8b8)
+
+- 2026-11-22 11:16: Trace the read after Namespace creation. (authoring-run/4f0bae81-577e-4c6c-b34e-daa95bc82a3c - ad54d29adb562767e830020c504302479159c578)
+
+- 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
+
+- 2026-11-22 02:59: Refresh the active Sandbox observation on Agent refocus. (authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b - 72a9006ec8c4b7a6e40947d75938f1518c7da364)
+- 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
 - 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
@@ -377,33 +399,5 @@ gateway startup and file availability.
 - 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
 
 - 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
-
-- 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
-
-- 2026-11-05 19:21: Record automatic Git SHA detection for local controller builds. (authoring-run/b294b13a-1a99-4f9a-8377-d76d11bfe62f - 0351eb77180fbeea7c70114af7c8937a521b90b4)
-- 2026-11-05 22:43: Unconfirmed status. (authoring-run/104e0ca4-86db-492b-af14-750b4ea079f1 - 346f0db69fb93eb462822c7f5a7f600081f10847)
-
-- 2026-11-05 20:13: Close stale confirmations. (namespace-cleanup-confirmation)
-
-- 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
-
-- 2026-10-30 14:30: Keep Deploy's last Secret operate answer while a recheck rereads it. (bughunt-1030g - a382326dde)
-
-- 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
-
-- 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
-
-- 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
-
-- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
-
-- 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
-
-- 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
-- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
-
-- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
-
-- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
