@@ -807,7 +807,7 @@ async function completePhaseChild() {
   });
   let exitCode = 1;
   let uncertain = false;
-  let error: { code: "phase-failed" } | undefined;
+  let phaseError: { code: "phase-failed"; reason?: "docker-subnet-exhausted" } | undefined;
   try {
     // Null has no fields. Other JSON values with no phase leave the default reply.
     if (request === null || request === undefined) {
@@ -853,13 +853,22 @@ async function completePhaseChild() {
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
-  } catch {
-    // Command owners can embed opaque argv and output in Error.message. Only
-    // this closed category crosses the phase boundary, never exception text.
-    error = { code: "phase-failed" };
+  } catch (error) {
+    // Command owners can embed opaque argv and output in Error.message. Send
+    // only fixed categories and reasons across the phase boundary.
+    phaseError = { code: "phase-failed" };
+    if (
+      isRecord(request) &&
+      request.phase === "prepare" &&
+      error instanceof Error &&
+      "dockerSubnetExhausted" in error &&
+      error.dockerSubnetExhausted === true
+    ) {
+      phaseError.reason = "docker-subnet-exhausted";
+    }
     exitCode = 1;
   }
-  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error: phaseError });
   await new Promise(() => {});
 }
 
