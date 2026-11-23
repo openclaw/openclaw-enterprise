@@ -1,4 +1,7 @@
-import { SOURCE_PROVIDER_PRESET_CONFIG_KEY, type SourceProviderPresetId } from "./model-providers.ts";
+import {
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  type SourceProviderPresetId,
+} from "./model-providers.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
   type RepositoryNetworkPolicyCeiling,

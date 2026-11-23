@@ -5,7 +5,7 @@ import {
   classifyGitHubToken,
   type GitHubTokenClass,
   type RepositoryCredentialGrantIdentity,
-} from "@openclaw-enterprise/contracts";
+} from "../../packages/contracts/src/index.ts";
 import type {
   AttemptContext,
   Clock,

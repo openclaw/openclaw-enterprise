@@ -180,6 +180,10 @@ const reviewedImports: ReviewedModules = {
   },
   // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
   "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
+  // Pure prefix classification, shared with Source enrollment; it reads no byte past the prefix.
+  "drivers/repo/github/access/static-token.ts": {
+    "@openclaw-enterprise/contracts": ["classifyGitHubToken"],
+  },
   "backends/token-service/service.ts": {
     "node:crypto": ["randomUUID"],
     "node:util": ["isDeepStrictEqual"],

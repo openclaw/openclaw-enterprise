@@ -362,7 +362,8 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       // A preset change cannot carry material, so the github class check would never see the value.
       if (
         presetChanges &&
-        (currentPreset === GITHUB_SOURCE_PRESET_ID || input.providerPreset === GITHUB_SOURCE_PRESET_ID)
+        (currentPreset === GITHUB_SOURCE_PRESET_ID ||
+          input.providerPreset === GITHUB_SOURCE_PRESET_ID)
       ) {
         throw new ResourceStateConflictError(
           "The github preset is chosen at registration. Register a new credential source instead.",
