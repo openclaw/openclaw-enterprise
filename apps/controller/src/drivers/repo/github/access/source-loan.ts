@@ -125,12 +125,15 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
   custody: RepositorySourceCustody,
   options: {
     readonly clock?: { now(): number };
-    /** Told once per Source, version and reason; a waiting route reads at every pass. */
+    /** Told once per revision, Source version and reason; a waiting route reads at every pass. */
     readonly refused?: (refusal: RepositorySourceLoanRefusal) => void;
   } = {},
 ): TokenMaterialReader<Transaction, Source> {
   const clock = options.clock ?? Date;
+  // Keyed by revision and Source: one revision's success must not repeat another's refusal.
   const reported = new Map<string, string>();
+  const revisionKey = (source: Source) =>
+    JSON.stringify([source.key.source.id, source.grant.credentialSource.sourceId]);
   const identity = (source: Source, window: number, version: string) => ({
     preparationAttemptId: loanUuid("repository-source-loan", source.key.source.id, String(window)),
     materialVersion: loanUuid(
@@ -150,8 +153,8 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
             "source_unreadable",
           );
     const key = `${refusal.sourceVersion ?? "-"} ${refusal.reason}`;
-    if (reported.get(refusal.sourceId) !== key) {
-      reported.set(refusal.sourceId, key);
+    if (reported.get(revisionKey(source)) !== key) {
+      reported.set(revisionKey(source), key);
       options.refused?.(refusal);
     }
   };
@@ -229,7 +232,7 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
       } finally {
         bytes.fill(0);
       }
-      reported.delete(sourceId);
+      reported.delete(revisionKey(source));
       return { resolved, hold: locked.hold };
     } catch (error) {
       await locked.hold.release();

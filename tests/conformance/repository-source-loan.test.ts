@@ -401,3 +401,24 @@ test("a Source loan compares the revision's deployed access with the ceiling, no
     ["source_access_exceeded", "source_access_exceeded"],
   );
 });
+
+test("a refused loan is reported once per revision, even while a peer revision's loans succeed", async () => {
+  const fake = custodyFake();
+  const { reader, refusals } = loanReader(fake);
+  fake.operable.delete("agent-a");
+  for (let pass = 0; pass < 3; pass += 1) {
+    // Each refresh reads every revision that names the Source.
+    assert.equal(await reader.readWarm(undefined, lent("agent-a")), undefined);
+    await (await lend(reader, lent("agent-b"))).hold.release();
+  }
+  assert.deepEqual(
+    refusals.map(({ reason }) => reason),
+    ["operate_denied"],
+  );
+  // The revision's own successful loan clears its record.
+  fake.operable.add("agent-a");
+  await (await lend(reader, lent("agent-a"))).hold.release();
+  fake.operable.delete("agent-a");
+  assert.equal(await reader.readWarm(undefined, lent("agent-a")), undefined);
+  assert.equal(refusals.length, 2);
+});

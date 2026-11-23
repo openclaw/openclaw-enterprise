@@ -190,7 +190,7 @@ At each loan it checks the Source's state, owner, preset and ceiling, the Agent
 principal's `operate` and the token class. The ceiling check covers the access
 the revision was deployed with: a ceiling lowered since then refuses the loan
 with reason `source_access_exceeded`; redeploy within it. A refused loan logs
-`REPOSITORY_SOURCE_LOAN_REFUSED` once per Source version and reason, with the
+`REPOSITORY_SOURCE_LOAN_REFUSED` once per revision, Source version and reason, with the
 Source ID and version and never the value. The current loan stays in the
 Sandbox until it ends.
 
