@@ -457,11 +457,9 @@ PYTHON
 )
 ```
 
-Continue only after confirmation. Before retrying an uncertain create or failed
-verification, list Roles or bindings with `occ iam role list --output json` or
-`occ iam access-binding list --output json`. Check the binding's Agent service
-principal, Role, and exact Secret. Duplicate bindings can coexist. Restrictions
-still apply. See [Namespace IAM policy](../../reference/authorization.md#manage-namespace-policy).
+Continue only after confirmation. Before retrying, check `occ iam role list` and
+`occ iam access-binding list` for this Agent service principal, Role and Secret.
+Duplicates can coexist; Restrictions still apply. See [Namespace IAM policy](../../reference/authorization.md#manage-namespace-policy).
 
 ### Prepare transport credentials and deploy
 
