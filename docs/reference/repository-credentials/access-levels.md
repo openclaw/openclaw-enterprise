@@ -60,26 +60,79 @@ Sandbox is the Provider's sole recipient and the workspace has no additional
 members. Operators must retain exclusive control of workspace, Sandbox and
 Provider writes for this delivery mode.
 
-To allow issue reads with the stock OpenShell Supervisor and managed installation
-Provider, set `scopedRest: "v1"` on the repository's Namespace registration. The
-registry requires `nativeGit: "v1"` on the same registration. Issue reads also
-require `permissions.issues` set to `read` or `write` and the corresponding
-permission on the GitHub App.
+To allow GitHub API access with stock OpenShell 0.1.9 and the managed Installation
+Provider, set `scopedRest: "v1"` alongside `nativeGit: "v1"` on the Installation's
+registration for the OCE Namespace. Each operation also requires the registration
+permission in this table, the corresponding GitHub App permission, and a saved
+repository grant:
 
-Complete the Worker rollout before enabling these settings. After updating the
-registration, rebind any existing repository access and deploy or redeploy the
-Agent with a saved read or write grant for that repository. Use the supplied
-`GITHUB_TOKEN` placeholder:
+| Operation                              | `permissions` entry                | Saved grant   |
+| -------------------------------------- | ---------------------------------- | ------------- |
+| List issues or read one issue          | `issues`: `read` or `write`        | Read or Write |
+| List pull requests or read one of them | `pull_requests`: `read` or `write` | Read or Write |
+| Create a pull request                  | `pull_requests`: `write`           | Write         |
+
+GitHub's issue routes also return pull requests as issue records, so the issue
+permission alone lets an Agent read pull request titles and descriptions.
+
+Complete the compatible Worker rollout before enabling these settings. After
+changing the registration, rebind existing repository access under the usual
+credential approval and deploy or redeploy the Agent. A Worker upgrade does not
+change a running Sandbox. If the registration already had `scopedRest: "v1"` and
+a `pull_requests` permission, the Agent receives the pull request routes at its
+next deployment. Use the supplied `GITHUB_TOKEN` placeholder:
 
 ```sh
 gh api --method GET repos/OWNER/REPO/issues
 gh api --method GET repos/OWNER/REPO/issues/NUMBER
+gh api --method GET repos/OWNER/REPO/pulls
+gh api --method GET repos/OWNER/REPO/pulls/NUMBER
 ```
 
-`NUMBER` must be a positive decimal issue number of at most 19 digits. OpenShell
-injects the real credential outside the Agent and permits only these issue GET
-paths. Unlisted repositories, adjacent paths such as comments, REST writes and
-GraphQL remain denied. Omitting `scopedRest` keeps native delivery Git-only.
+`NUMBER` must be a positive decimal number of at most 19 digits. OpenShell
+injects the real credential outside the Agent and enforces these routes locally.
+No OCE service is in the request path, so API access continues while the current
+credential is valid (at most one hour) when the Worker is unavailable; the Worker
+renews the credential. Omitting `scopedRest` keeps native delivery Git-only. These
+settings do not permit comments, reviews, PR updates or merges, issue writes,
+GraphQL, or direct access to repositories without a saved grant. Pull request
+creation has the exceptions under [Known limits](#known-limits).
+
+#### Pull request creation
+
+To create a normal or draft pull request, save the request in `pull.json` and
+send it as the JSON body:
+
+```json
+{ "title": "Fix", "head": "topic/fix", "base": "main" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/pulls --input pull.json
+```
+
+If a creation result is uncertain, inspect the repository before submitting again.
+To withdraw creation, save Read for the repository and redeploy. Verify that the
+old Sandbox retires.
+
+#### Known limits
+
+OpenShell matches the method, path and query of a request. It does not inspect
+the body, and OCE does not check it. An Agent that can create pull requests in a
+repository can also do the following in that repository:
+
+- Name a branch of a fork as the head, with `head: "OWNER:BRANCH"` or `head_repo`.
+  If the token also covers a repository of the same fork network for which the
+  Agent has no saved grant, such a pull request makes that repository's commits
+  readable through the target repository's pull request ref and diff.
+- Convert an existing issue into a pull request, with `issue: NUMBER`, which
+  changes that issue.
+
+A query string can carry the same fields.
+
+Two things bound both cases. GitHub applies the permissions and repositories of
+the installation token. The target is always a repository for which the Agent
+already holds a saved Write grant.
 
 ## Console access levels
 
