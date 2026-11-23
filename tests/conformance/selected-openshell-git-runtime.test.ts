@@ -1,3 +1,4 @@
+import { asRecord } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -3584,11 +3585,12 @@ test("a second Worker withdrawing Git during signing prevents the launcher POST"
   assert.equal(posts, 0);
 });
 
-test("native issue reads intersect the selected permissions, registry opt-in and frozen Git ACL", async (t) => {
-  const apiRules = async (rest?: ScopedRest, hasAdmittedIssueRead = false) => {
+test("native scoped REST intersects the selected permissions, registry opt-in and frozen Git ACL", async (t) => {
+  const apiRules = async (rest?: ScopedRest, hasAdmittedRoute = false) => {
     const held = await heldGit(t, true, undefined, rest);
+    // Any admitted API route, reads or creation, leaves the host to the stock policy alone.
     assert.deepEqual(held.prepared.middlewares["oce-prepared-git"].endpoints, {
-      include: [hasAdmittedIssueRead ? "deny-egress.invalid" : "api.github.com"],
+      include: [hasAdmittedRoute ? "deny-egress.invalid" : "api.github.com"],
     });
     await held.reconcile();
     assert.equal(held.activity.updates, 1, "provider passed complete policy readback");
@@ -3620,10 +3622,34 @@ test("native issue reads intersect the selected permissions, registry opt-in and
     ),
   );
   assert.deepEqual(await apiRules(), []);
-  assert.deepEqual(await apiRules({ permissions: { pull_requests: "write" } }), []);
+  const pullReads = issues.map((rule) => ({
+    ...rule,
+    path: rule.path!.replace("/issues", "/pulls"),
+  }));
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "read" } }, true), pullReads);
+  // Creation needs the write permission and the saved Write grant, which only delivery has.
+  const create = [{ method: "POST", path: "/repos/example/delivery/pulls" }];
+  const pulls = await apiRules({ permissions: { pull_requests: "write" } }, true);
   assert.deepEqual(
-    await apiRules({ permissions: { issues: "write", pull_requests: "write" } }, true),
+    pulls.filter((r) => r.method === "GET"),
+    pullReads,
+  );
+  assert.deepEqual(
+    pulls.filter((r) => r.method !== "GET"),
+    create,
+  );
+  const mixed = await apiRules({ permissions: { issues: "write", pull_requests: "write" } }, true);
+  assert.deepEqual(
+    mixed.filter((r) => r.path?.includes("/issues")),
     issues,
+  );
+  assert.deepEqual(
+    mixed.filter((r) => r.path?.includes("/pulls")),
+    [
+      ...pullReads.slice(0, pullReads.length / 2),
+      ...create,
+      ...pullReads.slice(pullReads.length / 2),
+    ],
   );
   assert.deepEqual(
     await apiRules(
@@ -3788,13 +3814,24 @@ test("a persisted v9 Git-only binding cannot inherit issue network access", asyn
 });
 
 test("native issue policy survives Sandbox creation and independent Credential Proxy readback", async (t) => {
+  await verifyScopedRestReadback(t, { issues: "read" });
+});
+
+test("native pull request creation selects no hook through Sandbox creation and readback", async (t) => {
+  const bound = await verifyScopedRestReadback(t, { issues: "read", pull_requests: "write" });
+  const path = "/repos/example/delivery/pulls";
+  const [readOnly, writable] = bound.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.ok(readOnly && writable && "rules" in writable);
+  assert.ok(writable.rules.some(({ allow }) => allow.method === "POST" && allow.path === path));
+  assert.equal("deny_rules" in writable, false);
+});
+
+async function verifyScopedRestReadback(t: TestContext, permissions: Record<string, string>) {
   const {
     f,
     revision: admitted,
     executionId,
-  } = await selectedV5(t, true, undefined, {
-    permissions: { issues: "read" },
-  });
+  } = await selectedV5(t, true, undefined, { permissions });
   const client = fixtureClient(f);
   let created: Awaited<ReturnType<RuntimeClient["createSandbox"]>> | undefined;
   const getSandbox = client.getSandbox.bind(client);
@@ -3968,12 +4005,14 @@ test("native issue policy survives Sandbox creation and independent Credential P
   assert.ok(bound);
   assert.deepEqual(created.spec?.policy, prepared.proxyWiring.configuration);
   assert.deepEqual(prepared.proxyWiring.configuration.network_policies, { [bound.name]: bound });
-  assert.equal(
-    JSON.stringify(prepared.proxyWiring.configuration.network_middlewares).includes(
-      "deny-egress.invalid",
-    ),
-    true,
-    "the approved issue routes must bypass the host-wide callback",
+  assert.deepEqual(
+    asRecord(
+      asRecord(
+        asRecord(prepared.proxyWiring.configuration.network_middlewares)?.["oce-prepared-git"],
+      )?.endpoints,
+    )?.include,
+    ["deny-egress.invalid"],
+    "the approved API routes must bypass the host-wide callback",
   );
   assert.deepEqual(
     bound.endpoints.filter(({ host }) => host === "api.github.com").map(({ path }) => path),
@@ -4001,11 +4040,45 @@ test("native issue policy survives Sandbox creation and independent Credential P
     0,
     "readback must not select usable material for an unobserved launcher",
   );
+  return bound;
+}
+
+test("a Worker upgrade keeps saved bindings current and releases nothing to a Sandbox loaded without pull request routes", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    permissions: { issues: "write", pull_requests: "write" },
+  });
+  // Pinned identities for these repositories and permissions. The routes derived for a
+  // binding are not part of its identity, so a change in them leaves saved bindings current.
+  assert.deepEqual(
+    held.revision.repositoryCredentials!.bindings.map((b) => b.grant.grantId),
+    [
+      "sha256:1373e0773c7511721ef345b008db21b53559f92b71b291a1c4b9bd5a54d39925",
+      "sha256:292d3fddbc9c9dfb93300157fd1f90a4f146ccfe40de1a595caeb377b7f818ee",
+      "sha256:daeb7d280763db55e3a36d7dc4693c7a1f8cfb8ddcfc7c23436e66a8a200fd8c",
+    ],
+  );
+  // The predecessor loaded issue routes only. This Worker expects the pull request routes too:
+  // the loaded policy differs, so the Sandbox keeps what it has and receives no material.
+  const loaded = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
+  const current = structuredClone(loaded);
+  for (const endpoint of loaded) {
+    assert.ok("rules" in endpoint);
+    Object.assign(endpoint, {
+      rules: endpoint.rules.filter(({ allow }) => !allow.path?.includes("/pulls")),
+    });
+  }
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  // A deployment by this Worker loads the current rule, and the same binding is released.
+  loaded.forEach((endpoint, index) => Object.assign(endpoint, current[index]));
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
 });
 
 test("native issue reads refuse a loaded API write before material selection", async (t) => {
   const held = await heldGit(t, true, undefined, {
-    permissions: { issues: "write", pull_requests: "write" },
+    permissions: { issues: "write" },
   });
   const endpoint = held.loadedGitRule.endpoints.find(({ host }) => host === "api.github.com");
   assert.ok(endpoint && "rules" in endpoint);

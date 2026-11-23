@@ -1,3 +1,5 @@
+import { credentialReplacementDiagnostic } from "./openshell-progress.mjs";
+import type { nativeFirstAgentProofDiagnostic } from "./reporter.ts";
 import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import { isRecord } from "./records.ts";
 
@@ -65,17 +67,6 @@ const safeRuntimeImageStockBrokerStages = new Set([
   "unrelated-private-host",
   "direct-private-host",
 ]);
-
-type NativeProofProjection = (
-  failureStage: unknown,
-  worker: unknown,
-) =>
-  | {
-      kind: "native-first-agent-proof";
-      failureStage: string;
-      worker?: Record<string, string | number | boolean>;
-    }
-  | undefined;
 
 const probeBooleanFields = [
   "running",
@@ -355,7 +346,7 @@ function relayNodeDiagnostic(value: unknown) {
 
 export function projectFailureDiagnostic(
   error: unknown,
-  projectNativeFirstAgentProof: NativeProofProjection,
+  projectNativeFirstAgentProof: typeof nativeFirstAgentProofDiagnostic,
   nativeChildFailure = false,
 ) {
   const diagnostic = optionalProperty(error, "openclawCiDiagnostic");
@@ -432,7 +423,14 @@ export function projectFailureDiagnostic(
       : undefined;
   }
   if (diagnostic.kind === "native-first-agent-proof") {
-    return projectNativeFirstAgentProof(diagnostic.failureStage, diagnostic.worker);
+    return projectNativeFirstAgentProof(
+      diagnostic.failureStage,
+      diagnostic.worker,
+      diagnostic.modelPhase,
+    );
+  }
+  if (diagnostic.kind === "openshell-credential-replacement") {
+    return credentialReplacementDiagnostic(diagnostic.stage);
   }
   if (diagnostic.kind === "runtime-model-probe") {
     if (

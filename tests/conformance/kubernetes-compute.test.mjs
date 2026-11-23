@@ -77,6 +77,7 @@ import {
   nativeSandboxRevision,
   readyNativeHarnessPod,
   recordingNativeSandbox,
+  refusingNativeSandbox,
 } from "./kubernetes-dedicated-deploy-fixture.ts";
 import {
   checkPendingScheduling,
@@ -1949,28 +1950,13 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
   let failure = new SandboxWorkspaceSetupRefusedError(
     "OpenShell workspace initialization refused.",
   );
-  const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels() {
-      return undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      throw failure;
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
-    async harnessStatus() {
-      assert.fail("a refused setup is reported without a status read");
-    },
-    async withdrawHarnessExposure() {},
-  };
+  const sandboxDriver = refusingNativeSandbox(provisions, () => failure);
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
     revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
   markReady(gatewayName);
   const before = Date.now();
   const refused = await prepare();
@@ -2003,35 +1989,26 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
 // the Driver again, so a freed Pod resumes the deployment.
 test("Kubernetes Sandbox provisioning keeps a revision pending when preparation Pods hit a full quota", async () => {
   const provisions = [];
-  const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels() {
-      return undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      throw new SandboxPodQuotaExceededError("The Namespace Pod quota is full.");
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
-    async harnessStatus() {
-      assert.fail("a pending quota is reported without a status read");
-    },
-    async withdrawHarnessExposure() {},
-  };
+  const sandboxDriver = refusingNativeSandbox(
+    provisions,
+    () => new SandboxPodQuotaExceededError("The Namespace Pod quota is full."),
+  );
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
-    revision: nativeSandboxRevision(sandboxDriver.id, "quota"),
+    revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
   markReady(gatewayName);
   const pending = await prepare();
   assert.equal(provisions.length, 1);
   assert.equal(pending.ready, false);
   assert.equal(pending.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
   assert.equal(pending.runtimeFailure, undefined);
-  assert.equal((await prepare()).pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  const retried = await prepare();
+  assert.equal(retried.ready, false);
+  assert.equal(retried.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  assert.equal(retried.runtimeFailure, undefined);
   assert.equal(provisions.length, 2);
 });
 
