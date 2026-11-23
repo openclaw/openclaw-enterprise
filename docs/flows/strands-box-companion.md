@@ -4,6 +4,10 @@ Build the provider layer from [its Dockerfile](../../deploy/runtime/strands-box/
 
 ## Startup and transport
 
+For new preview deployments, the API records a distinct Sandbox Driver ID. The
+Worker checks that ID before projecting the key. Start with a new Agent and
+follow the [upgrade guidance](../reference/drivers/strands-box.md#experimental-openai-api-key-isolation).
+
 1. The supervisor reads the mounted manifest and runs Box with `/etc/strands-box/box.toml`. [outer.mjs](../../deploy/runtime/strands-box/outer.mjs) owns the child lifetime. Box supplies the private PID namespace. Its standard input and output carry framed channel messages. Child logs go to standard error.
 2. The contained [bootstrap](../../deploy/runtime/strands-box/inner.mjs) opens the projected files named by `secretEnvironment` and starts the admitted `command` in `workspace`. By default, the model credential is among these inputs. With the [OpenAI preview](../reference/drivers/strands-box.md#experimental-openai-api-key-isolation), only the supervisor mounts the key and passes it to Box. The bootstrap refuses a missing or malformed placeholder and any secret projection. Box checks the exact placeholder at dispatch before substituting the key.
 3. The [listener initializer](../../deploy/runtime/strands-box/initialize-listener.mjs) creates a certificate for the Pod. The Gateway and worker verify the admitted certificate before sending credentials. The [supervisor](../../deploy/runtime/strands-box/supervisor.mjs) validates the revision bearer before passing native traffic to the contained process. The diagnostic listener accepts the revision readiness request and cannot upgrade to a native session. The [handshake](../../deploy/runtime/strands-box/handshake.mjs) checks native initialization. Readiness retains capacity when session channels are full.

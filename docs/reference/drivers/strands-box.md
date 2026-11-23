@@ -58,6 +58,18 @@ to protocol `openai-responses` and base URL `https://api.openai.com/v1` before
 deploying the revision. Disable managed plugins and standalone web search.
 Other endpoints, authentication modes and custom launch inputs are unsupported.
 
+Start with a **new Agent** on an installation whose API and Workers all run
+this build with the preview enabled. Deployments admitted by this API record
+the credential mode in the Sandbox Driver ID. A Worker with a different ID
+refuses the revision before projecting the key.
+
+Switching modes on an existing Agent is unsupported. Cleanup revisits earlier
+revisions even after Stop. Keep the original Worker and configuration available
+to retire those executions. Earlier preview builds also used the ordinary ID,
+so an ordinary Worker can give Codex the key for those revisions. For an
+upgrade, use a separate preview installation, a fresh Agent and a new key.
+Revoke any key previously exposed to the workload.
+
 **Every process in the Sandbox can use everything the key permits on the Responses
 endpoint.** Box checks the temporary bearer and substitutes the key only on
 HTTPS POST to the canonical path `/v1/responses`. The caller controls the
