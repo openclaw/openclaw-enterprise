@@ -100,7 +100,9 @@ OCC checks permission on the exact Source and dispatches credential changes to i
 
 API composition connects the selected native Proxy to TokenService and binds a trusted Source Namespace placement resolver. After committing replacement material, TokenService sends the exact Source reference and version, with a lazy resolver bound to that Source and TokenService instance. The Proxy returns without resolution or creation if no Provider exists. Otherwise it updates the owned Provider through conditional `UpdateProvider`. It validates the returned target receipts, waits on the same receipt while status is pending or persisted, and checks fresh admission and serving evidence before acknowledging an activated target. A never-activated target needs no serving observation. The wait does not repeat the update.
 
-If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`. Manual retry and live rotation qualification remain pending.
+If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`.
+
+`apps/controller/src/http/credential-sources.ts:pushAgentCredentials` reserves the manual Agent retry route. Until the implementation lands, the controller refuses the request with `503 DEPENDENCY_UNAVAILABLE` before it resolves or delivers any credential. Live rotation qualification remains pending.
 
 #### Retire the Source
 
