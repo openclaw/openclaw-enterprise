@@ -16249,7 +16249,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.",
                       "items": {
                         "anyOf": [
                           {
@@ -16435,6 +16435,23 @@
                                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "networkProxy": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "credentialSecretId": {
+                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "url": {
+                                    "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                    "maxLength": 2048,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["url"],
+                                "type": "object"
+                              },
                               "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                               "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                               "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -16563,6 +16580,7 @@
                                       { "const": "pluginApprovers", "type": "string" },
                                       { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
+                                      { "const": "networkProxy", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
                                       { "const": "credentialSources", "type": "string" },
                                       { "const": "secretBindings", "type": "string" },
@@ -16643,7 +16661,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
                       },
                       "type": "array"
                     },
@@ -16951,6 +16969,23 @@
                     "description": "Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer.",
                     "type": "boolean"
                   },
+                  "networkProxy": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "credentialSecretId": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": ["url"],
+                    "type": "object"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
@@ -17239,6 +17274,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
@@ -19371,6 +19423,23 @@
                     "description": "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
                     "type": "boolean"
                   },
+                  "networkProxy": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "credentialSecretId": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": ["url"],
+                    "type": "object"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
@@ -20773,6 +20842,23 @@
                     "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                     "type": "string"
                   },
+                  "networkProxy": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "credentialSecretId": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": ["url"],
+                    "type": "object"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" }
                 },
@@ -21135,6 +21221,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
@@ -21576,6 +21679,23 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "networkProxy": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "credentialSecretId": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "url": {
+                                  "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                  "maxLength": 2048,
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["url"],
+                              "type": "object"
+                            },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                             "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                             "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -21704,6 +21824,7 @@
                                     { "const": "pluginApprovers", "type": "string" },
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
+                                    { "const": "networkProxy", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
                                     { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
@@ -21784,7 +21905,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -21928,6 +22049,7 @@
                 "anyOf": [
                   { "required": ["configurationId"] },
                   { "required": ["gatewayManagedMode"] },
+                  { "required": ["networkProxy"] },
                   { "required": ["modelProviderId"] }
                 ],
                 "properties": {
@@ -22075,6 +22197,28 @@
                       {
                         "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "networkProxy": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "credentialSecretId": {
+                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "url": {
+                            "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                            "maxLength": 2048,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": ["url"],
+                        "type": "object"
                       },
                       { "type": "null" }
                     ]
@@ -22423,6 +22567,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
@@ -23977,6 +24138,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "plugins": {
@@ -30808,6 +30986,23 @@
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "networkProxy": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "credentialSecretId": {
+                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "url": {
+                                "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                "maxLength": 2048,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": ["url"],
+                            "type": "object"
+                          },
                           "revision": { "minimum": 1, "type": "integer" }
                         },
                         "required": [
@@ -31271,6 +31466,23 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "networkProxy": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "credentialSecretId": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "url": {
+                                  "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                  "maxLength": 2048,
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["url"],
+                              "type": "object"
+                            },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                             "plugins": {
                               "additionalProperties": false,
@@ -31420,6 +31632,7 @@
                                     { "const": "pluginApprovers", "type": "string" },
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
+                                    { "const": "networkProxy", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
                                     { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
@@ -34113,6 +34326,23 @@
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
+                        },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -34860,6 +35090,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },

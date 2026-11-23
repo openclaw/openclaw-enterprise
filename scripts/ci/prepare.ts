@@ -1183,12 +1183,15 @@ async function prepareK3dRuntimeImages(
   }
   // Replace the build tag with its imported digest before publishing the next step's inputs.
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE!;
-  // This focused journey deploys only embedded OpenClaw Agents. The full lane
+  // These focused journeys deploy only embedded OpenClaw Agents. The full lane
   // still prepares Codex because its other files exercise dedicated execution.
-  const embeddedOidcOnly =
+  const embeddedOnly =
     state.lane === "gateway-routing" &&
-    state.selectedFile === "tests/integration/oidc-agent-chat-k3d-real.test.ts";
-  if (lanePrepare(state.lane).codexSeccomp && !embeddedOidcOnly) {
+    [
+      "tests/integration/oidc-agent-chat-k3d-real.test.ts",
+      "tests/integration/agent-network-proxy-kubernetes-real.test.ts",
+    ].includes(state.selectedFile ?? "");
+  if (lanePrepare(state.lane).codexSeccomp && !embeddedOnly) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,

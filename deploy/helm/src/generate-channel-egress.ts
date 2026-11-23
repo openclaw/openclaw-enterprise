@@ -73,13 +73,25 @@ const document = {
                 name: "inspection",
                 domains: ["*"],
                 routes: [
-                  {
+                  ...[
+                    "dynamic_listeners",
+                    "static_listeners",
+                    "dynamic_active_clusters",
+                    "static_clusters",
+                    "dynamic_active_secrets&mask=name",
+                  ].map((resource) => ({
                     match: {
                       path: "/config_dump",
-                      headers: [{ name: ":method", string_match: { exact: "GET" } }],
+                      headers: [
+                        { name: ":method", string_match: { exact: "GET" } },
+                        {
+                          name: ":path",
+                          string_match: { exact: `/config_dump?resource=${resource}` },
+                        },
+                      ],
                     },
                     route: { cluster: "channel-egress-inspection" },
-                  },
+                  })),
                   {
                     match: {
                       path: "/stats",
