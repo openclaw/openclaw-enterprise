@@ -232,6 +232,10 @@ export const credentialSourceHandlers = {
     const source = clientCredentialSource(rotated);
     reply.send({ data: source, meta: { requestId: request.id } });
   },
+  async pushAgentCredentials() {
+    // TODO(D2): Replace this refusal when manual Agent credential delivery retry is implemented.
+    throw failure(503, "DEPENDENCY_UNAVAILABLE", "Agent credential delivery retry is unavailable.");
+  },
   async withdrawAgentCredentialSource({
     controller,
     context,
