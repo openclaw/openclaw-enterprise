@@ -117,14 +117,16 @@ Inspect the repository before retrying an uncertain creation result.
 
 #### Cut over existing registrations
 
-Remove the old `scopedRest` and `createIssues` fields before rollout. They are
-rejected, with no compatibility aliases. Review the actual Namespace Issues and
-Pull requests permissions first. An existing Agent draft can gain eligible REST
-routes at its next deployment. Changed grant hashes can cause an older revision's
-credential preparation or renewal to be refused, affecting Git and REST until
-recovery. Edit the normal draft and redeploy, then verify retirement of the old
-Sandbox. A registration edit does not immediately revoke a running Sandbox's
-loaded policy or current credential.
+Remove `scopedRest` from existing registrations before rollout. Both that
+retired setting and the previously proposed `createIssues` field are rejected.
+Review each Namespace's Issues and Pull requests permissions first. At the
+next deployment, new and existing Agent drafts receive the routes allowed by
+those permissions and the saved repository grants. No draft edit is required.
+
+Changed grant identities can interrupt credential preparation or renewal for an
+older revision, affecting Git and REST. Redeploy and verify retirement of the
+old Sandbox. Editing a registration does not immediately revoke a running
+Sandbox's loaded policy or credential.
 
 #### Pull request creation
 
