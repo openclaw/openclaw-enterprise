@@ -201,7 +201,9 @@ Sandbox until it ends.
   The Worker's next refresh (every 10 seconds) rotates it into the same Provider,
   with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with
   `credentialSourceId` and `credentialSourceVersion` once OpenShell reports it
-  installed. Read these in the Worker's own log: the Collector does not export them. Revoke the old token
+  installed. Read these in the Worker's own log: the Collector does not export them.
+  The log keeps the Source ID only as a `cs_` UUID and the version only as a
+  UUID, which TokenService picks at random for each value. Revoke the old token
   at GitHub once every running Agent that uses the Source has logged that event
   for the new version, or 15 minutes after the replacement. A `github` Source has
   no Credential Proxy Provider, so
