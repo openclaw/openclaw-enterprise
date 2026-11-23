@@ -5,6 +5,7 @@ import {
   canonicalSourceRepositoryCeiling,
   GITHUB_SOURCE_PRESET_ID,
   isGitHubFineGrainedToken,
+  isRepositoryTokenSource,
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   SOURCE_REPOSITORIES_CONFIG_KEY,
@@ -643,15 +644,18 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
-      try {
-        await dependencies.retireDelivery(
-          namespace,
-          identity.sourceRef,
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-        );
-      } catch {
-        // Native errors can contain credential or Workspace details.
-        throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+      // A repository token never has a model Provider copy, so retiring it waits on no Gateway.
+      if (!isRepositoryTokenSource(source)) {
+        try {
+          await dependencies.retireDelivery(
+            namespace,
+            identity.sourceRef,
+            AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+          );
+        } catch {
+          // Native errors can contain credential or Workspace details.
+          throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+        }
       }
       const removed = await driverOperation(
         () => owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),

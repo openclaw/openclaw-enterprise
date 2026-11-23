@@ -1,4 +1,7 @@
-import type { SourceProviderPresetId } from "./model-providers.ts";
+import {
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  type SourceProviderPresetId,
+} from "./model-providers.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
@@ -13,6 +16,16 @@ export const GITHUB_SOURCE_PRESET_ID = "github" satisfies SourceProviderPresetId
  * separated by commas. OCC stores it in canonical repository order.
  */
 export const SOURCE_REPOSITORIES_CONFIG_KEY = "repositories";
+
+/**
+ * Whether a stored Source holds a repository token. The purpose is fixed at registration, so a
+ * repository token never gets a model Provider copy, model delivery or workload projection.
+ */
+export function isRepositoryTokenSource(source: {
+  readonly config: Readonly<Record<string, string>>;
+}): boolean {
+  return source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID;
+}
 
 // The documented prefix of a GitHub fine-grained personal access token.
 const FINE_GRAINED_TOKEN_PREFIX = "github_pat_";

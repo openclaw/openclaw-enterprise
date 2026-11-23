@@ -465,6 +465,7 @@ export {
   canonicalSourceRepositoryCeiling,
   GITHUB_SOURCE_PRESET_ID,
   isGitHubFineGrainedToken,
+  isRepositoryTokenSource,
   SOURCE_REPOSITORIES_CONFIG_KEY,
   SourceRepositoryCeilingError,
 } from "./repository-token-source.ts";
