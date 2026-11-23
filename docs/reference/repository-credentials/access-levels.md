@@ -187,6 +187,7 @@ Saving the repository policy and deploying check the Source again:
 | A saved grant exceeds the Source's repository ceiling                                     | `409`, detail `/repositoryNetworkPolicy` |
 | The bindings mix the App and a Source, or two Sources                                     | `409`; `400` when the Agent is saved     |
 | `DELETE` of the Source, or a ceiling change, while the registry names it                  | `409`                                    |
+| `DELETE` of the Source while a deployed copy of it is not confirmed retired               | `409`                                    |
 
 The Worker lends the value for at most 15 minutes and renews it every 7.5 minutes.
 At each loan it checks the Source's state, owner, preset and ceiling, the Agent
@@ -214,8 +215,19 @@ Sandbox until it ends.
   the current loan does, at most 15 minutes later. Revoke the token at GitHub to
   end it at once.
 - **Stop and retirement.** A stopped Agent's route is withdrawn: nothing is lent
-  or renewed for it. Once no registration names the Source, it can be deleted,
-  and no further loan is made.
+  or renewed for it. Each deploy that selects the Source records the revision's
+  copy before the deployment is queued. The Worker retires a copy by deleting
+  the revision's `oce-github-token-` Provider, and records it only once a fresh
+  listing no longer shows that Provider: when the revision's Sandbox is gone
+  (Stop, redeploy or a deployment that ends without a Sandbox) and at each
+  Worker start. `DELETE` of the Source answers `409` with reason
+  `unretired_repository_source_copy` while any copy is unretired, even after the
+  registry no longer names the Source. To clear it, stop or redeploy without the
+  Source each Agent whose revision uses it. A copy whose Provider OpenShell still
+  lists, or whose Gateway does not answer, stays unretired and the Worker logs
+  `worker.openshell-git-copy` with status `retained` and reason
+  `provider_present` or `gateway_unavailable`. The next cleanup or Worker start
+  retries it.
 
 Replacement and retirement wait while the Worker holds the Source's catalog row.
 The Worker limits the hold to 60 seconds and confirms it before and after the
