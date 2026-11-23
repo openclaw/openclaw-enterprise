@@ -16,21 +16,23 @@ import {
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 test("docs repository checklist generates filters independently of deployment", async (t) => {
-  let child: ReturnType<typeof spawnDocsPreview> | undefined;
-  let browser: Browser | undefined;
-  let diagnostics: Awaited<ReturnType<typeof watchBrowserContext>> | undefined;
+  const preview: {
+    child?: ReturnType<typeof spawnDocsPreview>;
+    browser?: Browser;
+    diagnostics?: Awaited<ReturnType<typeof watchBrowserContext>>;
+  } = {};
   const { directory } = await createDocsFixture(t, "enterprise-docs-repository-actions-", {
     logo: true,
     async beforeRemove() {
       try {
         try {
-          await diagnostics?.capture();
+          await preview.diagnostics?.capture();
         } finally {
-          await browser?.close();
+          await preview.browser?.close();
         }
       } finally {
-        if (child?.pid !== undefined) {
-          await stopProcess(child, { graceMs: 5_000 });
+        if (preview.child?.pid !== undefined) {
+          await stopProcess(preview.child, { graceMs: 5_000 });
         }
       }
     },
@@ -45,16 +47,16 @@ test("docs repository checklist generates filters independently of deployment", 
   const build = buildDocs(directory);
   assert.equal(build.status, 0, build.stderr || build.stdout);
 
-  child = spawnDocsPreview(directory);
-  const origin = await waitForDocsPreview(child);
-  browser = await chromium.launch({
+  preview.child = spawnDocsPreview(directory);
+  const origin = await waitForDocsPreview(preview.child);
+  preview.browser = await chromium.launch({
     headless: true,
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
       : {}),
   });
-  const page = await browser.newPage();
-  diagnostics = await watchBrowserContext(t, page.context());
+  const page = await preview.browser.newPage();
+  preview.diagnostics = await watchBrowserContext(t, page.context());
   await page.goto(origin);
 
   const checklist = page.locator("[data-repository-actions]");

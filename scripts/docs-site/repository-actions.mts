@@ -51,7 +51,9 @@ function mount(root: HTMLElement) {
     root.querySelector<HTMLSelectElement>(`select[name=${name}]`)!.value;
 
   function eligibility(option: HTMLInputElement) {
-    if (!option.checked) return "Excluded by filter";
+    if (!option.checked) {
+      return "Excluded by filter";
+    }
     const [resource, operation] = option.value.split(":");
     const create = operation === "create";
     const grant = selected("grant");
@@ -93,12 +95,16 @@ function mount(root: HTMLElement) {
     for (const option of options) {
       const status = root.querySelector(`[data-action="${option.value}"] span`)!;
       const message = eligibility(option);
-      if (status.textContent !== message) status.textContent = message;
+      if (status.textContent !== message) {
+        status.textContent = message;
+      }
     }
   }
 
   function preset(checked: boolean) {
-    for (const option of [...options, future]) option.checked = checked;
+    for (const option of [...options, future]) {
+      option.checked = checked;
+    }
     render();
   }
 
@@ -109,4 +115,6 @@ function mount(root: HTMLElement) {
   render();
 }
 
-for (const root of document.querySelectorAll<HTMLElement>("[data-repository-actions]")) mount(root);
+for (const root of document.querySelectorAll<HTMLElement>("[data-repository-actions]")) {
+  mount(root);
+}
