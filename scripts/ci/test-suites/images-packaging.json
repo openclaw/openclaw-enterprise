@@ -109,7 +109,7 @@
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
-        "the chart leaves API egress to the operator and isolates other components",
+        "the chart preserves API ingress while leaving API egress to the cluster operator",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
         "the chart runs the migration selected by each controller image in the same process",
         "the staged sign-in chart preserves the historical worker probes for both Helm operations",

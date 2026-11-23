@@ -488,65 +488,57 @@ export function registerProxyAndEgressCases() {
     },
   );
 
-  test(
-    "the chart refuses Google Secret and egress settings the API cannot observe",
-    tooling,
-    async () => {
-      const google = googleUpgradeValues(recoveryUserId);
-      await chartOnly("google", [
-        [
-          "the Better Auth Secret",
-          { ...google, "auth.google.secretName": "occ-auth" },
-          /auth\.google\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "one key for client ID and secret",
-          { ...google, "auth.google.clientSecretKey": "client-id" },
-          /auth\.google client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "an empty-string domain allowlist",
-          { ...google, "auth.google.allowedDomains": "" },
-          /auth\.google\.allowedDomains must be a list of DNS domain names/,
-        ],
-        [
-          "an HTTP base URL",
-          { ...google, "auth.baseUrl": "http://oce.example.internal" },
-          /auth\.google requires an HTTPS auth\.baseUrl/,
-        ],
-      ]);
-    },
-  );
+  test("the chart refuses Google Secret settings the API cannot observe", tooling, async () => {
+    const google = googleUpgradeValues(recoveryUserId);
+    await chartOnly("google", [
+      [
+        "the Better Auth Secret",
+        { ...google, "auth.google.secretName": "occ-auth" },
+        /auth\.google\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...google, "auth.google.clientSecretKey": "client-id" },
+        /auth\.google client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "an empty-string domain allowlist",
+        { ...google, "auth.google.allowedDomains": "" },
+        /auth\.google\.allowedDomains must be a list of DNS domain names/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...google, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.google requires an HTTPS auth\.baseUrl/,
+      ],
+    ]);
+  });
 
-  test(
-    "the chart refuses OIDC Secret and egress settings the API cannot observe",
-    tooling,
-    async () => {
-      const oidc = oidcUpgradeValues(recoveryUserId);
-      await chartOnly("oidc", [
-        [
-          "the Google sign-in Secret",
-          { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "the Better Auth Secret",
-          { ...oidc, "auth.oidc.secretName": "occ-auth" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "one key for client ID and secret",
-          { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
-          /auth\.oidc client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "an HTTP base URL",
-          { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
-          /auth\.oidc requires an HTTPS auth\.baseUrl/,
-        ],
-      ]);
-    },
-  );
+  test("the chart refuses OIDC Secret settings the API cannot observe", tooling, async () => {
+    const oidc = oidcUpgradeValues(recoveryUserId);
+    await chartOnly("oidc", [
+      [
+        "the Google sign-in Secret",
+        { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
+        /auth\.oidc\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "the Better Auth Secret",
+        { ...oidc, "auth.oidc.secretName": "occ-auth" },
+        /auth\.oidc\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
+        /auth\.oidc client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.oidc requires an HTTPS auth\.baseUrl/,
+      ],
+    ]);
+  });
 
   test(
     "install notes warn when sign-in is exposed without a trusted proxy, and never fail",

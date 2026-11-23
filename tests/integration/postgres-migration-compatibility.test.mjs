@@ -966,6 +966,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
       ["occ.hold_agent_audit_policy(text)", true],
+      ["occ.purge_namespace_plugin_releases(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -2809,6 +2810,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [89, "ALTER TABLE"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
                 [86, "CREATE TRIGGER"],
@@ -2841,6 +2843,9 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 89) {
+          // Abort 0090 after creating the release table and restricted purge function.
+          failAt = "IF to_regclass('occ.plugin_releases') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 88) {
           // Abort 0089 after it has created the static version table and its current-version FK.
           failAt =

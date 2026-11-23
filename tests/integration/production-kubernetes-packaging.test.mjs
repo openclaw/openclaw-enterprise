@@ -2044,7 +2044,7 @@ test(
 );
 
 test(
-  "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
+  "the optional ChatGPT Backend isolates admin credentials and tenant Secrets",
   tooling,
   async () => {
     const { stdout } = await render(chatgptValues);

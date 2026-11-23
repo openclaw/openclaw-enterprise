@@ -624,7 +624,10 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     outlineOffset: "-3px",
   });
 
-  // Keep the record identifiable when its Delete button has focus, even without shadows.
+  // The Namespace publisher reaches Import before Delete, and each action keeps the row identifiable.
+  await page.keyboard.press("Tab");
+  const importPlugin = row.getByRole("button", { name: `Import plugin into ${provisioning.name}` });
+  assert.equal(await importPlugin.evaluate((node) => node.matches(":focus-visible")), true);
   await page.keyboard.press("Tab");
   const action = row.getByRole("button", { name: `Delete ${provisioning.name}`, exact: true });
   assert.equal(await action.evaluate((node) => node.matches(":focus-visible")), true);
@@ -642,6 +645,11 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   const other = list.getByRole("listitem").filter({ hasText: ready.id });
   assert.equal((await style(other, "outlineStyle")).outlineStyle, "none");
   await page.emulateMedia({ forcedColors: "none" });
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(
+    await importPlugin.evaluate((node) => node === globalThis.document.activeElement),
+    true,
+  );
   await page.keyboard.press("Shift+Tab");
   assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
   await page.keyboard.press("Enter");
