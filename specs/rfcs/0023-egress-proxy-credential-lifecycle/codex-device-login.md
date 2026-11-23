@@ -24,7 +24,7 @@ A second authorized Agent can bind the same Source. The worker reads account met
 
 The first Codex login and Agent path preserves the refusal to delete a referenced Source. Supporting disconnect while Agents still consume the grant requires a separate withdrawal authorization decision: the grant owner cannot automatically operate every consuming Agent, and native OpenShell refuses to delete an attached Provider. Only active disconnect is deferred; it does not block this path.
 
-Injection is allowed only for the admitted Codex executable, destination, port, method, and path. A Proxy or Sandbox that cannot enforce the required route refuses deployment. Missing account context, a wrong owner, stale delivery, absent placeholder, or failed policy readiness prevents Codex startup. Gateway ownership cannot silently substitute for Proxy delivery.
+One binding admits Bearer injection for the exact Codex executable and HTTPS `chatgpt.com:443` requests: `POST /backend-api/codex/responses`, `GET /backend-api/wham/accounts/check`, and `GET /backend-api/wham/config/bundle`. Codex uses the GET requests for workspace routing and managed configuration. The network grant and injection policy remain separate; both must authorize each request. Other hosts and paths, including an alternate workspace backend origin, remain refused. A Proxy or Sandbox that cannot enforce these exact matches refuses deployment. Missing account context, a wrong owner, stale delivery, absent placeholder, or failed policy readiness prevents Codex startup. Gateway ownership cannot silently substitute for Proxy delivery.
 
 ## Interface changes
 
