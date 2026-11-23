@@ -445,7 +445,6 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
-  ModelSourcePresetId,
   SourceProviderPresetId,
 } from "./model-providers.ts";
 export {
