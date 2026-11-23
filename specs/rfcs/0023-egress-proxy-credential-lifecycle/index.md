@@ -29,7 +29,7 @@ The validated bundled `repository.openShell` Git-only installation retains a sco
 [Diagram source](assets/overview.mmd)
 
 [GitHub installation-wide access](github-installation-access.md) describes an opt-in authority for ordinary Git and GitHub API work through the same online sender.
-The [GitHub App credential proposal](github-app-template-policy.md) separates inherited installation-token delivery with per-Agent repository policy from scoped TokenService issuance.
+The [GitHub App credential proposal](github-app-template-policy.md) connects TokenService issuance and Credential Proxy delivery to saved Agent repository grants and revises ownership of credential-specific Git rules.
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
