@@ -40,6 +40,11 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
+- **Background updates.** Preserve focus, text selection, and reading position when
+  a poll updates the page. Use `setText` for plain text and `setHidden` for visibility
+  to skip unchanged DOM writes. If an update hides or removes a control, move focus
+  to a useful alternative only if the control still has focus when the response arrives.
+  Clear any content the user can no longer read.
 - **Disabled controls.** Show the reason next to a disabled control. For a button,
   checkbox, select or text field, call `setUnavailable(control, unavailable, reason)`
   wherever its state or reason changes. While the reason shows, the control stays in the
@@ -84,6 +89,11 @@ Check that new assets load and the interaction works with the actual API. Follow
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
 Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
 so reviewers can read the starting state, follow the action, and see the result.
+
+For a page that polls, delay a response and select text, move keyboard focus, or scroll
+deliberately while it is pending. Return unchanged data, then data that shrinks the layout
+or hides or removes the focused control. Check the selection, reading position, and visible
+focus after each response. Check that revoking read access clears the affected content.
 
 Use [`responseTo`](../../tests/browser/console-action-helpers.ts) to wait for a response
 to the exact request method and URL. Start listening before triggering the action,
