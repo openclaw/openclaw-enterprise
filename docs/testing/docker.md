@@ -209,8 +209,9 @@ Select `OCC_TEST_QA_INSTALLATION=kubernetes`, `OCC_TEST_QA_PRESET=all`, and
 `OCC_TEST_QA_SCENARIOS=agent-automations`. Follow the
 [local QA setup](ci/qa-advisory.md#local-inputs) for source-built images, authorized
 model credentials and a runner that supports the Codex sandbox. The scenario
-runs the existing empty-cap checks, then the
-[HTTPS MCP helper](../../tests/helpers/qa-agent-automation-mcp.ts) for each Harness.
+runs the empty-cap checks before the
+[HTTPS MCP helper](../../tests/helpers/qa-agent-automation-mcp.ts) for OpenClaw.
+Codex runs the helper first.
 It needs no MCP account. Stdio and credentialed MCP are outside this pilot.
 
 The fixture creates an anonymous HTTPS peer and temporarily supplies exact
@@ -229,9 +230,14 @@ guard binding, and refusal of unsupported tool sources. A paused automation keep
 its immutable grant: incompatible narrowing or binding changes must remain blocked
 until the automation is deleted and its grant is retired. Dedicated evidence must
 bind the API-key revision opt-in, Agent-only requirements mount, and Agent-local
-readiness with all four effective feature constraints off. Require the exact direct
-approved declaration and call; a native `exec` wrapper or sleep tool does not
-qualify. Refuse repository credentials and protected Git for empty and finite
+readiness with all four effective feature constraints off. As a trusted native
+writer, the disposable Codex fixture pauses the stock memory-core dreaming cron
+job by compare-and-swap before Agent STOP. It restores the job by compare-and-swap
+after Agent CONT and readiness recovery. If the fixture cannot restore the job
+with its next run more than two hours away, the QA case fails and quarantines the
+fixture. The two-hour check applies only to QA fixture isolation.
+Require the exact direct approved declaration and call; a native `exec` wrapper
+or sleep tool does not qualify. Refuse repository credentials and protected Git for empty and finite
 dedicated caps. Recovery proof must
 also cover the paged `view=pending` response and reservation cancellation while
 the native runtime is unavailable, creator and administrator isolation, the

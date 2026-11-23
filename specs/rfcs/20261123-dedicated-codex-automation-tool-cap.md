@@ -94,10 +94,12 @@ match the selected revision. Refuse admission for an unready or unverifiable Pod
 new cross-Pod credential transfer, Pod-exec permission, or RBAC grant. Verify that the pinned
 scheduled path does not gain another native capability.
 
-Chat and native administrators remain trusted. Readiness loss does not terminate an established
-Gateway-to-Agent connection or stop cron. A trusted policy change can precede readiness propagation;
-OCC cannot immediately revoke a standing job. Retire the job or deny it at the MCP service. Issued
-calls can complete.
+Chat, native administrators and plugins remain trusted native writers. Stock memory-core can
+schedule a separate dreaming turn on dedicated `main` under native Agent policy and authority.
+OCC does not cap or revoke that job and does not include it in OCC automation history. Readiness
+loss does not terminate an established Gateway-to-Agent connection or stop cron. A trusted policy
+change can precede readiness propagation; OCC cannot immediately revoke a standing job. Retire
+the job or deny it at the MCP service. Issued calls can complete.
 
 Automation admission separately requires the existing reviewer `user`, no `auto_review`, and an
 enabled `networkProxy` in `limited` mode. Compute must verify the exact requirements content and

@@ -11,7 +11,7 @@ scheduling and history. See the [guide](../guides/agent-automations.md) and
 The runtime owner must qualify deployed Agent standing authority; a raw native
 filter is not a grant. Eligible operations require:
 
-- An enabled static MCP server with a finite nonempty list of exact raw operations.
+- An enabled static MCP server with a finite nonempty exact raw operation list.
 - Unambiguous canonical aliases allowed by Gateway policy and confirmed by
   effective native evidence.
 - The same endpoint, workload credential identity, permitted provider actions and
@@ -20,16 +20,15 @@ filter is not a grant. Eligible operations require:
 Kubernetes Compute qualifies Installation-attested anonymous HTTPS MCP for embedded
 OpenClaw and ordinary deployment-backed dedicated Codex. Nonempty grants reject
 provider-owned Sandbox, protected/credential deployments, native Git v9, stdio
-and credential-bearing MCP. Each packaged Harness needs genuine permitted and
-forbidden HTTPS execution proof. Unsupported qualification returns
+and credential-bearing MCP. Each packaged Harness needs genuine allowed/denied HTTPS execution proof. Unsupported qualification returns
 `503 AUTOMATIONS_UNQUALIFIED` without fallback. The Installation administrator
 supplies [endpoint attestations](drivers/kubernetes-compute.md#automation-mcp-endpoints).
 For nonempty grants, every enabled server requires attested `streamable-http`.
 Reject SSE, HTTP, caller loopback, more than 64 routes and Gateway port 47730/47731
 without holding chat; reject
 equivalent duplicate IPv6 host CIDRs. Public source retains HTTPS URLs; Compute
-projects Gateway loopback routes. Each grant binds the full enabled map and its
-attestations, so sibling changes invalidate it. Catalog setup may initialize/list
+projects Gateway loopback routes. Grants bind all enabled servers and
+attestations; sibling changes invalidate them. Catalog setup may initialize/list
 siblings before filtering; forbidden calls remain denied. Model-only
 `toolsAllow: []` skips MCP acquisition.
 
@@ -135,20 +134,20 @@ names `resources_list`, `resources_read`, `prompts_list`, `prompts_get`
 (case-insensitive), before subsets without probe or fallback; unrelated raw
 `foo__bar` remains valid.
 
-Scheduler housekeeping, history and failure alerts remain outside model-requested
-limits. Chat and native administrators are trusted writers outside OCC; OCC does
-not adopt their jobs.
+Scheduler housekeeping, history and failure alerts are outside model-requested limits.
+Chat, native administrators and plugins are trusted writers. Memory-core can schedule
+dreaming turns on dedicated `main` under native Agent policy and authority. OCC does
+not cap, revoke or include these jobs in its history.
 
 ## Ownership and authority
 
-A human session needs exact-Agent `operate` to create, read and manage
-records it created. Exact-Agent `administer` manages all OCC-owned records but
-cannot replace `operate` for creation. OCC refuses service keys; foreign and absent
-ownership records return the same 404.
+Humans need exact-Agent `operate` to create, read and manage their records.
+Exact-Agent `administer` manages OCC-owned records but cannot authorize creation.
+OCC refuses service keys; foreign and absent records return 404.
 
-Creation delegates the Agent's approved shared workload authority, never the
-creator's personal account, provider credential, session or approval. Model
-requests use the Agent's runtime authentication.
+Creation delegates approved shared Agent workload authority, never the creator's
+personal account, provider credential, session or approval. Model requests use
+Agent runtime authentication.
 
 Revoking the creator's `operate` removes management and history access unless
 another grant permits it; it does not cancel existing jobs. An Agent administrator

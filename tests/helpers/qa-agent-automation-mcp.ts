@@ -756,7 +756,40 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       try {
         await waitAutomationReady();
         await verifyQaCodexAutomationReadinessRefusal(f, agent, {
-          nativeJobs,
+          nativeJobs: readinessNativeJobs,
+          setStockEnabled: async (job, enabled) => {
+            let response: unknown;
+            try {
+              response = await native!.client.request("cron.update", {
+                id: job.id,
+                patch: { enabled },
+                expectedConfigRevision: job.configRevision,
+              });
+            } catch {
+              throw new Error("Native stock task update outcome is unknown; do not replay it.");
+            }
+            const updated = asRecord(response);
+            assert.ok(
+              updated?.id === job.id &&
+                updated.enabled === enabled &&
+                typeof updated.configRevision === "string" &&
+                updated.configRevision.length > 0,
+              "native stock task acknowledgement is invalid",
+            );
+            return updated.configRevision;
+          },
+          managedJobs: async () => {
+            const response = await request("GET", "?limit=100");
+            assert.ok(response.status === 200, "the full OCC automation view is required");
+            const page = asRecord(response.data);
+            assert.ok(
+              Array.isArray(page?.jobs) &&
+                page.nextOffset === null &&
+                page.total === page.jobs.length,
+              "the complete OCC automation view is required",
+            );
+            return page.jobs.length;
+          },
           peerCalls: async () => (await networkPeer!.read()).length,
           pendingReservations: async () => {
             const response = await request("GET", "?view=pending&limit=100");
@@ -1098,6 +1131,57 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       );
       await attest([`${networkPeer.url}/approved`, `${networkPeer.url}/blocked`]);
       native = await observer();
+    }
+    async function readinessNativeJobs() {
+      assert.ok(native);
+      const page = await native.client.request<{ jobs: unknown[] }>("cron.list", {
+        includeDisabled: true,
+        includeDeliveryPreviews: false,
+        limit: 200,
+        offset: 0,
+      });
+      assert.ok(Array.isArray(page.jobs), "native cron inventory is required");
+      return page.jobs
+        .map((value) => {
+          const job = asRecord(value);
+          const schedule = asRecord(job?.schedule);
+          const payload = asRecord(job?.payload);
+          const state = asRecord(job?.state);
+          assert.ok(typeof job?.id === "string" && job.id.length > 0, "native job ID is required");
+          assert.ok(
+            job?.declarationKey == null || typeof job.declarationKey === "string",
+            "native declaration type is invalid",
+          );
+          assert.ok(typeof job?.enabled === "boolean", "native enabled state is required");
+          assert.ok(
+            typeof job?.configRevision === "string" && job.configRevision.length > 0,
+            "native configuration revision is required",
+          );
+          assert.ok(typeof schedule?.kind === "string" && typeof payload?.kind === "string");
+          assert.ok(job?.agentId == null || typeof job.agentId === "string");
+          assert.ok(job?.effectiveAgentId == null || typeof job.effectiveAgentId === "string");
+          assert.ok(
+            job?.nextRunAtMs === state?.nextRunAtMs,
+            "native next-run projections must agree",
+          );
+          const nextRunAtMs = job?.nextRunAtMs ?? null;
+          const runningAtMs = state?.runningAtMs ?? null;
+          assert.ok(nextRunAtMs === null || Number.isSafeInteger(nextRunAtMs));
+          assert.ok(runningAtMs === null || Number.isSafeInteger(runningAtMs));
+          return {
+            id: job.id,
+            declarationKey: (job.declarationKey ?? null) as string | null,
+            enabled: job.enabled,
+            scheduleKind: schedule.kind,
+            payloadKind: payload.kind,
+            configRevision: job.configRevision,
+            agentId: (job.agentId ?? null) as string | null,
+            effectiveAgentId: (job.effectiveAgentId ?? null) as string | null,
+            nextRunAtMs: nextRunAtMs as number | null,
+            runningAtMs: runningAtMs as number | null,
+          };
+        })
+        .sort((left, right) => left.id.localeCompare(right.id));
     }
     async function nativeJobs() {
       assert.ok(native);
