@@ -64,6 +64,10 @@
                       {
                         "page": "guides/integrations/codex-plugins",
                         "label": "Plugins"
+                      },
+                      {
+                        "page": "guides/integrations/channels",
+                        "label": "Channels"
                       }
                     ]
                   },
@@ -140,6 +144,10 @@
                   {
                     "page": "reference/agents/gateway-managed-mode",
                     "label": "Gateway managed mode"
+                  },
+                  {
+                    "page": "reference/agents/network-proxy",
+                    "label": "Network Proxy"
                   },
                   {
                     "page": "guides/topics/agent-presets",
@@ -298,6 +306,14 @@
                   {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/other-delivery-modes",
+                    "label": "Other Delivery Modes"
                   },
                   {
                     "page": "guides/credential-proxy",

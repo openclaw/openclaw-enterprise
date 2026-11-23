@@ -13,23 +13,27 @@ retain the sibling journal and keep writers stopped until verification and clean
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
 
-Keep one operator and the freeze for unfinished deployments. Before
-`prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
-Then reconcile processes, release, migration, rollout and dispatch;
-add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
-OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
-Resume rechecks images, nodes and live state against baseline or candidate.
+Keep one operator and the freeze. Before `prepared`, writers and Helm are
+unchanged. Reconcile and use fresh evidence. If an immutable Secret blocks
+preparation, [stage a successor](immutable-installation-upgrade.md).
 
-For an [immutable reference switch](immutable-installation-upgrade.md), retain both
-Secrets' recorded UIDs and data; resume refuses replacements.
+If prepared, [stop on immutable Secret refusal](production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable) and preserve the original evidence.
 
-Resume uses immutable `controller-compatibility-results.json`, when selected.
-Changing or removing this prepared copy refuses recovery.
+For other resumable failures, reconcile processes, release, migration, rollout
+and dispatch. Add `--resume` with unchanged arguments, protected paths,
+kubeconfig contents, OCC URL, scripts, flow and chart. Keep candidates
+semantically unchanged. Resume rechecks images, nodes and live state against
+baseline or candidate.
+
+An [immutable reference switch](immutable-installation-upgrade.md) requires both
+Secrets' recorded UIDs and data.
+
+Resume requires the original `controller-compatibility-results.json` when selected.
 
 After verified completion, clean up without repeating rollout or Doctor.
-Any `completed` entry refuses resume before live access; preserve it. New upgrades
-require fresh evidence. Reconcile live state after output or marker failures:
-neither an absent marker nor `prepared` proves unfinished work. Older runs may lack markers.
+Preserve `completed` entries. They block resume before live access. New upgrades
+require fresh evidence. Reconcile live state after output or marker failures.
+Older runs may lack markers. Confirm completion independently of missing or `prepared` markers.
 
 ## Correct unusable comparison inputs
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 
 import {
@@ -49,6 +49,7 @@ const tenant: Namespace = {
 };
 const agentId = "agt_00000000-0000-4000-8000-000000000001";
 const revisionId = "rev_00000000-0000-4000-8000-000000000001";
+const servicePrincipalId = "service-principal-ownership";
 const agentDigest = createHash("sha256").update(agentId).digest("hex").slice(0, 12);
 const revisionDigest = createHash("sha256").update(revisionId).digest("hex").slice(0, 12);
 const gatewayName = `gateway-${agentDigest}`;
@@ -63,6 +64,8 @@ const configMapPath = `${namespacePath}/configmaps/${gatewayName}-rev-${revision
 const secretsPath = `${namespacePath}/secrets`;
 const harnessSecretName = `harness-secrets-${agentDigest}-${revisionDigest}`;
 const harnessSecretPath = `${secretsPath}/${harnessSecretName}`;
+const browserSecretName = `browser-delegation-${agentDigest}-${revisionDigest}`;
+const browserSecretPath = `${secretsPath}/${browserSecretName}`;
 const sourceSecretName = "occ-model-key";
 const sourceSecretPath = `${secretsPath}/${sourceSecretName}`;
 const gatewayImage = "openclaw-enterprise/gateway-fixture:local";
@@ -162,7 +165,7 @@ function admittedRevision(driver: KubernetesComputeDriver): {
     harnessAuth,
     compute: { id: driver.id, implementation: driver.implementation },
     executionAdmission: { version: 2, mode: "unprotected" },
-    servicePrincipalId: "service-principal-ownership",
+    servicePrincipalId,
     createdAt: tenant.createdAt,
   };
   const admission = driver.admitRevision(revision);
@@ -239,6 +242,7 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
     ],
     // The canonical credential is read during preparation. Only the projection is created.
     [sourceSecretPath, { kind: "Secret", methods: { prepare: ["GET"] } }],
+    [browserSecretPath, { kind: "Secret", methods: { stop: ["GET", "DELETE"] } }],
     [harnessSecretPath, { kind: "Secret", methods: { prepare: ["GET"], stop: ["GET", "DELETE"] } }],
     [
       `${secretsPath}/gateway-secrets-${agentDigest}-${revisionDigest}`,
@@ -442,6 +446,43 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
     setAbsentDeployment() {
       assert.ok(objects.delete(deploymentPath));
     },
+    retainBrowserCredential() {
+      // Retirement must handle a previously provisioned revision credential even
+      // when this controller has no browser endpoint. Seed its persisted API shape,
+      // not a replacement for the Driver's ownership or deletion decisions.
+      objects.set(
+        browserSecretPath,
+        wireWrite(
+          {
+            apiVersion: "v1",
+            kind: "Secret",
+            metadata: {
+              name: browserSecretName,
+              namespace,
+              labels: {
+                "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                "openclaw.dev/namespace": tenant.id,
+                "openclaw.dev/agent": agentId,
+                "openclaw.dev/service-principal": servicePrincipalId,
+                "openclaw.dev/revision": revisionId,
+              },
+              annotations: {
+                "openclaw.dev/namespace-id": tenant.id,
+                "openclaw.dev/agent-id": agentId,
+                "openclaw.dev/service-principal-id": servicePrincipalId,
+                "openclaw.dev/revision-id": revisionId,
+              },
+            },
+            immutable: true,
+            type: "Opaque",
+            data: {
+              "browser-key": Buffer.from(randomBytes(32).toString("hex")).toString("base64"),
+            },
+          },
+          browserSecretPath,
+        ),
+      );
+    },
     changeAgentAnnotation(path: string) {
       objects.set(path, withForeignAgent(observed(path), "annotations", "openclaw.dev/agent-id"));
     },
@@ -505,18 +546,29 @@ test("runtime resource deletion rejects foreign resources and retains exact UID 
   const candidates = [
     { name: "foreign-service", foreign: servicePath, deploymentMissing: true },
     { name: "foreign-config-map", foreign: configMapPath, deploymentMissing: true },
+    { name: "foreign-browser-secret", foreign: browserSecretPath, deploymentMissing: true },
     { name: "foreign-secret", foreign: harnessSecretPath, deploymentMissing: true },
+    {
+      name: "owned-without-browser-secret",
+      foreign: undefined,
+      deploymentMissing: true,
+      browserSecretPresent: false,
+    },
     { name: "owned", foreign: undefined, deploymentMissing: true },
     { name: "owned-deployment", foreign: undefined, deploymentMissing: false },
   ];
-  for (const { name, foreign, deploymentMissing } of candidates) {
+  for (const { name, foreign, deploymentMissing, browserSecretPresent = true } of candidates) {
     await t.test(name, async (subtest) => {
       const fixture = await ownershipLifecycleFixture(subtest, name);
       assert.deepEqual(await fixture.prepare(), readyRevision);
+      if (browserSecretPresent) {
+        fixture.retainBrowserCredential();
+      }
       const orderedDeletes = [
         ...(deploymentMissing ? [] : [deploymentPath]),
         servicePath,
         configMapPath,
+        ...(browserSecretPresent ? [browserSecretPath] : []),
         harnessSecretPath,
       ];
       const expectedDeletes = orderedDeletes

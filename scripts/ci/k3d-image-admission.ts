@@ -173,10 +173,11 @@ export async function prepareDevUpImage(
 
 // Native selection belongs to the importer: the required child may be present
 // only beneath its pinned index in the engine's local content store.
-async function selectNativeSourceImage(
+export async function selectNativeSourceImage(
   image: string,
   selection: NativeImageSelection,
   envName: string,
+  mode: "cache-only" | "pull-if-missing",
 ) {
   const repository = (reference: string) => {
     const name = reference.split("@", 1)[0] ?? "";
@@ -312,6 +313,11 @@ async function selectNativeSourceImage(
       return held;
     }
   }
+  if (mode !== "pull-if-missing") {
+    throw new Error(
+      `${envName} is missing from the ${selection.platform} cache. Stage ${image} or its pinned index ${selection.cacheIndex} on this engine.`,
+    );
+  }
   await pullImage(image, { execFile, docker });
   const pulled = await usable(image);
   if (!pulled) {
@@ -434,7 +440,7 @@ export function createK3dImageAdmission(
     }
 
     const { acquisitionReference, hostImageId } = nativeSelection
-      ? await selectNativeSourceImage(image, nativeSelection, envName)
+      ? await selectNativeSourceImage(image, nativeSelection, envName, "pull-if-missing")
       : {
           acquisitionReference: image,
           hostImageId: await ensureDockerSourceImage(state, image, envName),

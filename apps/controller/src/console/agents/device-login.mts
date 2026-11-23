@@ -66,7 +66,7 @@ function readLogin(
 }
 
 // A start needs a selected Credential Gateway that lists one refresh source type with a Codex
-// device login, and a selected Credential Refresh Driver (packages/occ/src/index.ts). The
+// device login, and a selected Credential Refresh Driver (packages/occ/src/device-authorization-flow.ts). The
 // Installation's capabilities list the Gateway's source types only while one is selected, so a
 // list without that type means every start is refused with 501 (finding 2991). They do not say
 // whether a Refresh Driver is selected: true can still be refused, and that 501 names why.

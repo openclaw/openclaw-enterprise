@@ -34,7 +34,7 @@ import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
 } from "../helpers/request-admission-expectations.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type DriverSelection = {
   id: string;

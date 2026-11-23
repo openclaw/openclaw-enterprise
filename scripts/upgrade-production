@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import shlex
 import stat
 import subprocess
@@ -27,7 +28,10 @@ REQUIRED = (
     "installationDirectory",
     "sourceRevision",
 )
-OPTIONAL = ("occ", "images")
+OPTIONAL = ("occ", "images", "imagePublication")
+PUBLICATION_IMAGES = ("controller", "runtime")
+JSON_INPUT_LIMIT = 64 * 1024
+OTHER_WRITE = stat.S_IWGRP | stat.S_IWOTH
 IMAGE_FLAGS = {
     "controller": "--controller-image",
     "broker": "--broker-image",
@@ -65,27 +69,73 @@ def unique_object(pairs):
     return result
 
 
-def profile_input(parser, filename):
+def read_bounded_json(parser, filename, *, directory_fd=None, publication=False):
+    label = "imagePublication" if publication else "profile"
+    owners = (os.geteuid(), 0) if publication else (os.geteuid(),)
+    forbidden_mode = OTHER_WRITE if publication else 0o077
+    file_policy = (
+        "a regular file owned by you or root and protected from other writers"
+        if publication else "an owner-only regular file"
+    ) + " without a symbolic link"
     try:
         fd = os.open(
-            filename, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+            filename, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
         )
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
             if (
                 not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or info.st_mode & 0o077
+                or info.st_uid not in owners
+                or info.st_mode & forbidden_mode
             ):
-                parser.error(
-                    "profile must be an owner-only regular file, not a symbolic link"
-                )
-            if info.st_size > 65536:
-                parser.error("profile must be at most 64 KiB")
-            value = json.loads(stream.read(65537), object_pairs_hook=unique_object)
-    except (OSError, UnicodeError, ValueError):
-        parser.error("cannot read private profile JSON; use an owner-only regular file")
+                parser.error(f"{label} must be {file_policy}")
+            content = stream.read(JSON_INPUT_LIMIT + 1)
+        if len(content) > JSON_INPUT_LIMIT:
+            parser.error(f"{label} must be at most 64 KiB")
+        return json.loads(content, object_pairs_hook=unique_object)
+    except OSError:
+        parser.error(f"cannot read {label}; use {file_policy}")
+    except (ValueError, RecursionError):
+        parser.error(f"cannot read {label}; use valid JSON without duplicate fields")
 
+
+def profile_input(parser, filename, *, select_publication):
+    directory_fd = None
+    if select_publication:
+        directory, name = os.path.split(filename)
+        try:
+            directory_fd = os.open(
+                directory or ".", os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_PATH", os.O_RDONLY)
+            )
+        except OSError:
+            # A legacy profile can be readable without permission to open its directory.
+            pass
+        else:
+            filename = name
+    try:
+        profile = read_bounded_json(parser, filename, directory_fd=directory_fd)
+        validate_profile(parser, profile)
+        if select_publication and "imagePublication" in profile:
+            info = os.fstat(directory_fd) if directory_fd is not None else None
+            if info is None or info.st_uid not in (os.geteuid(), 0) or info.st_mode & OTHER_WRITE:
+                parser.error(
+                    "imagePublication requires a profile directory owned by you or root "
+                    "and protected from other writers"
+                )
+            receipt = read_bounded_json(
+                parser, profile["imagePublication"], directory_fd=directory_fd, publication=True
+            )
+            profile.setdefault("images", {}).update(
+                published_image_pair(parser, receipt, profile["sourceRevision"])
+            )
+        return profile
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def validate_profile(parser, value):
     if not isinstance(value, dict) or set(value) - set(REQUIRED) - set(OPTIONAL):
         parser.error(
             "unsupported profile fields; store credential file references outside the profile"
@@ -112,7 +162,73 @@ def profile_input(parser, filename):
         for image in images.values()
     ):
         parser.error("profile images must be nonempty strings")
-    return value
+    if "imagePublication" in value:
+        publication = value["imagePublication"]
+        if (
+            not isinstance(publication, str)
+            or not publication.strip()
+            or not publication.isprintable()
+            or publication in (".", "..")
+            or "/" in publication
+            or "\\" in publication
+        ):
+            parser.error("imagePublication must be a plain filename in the profile directory")
+        if any(name in images for name in PUBLICATION_IMAGES):
+            parser.error("imagePublication cannot be combined with explicit controller or runtime images")
+
+
+def published_image_pair(parser, receipt, source):
+    # Project the two index digests from scripts/ci/container-release/publication.ts.
+    if (
+        not isinstance(receipt, list)
+        or len(receipt) != len(PUBLICATION_IMAGES)
+        or not all(isinstance(row, dict) for row in receipt)
+        or tuple(row.get("image") for row in receipt) != PUBLICATION_IMAGES
+    ):
+        parser.error("imagePublication must contain the controller and runtime publication entries")
+    if not re.fullmatch(r"[0-9a-f]{40}", source) or any(
+        row.get("sourceSha") != source or row.get("tag") != f"sha-{source}" for row in receipt
+    ):
+        parser.error("imagePublication must contain a pair with source and tag matching sourceRevision")
+    for field in ("runId", "attempt"):
+        identifier = receipt[0].get(field)
+        if (
+            not isinstance(identifier, str)
+            or not re.fullmatch(r"[1-9][0-9]*", identifier)
+            or receipt[1].get(field) != identifier
+        ):
+            parser.error("imagePublication entries must come from the same publication run and attempt")
+
+    images = {}
+    for row in receipt:
+        role = row["image"]
+        destination = f"ghcr.io/openclaw/openclaw-enterprise-{role}"
+        if row.get("destination") != destination:
+            parser.error(f"imagePublication expected the published {role} package {destination}")
+        digest = row.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            parser.error("imagePublication requires immutable SHA-256 digests")
+        images[role] = f"{destination}@{digest}"
+    return images
+
+
+def original_image_pair(parser, directory, source):
+    # Preview the native owner's recorded selections. The native command checks
+    # the full parameters and evidence again under its lock before resuming.
+    state = runpy.run_path("scripts/upgrade-preflight-state.py")
+    try:
+        root, _ = state["directory"](directory)
+        recorded = state["parameters"](root)
+        arguments = recorded["arguments"]
+        if (
+            state["journal"](root)["parametersSha256"] != state["digest"](recorded)
+            or arguments[8] != source
+            or not all(arguments[6:8])
+        ):
+            raise ValueError
+    except (KeyError, OSError, TypeError, ValueError):
+        parser.error("cannot recover the published image pair from the original upgrade evidence")
+    return dict(zip(PUBLICATION_IMAGES, arguments[6:8]))
 
 
 def report_status(parser, directory, *, allow_missing=False):
@@ -526,7 +642,7 @@ def preview_target(parser, profile, resolve_path):
     return paths, digests, trust
 
 
-def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, validate_candidate):
+def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, operation):
     directory = Path(resolve_path(profile["installationDirectory"]))
     paths.update({
         "baseline Helm values": str(directory / "values.yaml"),
@@ -539,6 +655,11 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, va
     ):
         if flag in options:
             paths[role] = options[flag]
+    check_compatibility = operation in ("plan", "apply") and COMPATIBILITY_RECEIPT in paths
+    if check_compatibility:
+        controller = profile.get("images", {}).get("controller")
+        if controller is None:
+            parser.error("--controller-compatibility-results requires a selected controller image")
     mappings = {}
     for role, filename in paths.items():
         if role in digests:
@@ -547,11 +668,28 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, va
         digests[role] = hashlib.sha256(content).hexdigest()
         if role != COMPATIBILITY_RECEIPT:
             mappings[role] = preview_mapping(parser, role, content)
+        elif check_compatibility:
+            try:
+                evidence = runpy.run_path("scripts/upgrade-evidence.py")
+                evidence["validate_compatibility_preview"](content, controller)
+            except (OSError, AttributeError, TypeError, ValueError, RecursionError):
+                parser.error(
+                    "Supply a passing PostgreSQL compatibility report for the selected controller and retry."
+                )
     before_values = mappings["baseline Helm values"]
+    if operation in ("plan", "apply", "preflight"):
+        namespace = before_values.get("preprovisionedNamespace")
+        # Match the native helper's `// {} | length` check, including scalars.
+        if namespace is not False and namespace not in (None, {}, [], ""):
+            parser.error(
+                "production image upgrades require the chart initialization Job; "
+                "preprovisioned Namespace canaries manage database upgrades separately. "
+                "See docs/reference/drivers/kubernetes-compute/preprovisioned-namespace.md."
+            )
     values = mappings.get("candidate Helm values", before_values)
     before_installation = mappings["baseline Installation"]
     installation = mappings.get("candidate Installation", before_installation)
-    if validate_candidate:
+    if operation not in ("resume", "migration-apply"):
         validate_candidate_inputs(parser, before_values, values, before_installation, installation)
 
     migration = setting(values, "database", "upgradeMigration")
@@ -652,6 +790,10 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, oper
     else:
         print("  Agents: keep current revisions")
     for name in input_names:
+        if name == COMPATIBILITY_RECEIPT and operation in ("plan", "apply"):
+            print("  The controller compatibility receipt matches the selected controller.")
+            print("  The installed controller digest requires live preflight. Qualify rollback separately.")
+            continue
         if name not in ("kubeconfig", KUBECONFIG_SERVER_CA, "baseline Helm values", "baseline Installation"):
             print(f"  {name}: supplied")
     for effect in effects:
@@ -845,7 +987,7 @@ def main():
             "the upgrade requires Helm release Secrets in the selected cluster"
         )
 
-    profile = profile_input(parser, args.profile)
+    profile = profile_input(parser, args.profile, select_publication=args.operation in ("plan", *NEW_RUNS))
     profile_path = Path(args.profile).absolute()
     base = profile_path.parent
 
@@ -861,10 +1003,13 @@ def main():
         options = expert_options(parser, args.operation, extra)
     if args.operation in ("plan", *APPROVED_OPERATIONS):
         check_revision(parser, checkout, profile["sourceRevision"])
+    if "imagePublication" in profile and args.operation in ("resume", "migration-apply"):
+        pair = original_image_pair(parser, args.evidence_dir, profile["sourceRevision"])
+        profile.setdefault("images", {}).update(pair)
     paths, digests, trust = preview_target(parser, profile, path)
     if args.operation in ("plan", "preflight", *APPROVED_OPERATIONS):
         effects = preview_inputs(
-            parser, profile, path, options, paths, digests, validate_candidate=args.operation not in ("resume", "migration-apply"),
+            parser, profile, path, options, paths, digests, operation=args.operation,
         )
     if args.operation in ("plan", *APPROVED_OPERATIONS):
         original_run = args.evidence_dir if args.operation in ("resume", "migration-apply") else None

@@ -4,11 +4,13 @@ import { availableParallelism, cpus } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import type { RequireJournal } from "./cleanup.ts";
 import { sanitizeError } from "./failure-redaction.ts";
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { openShellRequiredEnv } from "./openshell-model-inputs.ts";
+import type { PostgresPreparationFailureReason } from "./prepare-postgres.ts";
 import { aggregateGroup } from "./runner-aggregate.ts";
 import {
   case2PhaseEnv,
@@ -64,6 +66,7 @@ import {
 } from "./runner-preparation.ts";
 import { jobCancelling, killDescendants, runNode, type NodeResult } from "./runner-process.ts";
 import {
+  splitCaseFailure,
   readFileEvidence,
   validateExpectedTests,
   type FileEvidence,
@@ -100,6 +103,7 @@ function emptyFileResult(path: string, issues: RunnerIssue[]) {
     tests,
     issues,
     cleanup: null,
+    [splitCaseFailure]: undefined,
   };
 }
 
@@ -109,6 +113,8 @@ function imageDigests(env: NodeJS.ProcessEnv) {
     runtime: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
     controllerUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
     runtimeUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+    nativeBaselineController: "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+    nativeBaselineRuntime: "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
     repositoryCredentials: "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
     postgres: "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
     node: "OCC_TEST_PRODUCTION_NODE_IMAGE",
@@ -141,6 +147,7 @@ async function runFile(
   { statePath, prepareFile, preparationId }: FilePreparation,
   setup: Setup,
   testName?: unknown,
+  requireJournal?: RequireJournal,
 ) {
   const issues: RunnerIssue[] = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -182,22 +189,21 @@ async function runFile(
   const modelInputs = mergeEnv(inputs, file.env);
   if (prepareFile) {
     try {
-      const result =
-        (await setup(() =>
-          withinLimit(
-            () =>
-              prepareFile({
-                lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
-                file,
-                statePath,
-                modelSelectors: {
-                  OCC_TEST_OPENSHELL_HARNESS: modelInputs.OCC_TEST_OPENSHELL_HARNESS,
-                  OCC_TEST_OPENSHELL_MODEL_BASE_URL: modelInputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
-                },
-              }),
-            prepareLimitMs(),
-          ),
-        )) ?? {};
+      const prepare = () => {
+        requireJournal?.(true);
+        const options = {
+          lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
+          file,
+          statePath,
+          modelSelectors: {
+            OCC_TEST_OPENSHELL_HARNESS: modelInputs.OCC_TEST_OPENSHELL_HARNESS,
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: modelInputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
+          },
+          requireJournal,
+        };
+        return prepareFile(options);
+      };
+      const result = (await setup(() => withinLimit(prepare, prepareLimitMs()))) ?? {};
       const cleanup = optionalReporterField(result, "cleanup") ?? null;
       if (cleanup !== null && !isFileCleanup(cleanup)) {
         throw new Error("prepareFile cleanup must be a function");
@@ -385,7 +391,10 @@ async function runFile(
     const { cleanup } = prepared;
     if (cleanup) {
       try {
-        await setup(() => withinLimit(cleanup, cleanupLimitMs()));
+        await setup(() => {
+          requireJournal?.(true);
+          return withinLimit(cleanup, cleanupLimitMs());
+        });
         cleanupResult = { status: "passed" };
       } catch (error) {
         if (error instanceof StepTimeoutError) {
@@ -547,6 +556,7 @@ async function runFile(
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
     ...(openShellReplacement ? { openShellReplacement } : {}),
+    [splitCaseFailure]: evidence[splitCaseFailure],
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -576,6 +586,7 @@ async function runLane(
   resultsPath: unknown,
   selectedFile: unknown,
   testName: unknown,
+  requireJournal?: RequireJournal,
 ) {
   const source = sourceEvidence(root);
   const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
@@ -639,6 +650,7 @@ async function runLane(
         { statePath, prepareFile, preparationId },
         setup,
         testName,
+        requireJournal,
       );
       // Round both ends, so start + duration is the rounded end and never passes a
       // later file's start.
@@ -661,6 +673,29 @@ async function runLane(
           process.stderr.write(
             `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
           );
+          const failure = result[splitCaseFailure];
+          if (
+            failure &&
+            result.cleanup?.status === "passed" &&
+            result.issues.every(
+              ({ code, status }) => code === "expected-test-not-passed" && status === "failed",
+            )
+          ) {
+            if (failure.kind === "native-first-agent-proof") {
+              process.stderr.write(
+                `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${failure.failureStage}.\n`,
+              );
+              if (failure.modelPhase) {
+                process.stderr.write(
+                  `::notice title=Native first-Agent model-outcome phase::The registered native redeployment case reported a model-outcome failure during its ${failure.modelPhase} proof.\n`,
+                );
+              }
+            } else {
+              process.stderr.write(
+                `::notice title=OpenShell credential replacement failure::The registered credential replacement case reported a failure at stage ${failure.stage}.\n`,
+              );
+            }
+          }
         }
       }
       process.stderr.write(
@@ -789,17 +824,25 @@ async function completePhaseChild() {
   });
   let exitCode = 1;
   let uncertain = false;
-  let error: { code: "phase-failed" } | undefined;
+  let journalMissing = false;
+  const requireJournal: RequireJournal = (present) => {
+    if (!present || journalMissing) {
+      // Remember the loss even if the resource owner subsequently reports another error.
+      journalMissing = true;
+      throw new Error("Expected cleanup journal is missing.");
+    }
+  };
+  let phaseError:
+    | { code: "phase-failed"; reason?: PostgresPreparationFailureReason }
+    | { code: "cleanup-state-missing" }
+    | undefined;
   try {
     // Null has no fields. Other JSON values with no phase leave the default reply.
     if (request === null || request === undefined) {
       throw new TypeError("Missing lifecycle phase request.");
     }
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isRecord(
-      request,
-    )
-      ? request
-      : {};
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName, expectState } =
+      isRecord(request) ? request : {};
     if (phase === "prepare") {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
@@ -821,8 +864,13 @@ async function completePhaseChild() {
       if (!isRecord(owner) || typeof owner.cleanupState !== "function") {
         throw new Error("Invalid lifecycle cleanup owner.");
       }
-      const cleaned: unknown = Reflect.apply(owner.cleanupState, owner, [statePath]);
-      await cleaned;
+      const cleaned: unknown = Reflect.apply(owner.cleanupState, owner, [
+        statePath,
+        { requireJournal: expectState === true ? requireJournal : undefined },
+      ]);
+      if ((await cleaned) === false && expectState === true) {
+        requireJournal(false);
+      }
       exitCode = 0;
     } else if (phase === "run") {
       if (typeof manifestPath !== "string") {
@@ -832,16 +880,40 @@ async function completePhaseChild() {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
       }
-      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
+      exitCode = await runLane(
+        root,
+        manifest,
+        lane,
+        statePath,
+        resultsPath,
+        file,
+        testName,
+        requireJournal,
+      );
       uncertain = abandonedSteps > 0;
     }
-  } catch {
-    // Command owners can embed opaque argv and output in Error.message. Only
-    // this closed category crosses the phase boundary, never exception text.
-    error = { code: "phase-failed" };
+  } catch (error) {
+    // Command owners can embed opaque argv and output in Error.message. Send
+    // only fixed categories and reasons across the phase boundary.
+    phaseError = { code: "phase-failed" };
+    if (
+      isRecord(request) &&
+      request.phase === "prepare" &&
+      error instanceof Error &&
+      "prepareFailureReason" in error
+    ) {
+      const reason = error.prepareFailureReason;
+      if (reason === "docker-subnet-exhausted" || reason === "postgres-connection-refused") {
+        phaseError.reason = reason;
+      }
+    }
     exitCode = 1;
   }
-  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  if (journalMissing) {
+    phaseError = { code: "cleanup-state-missing" };
+    exitCode = 1;
+  }
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error: phaseError });
   await new Promise(() => {});
 }
 

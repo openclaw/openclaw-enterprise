@@ -12,6 +12,7 @@ import {
   record,
   stringList,
   parseJson,
+  type GatewayOptions,
   type RuntimeSandbox,
   type RuntimeInterval,
   type RuntimeKill,
@@ -58,6 +59,9 @@ export function registerWorkspacePollCases() {
     const kills: RuntimeKill[] = [];
     const lines: Record<string, unknown>[] = [];
     let openClaw = pluginList("disabled", 1);
+    const gatewayPort = "18789";
+    const gatewayPassword = "workspace-status-fixture";
+    const transports: Parameters<NonNullable<GatewayOptions["gatewayCall"]>>[2][] = [];
     // The Gateway starts before the node pairs: the optional binding file is absent.
     // Its provider owns a private directory outside the model/file-transfer workspace.
     const { config: baseConfig, codex } = codexGatewayConfig();
@@ -71,11 +75,18 @@ export function registerWorkspacePollCases() {
       env: {
         APP_SERVER_URL: "ws://harness.example.test:18790",
         OPENCLAW_REMOTE_WORKSPACE_ROOT: "/sandbox/enterprise",
+        OPENCLAW_GATEWAY_PORT: gatewayPort,
+        OPENCLAW_GATEWAY_PASSWORD: gatewayPassword,
+        OPENCLAW_GATEWAY_URL: "wss://unrelated.example.test",
       },
       workspaceNodeBindingPath: true,
       intervals,
       kills,
-      gatewayCall: (method) => (method === "plugins.list" ? openClaw : undefined),
+      gatewayCall: (method, _signal, transport) => {
+        assert.equal(method, "plugins.list");
+        transports.push(transport);
+        return openClaw;
+      },
       setTimeout: () => ({ unref() {} }),
       console: { error: (line) => lines.push(record(parseJson(line))) },
     });
@@ -145,6 +156,16 @@ export function registerWorkspacePollCases() {
 
     files.set(WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding("enrolled-node"));
     await tick();
+    const first = transports[0];
+    assert.ok(first);
+    assert.equal(first.rpcOptions.port, gatewayPort, "pin the probe to the Gateway process port");
+    assert.equal(first.rpcOptions.url, undefined);
+    assert.ok(first.rpcOptions.password === gatewayPassword, "use the provisioned password");
+    assert.equal(first.extra.clientName, "gateway-client");
+    assert.equal(first.extra.mode, "backend");
+    assert.equal(first.extra.deviceIdentity, null);
+    assert.equal(first.extra.sharedStateMode, "read-only");
+    assert.deepEqual(structuredClone(first.extra.scopes), ["operator.read"]);
     const applied = readConfig(files, configPath);
     const changedKeys = Object.keys({ ...atStart, ...applied }).filter(
       (key) => JSON.stringify(atStart[key]) !== JSON.stringify(applied[key]),
@@ -310,7 +331,7 @@ export function registerWorkspacePollCases() {
     });
   }
 
-  test("a Gateway that refuses its own CLI as unauthorized reports it at once; other refusals keep waiting", async () => {
+  test("a Gateway that refuses its local probe as unauthorized reports it at once; other refusals keep waiting", async () => {
     const intervals: RuntimeInterval[] = [];
     let now = 1_000_000;
     const clock = class extends Date {
@@ -411,11 +432,16 @@ export function registerWorkspacePollCases() {
     const intervals: RuntimeInterval[] = [];
     const kills: RuntimeKill[] = [];
     let openClaw = pluginList("unloaded", 1);
+    const transports: Parameters<NonNullable<GatewayOptions["gatewayCall"]>>[2][] = [];
     const { files, calls, sandbox } = await launchGateway(undefined, [], {
       workspaceNodeId: "enrolled-node",
       intervals,
       kills,
-      gatewayCall: () => openClaw,
+      // An existing Gateway can authenticate its paired client without a managed password.
+      gatewayCall: (_method, _signal, transport) => {
+        transports.push(transport);
+        return openClaw;
+      },
       setTimeout: () => ({ unref() {} }),
     });
     const effective = readConfig(files);
@@ -441,6 +467,14 @@ export function registerWorkspacePollCases() {
     openClaw = pluginList("active", 1);
     await tick();
     assert.equal(workspaceNodeState(sandbox).nodeId, "enrolled-node");
+    assert.equal(transports.length, 2);
+    for (const { rpcOptions, extra } of transports) {
+      assert.equal(rpcOptions.password, undefined);
+      assert.equal(rpcOptions.port, undefined);
+      assert.equal(extra.clientName, undefined);
+      assert.equal(extra.deviceIdentity, undefined);
+      assert.equal(extra.sharedStateMode, "read-only");
+    }
     assert.equal(files.get("/home/node/.openclaw/openclaw.json"), written);
     assert.deepEqual(kills, []);
   });

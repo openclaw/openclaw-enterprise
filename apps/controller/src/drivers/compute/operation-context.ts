@@ -172,14 +172,25 @@ export function isYieldingComputeStop(): boolean {
   return yieldingStops.getStore() === "refused-candidate";
 }
 
+/** Whether this operation is an ordinary stop, whose waits before the Harness is deleted yield. */
+export function isGatewayDrainStop(): boolean {
+  return yieldingStops.getStore() === "gateway-drain";
+}
+
 /**
- * Whether a stop's termination wait for `role`'s Pods should end now because other Work is
- * waiting. Other stops keep their full bounded waits.
+ * Whether a stop's wait should end now because other Work is waiting: the termination wait for
+ * `role`'s Pods, or the wait for a starting Harness (`harness-startup`). An ordinary stop yields
+ * only in the waits before it deletes the Harness. Other stops keep their full bounded waits.
  */
-export async function computeStopShouldYield(role?: "agent" | "gateway"): Promise<boolean> {
+export async function computeStopShouldYield(
+  role?: "agent" | "gateway" | "harness-startup",
+): Promise<boolean> {
   const mode = yieldingStops.getStore();
   if (mode === "gateway-drain") {
-    return role === "gateway" && (await computeWorkWaiting("gateway-drain"));
+    return (
+      (role === "gateway" || role === "harness-startup") &&
+      (await computeWorkWaiting("gateway-drain"))
+    );
   }
   return mode === "refused-candidate" && (await computeWorkWaiting("optional"));
 }

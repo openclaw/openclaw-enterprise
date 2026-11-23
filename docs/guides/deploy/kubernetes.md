@@ -10,6 +10,15 @@ Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
 OpenShell and use the shared first-Agent session, follow
 [Kubernetes setup](kubernetes-setup.md) or the [Amazon EKS guide](eks-openshell-setup.md).
 
+For cloud infrastructure, choose an independent target from the
+[`oce-terraform` reference](https://github.com/freeqaz-openai/oce-terraform).
+The AWS EKS target has a [dedicated OCE handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster).
+The Google Cloud GKE and Azure AKS targets are previews covered by mocked Terraform
+plans; live cluster deployment and OCE installation remain unverified. Each target
+provides `terraform output -json oce_placement` with the node selectors and Gateway
+StorageClass fields for the OCE installation profile. Review that output against
+the selected cluster before using it.
+
 ## Prepare the cluster
 
 Use Kubernetes 1.35 or later, IPv4 connectivity, and a network plugin that
@@ -85,10 +94,11 @@ differ between them. If a ClientTrafficPolicy already targets that Gateway or
 listener, add `path` to it.
 
 Keep the console route's request timeout at 15 seconds or more; Envoy Gateway's
-default is 15 seconds. Configuration and Secret create, update and delete send no
-Kubernetes call later than 12 seconds after the API starts the request, so on a slow
-cluster they fail with `503` instead of saving after the ingress answered `504`. The
-database commit is not bounded by them.
+default is 15 seconds. When you create, update or delete a Configuration or Secret,
+Kubernetes calls for the change share a 12-second limit. The limit starts when the
+API handler starts. OCC can return `503` if the limit expires. Cleanup and the
+database commit can take longer. If the ingress returns `504`, the write may still
+commit. Confirm the outcome before retrying.
 
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:

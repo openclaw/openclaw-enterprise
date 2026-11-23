@@ -86,6 +86,7 @@ import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { renderAgentLogs } from "./logs.mjs";
+import { createNetworkProxyFields } from "./network-proxy.mjs";
 import {
   displayDate,
   shortId,
@@ -243,6 +244,7 @@ interface DraftDetails {
   credentials: Credentials | null;
   channelSecretsNote: string;
   managedMode: { value: Text; action: HTMLButtonElement | null; control: HTMLElement | null };
+  networkProxy: { value: Text; credential: Text; control: HTMLElement };
   setAuthenticationPending(pending: boolean): void;
   setAuthenticationUnsaved(unsaved: boolean): void;
   setDraftEditorState(state: Partial<EditorState>): void;
@@ -451,11 +453,12 @@ function errorPanel(
 function summary(
   values: OpenClawConfigurationDocument,
   details: [string, string | Node | null | undefined][],
+  includeModel = true,
 ) {
   const primary = configuredModel(values);
-  const list = element("dl", { className: "configuration-summary" });
+  const list = element("dl", { className: "configuration-summary agent-settings-summary" });
   for (const [name, value] of [
-    ["Model", typeof primary === "string" ? primary : "Not specified"],
+    ...(includeModel ? [["Model", typeof primary === "string" ? primary : "Not specified"]] : []),
     ...details,
   ]) {
     list.append(element("dt", {}, name), element("dd", {}, value ?? "None"));
@@ -463,13 +466,22 @@ function summary(
   return list;
 }
 
-function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
+function nativeDocument(values: Readonly<Record<string, unknown>>, label: string) {
   return element(
     "details",
     { className: "native-document" },
     element("summary", {}, label),
     element("pre", { tabindex: "0" }, JSON.stringify(values, null, 2)),
   );
+}
+
+function harnessDocument(values: Readonly<Record<string, unknown>>, label: string) {
+  const keys = Object.keys(values);
+  if (!keys.length) {
+    return "None";
+  }
+  const fields = keys.length === 1 ? keys[0] : `${keys.length} top-level keys`;
+  return nativeDocument(values, `${label} (${fields})`);
 }
 
 // Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
@@ -593,6 +605,15 @@ function takeLinkedVersionView(key: string) {
   return linked;
 }
 
+export function matchesAgentIdentity(
+  value: unknown,
+  agentId: string,
+  namespaceId: string | null,
+): boolean {
+  const { id, namespaceId: actualNamespaceId, configurationId } = responseFields(value);
+  return id === agentId && actualNamespaceId === namespaceId && Boolean(configurationId);
+}
+
 export async function renderAgentDetail(
   context: DetailContext,
   {
@@ -611,11 +632,10 @@ export async function renderAgentDetail(
   // a read as write preflight or a write response as confirmation. A metadata-only Agent or
   // revision is still readable; its saved configuration and editing controls remain unavailable.
   function agentForPage(value: unknown): PageAgent {
-    const result = value as AgentRead | null;
-    if (result?.id !== agentId || result.namespaceId !== namespaceId || !result.configurationId) {
+    if (!matchesAgentIdentity(value, agentId, namespaceId)) {
       throw new Error("The response did not identify this Agent. Reload to check its saved state.");
     }
-    return result;
+    return value as AgentRead;
   }
   const readAgent = (source: Pick<DetailContext, "request"> = context) =>
     source.request(path).then(agentForPage);
@@ -880,8 +900,7 @@ export async function renderAgentDetail(
   // The Agent as last read; Stop and finished deployments update it in place.
   let currentAgent = agent;
   let currentRuntimeState = agent.desiredRuntimeState;
-  // Counts the Agent states applied to the page, so a reread can tell whether a newer one
-  // landed while it was in flight (finding 2998).
+  // Counts applied Agent states and foreground serving changes that supersede older reads.
   let agentUpdates = 0;
   // When the last Agent state was applied, on the document's performance clock.
   let agentUpdatedAt = Number.NEGATIVE_INFINITY;
@@ -962,6 +981,8 @@ export async function renderAgentDetail(
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
   let draftEditorNavigationBlock: string | null = null;
+  let networkProxyNavigationBlock: string | null = null;
+  let networkProxySaving = false;
   // Whether a draft editor's write is in flight (its block names the save to wait for).
   let draftEditorSaving = false;
   // Set while a saved draft refreshes in place; tab and version changes wait for it.
@@ -1073,16 +1094,24 @@ export async function renderAgentDetail(
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   // A recorded outcome is the version and a status badge (spec 3.5). The separator stays in the
   // text for screen readers and text matching ("v7 · Failed"); the badge's gap shows it.
-  function setDeploymentOutcome(node: HTMLElement, version: string, label: string, tone?: string) {
-    const text = `${version} · ${label}`;
-    const badge = node.querySelector<HTMLElement>(":scope > .badge");
-    if (node.textContent === text && badge && (badge.dataset.tone ?? "") === (tone ?? "")) {
+  function setDeploymentOutcome(revision: Revision, label: string, tone?: string) {
+    const href = context.pageUrl(target(revision.id, "deployment"));
+    const link = latestDeploymentValue.querySelector(":scope > a");
+    const badge = latestDeploymentValue.querySelector<HTMLElement>(":scope > .badge");
+    if (badge && link?.getAttribute("href") === href) {
+      // Keep the version link mounted so a status update does not take away keyboard focus.
+      if (badge.dataset.tone !== tone) {
+        if (tone) {
+          badge.dataset.tone = tone;
+        } else {
+          delete badge.dataset.tone;
+        }
+      }
+      setText(badge, label);
       return;
     }
-    node.replaceChildren(
-      ...(visibleRevisions[0] && version === `v${visibleRevisions[0].revision}`
-        ? [versionLink(version, visibleRevisions[0].id, "deployment")]
-        : [version]),
+    latestDeploymentValue.replaceChildren(
+      versionLink(`v${revision.revision}`, revision.id, "deployment"),
       element("span", { className: "visually-hidden" }, " · "),
       element("span", { className: "badge", ...(tone ? { "data-tone": tone } : {}) }, label),
     );
@@ -1092,48 +1121,75 @@ export async function renderAgentDetail(
   const liveServingNote = element("p", { className: "stat-help" });
   // A failed deployment that probably left nothing serving (see renderLatestDeployment).
   let mayBeOfflineAfterFailure = false;
-  // The Sandbox Driver's record of the current version's Sandbox, read once per serving state
-  // (finding 2152). Nothing restarts a lost Sandbox, so Live serving says so and names the next
-  // step. A status that cannot be read is unknown, never lost.
+  // Read the Sandbox Driver's record on entry, on a serving change and on admitted refocus.
+  // Nothing restarts a lost Sandbox, so Live serving names the next step when it observes loss.
   let harnessRead: { revisionId: string; status: AgentHarnessStatusRead | null } | null = null;
-  let harnessReads = 0;
   // The current version the read in flight or answered is for, or null when none is wanted.
   let harnessRequested: string | null = null;
+  let harnessAbort: AbortController | undefined;
+  let servingProjectionPending = false;
   // Only a running Agent's dedicated current version has a Sandbox to read. The version's own
   // mode decides once the version list shows it; the Agent's saved mode can differ from it.
   // The note line is reserved from the first paint (console.css), so the answer moves nothing.
   const harnessExpected = () =>
     !deleting &&
+    !servingProjectionPending &&
     currentRuntimeState === "running" &&
     Boolean(currentRevisionId) &&
     (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
       currentAgent.executionMode) === "dedicated";
-  function syncHarnessRead() {
+  function syncHarnessRead(recheck?: ForegroundAgentRecheck) {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
-    if (wanted === harnessRequested) {
+    if (wanted === harnessRequested && (!recheck || wanted === null)) {
       return;
     }
-    // A stop, a new current version or a deletion drops any answer for the old state.
-    const read = ++harnessReads;
+    // Retire an obsolete observation before its response can reach the shared client.
+    harnessAbort?.abort();
     harnessRequested = wanted;
     harnessRead = null;
     if (wanted === null) {
+      harnessAbort = undefined;
       return;
     }
-    void request(`${path}/harness-status`)
-      .then(
-        (status) => status as AgentHarnessStatusRead,
-        () => null,
-      )
-      .then((status) => {
-        if (read !== harnessReads || !context.isCurrent() || deleting) {
-          return;
+    const abort = new AbortController();
+    harnessAbort = abort;
+    const isCurrent = () =>
+      harnessAbort === abort &&
+      wanted === currentRevisionId &&
+      harnessExpected() &&
+      context.isCurrent() &&
+      (recheck?.isCurrent() ?? true);
+    const finish = (status: AgentHarnessStatusRead | null) => {
+      harnessRead = { revisionId: wanted, status };
+      renderLiveServing();
+    };
+    if (recheck) {
+      renderLiveServing();
+    }
+    return request(`${path}/harness-status`, { signal: abort.signal }).then(
+      (answer) => {
+        if (isCurrent()) {
+          const status = answer as AgentHarnessStatusRead | null;
+          // Activation can happen after the Agent read and before OCC looks up the Sandbox.
+          finish(status?.status === "observed" && status.revisionId !== wanted ? null : status);
         }
-        // A read that failed is kept as null: the note then says the status is unknown.
-        harnessRead = { revisionId: wanted, status };
-        renderLiveServing();
-      });
+      },
+      (error: unknown) => {
+        if (isCurrent()) {
+          const { status } = requestFailure(error);
+          if (recheck && (status === 401 || status === 403 || status === 404)) {
+            throw error;
+          }
+          finish(null);
+        }
+      },
+    );
   }
+  function enterDeletionView(options?: { focus?: boolean }) {
+    harnessAbort?.abort();
+    showDeleting(options);
+  }
+
   function renderLiveServing() {
     syncHarnessRead();
     const expected = harnessExpected();
@@ -1348,7 +1404,7 @@ export async function renderAgentDetail(
     context,
     path,
     agent,
-    showDeleting,
+    enterDeletionView,
     (next) => updateCurrentAgent(next, latestRevisionResult, viewedSnapshot),
     callerPermissionsRead.then((permissions) => permissions?.operate),
     // A refusal records how many rereads had started, so an answer read before it, such as a
@@ -1359,9 +1415,13 @@ export async function renderAgentDetail(
     context,
     path,
     agent,
-    showDeleting,
+    enterDeletionView,
     callerPermissionsRead.then((permissions) => permissions?.delete),
     () => permissionsRereads,
+    (afterReads) =>
+      !permissionsReadSettled && permissionsRereads > afterReads
+        ? latestPermissionsRead
+        : rereadPermissions(),
   );
   // Stop and Delete share the Configuration tab’s danger zone (UX spec 3.9). A row
   // hides itself when the caller's permission answer denies it, and the zone hides with no row.
@@ -1504,7 +1564,7 @@ export async function renderAgentDetail(
     if (activeCredentials?.isSaving()) {
       return "This page stays open until the channel Secret bindings save finishes.";
     }
-    return draftEditorNavigationBlock;
+    return networkProxyNavigationBlock ?? draftEditorNavigationBlock;
   }
   function showLeaveBlock() {
     const reason = leaveReason();
@@ -1530,6 +1590,8 @@ export async function renderAgentDetail(
       showLeaveNote(authenticationLeaveAnchor, reason, "end");
     } else if (activeCredentials?.isSaving()) {
       showLeaveNote(activeCredentials.section, reason, "after");
+    } else if (networkProxyNavigationBlock) {
+      showLeaveNote(content, networkProxyNavigationBlock, "start");
     } else {
       showDraftEditorNavigationBlock();
     }
@@ -1546,6 +1608,7 @@ export async function renderAgentDetail(
         refreshingDraft ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
+        (selectedTab === "configuration" && networkProxyNavigationBlock) ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
           draftEditorNavigationBlock))
     );
@@ -1560,6 +1623,7 @@ export async function renderAgentDetail(
         (rereads && refreshingDraft) ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
+        networkProxySaving ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
           draftEditorSaving))
     );
@@ -1726,11 +1790,16 @@ export async function renderAgentDetail(
     },
   );
   headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
+  // Recovery can remember a new denial, as can visiting the draft and coming Back.
+  let updateSnapshotAccess: (() => void) | undefined;
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
     isDeleting: () => deleting,
-    refresh: renderLatestDeployment,
+    refresh: () => {
+      renderLatestDeployment();
+      updateSnapshotAccess?.();
+    },
     versionLink,
   });
   const overviewStatus = element(
@@ -1890,6 +1959,7 @@ export async function renderAgentDetail(
   }
   // A page restored for Back mounts at its old scroll position.
   context.onResume?.(() => {
+    updateSnapshotAccess?.();
     const linked = takeLinkedVersionView(linkedKey());
     if (linked && !deleting) {
       openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
@@ -2382,7 +2452,7 @@ export async function renderAgentDetail(
       return;
     }
     if (freshAgent.status === "deleting") {
-      showDeleting();
+      enterDeletionView();
       return;
     }
     agentUpdates += 1;
@@ -2401,6 +2471,7 @@ export async function renderAgentDetail(
     currentAgent = freshAgent;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
+      servingProjectionPending = false;
       renderLiveServing();
       retainedTabs.clear();
       if (mountedTab) {
@@ -2511,9 +2582,29 @@ export async function renderAgentDetail(
   // 3000). The recheck's answer now updates the page as a poll's does, under the same guards,
   // without a second read.
   context.onRechecked?.((recheck) => {
-    if (context.isCurrent() && !deleting) {
-      void rereadServing(recheck).catch(() => {});
+    if (!recheck.isCurrent() || deleting || agentUpdatedAt > recheck.readStartedAt) {
+      return;
     }
+    const fresh = agentForPage(recheck.agent);
+    const servingUnchanged =
+      fresh.status === "active" &&
+      fresh.activeRevisionId === currentRevisionId &&
+      fresh.desiredRuntimeState === currentRuntimeState;
+    if (!servingUnchanged || servingProjectionPending) {
+      // Admission has newer lifecycle evidence than the rendered summary. Retire the old
+      // Sandbox now, even if the extra version list needed to update that summary fails.
+      agentUpdates += 1;
+      servingProjectionPending = !servingUnchanged;
+      if (servingProjectionPending) {
+        renderLiveServing();
+      }
+    }
+    if (servingUnchanged && harnessExpected()) {
+      return syncHarnessRead(recheck);
+    }
+    // The lifecycle projection can need an extra version list. It remains best effort
+    // after admission and can neither hold admission open nor report a Sandbox refusal.
+    void rereadServing(recheck).catch(() => {});
   });
   async function runningVersion() {
     servingReread ??= rereadServing()
@@ -2596,12 +2687,18 @@ export async function renderAgentDetail(
     if (deploymentAttention.dataset.message !== attentionKey) {
       deploymentAttention.dataset.message = attentionKey;
     }
-    if (needsAttention && deploymentAttention.dataset.rendered !== attentionKey) {
-      deploymentAttention.dataset.rendered = attentionKey;
-      deploymentAttention.replaceChildren(
-        element("p", {}, attentionText),
-        versionLink("View deployment", latest.id, "deployment"),
-      );
+    if (needsAttention) {
+      const message = deploymentAttention.firstElementChild;
+      if (message && deploymentAttention.dataset.rendered === latest.id) {
+        // Update the status without removing the link from the keyboard's focus.
+        setText(message, attentionText);
+      } else {
+        deploymentAttention.dataset.rendered = latest.id;
+        deploymentAttention.replaceChildren(
+          element("p", {}, attentionText),
+          versionLink("View deployment", latest.id, "deployment"),
+        );
+      }
     }
     if (!latest) {
       showRecovery(null);
@@ -2712,8 +2809,7 @@ export async function renderAgentDetail(
       setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
       setDeploymentOutcome(
-        latestDeploymentValue,
-        `v${latest.revision}`,
+        latest,
         label ?? (latestDeploymentUnavailable ? "Unavailable" : "Loading…"),
         latestDeploymentStatus ? DEPLOYMENT_OUTCOME_TONES[latestDeploymentStatus] : undefined,
       );
@@ -3126,10 +3222,9 @@ export async function renderAgentDetail(
     applyDraftAccess();
   });
 
+  const draftPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`;
   const snapshotPath =
-    selected === "draft"
-      ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
-      : `${path}/revisions/${encodeURIComponent(selected)}`;
+    selected === "draft" ? draftPath : `${path}/revisions/${encodeURIComponent(selected)}`;
 
   // A version this tab's Deploy created that the newest page of versions leaves out is one the
   // caller may not read: the list returns only readable versions, newest first, and it is newer
@@ -3324,6 +3419,119 @@ export async function renderAgentDetail(
       action: null,
       control: null,
     };
+    let proxyDirty = false;
+    let proxyUnknown = false;
+    const proxyValue = document.createTextNode(agent.networkProxy?.url ?? "None");
+    const proxyCredential = document.createTextNode(
+      agent.networkProxy?.credentialSecretId ?? "None",
+    );
+    const proxyFeedback = element("p", { className: "hint", role: "status" });
+    const proxyPermission = element("p", { className: "hint" });
+    const proxyFields = createNetworkProxyFields({
+      context,
+      namespaceId,
+      id: "agent-network-proxy",
+      ...(agent.networkProxy === undefined ? {} : { initial: agent.networkProxy }),
+      agentName: () => agent.name,
+      onChange: syncProxyEdit,
+    });
+    const proxyReload = button("Reload draft", () => void reloadDraftInPlace(context, {}), {
+      hidden: true,
+    });
+    const proxySave = button("Save Network proxy for next deployment", () => void saveProxy());
+    const proxyCancel = button("Cancel proxy edits", () => {
+      proxyFields.reset(agent.networkProxy);
+      proxyFeedback.textContent = "";
+    });
+    const proxyClear = button("Clear proxy for next deployment", () => {
+      proxyFields.reset(undefined);
+      void saveProxy();
+    });
+    const proxyControl = element(
+      "section",
+      { className: "network-proxy-editor" },
+      element("h3", {}, "Gateway channel proxy"),
+      proxyFields.node,
+      proxyPermission,
+      element(
+        "div",
+        { className: "form-actions" },
+        proxySave,
+        proxyCancel,
+        proxyClear,
+        proxyReload,
+      ),
+      proxyFeedback,
+    );
+    function syncProxyEdit() {
+      const draft = proxyFields.draft();
+      proxyDirty =
+        proxyFields.input.value !== (agent.networkProxy?.url ?? "") ||
+        draft.credentialSecretId !== agent.networkProxy?.credentialSecretId;
+      if (proxyUnknown) {
+        networkProxyNavigationBlock =
+          "Reload the draft before changing or deploying the Network proxy.";
+      } else if (networkProxySaving) {
+        networkProxyNavigationBlock = "Wait for the Network proxy save to finish.";
+      } else if (proxyDirty) {
+        networkProxyNavigationBlock = "Save or cancel Network proxy edits before leaving this tab.";
+      } else {
+        networkProxyNavigationBlock = null;
+      }
+      updateNavigationControls();
+      updateDeployControls();
+    }
+    async function saveProxy() {
+      let selection;
+      try {
+        selection = proxyFields.read();
+      } catch (error) {
+        proxyFields.showValidation(
+          error instanceof Error ? error.message : "The Network proxy selection is invalid.",
+        );
+        return;
+      }
+      networkProxySaving = true;
+      proxyFeedback.textContent = "";
+      syncProxyEdit();
+      try {
+        const saved = agentForPage(
+          await request(path, { method: "PATCH", body: { networkProxy: selection ?? null } }),
+        );
+        if ("configurationReadError" in saved || !sameValue(saved.networkProxy, selection)) {
+          throw new Error("The Agent response did not confirm the Network proxy selection.");
+        }
+        if (context.isCurrent()) {
+          agent = saved;
+          proxyValue.textContent = agent.networkProxy?.url ?? "None";
+          proxyCredential.textContent = agent.networkProxy?.credentialSecretId ?? "None";
+          proxyUnknown = false;
+          proxyFields.reset(agent.networkProxy);
+          proxyFeedback.textContent = "Network proxy saved. Deploy a new version to apply it.";
+          setStatusTone(proxyFeedback, "success");
+          void readDeploySecretsDenied({ fresh: true });
+        }
+      } catch (error) {
+        if (!context.isCurrent()) {
+          return;
+        }
+        const failure = requestFailure(error);
+        proxyUnknown = failure.status === undefined || failure.status >= 500;
+        proxyReload.hidden = !proxyUnknown;
+        if (proxyUnknown) {
+          const reason = failure.status === 503 ? failure.serverMessage : undefined;
+          proxyFeedback.textContent = reason
+            ? `${reason} Reload this draft before continuing because the save outcome could not be confirmed.`
+            : "The Network proxy may have been saved. Reload this draft before continuing.";
+        } else {
+          proxyFeedback.textContent = describeFailure(error, { mutation: true, form: true });
+        }
+        setStatusTone(proxyFeedback, "danger");
+      } finally {
+        networkProxySaving = false;
+        syncProxyEdit();
+      }
+    }
     let authenticationForm: HTMLElement | undefined;
     const retainedAuthentication = context.drafts.get("authentication") as
       AuthenticationDraft | undefined;
@@ -3475,6 +3683,10 @@ export async function renderAgentDetail(
         }
       }
       const configurationIds = new Set(bound.keys());
+      if (agent.networkProxy?.credentialSecretId !== undefined) {
+        const id = agent.networkProxy.credentialSecretId;
+        bound.set(id, { kind: "secret", namespaceId, id });
+      }
       const harness = harnessCredential(agent.harnessAuth, namespaceId);
       if (harness?.kind === "secret") {
         bound.set(harness.id, harness);
@@ -3564,6 +3776,9 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        proxyDirty ||
+        proxyUnknown ||
+        networkProxySaving ||
         callerPermissions?.deploy === false ||
         Boolean(deploySecretsOperateReason(deploySecretsDenied)) ||
         authenticationSaveState !== "idle" ||
@@ -3745,7 +3960,30 @@ export async function renderAgentDetail(
           deployPending ||
           Boolean(deployReloadMessage) ||
           Boolean(draftEditorNavigationBlock) ||
+          proxyDirty ||
+          networkProxySaving ||
           Boolean(credentials?.mutationPending());
+      }
+      const proxyUnavailable =
+        callerPermissions?.update !== true ||
+        deployPending ||
+        networkProxySaving ||
+        proxyUnknown ||
+        Boolean(deployReloadMessage) ||
+        Boolean(credentials?.mutationPending());
+      proxyFields.setDisabled(proxyUnavailable);
+      proxySave.disabled = proxyUnavailable || !proxyDirty;
+      proxyCancel.disabled = networkProxySaving || proxyUnknown || !proxyDirty;
+      proxyClear.hidden = agent.networkProxy === undefined;
+      proxyClear.disabled = proxyUnavailable;
+      proxyReload.disabled = networkProxySaving;
+      if (callerPermissions?.update === true) {
+        proxyPermission.textContent = "";
+      } else if (callerPermissions?.update === false) {
+        proxyPermission.textContent =
+          "Agent update permission is required to change the Network proxy.";
+      } else {
+        proxyPermission.textContent = "Checking Agent update permission…";
       }
       const draftBlocksDeploy = deployIsDisabled();
       const deployUnavailable = draftBlocksDeploy;
@@ -3794,6 +4032,12 @@ export async function renderAgentDetail(
         } else if (harnessGrantChecking) {
           // A read that settles within 250 ms never shows this text (finding 2576).
           setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
+        } else if (proxyUnknown) {
+          deployStatus.textContent = "Reload the Network proxy draft before deploying.";
+        } else if (networkProxySaving) {
+          deployStatus.textContent = "Wait for the Network proxy save before deploying.";
+        } else if (proxyDirty) {
+          deployStatus.textContent = "Save or cancel Network proxy edits before deploying.";
         } else if (authenticationPending || harnessGrantMissing) {
           deployStatus.textContent =
             "Confirm authentication and Secret access in Credentials before deploying.";
@@ -4366,6 +4610,7 @@ export async function renderAgentDetail(
       credentials,
       channelSecretsNote,
       managedMode,
+      networkProxy: { value: proxyValue, credential: proxyCredential, control: proxyControl },
       setAuthenticationPending(pending) {
         authenticationPending = pending;
         updateDeployControls();
@@ -4433,6 +4678,8 @@ export async function renderAgentDetail(
       // Delete took the editors: there is nothing to rebuild, and a settled save no longer holds
       // the page (finding 2125).
       draftEditorNavigationBlock = null;
+      networkProxyNavigationBlock = null;
+      networkProxySaving = false;
       draftEditorSaving = false;
       authenticationSaveState = "idle";
       if (context.isCurrent()) {
@@ -4540,7 +4787,9 @@ export async function renderAgentDetail(
     ++agentNamesGeneration;
     agentDeniedSecretNames = [];
     configurationDeniedSecretNames = [];
-    redrawConfigurationAccessViews();
+    if (!deleting) {
+      redrawConfigurationAccessViews();
+    }
     secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
@@ -4561,6 +4810,12 @@ export async function renderAgentDetail(
       if (context.isCurrent() && (foreground?.() ?? true) && reread > appliedReread) {
         appliedReread = reread;
         callerPermissions = permissions;
+        // A deleting Agent shows only the deletion row. If the page opened in that state,
+        // the editor, deployment controls and native admin view were never initialized.
+        if (deleting) {
+          deletion.applyDelete(permissions?.delete, reread);
+          return callerPermissions;
+        }
         if (
           permissions &&
           permissions !== unconfirmedPermissions &&
@@ -4572,7 +4827,7 @@ export async function renderAgentDetail(
           reread === permissionsRereads
             ? Promise.resolve(agentSaveDenial(permissions, agent))
             : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
-        if (latestDeploymentStatus === "failed" && !deleting) {
+        if (latestDeploymentStatus === "failed") {
           renderLatestDeployment();
         }
         applyDraftAccess();
@@ -4631,6 +4886,8 @@ export async function renderAgentDetail(
     details = next;
     // The rebuilt editors start clean; nothing is saving any more.
     draftEditorNavigationBlock = null;
+    networkProxyNavigationBlock = null;
+    networkProxySaving = false;
     draftEditorSaving = false;
     authenticationSaveState = "idle";
     // Tabs built from the previous draft state would drive its replaced controls.
@@ -4639,11 +4896,12 @@ export async function renderAgentDetail(
       mountedTab.reusable = false;
     }
     savedNotice = saved;
-    // A save lands well after its click, and the rebuilt tab is usually shorter than the editor
-    // it replaces. When the cards below the version layout are in view, scroll by the layout's
-    // change, so they keep their place and the summary takes the editor's (finding 1482).
-    const bottomBefore = versionLayout.getBoundingClientRect().bottom;
-    const anchorBelow = bottomBefore < globalThis.innerHeight;
+    // When a save collapses the editor, keep the cards below it in place if visible.
+    // If they were farther down the page, keep them below the viewport (finding 1482).
+    const anchorBottom = Math.min(
+      versionLayout.getBoundingClientRect().bottom,
+      globalThis.innerHeight,
+    );
     try {
       await renderTab();
     } finally {
@@ -4654,9 +4912,9 @@ export async function renderAgentDetail(
     }
     // The permission reread can land after the rebuilt tab was drawn.
     redrawConfigurationAccessViews();
-    const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
-    if (anchorBelow && shrunk < 0) {
-      globalThis.scrollBy({ top: shrunk, behavior: "instant" });
+    const scrollDelta = versionLayout.getBoundingClientRect().bottom - anchorBottom;
+    if (scrollDelta < 0) {
+      globalThis.scrollBy({ top: scrollDelta, behavior: "instant" });
     }
     // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
     // Cancel that the rebuilt editor hides falls back to the tab (finding 2386).
@@ -5889,13 +6147,41 @@ export async function renderAgentDetail(
       if (!draft) {
         details.push(
           ["Harness", `${snapshot.harness.id} · ${snapshot.harness.version}`],
-          ["Requested Harness overrides", JSON.stringify(snapshot.harness.overrides)],
-          ["Resolved Harness settings", JSON.stringify(snapshot.harness.configuration)],
+          [
+            "Requested Harness overrides",
+            harnessDocument(snapshot.harness.overrides, "View overrides"),
+          ],
+          [
+            "Resolved Harness settings",
+            harnessDocument(snapshot.harness.configuration, "View settings"),
+          ],
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }
       let currentConfigurationEntry: HTMLButtonElement | null = null;
+      let snapshotHeading: HTMLElement | null = null;
       if (!draft) {
+        const draftLinks = element(
+          "div",
+          { className: "agent-toolbar-actions" },
+          versionLink("Draft credentials", "draft", "credentials"),
+          versionLink("Draft repositories", "draft", "repositories"),
+        );
+        // A URL without a revision can show a different active version on Back.
+        for (const link of draftLinks.querySelectorAll("a")) {
+          link.dataset.returnFocusHref = `${link.href}#${selected}`;
+        }
+        const canReadDraft = () =>
+          callerPermissions?.configurationRead === true &&
+          !agent.configurationReadError &&
+          !context.deniedReads?.has(draftPath);
+        draftLinks.hidden = !canReadDraft();
+        snapshotHeading = element(
+          "div",
+          { className: "agent-version-heading" },
+          element("h2", {}, "Configuration snapshot"),
+          draftLinks,
+        );
         // A caller who may not edit the Configuration opens the draft to read it; the entry does
         // not offer an editor it has none of (finding 2436).
         const entryLabel = () =>
@@ -5911,18 +6197,24 @@ export async function renderAgentDetail(
           };
           context.navigate(target("draft", "configuration"));
         });
-        followConfigurationAccess(() => {
+        updateSnapshotAccess = () => {
           if (context.isCurrent() && entry.isConnected) {
             entry.textContent = entryLabel();
+            const hideLinks = !canReadDraft();
+            if (hideLinks && draftLinks.contains(document.activeElement)) {
+              tabControls.get("configuration")?.focus();
+            }
+            draftLinks.hidden = hideLinks;
           }
-        });
+        };
+        followConfigurationAccess(updateSnapshotAccess);
         currentConfigurationEntry = entry;
       }
       content.append(
         element(
           "section",
           { className: "agent-card" },
-          element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
+          snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
           repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
@@ -5939,6 +6231,23 @@ export async function renderAgentDetail(
             ? (data.managedMode.control ??
                 element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
             : null,
+          summary(
+            values,
+            [
+              [
+                "Network proxy URL (Gateway channels)",
+                draft ? data.networkProxy.value : (snapshot.networkProxy?.url ?? "None"),
+              ],
+              [
+                "Proxy credential Secret",
+                draft
+                  ? data.networkProxy.credential
+                  : (snapshot.networkProxy?.credentialSecretId ?? "None"),
+              ],
+            ],
+            false,
+          ),
+          draft ? data.networkProxy.control : null,
         ),
       );
     }
@@ -6634,6 +6943,7 @@ export async function renderAgentDetail(
           // A conflict keeps the same editor. Rebuilding it detaches a reader's focused
           // textarea and deactivates its selection before recovery can check focus.
           if (reloadRequired && body.contains(editor)) {
+            reload.id = "configuration-conflict-reload";
             cancel.after(reload);
           } else {
             render();

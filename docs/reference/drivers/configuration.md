@@ -111,4 +111,4 @@ the `AgentRevision`. Later storage updates or deletion cannot change that saved 
 
 - [Configuration resource](../configuration.md), [settings](../settings.md), and [deployment](../../guides/deploy.md)
 - [Configuration execution flow](../../flows/configuration-driver.md)
-- [OCC resource operations](../../../packages/occ/src/index.ts)
+- [OCC resource operations](../../../packages/occ/src/configuration-operations.ts)

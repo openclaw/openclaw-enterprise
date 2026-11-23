@@ -41,7 +41,7 @@ Qualify your actual production configuration before use.
 
 Prepare the [guarded OIDC profile](oidc-sign-in.md#requirements): one serving
 controller, PostgreSQL State, native IAM, and one canonical HTTPS Console origin.
-OIDC supports native Agent access. Rolling or mixed-version serving is unsupported.
+OIDC supports [native Agent access](native-admin.md). Rolling or mixed-version serving is unsupported.
 Verify access to a password recovery administrator before making changes. Configure
 [trusted proxy settings](../../reference/settings/production.md#external-sign-in-and-trusted-proxies) when
 the API otherwise sees a shared proxy address, so sign-in admission limits use the

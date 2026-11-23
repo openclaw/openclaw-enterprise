@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-18
-last_updated_session: 01a13641-ad1f-7e93-a453-f1fd8c3ad711
+updated: "2026-11-20"
+last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
 ---
 
 # Agent Plugin Approvals Flow
@@ -21,7 +21,7 @@ dispatching an Ask tool to the Harness. Name lookup is described in the
 - Assumptions: the actor has Agent create or exact Agent update permission, and
   the selected PluginDriver supports approvers.
 - Source: `apps/controller/src/console/agents/slack-approvers.mts:createSlackApproverField`,
-  `packages/occ/src/index.ts:OpenClawController.updateAgent`, and
+  `packages/occ/src/agent-drafts.ts:updateAgent`, and
   `apps/controller/src/drivers/plugin/runtime-translator.ts:pluginApprovalOverlay`.
 
 ## Flow
@@ -52,7 +52,7 @@ graph TD
 
 ### 1. Save and freeze approver policy
 
-`packages/occ/src/index.ts:OpenClawController.updateAgent`
+`packages/occ/src/agent-drafts.ts:updateAgent`
 
 Agent `pluginApprovers` supplies the default. A plugin's `approvers` replaces
 the default; a tool's `approvers` replaces the plugin list. Omission inherits
@@ -156,6 +156,8 @@ credentialed MCP request policy.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-18 05:23: Document managed MCP human approval and its direct-script boundary. (01a13641-ad1f-7e93-a453-f1fd8c3ad711 - c8c1fb2d1)
 

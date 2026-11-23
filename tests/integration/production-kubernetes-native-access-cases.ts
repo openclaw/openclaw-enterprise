@@ -1025,37 +1025,40 @@ export async function checkInitializationHookNames(t: TestContext): Promise<void
 }
 
 export async function checkRetiredBootstrapOutputs(): Promise<void> {
-  const credentials = { "bootstrap.credentials.secretName": "occ-bootstrap-credentials" };
-  const password = { "bootstrap.password.claimName": "bootstrap-password" };
+  const claimName = "bootstrap-password";
+  const credentials = { "bootstrap.credentials.secretName": "bootstrap-install-input" };
+  const noCredentials = { "bootstrap.credentials.secretName": "" };
+  const password = { "bootstrap.password.claimName": claimName };
   const serviceKey = { "bootstrap.serviceKey.fileName": "initial-admin-service-key.json" };
+  const retired = { ...password, ...serviceKey };
 
-  // Supply a valid Secret so only the retired setting can cause each refusal.
-  await assert.rejects(render({ ...credentials, ...password }), {
-    stderr: /bootstrap\.password is removed\. Use bootstrap\.credentials\.secretName/,
-  });
-  await assert.rejects(render({ ...credentials, ...serviceKey }), {
-    stderr: /bootstrap\.serviceKey is removed\. Use bootstrap\.credentials\.secretName/,
+  // Report every obsolete input in one pass, even with valid credentials or an empty key.
+  for (const setting of [password, { "bootstrap.serviceKey": "" }, retired]) {
+    await assert.rejects(render({ ...credentials, ...setting }), {
+      stderr:
+        /Remove bootstrap\.password and bootstrap\.serviceKey.*bootstrap\.credentials\.secretName/,
+    });
+  }
+  await assert.rejects(render(noCredentials), {
+    stderr: /bootstrap\.credentials\.secretName must reference a precreated Secret/,
   });
 
-  // A legacy release retains both settings and has no credentials Secret configured.
-  const legacy = { "bootstrap.credentials.secretName": "", ...password, ...serviceKey };
-  for (const isUpgrade of [false, true]) {
-    const objects = await renderObjects(isUpgrade ? legacy : credentials, { isUpgrade });
-    const { initialization, api, worker } = controlPlaneWorkloads(objects);
-    assert.ok(initialization && api && worker, "Expected the initializer, API and worker");
-    // The initializer is a hook, not part of Helm's ordinary saved manifest.
-    assert.equal(
-      asRecord(asRecord(initialization.metadata)?.annotations)?.["helm.sh/hook"],
-      "pre-install,pre-upgrade",
-    );
-    for (const object of objects) {
-      const resource = `${isUpgrade ? "upgrade" : "install"} ${object.kind}/${object.metadata.name}`;
-      assert.notEqual(object.kind, "PersistentVolumeClaim", `${resource} creates a PVC`);
-      assert.ok(
-        !JSON.stringify(object).includes('"persistentVolumeClaim":'),
-        `${resource} references a PVC`,
-      );
-    }
+  // Older releases can carry both output settings. Compare all parsed resources,
+  // including hooks, with the same upgrade that has no retired settings.
+  const upgrade = { isUpgrade: true };
+  const cleanUpgrade = await renderObjects(noCredentials, upgrade);
+  const legacyUpgrade = await renderObjects({ ...noCredentials, ...retired }, upgrade);
+  assert.deepEqual(legacyUpgrade, cleanUpgrade, "Retired settings must not affect an upgrade");
+  assert.deepEqual(
+    await renderObjects({ ...credentials, ...retired }, upgrade),
+    legacyUpgrade,
+    "Upgrades must not use a configured bootstrap Secret",
+  );
+
+  // The credential volume belongs to the operator. Neither install nor upgrade may create or mount it.
+  const install = await renderObjects(credentials);
+  for (const objects of [install, legacyUpgrade]) {
+    assert.ok(!JSON.stringify(objects).includes(claimName), "Chart uses the legacy PVC");
   }
 }
 

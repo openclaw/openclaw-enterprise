@@ -1047,3 +1047,303 @@ export async function checkProviderInvalidEvidence(
   await assert.rejects(fixture.prepare(), /Runtime failure status returned invalid data/);
   assert.deepEqual(fixture.hooks.slice(-2), ["start", "stop"]);
 }
+
+type ProjectedOwnership = {
+  namespaceId: AgentRevision["namespaceId"];
+  agentId: AgentRevision["agentId"];
+  revisionId: AgentRevision["id"];
+  serviceAccountId: string;
+  servicePrincipalId: string;
+};
+
+export function checkProviderProjectedLabels(
+  ownership: ProjectedOwnership,
+  workload: unknown,
+  requirements: unknown,
+) {
+  const launch = resourceRecord(requirements, "Harness launch");
+  assert.equal(launch.loginMode, "api_key");
+  const requirementLabels = resourceLabels(launch.labels, "Harness labels");
+  const deployment = resourceRecord(workload, "workload");
+  const workloadLabels = resourceLabels(
+    resourceRecord(deployment.metadata, "workload metadata").labels,
+    "workload labels",
+  );
+  const template = resourceRecord(
+    resourceRecord(deployment.spec, "workload spec").template,
+    "Pod template",
+  );
+  const templateLabels = resourceLabels(
+    resourceRecord(template.metadata, "Pod template metadata").labels,
+    "Pod template labels",
+  );
+  // Backend requirements must carry readable identities unchanged into Pod labels and selectors.
+  for (const [key, value] of Object.entries({
+    "openclaw.dev/namespace": ownership.namespaceId,
+    "openclaw.dev/agent": ownership.agentId,
+    "openclaw.dev/revision": ownership.revisionId,
+    "openclaw.dev/service-account": ownership.serviceAccountId,
+    "openclaw.dev/service-principal": ownership.servicePrincipalId,
+  })) {
+    assert.equal(workloadLabels[key], value);
+    assert.equal(templateLabels[key], value);
+    assert.equal(requirementLabels[key], value);
+  }
+}
+
+// The pinned OpenShell gateway's allowed_pod_labels check, ported from NVIDIA/OpenShell
+// bdb956f2cd65a635f1294fccf1d138d263bf650f crates/openshell-driver-kubernetes/src/config.rs
+// (pod_metadata_key_allowed): an entry is an exact key or `<domain>/*`, and the openshell.ai
+// and agents.x-k8s.io domains (and their subdomains) are never admitted.
+function openShellPodLabelAllowed(allowlist: readonly string[], key: string) {
+  const domain = key.includes("/") ? key.slice(0, key.indexOf("/")) : undefined;
+  if (
+    domain !== undefined &&
+    ["openshell.ai", "agents.x-k8s.io"].some(
+      (reserved) => domain === reserved || domain.endsWith(`.${reserved}`),
+    )
+  ) {
+    return false;
+  }
+  return allowlist.some((entry) =>
+    entry.endsWith("/*") ? domain === entry.slice(0, -2) : entry === key,
+  );
+}
+
+export function checkOpenShellHarnessLabelAdmission(
+  requirements: unknown,
+  allowlist: readonly string[],
+) {
+  const labels = resourceLabels(
+    resourceRecord(requirements, "Harness requirements").labels,
+    "Harness labels",
+  );
+  // The OpenShell Sandbox Driver forwards these labels as CreateSandbox template.labels. A key
+  // the gateway does not admit fails every create, as app.kubernetes.io/managed-by once did.
+  const refused = Object.keys(labels).filter((key) => !openShellPodLabelAllowed(allowlist, key));
+  assert.deepEqual(refused, []);
+  assert.ok(Object.keys(labels).includes("app.kubernetes.io/managed-by"));
+}
+
+type ProviderReadinessFixture = {
+  readonly labels: unknown;
+  pod(name: string, ready?: string): unknown;
+  setObservation(value: unknown): void;
+  ready(): Promise<boolean>;
+  activate(): Promise<void>;
+};
+type ProviderReadinessSource = Omit<ProviderReadinessFixture, "activate"> & {
+  driver: Pick<ReturnType<typeof providerReadinessFixture>["driver"], "activateRevision">;
+  revision: AgentRevision;
+  namespace: string;
+};
+
+function providerObservationFixture(factory: unknown): ProviderReadinessFixture {
+  assert.strictEqual(factory, providerReadinessFixture);
+  const fixture: ProviderReadinessSource = factory();
+  return {
+    labels: fixture.labels,
+    pod: fixture.pod,
+    setObservation: fixture.setObservation,
+    ready: fixture.ready,
+    activate: () => {
+      const auth = fixture.revision.harnessAuth;
+      assert.ok(auth.method === "api_key" && auth.source.kind === "secret");
+      const expected: ResolvedHarnessAuth = {
+        ...auth,
+        backendRef: {
+          namespaceName: fixture.namespace,
+          name: "occ-model-key",
+          key: "value",
+          uid: "model-secret-uid",
+        },
+      };
+      const envelope: unknown = authContext(fixture.revision);
+      const resolved = resourceRecord(envelope, "resolved auth context").harnessAuth;
+      assertResolvedAuth(resolved, expected);
+      return fixture.driver.activateRevision(fixture.revision, {
+        harnessAuth: resolved,
+        secretEnvironment: [],
+      });
+    },
+  };
+}
+
+type MutableProviderPod = {
+  apiVersion?: string;
+  kind?: string;
+  metadata: {
+    name: string;
+    namespace: string;
+    labels?: Record<string, string>;
+    deletionTimestamp?: Date | string;
+  };
+  status?: { conditions?: { type: string; status: string }[] };
+};
+
+function assertReadinessPod(value: unknown): asserts value is MutableProviderPod {
+  const pod = resourceRecord(value, "provider Pod");
+  assert.ok(pod.apiVersion === undefined || typeof pod.apiVersion === "string");
+  assert.ok(pod.kind === undefined || typeof pod.kind === "string");
+  const metadata = resourceRecord(pod.metadata, "provider Pod metadata");
+  assert.ok(typeof metadata.name === "string" && typeof metadata.namespace === "string");
+  if (metadata.labels !== undefined) {
+    resourceLabels(metadata.labels, "provider Pod labels");
+  }
+  const timestamp = metadata.deletionTimestamp;
+  assert.ok(timestamp === undefined || timestamp instanceof Date || typeof timestamp === "string");
+  if (pod.status !== undefined) {
+    const status = resourceRecord(pod.status, "provider Pod status");
+    if (status.conditions !== undefined) {
+      for (const condition of resourceRecords(status.conditions, "provider Pod conditions")) {
+        assert.ok(typeof condition.type === "string" && typeof condition.status === "string");
+      }
+    }
+  }
+}
+
+function readinessPod(
+  fixture: ProviderReadinessFixture,
+  name: string,
+  ready?: string,
+): MutableProviderPod {
+  const pod = fixture.pod(name, ready);
+  assertReadinessPod(pod);
+  return pod;
+}
+
+export async function checkExactProviderHarnessReadiness(t: TestContext, factory: unknown) {
+  const fixture = providerObservationFixture(factory);
+  const ready = readinessPod(fixture, "harness-ready");
+  const unready = readinessPod(fixture, "harness-starting", "False");
+  const terminating = readinessPod(fixture, "harness-terminating");
+  terminating.metadata.deletionTimestamp = new Date("2026-08-25T00:00:00Z");
+  const cases: [string, MutableProviderPod[], boolean][] = [
+    ["no Pods", [], false],
+    ["one Ready Pod", [ready], true],
+    ["one unready Pod", [unready], false],
+    ["one unknown Pod", [readinessPod(fixture, "harness-unknown", "Unknown")], false],
+    ["two Ready Pods", [ready, readinessPod(fixture, "harness-other")], false],
+    ["Ready then unready", [ready, unready], false],
+    ["unready then Ready", [unready, ready], false],
+    ["two unready Pods", [unready, readinessPod(fixture, "harness-other", "False")], false],
+    ["repeated Pod entry", [ready, ready], false],
+    ["only terminating", [terminating], false],
+    ["Ready plus terminating", [ready, terminating], true],
+    ["unready plus terminating", [unready, terminating], false],
+    ["all terminating", [terminating, terminating], false],
+  ];
+  for (const missing of ["status", "conditions"]) {
+    const waiting = readinessPod(fixture, `harness-no-${missing}`);
+    if (missing === "status") {
+      delete waiting.status;
+    } else {
+      delete resourceRecord(waiting.status, "provider Pod status").conditions;
+    }
+    cases.push([`missing optional ${missing}`, [waiting], false]);
+  }
+  for (const [field, value] of [
+    ["namespace", "another-namespace"],
+    ["openclaw.dev/agent", "another-agent"],
+    ["openclaw.dev/revision", "another-revision"],
+    ["openclaw.dev/workload-role", "gateway"],
+  ] satisfies [string, string][]) {
+    const unrelated = readinessPod(fixture, "unrelated");
+    if (field === "namespace") {
+      unrelated.metadata.namespace = value;
+    } else {
+      resourceLabels(unrelated.metadata.labels, "provider Pod labels")[field] = value;
+    }
+    cases.push([`wrong ${field}`, [unrelated], false]);
+    cases.push([`Ready plus wrong ${field}`, [ready, unrelated], true]);
+  }
+  const unlabeled = readinessPod(fixture, "unlabeled");
+  delete unlabeled.metadata.labels;
+  cases.push(["no labels", [unlabeled], false]);
+  const noTypeMetadata = readinessPod(fixture, "typed-sdk-pod");
+  delete noTypeMetadata.apiVersion;
+  delete noTypeMetadata.kind;
+  cases.push(["optional Pod type metadata omitted", [noTypeMetadata], true]);
+  const stringTimestamp = structuredClone(terminating);
+  stringTimestamp.metadata.deletionTimestamp = "2026-08-25T00:00:00Z";
+  cases.push(["serialized deletion timestamp", [ready, stringTimestamp], true]);
+  for (const fraction of [".5", ".123456", ".123456789"]) {
+    const fractional = structuredClone(terminating);
+    fractional.metadata.deletionTimestamp = `2026-08-25T00:00:00${fraction}Z`;
+    cases.push([
+      `serialized deletion timestamp with ${fraction} fraction`,
+      [ready, fractional],
+      true,
+    ]);
+  }
+
+  for (const [name, items, expected] of cases) {
+    await t.test(name, async () => {
+      fixture.setObservation({ apiVersion: "v1", kind: "PodList", items });
+      assert.equal(await fixture.ready(), expected);
+    });
+  }
+}
+
+export async function checkProviderAssignedNetworkProfile(factory: unknown) {
+  const fixture = providerObservationFixture(factory);
+  // The provider receives the provider-fenced profile, derived from the ordinary template.
+  assert.equal(
+    resourceLabels(fixture.labels, "fixture Harness labels")["openclaw.dev/network-profile"],
+    "provider-fenced-v1",
+  );
+  fixture.setObservation({ items: [readinessPod(fixture, "approved")] });
+  assert.equal(await fixture.ready(), true);
+
+  // A provider may preserve identity and report Ready while losing the network
+  // classification, or gaining the ordinary one and with it Compute's egress grants.
+  // Reject that candidate before activation can change routing.
+  for (const profile of [undefined, "", "unknown-profile", "broad-egress-v1"]) {
+    const pod = readinessPod(fixture, "unapproved");
+    const labels = resourceLabels(pod.metadata.labels, "provider Pod labels");
+    if (profile === undefined) {
+      delete labels["openclaw.dev/network-profile"];
+    } else {
+      labels["openclaw.dev/network-profile"] = profile;
+    }
+    fixture.setObservation({ items: [pod] });
+    await assert.rejects(fixture.ready(), /invalid or incomplete provider Harness Pod list/);
+    await assert.rejects(fixture.activate(), /invalid or incomplete provider Harness Pod list/);
+  }
+}
+
+export const namespaceProviderRevisionOverrides = {
+  id: "new-revision",
+  agentId: "namespace-agent",
+  sandboxDriverId: "namespace-provider",
+} satisfies Partial<AgentRevision>;
+
+export function checkNamespaceProviderGrants(
+  value: unknown,
+  namespaceName: string,
+  agentId: string,
+) {
+  const grants = resourceRecords(value, "egress rules");
+  const destinationLabels = (
+    rule: Record<string, unknown>,
+    selector: "podSelector" | "namespaceSelector",
+  ) =>
+    resourceLabels(
+      resourceRecord(resourceRecords(rule.to, "egress destinations")[0]?.[selector], selector)
+        .matchLabels,
+      `${selector} matchLabels`,
+    );
+  assert.equal(grants.length, 2);
+  assert.deepEqual(
+    new Set(grants.map((rule) => destinationLabels(rule, "podSelector")["openclaw.dev/revision"])),
+    new Set(["new-revision", "old-revision"]),
+  );
+  for (const rule of grants) {
+    assert.equal(
+      destinationLabels(rule, "namespaceSelector")["kubernetes.io/metadata.name"],
+      namespaceName,
+    );
+    assert.equal(destinationLabels(rule, "podSelector")["openclaw.dev/agent"], agentId);
+    assert.deepEqual(rule.ports, [{ protocol: "TCP", port: 8080 }]);
+  }
+}

@@ -107,7 +107,7 @@ export function candidateDeploymentError(
     };
   }
   // Deployment error messages copy deploymentErrorMessage in
-  // packages/occ/src/state/controller-work.ts; keep them in step.
+  // packages/occ/src/deployment-work-status.ts; keep them in step.
   if (scenario.candidateCredentialRejected) {
     return {
       code: "RUNTIME_AUTHENTICATION_FAILED",

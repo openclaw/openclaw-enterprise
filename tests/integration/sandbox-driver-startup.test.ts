@@ -1,4 +1,5 @@
 import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
+import { verifyStagedHarnessActivation } from "./sandbox-driver-staged-harness-cases.ts";
 import {
   registerDedicatedCodexProviderCase,
   registerInitialWorkspaceCases,
@@ -43,6 +44,11 @@ import {
 } from "./sandbox-driver-startup-orchestration.ts";
 
 registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
+
+test(
+  "OpenShell stages without running the Harness and activates with fresh provider placeholders",
+  verifyStagedHarnessActivation,
+);
 
 registerManagedPluginPolicyCases(credentialGatewayOverProviders);
 

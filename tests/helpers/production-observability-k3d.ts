@@ -9,7 +9,7 @@ import { Check } from "typebox/value";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
-import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
+import { prepareObservabilityNativeRepository } from "./observability-native-repository.ts";
 import { createObservabilityCollector } from "./production-observability-collector.ts";
 import { installProductionHelmControlPlane } from "./production-helm-real.ts";
 import {
@@ -31,6 +31,10 @@ type CommandOptions = {
   timeout?: number;
   signal?: AbortSignal;
 };
+
+const installationProbeTransportCodes = ["ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "ECONNRESET"];
+const installationProbeReceipt =
+  /^installation probe (?:(fetch) (timeout|unknown|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ECONNRESET)|(body) (timeout|invalid-json|unknown) ([1-5][0-9]{2}))\n$/;
 
 type Images = {
   controller: string;
@@ -64,6 +68,8 @@ const nativeRepositoryValues = Type.Object({
   publicCaSecretName: Type.String(),
   upstreamCidrs: Type.Array(Type.String()),
 });
+
+export type NativeRepositoryValues = Static<typeof nativeRepositoryValues>;
 
 type HarnessConfiguration = OpenClawConfigurationDocument & {
   agents: { defaults: OpenClawConfigurationDocument };
@@ -167,7 +173,12 @@ export async function installObservabilityControlPlane(
   };
   const redact = (value: string) =>
     secrets.reduce((text, item) => text.replaceAll(item, "[redacted]"), value);
-  const run = async (command: string, args: string[], options: CommandOptions = {}) => {
+  const run = async (
+    command: string,
+    args: string[],
+    options: CommandOptions = {},
+    reportInstallationFailure = false,
+  ) => {
     const executables: Record<string, string | undefined> = {
       helm: process.env.OCC_HELM_BIN,
       kubectl: process.env.OCC_KUBECTL_BIN,
@@ -186,11 +197,30 @@ export async function installObservabilityControlPlane(
     const diagnostics = readString(stderr, "command stderr");
     // Validation errors can quote the submitted Secret, including escaped PEM
     // or base64 data. Never expose diagnostics from a command with private stdin.
-    assert.equal(
-      code,
-      0,
-      options.input ? `${command} failed with input` : redact(`${command}: ${diagnostics}`),
-    );
+    try {
+      assert.equal(
+        code,
+        0,
+        options.input ? `${command} failed with input` : redact(`${command}: ${diagnostics}`),
+      );
+    } catch (error) {
+      if (reportInstallationFailure && error instanceof Error && typeof stdout === "string") {
+        const receipt = installationProbeReceipt.exec(stdout);
+        // An absent or invalid receipt leaves the failed operation unknown.
+        if (receipt?.[0] === stdout) {
+          const [, fetch, fetchReason, body, bodyReason, status] = receipt;
+          Object.assign(error, {
+            openclawCiDiagnostic: {
+              kind: "observability-installation-probe",
+              phase: fetch ?? body,
+              reason: fetchReason ?? bodyReason,
+              status: body ? Number(status) : undefined,
+            },
+          });
+        }
+      }
+      throw error;
+    }
     return readString(stdout, "command stdout");
   };
   const kubectl = (...args: string[]) => run("kubectl", kubectlArguments(selection, args));
@@ -283,9 +313,9 @@ export async function installObservabilityControlPlane(
       modelProvider: { protocol: "openai-responses", baseUrl: "https://model.stub.invalid/v1" },
     });
   }
-  let repositoryCredentials: Static<typeof nativeRepositoryValues> | undefined;
+  let repositoryCredentials: NativeRepositoryValues | undefined;
   if (nativeRepository) {
-    const prepared: unknown = await prepareObservabilityNativeRepository({
+    const prepared = await prepareObservabilityNativeRepository({
       configuration,
       system,
       release,
@@ -417,7 +447,13 @@ export async function installObservabilityControlPlane(
       throw reason;
     }
   }
-  async function node(pod: string, namespace: string, script: string, input?: unknown) {
+  async function node(
+    pod: string,
+    namespace: string,
+    script: string,
+    input?: unknown,
+    reportInstallationFailure = false,
+  ) {
     return run(
       "kubectl",
       kubectlArguments(selection, [
@@ -433,9 +469,12 @@ export async function installObservabilityControlPlane(
         script,
       ]),
       { input: JSON.stringify(input) },
+      reportInstallationFailure,
     );
   }
   async function request(method: string, path: string, body?: unknown, authenticated = true) {
+    const reportInstallationFailure =
+      method === "GET" && path === "/installation" && body === undefined && !authenticated;
     const result: unknown = JSON.parse(
       await node(
         "operator",
@@ -445,15 +484,33 @@ export async function installObservabilityControlPlane(
       const input=JSON.parse(fs.readFileSync(0,'utf8'));
       const headers=input.body===undefined?{}:{'content-type':'application/json'};
       if(input.serviceKey)headers['x-api-key']=input.serviceKey;
-      const r=await fetch(input.url,{method:input.method,headers,body:input.body===undefined?undefined:JSON.stringify(input.body),signal:AbortSignal.timeout(15000)});
-      console.log(JSON.stringify({status:r.status,requestId:r.headers.get('x-request-id'),body:await r.json()}));
+      const signal=AbortSignal.timeout(15000);
+      let response;
+      try {
+        response=await fetch(input.url,{method:input.method,headers,body:input.body===undefined?undefined:JSON.stringify(input.body),signal});
+        console.log(JSON.stringify({status:response.status,requestId:response.headers.get('x-request-id'),body:await response.json()}));
+      } catch (error) {
+        if (!input.reportInstallationFailure) throw error;
+        const transportCode=error?.cause?.code;
+        const timedOut=signal.aborted&&error instanceof DOMException&&
+          (error.name==='TimeoutError'||error.name==='AbortError');
+        const reason=timedOut?'timeout'
+          :response&&error instanceof SyntaxError?'invalid-json'
+          :!response&&${JSON.stringify(installationProbeTransportCodes)}.includes(transportCode)?transportCode
+          :'unknown';
+        const detail=response?'body '+reason+' '+response.status:'fetch '+reason;
+        process.stdout.write('installation probe '+detail+'\\n');
+        process.exitCode=1;
+      }
     `,
         {
           url: `http://openclaw-enterprise-api.${system}.svc:8080${path}`,
           method,
           body,
           serviceKey: authenticated ? serviceKey : undefined,
+          reportInstallationFailure: reportInstallationFailure || undefined,
         },
+        reportInstallationFailure,
       ),
     );
     for (const value of secrets) {

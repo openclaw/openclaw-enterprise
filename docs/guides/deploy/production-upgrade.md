@@ -8,14 +8,13 @@ and the [OCC CLI](../cli.md#connect-to-your-installation).
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
-1. [Select and prepare the release](#prepare-the-release). Record the live
-   baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
-2. [Preflight the target](#rehearse-before-the-maintenance-window).
-   [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
-3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
-   [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
-4. [Verify the release](#verify-the-release) with a real workload.
-5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
+1. [Prepare the release](#prepare-the-release), live baseline and [required backups](upgrade-checklist.md).
+2. [Preflight](#rehearse-before-the-maintenance-window) and
+   [compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
+3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane)
+   or [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
+4. [Verify](#verify-the-release) with a real workload.
+5. [Recover](#recover-from-a-partial-failure) before retrying.
 
 Use `--controller-image` for API and worker. Repository credentials also require
 `--broker-image`; restarting the broker can interrupt existing Agents.
@@ -37,46 +36,43 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-For retained conversations, send a unique nonsecret marker through the approved
-interface. Privately record its Agent and location.
+Send a unique nonsecret marker per retained chat through the approved interface.
+Privately record its Agent and location.
 
-Prepare:
-
-- images pinned by lowercase `@sha256:` digest, with passing checks and a full
-  reviewed commit; use [published digests](../../release/containers.md#prepare-and-publish)
-  or build them;
-- clean `RELEASE_SOURCE_SHA` checkout; run the helper at its root;
-- matching OCC CLI (`--occ`, `/secure/occ/bin/occ`):
-  [release binary](../cli.md#connect-to-your-installation) or run
-  `go build -trimpath -o bin/occ ./cmd/occ` there;
-- [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
-  database state;
-- protected files: production kubeconfig, Helm values, Installation YAML, OCC
-  service key and optional CA bundle;
+- [Published](../../release/containers.md#prepare-and-publish) or built images with
+  lowercase `@sha256:` digest from the reviewed commit with passing checks.
+- A clean checkout at the full `RELEASE_SOURCE_SHA`. Run from its root.
+- Matching [OCC CLI](../cli.md#connect-to-your-installation) at `--occ`.
+  Build with `go build -trimpath -o bin/occ ./cmd/occ`.
+- [Baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and database state.
+- Protected kubeconfig, Helm values, Installation YAML, OCC service key and optional CA bundle.
 - Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
-  jq, yq, cmp and mktemp. Helm upgrade identity: list Deployments, StatefulSets,
-  Pods, PVCs cluster-wide; in the release namespace create, read, delete
-  preflight Jobs, Secrets, NetworkPolicies; list Jobs; read Pods, logs,
-  Installation Secrets; get, patch, watch Deployments. Rendered cert-manager
-  Certificates require server-side dry-run apply. Preparation checks named `update`
-  for changed mutable Installation Secrets; apply and resume check named `patch`
-  before stopping running workers. Confirmed denials stop commands; inconclusive checks warn.
-  Staged immutable Secrets remain read-only.
-- bundled Collector: `get` on config Secret in the release namespace;
-  [refresh it](../observability.md#refresh-the-collector-configuration-on-upgrade)
-  from the checkout and restart the Collector, including image-only releases.
-  `collector.yaml` or `kubernetes.yaml` differences stop preparation; use
-  `--collector-config-reviewed` only for intentional, reviewed differences.
-- PostgreSQL backups for controller migrations; Agent-volume backups for possible runtime
-  data restoration.
+  jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
+  Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
+  preflight Jobs, Secrets and NetworkPolicies, lists Jobs, reads Pods, logs and
+  Installation Secrets, and gets, patches and watches Deployments. Rendered
+  cert-manager Certificates require server-side dry-run apply.
+  Preparation checks named `update` permission for changed mutable Installation
+  Secrets. Apply and resume check named `patch` permission before stopping a
+  running worker. A confirmed denial stops the command. An inconclusive check
+  warns. Staged immutable Secrets remain read-only.
+- for the bundled Collector, grant `get` on its config Secret in the release namespace.
+  [Refresh that Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
+  from the release checkout and restart the Collector, including for image-only releases.
+  Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  Use `--collector-config-reviewed` only for intentional, reviewed differences.
+- PostgreSQL backups for controller migrations and Agent-volume backups for
+  runtime releases that can require data restoration.
 
-Upgrades ignore legacy `bootstrap.password` and `bootstrap.serviceKey`. Identify
-the PVC by saved legacy release namespace and saved effective
-`bootstrap.password.claimName` or recorded initializer hook. Keep it through
-[verification](#verify-the-release) and until the rollback or old-chart reapplication
-window closes. Keep still-needed initial administrator credentials independently recoverable in
-protected storage outside the claim. Before deletion, confirm no live workloads
-or retained Helm manifests or hooks reference its exact namespace and name. If unclear, keep it.
+Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey`. For fresh
+installs, copy the values and remove both keys. Set `bootstrap.credentials.secretName`
+to a precreated Secret.
+
+Identify the old PVC by release namespace and effective `bootstrap.password.claimName`
+or saved initializer hook. Keep it through [verification](#verify-the-release)
+and the rollback or old-chart reapplication window. Before deletion,
+secure needed credentials outside the claim. Check that no live workload,
+retained Helm manifest or hook references it. If unsure, keep it.
 
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
@@ -256,13 +252,13 @@ acknowledged candidate write.
 
 Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 
-Add `--controller-compatibility-results /secure/occ/controller-results.json` with
-`--controller-image` to require the native PostgreSQL `run` result from
-[controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before shutdown, database-write, configured IAM activation and cleanup must pass for the
-exact image digests; index, manifest and config digests differ. [Recovery retains the receipt](production-upgrade-recovery.md).
-`sourceSha` identifies the test checkout, not image revisions or cleanliness.
-Writers stop; online migration and rollback remain unqualified.
+With `--controller-image`, add `--controller-compatibility-results FILE` to require
+[native PostgreSQL qualification](../../testing/postgresql.md#released-controller-compatibility).
+Before shutdown, writes, configured IAM activation and cleanup must pass for both exact
+image digests (index, manifest and config differ). [Recovery retains the receipt](production-upgrade-recovery.md).
+`sourceSha` identifies only the test commit.
+If warned of incompatible history, qualify another recovery controller before maintenance.
+Writers stop. Online migration and rollback remain unqualified.
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
@@ -272,18 +268,16 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-Output:
-
 ```text
-Upgrade: Preparing the upgrade.
+Upgrade: Preparing the upgrade. [2026-11-20T10:00:00Z]
 ...
-Upgrade: Verifying upgrade completion.
+Upgrade: Verifying upgrade completion. [2026-11-20T10:05:12Z]
 Upgraded controller image; no Agent deployments were requested.
 ```
 
-Phases use stderr; completion uses stdout. Use `--verbose` for native output.
-Otherwise, private evidence retains scale/rollout logs. Reconcile uncertain writes;
-progress does not prove completion.
+Stderr shows phases with UTC timestamps when available. Stdout reports
+completion. `--verbose` shows native output. Private evidence retains
+scale/rollout logs. Reconcile uncertain writes.
 
 Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
 Keep protected values equal to live values. The helper preserves the broker hostname,

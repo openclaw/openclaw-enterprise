@@ -20,21 +20,26 @@ import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/ind
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
+import type { Selection } from "./native-admin-upgrade-audit-cases.ts";
+import {
+  gatewayEndpoint,
+  nativeAdminScenario,
+  writeUpgradeRequest,
+  type PendingResetPhase,
+  type AccessRegistration,
+} from "./native-admin-upgrade-transport-fixture.ts";
+import {
+  registerDelayedDenialAppendCase,
+  registerHttpAuditFailureCase,
+  registerHttpDenialResponseCases,
+} from "./native-admin-upgrade-denial-cases.ts";
 
-type BrowserSelection = Awaited<
-  ReturnType<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>
->;
+export { AdmissionSocket } from "./native-admin-upgrade-denial-cases.ts";
 
-type AdmissionSelection = {
-  readonly agent: Pick<BrowserSelection["agent"], "id" | "namespaceId" | "desiredRuntimeState">;
-  readonly revision: Pick<BrowserSelection["revision"], "id" | "compute" | "configuration">;
-  readonly mode: BrowserSelection["mode"];
-};
-
-type AuthorizationInput = AdmissionSelection & { readonly denied: Error };
+type AuthorizationInput = Selection & { readonly denied: Error };
 
 export interface DenialOverrides {
-  readonly authorize?: (input: AuthorizationInput) => Promise<AdmissionSelection>;
+  readonly authorize?: (input: AuthorizationInput) => Promise<Selection>;
   readonly append?: (event: AuditEventCreationInput) => Promise<void>;
   readonly transport?: () => Promise<string>;
   readonly admissionError?: Error;
@@ -56,17 +61,22 @@ interface GatewayRequest {
   ): boolean;
 }
 
-interface DenialOwner {
+export interface DenialOwner {
+  readonly access: Pick<
+    ReturnType<typeof createNativeAdminAccess>,
+    "interceptHttp" | "httpAdmissionReason"
+  >;
   readonly denied: Error;
   readonly warnings: readonly unknown[];
   readonly upstreams: readonly GatewayRequest[];
   denials(): readonly AuditEventCreationInput[];
+  request(): { method: string; url: string; headers: IncomingHttpHeaders };
   shutdown(): Promise<void>;
   upgrade(): UpgradeSocket;
 }
 
-interface RecoveryFixture {
-  denialOwner(t: TestContext, overrides: DenialOverrides): Promise<DenialOwner>;
+export interface RecoveryFixture {
+  denialOwner(t: TestContext, overrides?: DenialOverrides): Promise<DenialOwner>;
   settleCallbacks(): Promise<void>;
   AdmissionSocket: new () => UpgradeSocket;
 }
@@ -78,11 +88,9 @@ function acknowledgeUpgrade(owner: DenialOwner, socket: UpgradeSocket): void {
   upstream.emit("upgrade", { statusCode: 101, headers: {} }, socket, Buffer.alloc(0));
 }
 
-export function registerUpgradeAdmissionRecoveryCases({
-  denialOwner,
-  settleCallbacks,
-  AdmissionSocket,
-}: RecoveryFixture): void {
+export function registerUpgradeAdmissionRecoveryCases(fixture: RecoveryFixture): void {
+  const { denialOwner, settleCallbacks, AdmissionSocket } = fixture;
+  registerDelayedDenialAppendCase(fixture);
   for (const boundary of ["timeout", "disconnect", "shutdown-wait-expiry"]) {
     test(`native-admin denial ownership consumes a denial after ${boundary}`, async (t) => {
       const admission = Promise.withResolvers<never>();
@@ -164,7 +172,7 @@ export function registerUpgradeAdmissionRecoveryCases({
 
   for (const boundary of ["timeout", "disconnect", "shutdown"]) {
     test(`native-admin denial ownership never opens a gateway after ${boundary}`, async (t) => {
-      const admission = Promise.withResolvers<AdmissionSelection>();
+      const admission = Promise.withResolvers<Selection>();
       let selection: AuthorizationInput | undefined;
       const owner = await denialOwner(t, {
         authorize(input) {
@@ -237,13 +245,11 @@ export function registerUpgradeAdmissionRecoveryCases({
       await owner.shutdown();
     }
   });
+  registerHttpAuditFailureCase(fixture);
 }
 
-export function registerUpgradeLeaseAndResetRecoveryCases({
-  denialOwner,
-  settleCallbacks,
-  AdmissionSocket,
-}: RecoveryFixture): void {
+export function registerUpgradeLeaseAndResetRecoveryCases(fixture: RecoveryFixture): void {
+  const { denialOwner, settleCallbacks, AdmissionSocket } = fixture;
   for (const order of ["denial-first", "deadline-first"]) {
     test(`native-admin denial ownership attempts one audit at the deadline (${order})`, async (t) => {
       const admission = Promise.withResolvers<never>();
@@ -372,6 +378,7 @@ export function registerUpgradeLeaseAndResetRecoveryCases({
       await owner.shutdown();
     }
   });
+  registerHttpDenialResponseCases(fixture);
 }
 
 const installation = {
@@ -684,4 +691,91 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
   assert.ok(details);
   assert.equal(details.reason, "authorization_denied");
   assert.equal(details.host, host);
+}
+
+export async function clientResetWhilePending(
+  phase: PendingResetPhase,
+  register: (input: AccessRegistration) => void,
+): Promise<void> {
+  const scenario = nativeAdminScenario("inst_native_admin_upgrade");
+  const { selection } = scenario;
+  // An Agent gateway that only counts connection attempts.
+  const gatewayConnections: net.Socket[] = [];
+  const gateway = net.createServer((connection) => {
+    gatewayConnections.push(connection);
+    connection.destroy();
+  });
+  await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  const gates: Partial<Record<PendingResetPhase, () => void>> = {};
+  const entered: Partial<Record<PendingResetPhase, true>> = {};
+  const gated = <T>(name: PendingResetPhase, value: T): Promise<T> => {
+    entered[name] = true;
+    return new Promise<T>((resolve) => {
+      gates[name] = () => resolve(value);
+    });
+  };
+  const crashes: Error[] = [];
+  const onUncaught = (error: Error) => {
+    crashes.push(error);
+  };
+  process.on("uncaughtException", onUncaught);
+  const app = Fastify({ logger: false });
+  register({
+    ...scenario,
+    app,
+    admit: () => (phase === "admission" ? gated("admission", selection) : selection),
+    gatewayEndpoint: () => gatewayEndpoint(gateway),
+    gatewayKey: () => gated("gateway key", "gateway-test-key"),
+    leaseIntervalMs: undefined,
+    async appendAudit() {},
+  });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const serverSockets: net.Socket[] = [];
+  app.server.on("connection", (socket) => serverSockets.push(socket));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect(address.port, "127.0.0.1");
+      socket.on("error", reject);
+      socket.on("connect", () => {
+        writeUpgradeRequest(socket, scenario);
+        const phaseDeadline = Date.now() + 1000;
+        const waitForPhase = () => {
+          if (entered[phase] || Date.now() > phaseDeadline) {
+            socket.resetAndDestroy();
+            resolve();
+            return;
+          }
+          setTimeout(waitForPhase, 10);
+        };
+        setTimeout(waitForPhase, 20);
+      });
+    });
+    assert.equal(entered[phase], true, `the upgrade must reach the pending ${phase}`);
+    // Release the gate only once the server has seen the reset.
+    await waitUntil(
+      "the server to observe the reset",
+      () => serverSockets.every((socket) => socket.destroyed),
+      { timeoutMs: 2000, intervalMs: 10 },
+    );
+    assert.equal(serverSockets.length, 1);
+    const serverSocket = serverSockets[0];
+    assert.ok(serverSocket);
+    assert.equal(serverSocket.destroyed, true, "the server must observe the reset");
+    const release = gates[phase];
+    assert.ok(release, "the selected pending gate must exist");
+    release();
+    // Give a wrongly continued upgrade time to read the key or dial the gateway.
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    if (phase === "admission") {
+      assert.equal(entered["gateway key"], undefined, "a reset upgrade must not read the key");
+    }
+    assert.equal(gatewayConnections.length, 0);
+    assert.deepEqual(crashes, []);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    await app.close();
+    await new Promise<void>((resolve) => gateway.close(() => resolve()));
+  }
 }

@@ -92,12 +92,16 @@ export function registerWriterHandoffCases({
   realHelm: string;
   repository: string;
 }): void {
-  test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
+  test("an aliased separate database deployment pauses before Helm and preserves the handoff on resume", async (t) => {
     let databaseId = "ins_test";
     const f = await fixture(t, {
       controllerOnly: true,
       candidates: true,
-      chart: { installation: (installation) => installation },
+      valuesExtension: "yaml",
+      chart: {
+        values: (values) => ({ migrationMode: "separate", ...values }),
+        installation: (installation) => installation,
+      },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
       migrationSecrets: true,
     });
@@ -106,13 +110,12 @@ export function registerWriterHandoffCases({
       join(f.directory, "candidate-installation.json"),
       await readFile(join(f.directory, "installation.json")),
     );
-    const path = join(f.directory, "candidate-values.json");
-    const values = asRecord(JSON.parse(await readFile(path, "utf8")));
-    assert.ok(values, "expected staged chart values");
-    const database = asRecord(values.database);
-    assert.ok(database, "expected staged database settings");
-    values.database = { ...database, upgradeMigration: "separate" };
-    await writeFile(path, JSON.stringify(values));
+    // Operators can reuse a YAML scalar with an alias in their candidate values.
+    await execute("yq", [
+      "-i",
+      '.migrationMode anchor = "separate" | .database.upgradeMigration alias = "separate"',
+      join(f.directory, "candidate-values.yaml"),
+    ]);
     const { stdout } = await execute(
       realHelm,
       [
@@ -122,7 +125,7 @@ export function registerWriterHandoffCases({
         "--namespace",
         "system",
         "--values",
-        join(f.directory, "values.json"),
+        join(f.directory, "values.yaml"),
       ],
       { cwd: repository },
     );
@@ -138,6 +141,11 @@ export function registerWriterHandoffCases({
       }),
     );
     await runWithInjectedFault(f, "fail-scale-worker");
+    const check: unknown = JSON.parse(await f.readEvidence("preflight-migration-job.json"));
+    const pod = field(field(field(check, "spec"), "template"), "spec");
+    const containers = list(field(pod, "containers"), "preflight migration Job containers");
+    const args = list(field(containers[0], "args"), "preflight migration arguments");
+    assert.deepEqual(args.slice(-2), ["--check-for-installation", "ins_test"]);
     await assert.rejects(f.run("--resume", "--migration-history-checked"), (error: unknown) => {
       const failure = readUpgradeFailure(error);
       return failure.code === 3 && /separate database deployment/.test(failure.stderr);
@@ -186,7 +194,7 @@ export function registerWriterHandoffCases({
     const handoff = join(f.evidence, "database-migration-handoff.json");
     const savedHandoff = join(f.directory, "saved-handoff.json");
     const settingsPaths = [
-      join(f.directory, "values.json"),
+      join(f.directory, "values.yaml"),
       join(f.directory, "installation.json"),
     ];
     const settings = () =>

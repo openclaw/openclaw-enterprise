@@ -317,7 +317,10 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		if sandboxDriver == "none" {
 			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
 			if err != nil {
-				return err
+				if ctx.Err() != nil {
+					return err
+				}
+				return startupError("codex-sandbox-preparation", err)
 			}
 		}
 		// Dedicated Harnesses, including OpenShell-owned Codex, require private

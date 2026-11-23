@@ -1,5 +1,5 @@
 import type { ResourceRef } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 export function agentResource(id: string, namespaceId = "namespace-a"): ResourceRef {
   return { kind: "agent", id, namespaceId };

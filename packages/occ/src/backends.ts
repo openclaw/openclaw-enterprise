@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import type {
   Driver,
   BackendDefinition,
+  BackendRef,
   DriverCapability,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";
@@ -522,6 +523,19 @@ export function assertConfiguredBackend(
     throw new ScopeViolationError(`${label} does not match a configured Backend.`);
   }
   return backend;
+}
+
+export function resolveAgentBackendId(
+  backends: BackendMap,
+  value: BackendRef | undefined,
+  preserve?: BackendRef,
+): BackendRef {
+  const backendId = value === undefined ? (preserve ?? null) : value;
+  const backend = assertConfiguredBackend(backends, backendId, "Backend");
+  if (backend !== undefined && backend.type !== "chatgpt") {
+    throw new ScopeViolationError("The Agent Backend must support its Harness association.");
+  }
+  return backendId;
 }
 
 export function validateSelectedBackendDrivers(

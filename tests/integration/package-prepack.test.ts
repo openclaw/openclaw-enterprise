@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 

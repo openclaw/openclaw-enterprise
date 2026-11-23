@@ -136,4 +136,4 @@ supported resource actions and Restrictions.
 ## Related
 
 - [Authorization policy](../authorization.md) and [authentication](../authentication.md)
-- [OCC resource operations](../../../packages/occ/src/index.ts) and [worker authorization](../../../apps/controller/src/worker.ts)
+- [OCC resource operations](../../../packages/occ/src/controller-authority.ts) and [worker authorization](../../../apps/controller/src/worker.ts)

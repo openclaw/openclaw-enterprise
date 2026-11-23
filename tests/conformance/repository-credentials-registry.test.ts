@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { AgentRevision, RepositoryRevisionState } from "@openclaw-enterprise/contracts";
 import { controlledProtectedDriver } from "../fixtures/prepared-repository-git.mjs";
 import {
+  allowsGitHubRepositoryNetworkGrant,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
   createGitHubRepositoryDeliveryResolver,
@@ -25,6 +26,8 @@ interface NamespaceInput {
   pullRequestBase?: string;
   draftPullLimit?: string | number | boolean | null;
   permissions?: Record<string, string>;
+  nativeGit?: "v1";
+  scopedRest?: "v1";
   allowStandingApproval?: true;
   token?: string;
 }
@@ -76,6 +79,66 @@ function registryInput(): RegistryInput {
     ],
   };
 }
+
+test("Git network grants require the canonical repository and exact Namespace contents rights", () => {
+  const input = registryInput();
+  input.repositories[0].namespaces[0] = {
+    namespaceId: "namespace-a",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", contents: "write" },
+  };
+  input.repositories[0].namespaces.push({
+    namespaceId: "namespace-c",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", issues: "write" },
+  });
+  const registry = validateGitHubRepositoryRegistry({
+    ...input,
+    installationAccess: {
+      repositoryRef: "all-repositories",
+      namespaces: [{ namespaceId: "namespace-d", accessMode: "installation" }],
+    },
+  });
+  const permits = (
+    namespaceId: string,
+    access: "read" | "write",
+    repository = "example/application",
+  ) => allowsGitHubRepositoryNetworkGrant(registry, { namespaceId, grant: { repository, access } });
+
+  assert.equal(permits("namespace-a", "read"), true);
+  assert.equal(permits("namespace-a", "write"), true);
+  assert.equal(permits("namespace-b", "read"), true);
+  assert.equal(permits("namespace-b", "write"), false);
+  assert.equal(permits("namespace-c", "read"), false, "issues access does not authorize Git");
+  assert.equal(permits("namespace-d", "read"), false, "installation access is a separate grant");
+  assert.equal(permits("namespace-a", "read", "other/application"), false);
+  assert.equal(permits("namespace-a", "read", "application"), false, "a ref is not an owner/name");
+  assert.equal(permits("namespace-a", "read", "Example/Application"), false);
+});
+
+test("scoped REST requires native Git on the same Namespace registration", () => {
+  const input = registryInput();
+  const policy: NamespaceInput = {
+    namespaceId: "namespace-a",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", contents: "read", issues: "read" },
+    scopedRest: "v1",
+  };
+  input.repositories[0].namespaces[0] = policy;
+  assert.throws(() => validateGitHubRepositoryRegistry(input), /invalid-repository-registry/);
+
+  policy.nativeGit = "v1";
+  const scopedRest = validateGitHubRepositoryRegistry(input);
+  assert.equal(namespacePolicy(scopedRest).scopedRest, "v1");
+
+  delete policy.scopedRest;
+  const gitOnly = validateGitHubRepositoryRegistry(input);
+  const request = { namespaceId: policy.namespaceId, repositoryRef: "application" };
+  assert.notEqual(
+    resolveGitHubRepositoryBinding(scopedRest, request).grant.grantId,
+    resolveGitHubRepositoryBinding(gitOnly, request).grant.grantId,
+  );
+});
 
 test("canonical registry fingerprints bind exact authority and the selected Namespace policy", async (t) => {
   const input = registryInput();
@@ -187,8 +250,20 @@ test("Git-only registry policy binds its transport and exact ref before opening 
   policy.transport = "git-only";
   const scopedGrant = grant();
   assert.notEqual(scopedGrant, legacyGrant, "legacy client-only ref policy is not the same grant");
+  const permits = (access: "read" | "write") =>
+    allowsGitHubRepositoryNetworkGrant(registry(), {
+      namespaceId: "namespace-a",
+      grant: { repository: "example/application", access },
+    });
+  assert.equal(permits("read"), true);
+  assert.equal(
+    permits("write"),
+    false,
+    "the network policy cannot narrow push to the approved ref",
+  );
   policy.pushRefAllowlist = [];
   assert.notEqual(grant(), scopedGrant, "ref authorization is bound to the grant");
+  assert.equal(permits("write"), false, "an empty ref allowlist denies all pushes");
   delete policy.pushRefAllowlist;
   assert.throws(
     registry,
@@ -506,6 +581,22 @@ test("selected repository standing approval binds permissions and rechecks deliv
     repositories: [{ repositoryId: "34567", repository: "example/application" }],
     permissions: scope.apiPermissions,
   });
+  const enabled = structuredClone(input);
+  const enabledPolicy = enabled.repositories[0].namespaces[0];
+  delete enabledPolicy.allowStandingApproval;
+  enabledPolicy.nativeGit = "v1";
+  enabledPolicy.scopedRest = "v1";
+  const optedIn = validateGitHubRepositoryRegistry(enabled);
+  assert.equal(resolveGitHubStandingApprovalScope(optedIn, scopeInput), undefined);
+  assert.throws(
+    () => createGitHubRepositoryDeliveryResolver(optedIn)(deliveryRevision(finiteState)),
+    /selected-repository-grant-changed/,
+  );
+  assert.notEqual(
+    resolveGitHubRepositoryBinding(optedIn, request).grant.grantId,
+    binding.grant.grantId,
+  );
+
   const reordered = structuredClone(input);
   reordered.repositories[0].namespaces[0].permissions = {
     contents: "write",

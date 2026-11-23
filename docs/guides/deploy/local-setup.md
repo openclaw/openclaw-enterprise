@@ -13,6 +13,10 @@ Install OpenClaw Enterprise (OCE) in a private k3d cluster.
 - [Prepare your Linux host](local-kubernetes-tools.md). Check that your operator account can use Docker, pnpm and the Kubernetes tools.
 - Use an operator account with permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
+The local launcher prepares [managed channel egress](channel-egress.md), including
+the Envoy dependencies and matching network exclusions. After deploying a
+dedicated Codex Agent, you can [connect it to Slack](../integrations/channels.md).
+
 ## 1. Prepare the quickstart files and select a matching release
 
 At the root of the OCE checkout, start a child Bash shell. Run the remaining blocks there. A failed command stops setup and returns you to your original terminal. Keep the printed run directory for recovery.

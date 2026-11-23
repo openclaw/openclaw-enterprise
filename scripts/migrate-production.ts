@@ -65,6 +65,14 @@ try {
   const applicationName = "oce-migration-" + randomUUID();
   parsed.searchParams.set("application_name", applicationName);
   pool = await createPostgresPool(parsed.toString(), { max: 1 });
+  // pg-pool removes its idle error listener during checkout. Terminating the
+  // backend can both reject a query and emit a separate socket error on the client.
+  let connectionFailed = false;
+  pool.on("connect", (client) => {
+    client.on("error", () => {
+      connectionFailed = true;
+    });
+  });
   const interrupt = (signal: NodeJS.Signals) => {
     if (interrupted) {
       return;
@@ -105,12 +113,12 @@ try {
       requireCurrent,
       installationId,
     });
-    if (interrupted) {
-      throw new Error("Migration interrupted.");
-    }
   } finally {
     migrationFinished = true;
     await cancellation;
+  }
+  if (interrupted || connectionFailed) {
+    throw new Error("Migration interrupted or connection lost.");
   }
   const checkedEvent = guardedCheck ? "migration.checked-for-installation" : "migration.checked";
   const event = checkOnly ? checkedEvent : "migration.completed";
@@ -127,7 +135,8 @@ try {
     "code" in error &&
     (error.code === "MIGRATION_HISTORY_UNSUPPORTED" ||
       error.code === "MIGRATION_HISTORY_NOT_EMPTY" ||
-      error.code === "MIGRATION_HISTORY_PENDING")
+      error.code === "MIGRATION_HISTORY_PENDING" ||
+      error.code === "MIGRATION_REGISTRATION_PENDING")
   ) {
     code = error.code;
     operatorMessage = error.message;

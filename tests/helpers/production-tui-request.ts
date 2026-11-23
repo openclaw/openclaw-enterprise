@@ -9,9 +9,10 @@ type RequestConfiguration = {
   secrets: readonly string[];
 };
 
-type ApiResponse = {
+export type ProductionTuiResponse = {
   status: number | undefined;
   requestId?: string;
+  upstreamSocketReused?: boolean;
   body: unknown;
 };
 
@@ -30,7 +31,7 @@ export function createProductionTuiRequest(configuration: RequestConfiguration) 
     path: string,
     body?: unknown,
     { authenticated = true, signal }: { authenticated?: boolean; signal?: AbortSignal } = {},
-  ): Promise<ApiResponse> =>
+  ): Promise<ProductionTuiResponse> =>
     new Promise((resolve, reject) => {
       const data = body === undefined ? undefined : JSON.stringify(body);
       let status: number | undefined;
@@ -78,13 +79,19 @@ export function createProductionTuiRequest(configuration: RequestConfiguration) 
           }
           const header = response.headers["x-request-id"];
           const envelope = parsed as { meta?: { requestId?: unknown } } | null;
-          const result: ApiResponse = { status, body: parsed };
+          const result: ProductionTuiResponse = { status, body: parsed };
           if (
             header === envelope?.meta?.requestId &&
             Check(RequestId, header) &&
             !configuration.secrets.some((value) => header.includes(value))
           ) {
             result.requestId = header;
+            if (method === "GET" && path === "/installation" && status === 200) {
+              const reused = response.headers["x-oce-rehearsal-upstream-reused"];
+              if (reused === "0" || reused === "1") {
+                result.upstreamSocketReused = reused === "1";
+              }
+            }
           }
           resolve(result);
         },

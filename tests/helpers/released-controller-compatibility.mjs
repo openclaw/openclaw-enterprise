@@ -3,10 +3,11 @@ import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { settled } from "./child-processes.mjs";
 import { withTestOwnerLabel } from "./docker-test-owner.ts";
+import { releasedControllerHistoryStatus } from "./released-controller-history.ts";
 
 const exec = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -15,6 +16,7 @@ const sharedCookieOrigin = "https://console.oce.localhost";
 const agentDomain = "agents.oce.localhost";
 const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
 const processProgram = "released-controller-process.mts";
+const commandTimeout = 120_000;
 const imageProbe = `
   import { existsSync, readFileSync } from "node:fs";
   const configuration = "/app/apps/controller/src/auth/configuration.ts";
@@ -34,13 +36,16 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
   const children = [];
   const exits = [];
   const observations = [];
+  function runDocker(args, { timeout = commandTimeout, signal } = {}) {
+    return exec(docker, withTestOwnerLabel(docker, args), {
+      timeout,
+      maxBuffer: 4 * 1024 * 1024,
+      signal,
+    });
+  }
   async function command(args, { cleanup = false } = {}) {
     try {
-      return await exec(docker, withTestOwnerLabel(docker, args), {
-        timeout: 120_000,
-        maxBuffer: 4 * 1024 * 1024,
-        ...(cleanup ? {} : { signal: t.signal }),
-      });
+      return await runDocker(args, { signal: cleanup ? undefined : t.signal });
     } catch {
       // Docker errors embed argv, including the disposable database URL.
       throw new Error("Controller image command failed; no compatibility result.");
@@ -127,26 +132,61 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     image.reference,
     program,
   ];
-  const migrate = (image, ...options) =>
-    command([
-      ...args(image, inputsByImage.get(image.reference).migration, {
-        NODE_ENV: "development",
-        OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
-      }),
-      ...options,
-    ]);
+  const migrationArgs = (image, options, environment = {}) => [
+    ...args(image, inputsByImage.get(image.reference).migration, {
+      NODE_ENV: "development",
+      OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
+      ...environment,
+    }),
+    ...options,
+  ];
+  const migrate = (image, ...options) => command(migrationArgs(image, options));
   const history = async () =>
     (
       await db.migrator.query(
-        "SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id",
+        "SELECT id,hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id",
       )
     ).rows;
+  async function reportReleasedHistory() {
+    const beforeCheck = await history();
+    // Keep command arguments and both streams inside the probe, including execFile errors.
+    const signal = AbortSignal.any([t.signal, AbortSignal.timeout(commandTimeout)]);
+    const attempt = runDocker(
+      migrationArgs(images.released, ["--require-current"], {
+        PGOPTIONS: "-c default_transaction_read_only=on",
+      }),
+      { timeout: 0, signal },
+    );
+    const outcome = await attempt.then(
+      ({ stdout, stderr }) => ({
+        code: attempt.child.exitCode,
+        killed: attempt.child.killed,
+        signal: attempt.child.signalCode,
+        stdout,
+        stderr,
+      }),
+      (error) => error,
+    );
+    const status = releasedControllerHistoryStatus(outcome);
+    if (status === undefined || signal.aborted) {
+      return;
+    }
+    assert.ok(
+      isDeepStrictEqual(await history(), beforeCheck),
+      "Released migration history check must preserve the ordered migration ledger.",
+    );
+    if (!t.signal.aborted) {
+      t.diagnostic(
+        `openclaw-ci-measurement ${JSON.stringify({ kind: "released-controller-history", status })}`,
+      );
+    }
+  }
   async function start(image, role, { configuredIAM = false } = {}) {
     const name = `${owner}-${role}-${randomUUID().slice(0, 8)}`;
     const mounts = [
       processProgram,
       "development.ts",
-      "default-users-iam.mjs",
+      "default-users-iam.ts",
       "secret-driver.ts",
     ].flatMap((file) => [
       "--mount",
@@ -341,6 +381,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       before,
       observations,
       db,
+      reportReleasedHistory,
     });
   } finally {
     // Reuse the repository owner label for interruption cleanup, and remove only
@@ -379,7 +420,7 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     t,
     images,
     createDatabase,
-    async ({ start, migrate, history, before, observations }) => {
+    async ({ start, migrate, history, before, observations, reportReleasedHistory }) => {
       let released = await start(images.released, "released");
       const namespace = await released.request("before-migration", "work", {
         name: "Before migration",
@@ -395,6 +436,10 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
       ]);
       const after = await history();
       assert.deepEqual(after.slice(0, before.length), before);
+      // Check the original session and database pool before a restart can hide a failed read.
+      reads.push(
+        await released.request("after-migration", "read", { namespaceId: namespace.namespaceId }),
+      );
       await released.request("after-migration", "work", { name: "After migration" });
       await released.stop();
       released = await start(images.released, "released");
@@ -459,6 +504,8 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
           "Released controller must list the exact candidate-created credential source, including after restart.",
         );
       }
+      // The released migrator's history admission is distinct from controller database access.
+      await reportReleasedHistory();
     },
   );
 }

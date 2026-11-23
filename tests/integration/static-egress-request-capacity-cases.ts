@@ -854,3 +854,16 @@ export function registerStaticEgressResponsesAndCapacityCases(
   registerStaticEgressResponsesWireCases(unicodeEscapes);
   registerStaticEgressRequestCapacityCases();
 }
+
+export {
+  runStaticEgressElapsedDeadlineCase,
+  runStaticEgressReceiptCapacityCase,
+} from "./static-egress-receipt-capacity-cases.ts";
+export {
+  runStaticEgressCredentialRejectionCase,
+  runStaticEgressReceiptAuthorizationFailureCase,
+  runStaticEgressReceiptRestartCase,
+  runStaticEgressResponseCommitCase,
+} from "./static-egress-receipt-persistence-cases.ts";
+export { createReceiptPersistenceFaults } from "./static-egress-receipt-support.ts";
+export { createStaticEgressAdmissionCases } from "./static-egress-admission-cases.ts";

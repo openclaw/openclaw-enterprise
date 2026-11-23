@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, linkSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 import { baseInput, codexInput } from "./profile-renderer-inputs.ts";
 import {
-  repository,
   render,
+  renderCliFromFile,
   renderError,
   profileFailure,
   readPreflight,
@@ -50,20 +49,7 @@ export function registerOutputFileCases(): void {
             }
           }
           assert.throws(
-            () =>
-              execFileSync(
-                process.execPath,
-                [
-                  "scripts/render-installation-profile.ts",
-                  "--profile",
-                  "openclaw",
-                  "--input",
-                  inputPath,
-                  "--out-dir",
-                  outputPath,
-                ],
-                { cwd: repository, stdio: "pipe" },
-              ),
+            () => renderCliFromFile("openclaw", inputPath, outputPath),
             /input must not name a generated output file/,
           );
           for (const [file, contents] of before) {
@@ -98,20 +84,7 @@ export function registerOutputFileCases(): void {
       assert.equal((await render(profile, input, output.directory)).preflight.ok, true);
       writeFileSync(join(output.directory, "input.json"), "{");
       assert.throws(
-        () =>
-          execFileSync(
-            process.execPath,
-            [
-              "scripts/render-installation-profile.ts",
-              "--profile",
-              profile,
-              "--input",
-              join(output.directory, "input.json"),
-              "--out-dir",
-              output.directory,
-            ],
-            { cwd: repository, stdio: "pipe" },
-          ),
+        () => renderCliFromFile(profile, join(output.directory, "input.json"), output.directory),
         /unavailable or invalid JSON/,
       );
       for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
@@ -124,20 +97,7 @@ export function registerOutputFileCases(): void {
       const loop = join(output.directory, "loop.json");
       symlinkSync(loop, loop);
       assert.throws(
-        () =>
-          execFileSync(
-            process.execPath,
-            [
-              "scripts/render-installation-profile.ts",
-              "--profile",
-              profile,
-              "--input",
-              loop,
-              "--out-dir",
-              output.directory,
-            ],
-            { cwd: repository, stdio: "pipe" },
-          ),
+        () => renderCliFromFile(profile, loop, output.directory),
         /unavailable or invalid JSON/,
       );
       for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {

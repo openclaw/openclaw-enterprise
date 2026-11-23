@@ -34,33 +34,28 @@ export function registerKubernetesDeployment(): void {
     const driver = pluginComputeDriver();
     const candidate = revision({ plugins: codexNoPluginState() });
     const runtime = required(pluginRuntimeSpecForRevision(candidate));
-    const deployment = driver.deployment(
-      "agent-plugin-compute-rev",
-      {
+    const deployment = driver.deployment({
+      name: "agent-plugin-compute-rev",
+      ownership: {
         namespaceId: tenant.id,
         agentId: agent.id,
         revisionId: "revision-plugin-compute-1",
       },
-      { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-      {
+      namespace: { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
+      images: {
         runtime: "openclaw-enterprise/agent-fixture:local",
         workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
       },
-      "agent-plugin-compute",
-      "agent",
-      {},
-      "info",
-      undefined,
-      false,
-      undefined,
-      driver.harnessAuthForRevision(candidate, harnessAuthContext(candidate), {
+      serviceAccountName: "agent-plugin-compute",
+      role: "agent",
+      environment: {},
+      loggingLevel: "info",
+      harnessAuth: driver.harnessAuthForRevision(candidate, harnessAuthContext(candidate), {
         name: kubernetesNamespaceName(tenant.id),
         plane: "control",
       }),
-      undefined,
-      [],
-      { name: "plugin-runtime-agent-plugin-compute", runtime },
-    );
+      pluginRuntime: { name: "plugin-runtime-agent-plugin-compute", runtime },
+    });
 
     const pod = renderedPod(deployment);
     assert.equal(
@@ -127,33 +122,28 @@ export function registerKubernetesDeployment(): void {
             : undefined,
         ),
       );
-      const deployment = driver.deployment(
-        "gateway-plugin-compute-rev",
-        {
+      const deployment = driver.deployment({
+        name: "gateway-plugin-compute-rev",
+        ownership: {
           namespaceId: tenant.id,
           agentId: agent.id,
           revisionId: "revision-plugin-compute-1",
         },
-        { name: "oce-plugin-compute", plane: "execution" },
-        {
+        namespace: { name: "oce-plugin-compute", plane: "execution" },
+        images: {
           runtime: "openclaw-enterprise/gateway-fixture:local",
           workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
         },
-        "gateway-plugin-compute",
-        "gateway",
-        {},
-        "info",
-        driver.gatewayConfiguration(revision(), undefined, {
+        serviceAccountName: "gateway-plugin-compute",
+        role: "gateway",
+        environment: {},
+        loggingLevel: "info",
+        configuration: driver.gatewayConfiguration(revision(), undefined, {
           name: "oce-plugin-compute",
           plane: "execution",
         }),
-        false,
-        undefined,
-        undefined,
-        undefined,
-        [],
-        { name: "plugin-runtime-gateway-plugin-compute", runtime },
-      );
+        pluginRuntime: { name: "plugin-runtime-gateway-plugin-compute", runtime },
+      });
 
       const pod = renderedPod(deployment);
       assert.equal(
@@ -400,34 +390,31 @@ export function registerKubernetesDeployment(): void {
         }),
       ),
     );
-    const deployment = driver.deployment(
-      "gateway-plugin-compute-rev",
-      {
+    const deployment = driver.deployment({
+      name: "gateway-plugin-compute-rev",
+      ownership: {
         namespaceId: tenant.id,
         agentId: agent.id,
         revisionId: "revision-plugin-compute-1",
       },
-      { name: "oce-plugin-compute", plane: "execution" },
-      {
+      namespace: { name: "oce-plugin-compute", plane: "execution" },
+      images: {
         runtime: "openclaw-enterprise/gateway-fixture:local",
         workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
       },
-      "gateway-plugin-compute",
-      "gateway",
-      {},
-      "info",
-      driver.gatewayConfiguration(revision(), undefined, {
+      serviceAccountName: "gateway-plugin-compute",
+      role: "gateway",
+      environment: {},
+      loggingLevel: "info",
+      configuration: driver.gatewayConfiguration(revision(), undefined, {
         name: "oce-plugin-compute",
         plane: "execution",
       }),
-      false,
-      undefined,
-      undefined,
-      undefined,
-      [],
-      { name: "plugin-runtime-gateway-plugin-compute", runtime },
-      [{ pluginId: "codex-plugin:linear@openai-curated-remote", code: "PLUGIN_AUTH_REQUIRED" }],
-    );
+      pluginRuntime: { name: "plugin-runtime-gateway-plugin-compute", runtime },
+      pluginWarnings: [
+        { pluginId: "codex-plugin:linear@openai-curated-remote", code: "PLUGIN_AUTH_REQUIRED" },
+      ],
+    });
 
     const pod = renderedPod(deployment);
     assert.equal(
@@ -489,29 +476,24 @@ export function registerKubernetesDeployment(): void {
     for (const pluginApprovers of [undefined, []]) {
       const candidate = revision({ pluginApprovers });
       const runtime = required(pluginRuntimeSpecForRevision(candidate));
-      const deployment = driver.deployment(
-        "gateway-plugin-free",
-        { namespaceId: tenant.id, agentId: agent.id, revisionId: candidate.id },
-        { name: "oce-plugin-compute", plane: "execution" },
-        {
+      const deployment = driver.deployment({
+        name: "gateway-plugin-free",
+        ownership: { namespaceId: tenant.id, agentId: agent.id, revisionId: candidate.id },
+        namespace: { name: "oce-plugin-compute", plane: "execution" },
+        images: {
           runtime: "openclaw-enterprise/gateway-fixture:local",
           workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
         },
-        "gateway-plugin-compute",
-        "gateway",
-        {},
-        "info",
-        driver.gatewayConfiguration(candidate, undefined, {
+        serviceAccountName: "gateway-plugin-compute",
+        role: "gateway",
+        environment: {},
+        loggingLevel: "info",
+        configuration: driver.gatewayConfiguration(candidate, undefined, {
           name: "oce-plugin-compute",
           plane: "execution",
         }),
-        false,
-        undefined,
-        undefined,
-        undefined,
-        [],
-        { name: "plugin-runtime-gateway-plugin-free", runtime },
-      );
+        pluginRuntime: { name: "plugin-runtime-gateway-plugin-free", runtime },
+      });
       const pod = renderedPod(deployment);
       assert.equal(
         pod.volumes.some(

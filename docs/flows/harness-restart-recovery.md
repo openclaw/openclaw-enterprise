@@ -1,7 +1,7 @@
 ---
 created: "2026-11-17 17:20"
-updated: "2026-11-18 22:29"
-last_updated_session: "authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc"
 ---
 
 # Harness restart recovery flow
@@ -69,7 +69,7 @@ The recovery owner captures the exact session target, retains current source
 authority, and admits its native continuation through session-event handoff.
 It keeps the restart marker until acceptance or a terminal admission failure.
 
-Deployment admission in `packages/occ/src/index.ts:admitAgentDeployment` saves
+Deployment admission in `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` saves
 ordinary runtime inputs and enqueues the revision. It stores no recovery metadata.
 `apps/controller/src/worker.ts` retains desired-running-state, selected-revision,
 lease, and predecessor checks during replacement. Compute runtime selection and
@@ -151,6 +151,8 @@ case must also show one continuation and a final result without another user mes
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
 
 - 2026-11-18 22:29: Leave upstream restart-scope policy unchanged and document accepted transition refusal (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 

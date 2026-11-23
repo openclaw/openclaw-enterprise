@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { registerConfigurationChannelCredentialCases } from "./configuration-channel-credential-cases.ts";
 import { registerConfigurationSizeAdmissionCases } from "./configuration-size-admission-cases.ts";
@@ -275,7 +275,14 @@ async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(id, "provisioning", "ready"),
   );
-  return { ...context, root, stored: () => readdir(join(root, id)).catch(() => []) };
+  return {
+    ...context,
+    root,
+    stored: async () => {
+      const entries = await readdir(root);
+      return entries.includes(id) ? readdir(join(root, id)) : [];
+    },
+  };
 }
 
 /**
@@ -1528,6 +1535,19 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
         assert.ok(Date.now() - started < 5_000, JSON.stringify(values));
       }
     });
+  }
+  await assertNothingStored(context);
+
+  // An empty Preset response must not hide a missing Configuration store.
+  const heldStore = join(await temporaryDirectory(t, "occ-store-backup-"), "original");
+  await rename(context.root, heldStore);
+  try {
+    const presets = await request(context.app, "GET", context.presets);
+    assert.equal(presets.status, 200);
+    assert.deepEqual(presets.body.data, []);
+    await assert.rejects(assertNothingStored(context), { code: "ENOENT" });
+  } finally {
+    await rename(heldStore, context.root);
   }
   await assertNothingStored(context);
 

@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { checkServerIdentity, rootCertificates } from "node:tls";
 
 import Type, { type Static, type TSchema } from "typebox";
@@ -18,7 +18,12 @@ import {
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
-import { parseProductionChart, renderExecutionChart } from "../helpers/production-chart.ts";
+import {
+  parseProductionChart,
+  productionValues,
+  renderExecutionChart,
+  renderProductionChart,
+} from "../helpers/production-chart.ts";
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,
@@ -28,6 +33,7 @@ import {
   type ChartValues,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
+import { qaHybridRoutingValues } from "../helpers/qa-hybrid-routing.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const productionGatewayName = "oce-agent-gateways";
@@ -631,7 +637,7 @@ export function registerProductionGatewayNameCase(
   });
 }
 
-export async function checkRemoteNodeCidrs(): Promise<void> {
+export async function checkRemoteNodeCidrs(t: TestContext): Promise<void> {
   for (const override of [
     { "gatewayRouting.remoteNodeCidrs[0]": "not-a-cidr" },
     { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
@@ -646,9 +652,41 @@ export async function checkRemoteNodeCidrs(): Promise<void> {
       /gatewayRouting\.remoteNodeCidrs/,
     );
   }
-  for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
-    await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
-  }
+
+  await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": "10.0.0.1/32" });
+
+  // Render the other valid ranges together using the actual Compose QA profile.
+  // Packaging defaults can hide a required setting missing from the fixture.
+  const cidrs = ["10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"];
+  const values = qaHybridRoutingValues({
+    controllerChartImage: "registry.example.invalid/controller@sha256:" + "a".repeat(64),
+    consoleUrl: "https://console.example.test",
+    adminEmail: "admin@example.test",
+    databaseIp: "10.0.0.2",
+    nodeIp: "10.0.0.1",
+    nodeName: "worker-kubernetes",
+    agentNativeAdminDomain: "admin.example.test",
+  });
+  values.gatewayRouting.remoteNodeCidrs = cidrs;
+  const directory = await temporaryDirectory(t, "qa-hybrid-routing-");
+  const valuesFile = join(directory, "routing-values.json");
+  await writeFile(valuesFile, JSON.stringify(values));
+  const { stdout } = await renderProductionChart(
+    {},
+    {
+      release: "openclaw-enterprise",
+      namespace: "oce-system",
+      valuesFiles: [valuesFile],
+      omit: Object.keys(productionValues),
+    },
+  );
+  assert.partialDeepStrictEqual(await parseProductionChart(stdout), [
+    {
+      kind: "NetworkPolicy",
+      metadata: { namespace: "envoy-gateway-system" },
+      spec: { ingress: [{ from: cidrs.map((cidr) => ({ ipBlock: { cidr } })) }] },
+    },
+  ]);
 }
 
 function itemZero(value: unknown): unknown {

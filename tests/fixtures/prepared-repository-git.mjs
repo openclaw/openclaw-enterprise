@@ -32,6 +32,8 @@ import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 
+export const preparedGitUseSocketName = "prepared-git-use.sock";
+
 // This exercises the production use service over real PostgreSQL and a synthetic
 // HTTPS GitHub App issuer. It does not prove a Git subprocess or live GitHub push.
 /**
@@ -77,7 +79,9 @@ export async function fixture(
     ownerClock,
   } = {},
 ) {
-  const directory = await socketDirectory(t, "prepared-git-");
+  const directory = await socketDirectory(t, "prepared-git-", {
+    longest: preparedGitUseSocketName,
+  });
   const privateKeyPath = join(directory, "app.pem");
   const custodyKeyPath = join(directory, "custody.key");
   const permissions = {
@@ -207,7 +211,7 @@ export async function fixture(
     durationSeconds: 3600,
     brokerProtocol: 3,
   });
-  const socketPath = join(directory, "prepared-git-use.sock");
+  const socketPath = join(directory, preparedGitUseSocketName);
   const broker = await openBroker?.({
     gh,
     registry,
@@ -299,7 +303,7 @@ export async function fixture(
         "A socketless fixture owner requires an explicit custody selection",
       );
       // Each owner serves its use socket beside its control socket: give it its own directory.
-      const sockets = await socketDirectory(t, "pgit-", { longest: "prepared-git-use.sock" });
+      const sockets = await socketDirectory(t, "pgit-", { longest: preparedGitUseSocketName });
       const other = await startPreparedGitHubGitOwner({
         ...ownerOptions,
         controlSocket: join(sockets, "control.sock"),

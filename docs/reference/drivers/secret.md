@@ -173,4 +173,4 @@ model API keys go only to the Harness that executes the model.
 
 - [Agent Harness authentication](../agents.md#harness-authentication) and [Configuration Secret bindings](../configuration/secrets.md)
 - [Secret storage and delivery flow](../../flows/secret-storage-and-delivery.md)
-- [OCC Secret operations](../../../packages/occ/src/index.ts) and [worker delivery](../../../apps/controller/src/worker.ts)
+- [OCC Secret operations](../../../packages/occ/src/secret-operations.ts) and [worker delivery](../../../apps/controller/src/worker.ts)
