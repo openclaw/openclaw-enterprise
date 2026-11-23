@@ -243,7 +243,7 @@ The transaction stores the public UUID, creator, exact target, `toolGrant` and
 admission audit. The grant contains exact names and opaque binding fingerprints;
 credential values are not stored there.
 `packages/occ/src/state/postgres-agent-automations.ts` and
-`migrations/0090_agent_automations.sql` enforce immutable ownership/grant fields and
+`migrations/0091_agent_automations.sql` enforce immutable ownership/grant fields and
 one-time native identity binding.
 
 ### 4. Create disabled, bind, then activate with native CAS
@@ -266,23 +266,23 @@ history can outlive a one-shot job; it is not evidence of grant retirement.
 
 ### 5. Fence successors and startup preparation
 
-`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` evaluates a
-candidate under the Namespace/Agent decision locks. Every unretired grant must be
-a subset of its qualified operations with unchanged binding fingerprints.
-Unrelated operation additions do not expand an existing job. Removing a captured
-operation or changing its authority blocks the candidate.
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` checks
+candidate compatibility under Namespace/Agent locks before the internal Channel
+policy preview returns and before runtime credential setup. Authorized Channel
+Secret retrieval may already have started, so this does not guarantee zero Channel
+side effects. Every unretired grant must remain a subset of candidate operations with
+unchanged binding fingerprints; additions cannot expand jobs, and changed authority
+blocks the candidate.
 
 `apps/controller/src/worker.ts:ControllerWorker.automationAuthorityCurrent` repeats
 that check under the live claim's Namespace/Agent locks before Compute binding or
 preparation. It covers deployment and selected-revision re-observation/maintenance,
-including work resumed after controller startup. A mismatch returns from that preparation attempt with
-`AUTOMATION_TOOL_GRANT_MISMATCH`. Active-revision finalization observes/requeues
+including work resumed after controller startup. Mismatch returns `AUTOMATION_TOOL_GRANT_MISMATCH`. Active-revision finalization observes/requeues
 work; it does not stop the Gateway. This is not a per-call check inside a running
 native scheduler. Installation allowlist withdrawal alone is not immediate
 revocation of running cron work. A kubelet restart of the same immutable live
 revision has no new OCC callback and can resume native catch-up under the captured
-grant. These fences cover OCC-managed revision admission/startup/recovery, not a
-per-container restart callback.
+grant.
 
 ### 6. Retire authority separately from history
 

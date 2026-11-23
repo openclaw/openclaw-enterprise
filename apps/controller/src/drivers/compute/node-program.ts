@@ -43,7 +43,7 @@ export function nodeProgramArguments(program: string): string[] {
   ];
 }
 
-/** Pack only the static Codex child inside a workspace node supervisor. */
+/** Use Brotli where a rendered launch must fit a smaller command budget. */
 export function compactNodeChildArguments(program: string): string[] {
   const packed = brotliCompressSync(withoutLineComments(program), {
     params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
@@ -64,13 +64,19 @@ function programPieces(program: Buffer): string[] {
 }
 
 /** Re-encode a provider prelude with the canonical, already-rendered Node program. */
-export function prependNodeProgramArguments(prelude: string, args: readonly string[]): string[] {
+export function prependNodeProgramArguments(
+  prelude: string,
+  args: readonly string[],
+  compact: boolean,
+): string[] {
   const [loader, ...pieces] = args;
   if (loader !== NODE_PROGRAM_LOADER) {
     throw new Error("Expected the canonical Node program loader.");
   }
   const program = inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
-  return nodeProgramArguments(prelude + program);
+  return compact
+    ? compactNodeChildArguments(prelude + program)
+    : nodeProgramArguments(prelude + program);
 }
 
 /** Read only a bounded, canonically compressed controller-rendered Node program. */

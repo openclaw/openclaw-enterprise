@@ -18,9 +18,8 @@ A raw native filter is not an authorization grant. Eligible operations must have
   standing approval as ordinary unattended Agent execution.
 
 Kubernetes Compute qualifies operator-attested anonymous HTTPS MCP for embedded
-OpenClaw and ordinary deployment-backed dedicated Codex. Provider-owned Sandbox,
-protected-egress, credential deployment, stdio and credential-bearing MCP fail
-closed. Each packaged Harness requires genuine permitted and forbidden HTTPS proof
+OpenClaw and ordinary deployment-backed dedicated Codex. Nonempty grants refuse provider-owned Sandbox, protected/credential deployments,
+native Git v9, stdio and credential-bearing MCP. Each packaged Harness requires real permitted/forbidden HTTPS proof
 before deployment. Unsupported qualification returns `503 AUTOMATIONS_UNQUALIFIED`
 without fallback; qualified model-only scheduling remains available. An Installation
 administrator supplies [endpoint attestations](drivers/kubernetes-compute.md#automation-mcp-endpoints).
@@ -60,10 +59,11 @@ For nonempty grants, Code Mode and tool search must already be off; admission
 does not change ordinary chat. Shell/file tools, code, discovery, delegation,
 messaging, apps and managed MCP Sandbox are outside this pilot.
 
-Native writes carry explicit `payload.toolsAllow`, including model-only `[]`.
-The adapter refuses automatic/default-tool flags, triggers, non-isolated payloads
-and delivery. It checks eligibility and native revision from one read before
-mutation; unknown qualification, ambiguous bindings or unsupported state refuse admission.
+Native writes set explicit `payload.toolsAllow`. The empty cap disables
+model-selected tools. Trusted administrator hooks and required runtime setup can
+still run. Refuse automatic/default-tool flags, triggers, non-isolated payloads,
+delivery, unknown qualification, ambiguous bindings and unsupported state; check
+eligibility/native revision from one read before mutation.
 
 An empty MCP `toolFilter.include` can mean **all tools**. To revoke all operations,
 disable or omit the server; never use `[]` as a restriction.
@@ -119,9 +119,9 @@ with their normalized server prefix plus `__`, and utility names
 (case-insensitive), before subsets without probe or fallback; unrelated raw
 `foo__bar` remains valid.
 
-These limits govern model-requested tools, not scheduler housekeeping, bootstrap,
-history or failure alerts. Ordinary chat and native administrators remain trusted
-writers outside OCC; OCC does not import or adopt their native jobs.
+Scheduler housekeeping, history and failure alerts remain outside model-requested
+limits. Chat and native administrators are trusted writers outside OCC; OCC does
+not adopt their jobs.
 
 ## Ownership and authority
 

@@ -96,6 +96,8 @@ fresh private paths and an after-hook with the same Docker prerequisites.
 
 ## Subnet pool exhaustion
 
+Complete lifecycle results record `docker-subnet-exhausted` in `lifecycle.phases.prepare.error.reason`.
+
 If Compose reports `all predefined address pools have been fully subnetted`,
 Docker could not allocate a subnet for the project network. Stop the run if it
 is still active. If its cleanup did not finish, run the printed command from the

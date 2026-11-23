@@ -70,12 +70,9 @@ Verify cloud volume detach and node fencing separately.
 The [State and Lifecycle check](ci/required-checks.md#scenarios) traces a deploy
 from request to worker success and checks the direct Agent audit grant.
 
-For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
-[credentialed runtime](openshell.md). Delete only your disposable cluster:
-
-```sh
-k3d cluster delete oce
-```
+Live OAuth uses [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md). After your fixture's tests (including direct
+[routing](#private-gateway-routing)), delete only that cluster with `k3d cluster delete '<name>'`.
 
 ### Installation handoff
 
@@ -350,31 +347,12 @@ and `OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE`. One input fails. Omit both to s
 
 ### Run an isolated upgrade qualification lane
 
-Set `OCC_TEST_OPENAI_MODEL`. Verify provenance for compatible prior and distinct
-reviewed candidate controller and runtime digests. A disposable Pod selects the
-incumbent image’s worker probe for installation. The upgrade uses the candidate
-chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
+The scheduled TUI job covers revision cutover. To qualify upgrades, set
+`OCC_TEST_OPENAI_MODEL` and both upgrade images. Verify provenance and compatibility
+of the incumbent and candidate digests. Installation probes the incumbent Worker.
+Upgrades use the candidate chart. Install Docker, k3d, kubectl, Helm, yq, jq and Go.
 
-```sh
-run_dir="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" && \
-  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
-    --state "$run_dir/state.json" --results "$run_dir/results.json"
-```
-
-Before removing the runner, [retain both private availability receipts](populated-controller-return.md#retain-ordinary-upgrade-observations).
-
-After success or failure, save the private image mapping if needed and clean up:
-
-```sh
-install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
-node scripts/ci/cleanup.ts --state "$run_dir/state.json"
-```
-
-Retain the state if cleanup fails. Do not publish the state or environment file.
-Confirm evidence includes both upgrades and a fresh model reply. Imported local
-references can differ from registry digests; this does not prove exact registry
-reference deployment or live EKS behavior.
+Follow the [qualification and cleanup procedure](populated-controller-return.md#qualify-distinct-controller-and-runtime-images).
 
 ## Two-cluster validation
 
@@ -518,26 +496,30 @@ establish recovery after worker retry exhaustion or an aged node reconnect after
 its pairing code expires. Remote Codex plugin installation needs a separate
 ChatGPT-backed credential and proof.
 
-When finished, remove only the clusters and network created above:
-
-```sh
-k3d_local cluster delete openclaw-k8s-local-cp openclaw-k8s-local-dp
-docker --context "$OCE_DOCKER_CONTEXT" network rm oce-two-cluster-local
-```
-
-Remove the private test directory when you no longer need its kubeconfigs.
-
 ### Upgrade the execution chart
 
 Upgrade the execution release before the control-plane image upgrade:
 
 ```bash
-helm upgrade <execution-release> deploy/helm/openclaw-execution \
-  --kube-context <execution-context> --namespace <execution-system-namespace> \
-  -f <execution-values.yaml>
+# Fixture kubeconfig "$OCE_TEST_DIR/dp.kubeconfig"
+helm upgrade '<execution-release>' deploy/helm/openclaw-execution \
+  --kubeconfig '<execution-kubeconfig>' \
+  --kube-context '<execution-context>' --namespace '<execution-system-namespace>' \
+  -f '<execution-values.yaml>'
 ```
 
 Pass the installation values; do not use `--reuse-values`. Keep
 `agentRuntimeLogs.enabled` equal to the CP chart value. The control-plane
 [upgrade preflight](../guides/deploy/production-upgrade.md) checks tenant grants
 before stopping the old controller.
+
+### Test cleanup
+
+Verify upgrades after testing. Remove only your clusters and network.
+
+```sh
+k3d_local cluster delete openclaw-k8s-local-cp openclaw-k8s-local-dp
+docker --context "$OCE_DOCKER_CONTEXT" network rm oce-two-cluster-local
+```
+
+Remove the private directory when kubeconfigs are unneeded.

@@ -118,6 +118,7 @@ import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { createDeviceAuthorizationHandlers } from "./http/device-authorization.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
@@ -1255,6 +1256,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       rejectDeployment: (request, context) =>
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
     }),
+    ...createDeviceAuthorizationHandlers({
+      auditSink: options.auditSink,
+      // Start phases belong in the factory input, before audit details are sanitized and frozen.
+      startEvent: ({ context, request }, resource, details) =>
+        event(context.operation, request, resource, "mutation", context, undefined, {
+          outcome: "success",
+          details,
+        }),
+    }),
     ...createWorkspaceFileHandlers({
       access: options.workspaceFilesAccess,
       timeoutMs: workspaceFileRequestTimeoutMs,
@@ -1944,71 +1954,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return deleting;
       });
       reply.status(202).send({ data: namespace, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (
-      operation.operationId === "startAgentDeviceAuthorization" ||
-      operation.operationId === "startSavedAgentDeviceAuthorization" ||
-      operation.operationId === "pollAgentDeviceAuthorization" ||
-      operation.operationId === "pollSavedAgentDeviceAuthorization" ||
-      operation.operationId === "cancelAgentDeviceAuthorization" ||
-      operation.operationId === "cancelSavedAgentDeviceAuthorization"
-    ) {
-      const agentId = params.agentId;
-      let result;
-      if (operation.operationId.startsWith("start")) {
-        result = await controller.startAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          body?.harnessId as string,
-          agentId,
-          (source, phase) =>
-            event(
-              operation,
-              request,
-              phase === "session_pending"
-                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
-                : source.ref,
-              "mutation",
-              context,
-              undefined,
-              { outcome: "success", details: { phase, sourceId: source.id } },
-            ),
-        );
-      } else if (operation.operationId.startsWith("poll")) {
-        result = await controller.pollAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.sessionId as string,
-          agentId,
-        );
-      } else {
-        await controller.cancelAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.sessionId as string,
-          agentId,
-        );
-      }
-      // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
-        await options.auditSink.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-      }
-      reply.header("cache-control", "no-store");
-      if (result === undefined) {
-        reply.status(204).send();
-      } else {
-        reply.send({ data: result, meta: { requestId: request.id } });
-      }
       return;
     }
 

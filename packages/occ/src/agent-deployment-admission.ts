@@ -967,6 +967,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
               repositoryCredentials,
               harnessAuth,
               revisionHarness.configuration,
+              policy?.repositoryNetworkPolicy === undefined
+                ? undefined
+                : admittedRepository?.nativeGit,
             )
           : undefined;
       const egressPlan = proxyAdmission?.plan;
@@ -1104,8 +1107,26 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         proxyAdmission?.assertProvidersCurrent();
         assertRepositoryNetworkPolicyDrivers();
       };
+      let candidate = policyAdmittedRevision;
+      const automations = (await state.agentAutomations.list(namespace.id, lockedAgent.id)).filter(
+        (automation) => automation.retiredAt === null,
+      );
+      if (automations.length > 0) {
+        candidate ??= prepareComputeRevision(compute, revisionDraft);
+        const candidateGrant = (await compute.evaluateAgentAutomationPolicy?.(candidate))?.grant;
+        if (
+          automations.some(
+            (automation) => !agentAutomationGrantSupported(automation.toolGrant, candidateGrant),
+          )
+        ) {
+          throw new ResourceStateConflictError(
+            "The proposed Agent revision changes a standing automation tool binding. Delete the affected automation before deploying.",
+          );
+        }
+      }
       if (preview) {
         // The Channel caller starts validation under these locks and rolls back its unit.
+        assertProvidersCurrent();
         return assertProvidersCurrent;
       }
       if (compute.requiresAgentRuntimeCredentials === true) {
@@ -1119,22 +1140,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         );
       }
 
-      const candidate = policyAdmittedRevision ?? prepareComputeRevision(compute, revisionDraft);
-      const automations = (await state.agentAutomations.list(namespace.id, lockedAgent.id)).filter(
-        (automation) => automation.retiredAt === null,
-      );
-      if (automations.length > 0) {
-        const candidateGrant = (await compute.evaluateAgentAutomationPolicy?.(candidate))?.grant;
-        if (
-          automations.some(
-            (automation) => !agentAutomationGrantSupported(automation.toolGrant, candidateGrant),
-          )
-        ) {
-          throw new ResourceStateConflictError(
-            "The proposed Agent revision changes a standing automation tool binding. Delete the affected automation before deploying.",
-          );
-        }
-      }
+      candidate ??= prepareComputeRevision(compute, revisionDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         dependencies.channels.assertPreparedDeploymentDrivers(prepared);
