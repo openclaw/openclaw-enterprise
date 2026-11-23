@@ -20,37 +20,33 @@ command; use this page as its migration inventory.
 - [ ] Diff the deployed and candidate source for database migrations, Helm
       templates, Installation schema, bundled Presets, Driver settings, runtime
       dependencies, and required Kubernetes assets.
-- [ ] Confirm the candidate image still ships every `/app/deploy/presets/` file
-      that `presets.files` names; the image helper's startup preflight stops
-      before quiescence on a missing one. The helper refuses Installation
-      changes other than the Plugin Driver, so remove such entries and restart
-      first; saved Presets stay.
-- [ ] On a single-cluster install, run
-      `kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace`.
-      Releases with the shared tenant namespace refuse to start while a row has
-      an empty `NAMESPACE` column (a
-      [split-layout tenant](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations));
-      the image helper's preflight stops before quiescence.
-- [ ] Before the window, render the candidate chart with your live values
-      (`helm template --is-upgrade`) and
-      [correct any value it refuses](production-upgrade-recovery.md#correct-values-the-candidate-refuses).
-      The image helper renders again and runs its startup preflight before
-      stopping anything.
-- [ ] Decide whether this is a controller-only, runtime-only, or coordinated
-      release. A controller-only release does not request Agent deployments,
-      but the new worker can restart existing Agent Pods once and interrupt
-      repository-bound versions. A runtime
-      release creates new versions from current Agent and Configuration drafts.
-      To classify a source diff, compare its paths with what
-      `deploy/runtime/Dockerfile` copies into its final `runtime` stage, directly
-      or through a stage that stage copies from (`COPY --from=`);
-      `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile` lists them. A change to
-      one of those paths, or to the OpenClaw commit or Codex version the
-      Dockerfile pins, needs the new runtime image. For example, the repository
-      credential client in
-      `apps/controller/src/drivers/repo/github/access/client/` is built into
-      the runtime image. Other controller source ships only in the controller
-      image. This includes the Agent Pod specs that the controller renders, such
+- [ ] Check that the candidate can read each Installation `presets.files` path.
+      Restore required files. Flag obsolete entries. Ordinary image upgrades
+      permit only supported Plugin Driver Installation edits.
+- [ ] For single-cluster discovery, run
+      `kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' get namespaces -l 'openclaw.dev/gateway-namespace,!openclaw.dev/namespace' -L openclaw.dev/gateway-namespace`.
+      Require a complete, successful read. For
+      [split tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),
+      the tenant label is absent and the namespace name matches the storage name
+      derived from a nonempty Gateway label.
+- [ ] With [preprovisioning](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md),
+      verify the bound Namespace. Stop here. This profile omits initialization Jobs
+      and requires an independently migrated database and bootstrapped Installation.
+- [ ] Render with live values (`helm template --is-upgrade`) and
+      [correct refused values](production-upgrade-recovery.md#correct-values-the-candidate-refuses)
+      before maintenance. Preflight rejects missing Preset files and
+      single-cluster split layouts before stopping writers.
+- [ ] Identify changed controller, repository broker and runtime images.
+      The new worker can restart Agent Pods once, interrupting
+      repository-bound versions. Runtime upgrades create versions from current
+      Agent and Configuration drafts. Trace inputs through intermediate stages
+      (`COPY --from=`) into the final `runtime` stage.
+      See `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile`.
+      Rebuild the runtime when inputs, the OpenClaw commit or Codex version
+      change. Inputs include
+      `apps/controller/src/drivers/repo/github/access/client/` and
+      `apps/controller/src/drivers/repo/access/client-contracts.ts`.
+      The controller renders Agent Pod specs using files such
       as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
       existing Agents get that change when the controller renders their Pods again.
 - [ ] Check controller/runtime compatibility. Upgrade the controller first when
@@ -239,15 +235,13 @@ Create a private evidence directory and record these values before mutation.
       artifact and sandbox probe on every eligible node, including replacement
       nodes. Reassess it when the node or runtime inputs change; follow the
       [Codex sandbox procedure](codex-sandbox.md).
-- [ ] Inspect repository session and cleanup obligations before restarting the
-      broker. `CLOSED`, missing inventory, and `invalidated` attempts do not
-      establish `DISPOSED`; retain unresolved cleanup evidence and follow the
-      [broker upgrade and recovery procedure](../repository-credentials/installation.md#select-composition-and-network-access).
-- [ ] If a rollout replaces the worker's enabled repository broker, identify
-      running Agents with delivered repository sessions. Plan an interruption
-      and authorized replacement versions for affected Agents, including for a
-      controller-only release. Review their current drafts and required deploy
-      grants. Stop if that recovery cannot be performed safely.
+- [ ] Before restarting or replacing enabled brokers, inspect sessions and cleanup.
+      `CLOSED`, missing inventory and `invalidated` attempts do not establish
+      `DISPOSED`. Retain unresolved cleanup evidence and follow
+      [broker recovery](../repository-credentials/installation.md#install-and-verify).
+      Plan interruptions for running Agents with delivered sessions, including
+      controller-only upgrades. Review drafts and deploy grants for
+      separately authorized replacements. Stop if authorized recovery is infeasible.
 
 ## Assign every surface a disposition
 
@@ -257,9 +251,17 @@ and database migrations to retained volumes and local profile state.
 
 ## Apply the release in dependency order
 
-1. Install cluster prerequisites (on two clusters, upgrade the
+1. Install cluster prerequisites (upgrade the
    [execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
-   first) and reconcile protected inputs without replacing retained data.
+   first on two clusters). Reconcile protected inputs without replacing retained data.
+   Continue to step 2 unless removing obsolete `presets.files` entries.
+   Stop for immutable Installation Secrets. Seek separate review. Before editing, require
+   `repositoryWorkerRestart` of `not-applicable` or `reverification-supported`
+   for every retained running revision in the incumbent’s complete deployment inventory. Otherwise stop.
+   After baseline capture and broker recovery planning, [remove obsolete entries](production-installation-changes.md)
+   and restart API and worker. Preserve saved Presets and grants. Verify recovery against
+   the unchanged original baseline. Reconcile protected and live inputs.
+   Capture another complete baseline elsewhere. Set `BASELINE` there.
 2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
    including the candidate's canonical migration check. Stop on unsupported
    history or an unresolved required quiescence step.
@@ -272,8 +274,12 @@ and database migrations to retained volumes and local profile state.
    readiness.
 4. Reconcile persisted resources that startup intentionally preserves, including
    same-name Presets. Compare complete objects, not only counts or names.
-5. Update runtime image selection only when required. Reload API and worker, then
-   deploy the recorded running fleet through OCC.
+5. For ordinary runtime image changes, update selections, reload API and worker,
+   and deploy recorded running Agents through OCC. Skip completed helper actions.
+   Reconcile unknown effects first.
+   Handle authorized broker recovery separately.
+   [One-off upgrades](one-off-upgrades.md) can require redeployment with unchanged
+   runtime images.
 6. Reconcile external integrations and cluster-owned supporting services.
 7. Run the acceptance checks below before ending the interruption window.
 
@@ -284,18 +290,18 @@ and database migrations to retained volumes and local profile state.
       expected controller digest; migration history is canonical.
 - [ ] The authenticated Installation and protected startup configuration agree.
       API and worker selected the same Driver identities.
-- [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
-      contain the expected IDs. IAM, Backend, service-account, deployment-work,
-      and audit-record inventories also reconcile. The controller-only helper
-      requests no deployments. Verify readiness after Agent Pod restarts and
-      check any replacement revisions needed after broker restart.
+- [ ] Namespace, Agent, Configuration, Preset and Secret-metadata inventories
+      retain expected `BASELINE` IDs. Reconcile IAM, Backend, service-account,
+      deployment-work and audit-record inventories with `BASELINE`. Ordinary
+      controller-only upgrades request no deployments. Verify restarted Pods
+      are ready. Verify Agent revisions replaced for broker recovery.
 - [ ] Persisted Preset templates match the intended source definitions. Missing
       defaults were created, intended same-name copies were updated in place,
       and obsolete copies were handled deliberately.
 - [ ] Runtime releases selected new successful versions. Gateway and Agent Pods
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
-      sessions match the baseline.
+      sessions match `BASELINE`.
 - [ ] The configured sign-in paths work and expected operations appear in the
       audit ledger. Check that configured metrics, traces, and test alerts
       reach their destinations.
