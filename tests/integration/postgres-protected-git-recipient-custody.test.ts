@@ -963,6 +963,21 @@ test(
     assert.ok(owner.protectedGit, "the protected Git authority is selected");
     await owner.maintain();
     const selectedRoute = { revisionId, fence: 1, observed };
+    // Keep the caller and durable observation in agreement. Only the Provider family
+    // is wrong for this online recipient, which has no deliveryProfile.
+    const source = { ...observed, provider: openShellSourceGitProviderPrefix + "a".repeat(32) };
+    const setObserved = (value: typeof observed) =>
+      f.pool.query("UPDATE occ.credential_deliveries SET observed=$2::jsonb WHERE revision_id=$1", [
+        revisionId,
+        JSON.stringify(value),
+      ]);
+    await setObserved(source);
+    const refused = await owner.protectedGit.online.readMaterial(
+      { ...selectedRoute, observed: source },
+      t.signal,
+    );
+    assert.ok(!refused || !("value" in refused), "online custody must refuse a Source Provider");
+    await setObserved(observed);
     const selected = await owner.protectedGit.online.readMaterial(selectedRoute, t.signal);
     assert.ok(
       selected && !("absent" in selected),

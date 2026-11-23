@@ -4643,6 +4643,28 @@ function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
   };
 }
 
+test("a native Source Provider cannot bind an App REST grant", () => {
+  const repository = "example/application";
+  const grants = [{ repository, access: "read" }] as const;
+  const binaries = ["/usr/bin/git"];
+  const rest = [{ repository, version: "v1", readIssues: true }] as const;
+  const app = "oce-github-installation-" + "a".repeat(32);
+  const source = "oce-github-token-" + "a".repeat(32);
+  const hosts = (rule: ReturnType<typeof compileOpenShellBoundGitRule>) =>
+    rule.endpoints.map(({ host }) => host);
+  assert.ok(
+    hosts(compileOpenShellBoundGitRule(grants, app, binaries, rest)).includes("api.github.com"),
+  );
+  assert.deepEqual(
+    hosts(compileOpenShellBoundGitRule(grants, source, binaries, undefined, "source")),
+    ["github.com"],
+  );
+  assert.throws(
+    () => compileOpenShellBoundGitRule(grants, source, binaries, rest, "source"),
+    /Git-only/,
+  );
+});
+
 test("native Git refuses Source material without the custody hold", async (t) => {
   const { f, revision, reconcile, activity } = await heldGit(
     t,

@@ -61,7 +61,7 @@ export const protectedRepositoryGitInstallationSql = `
   AND CASE WHEN ${recipient} ? 'deliveryProfile'
     THEN (${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed','network-policy'))
       OR (${observedSourceProfile} AND ${networkPolicyGitSelection})
-    ELSE NOT (${observedInstallationProfile}) END
+    ELSE NOT (${observedInstallationProfile} OR ${observedSourceProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'
   AND r.observed->>'executionId' = r.revision_id AND r.observed->>'providerId' = (r.desired->>'providerId')

@@ -247,6 +247,9 @@ export function compileOpenShellBoundGitRule(
         : "Expected an installation Git Provider.",
     );
   }
+  if (credential === "source" && scopedRest !== undefined) {
+    throw new Error("A Source Provider is Git-only.");
+  }
   if (!Array.isArray(binaries) || binaries.length === 0) {
     throw new Error("Expected exact Git transport binary paths.");
   }
