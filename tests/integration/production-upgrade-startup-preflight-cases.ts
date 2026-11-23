@@ -2547,7 +2547,7 @@ exec "$0.fixture" "$@"
     });
   }
 
-  for (const [scenario, name] of [
+  for (const [scenario, name, denyAdmission] of [
     [
       "worker-only",
       "an oversized draft still lets a conflicting policy refuse the channel one-off before Stop",
@@ -2612,6 +2612,12 @@ exec "$0.fixture" "$@"
     [
       "worker-admission-denied",
       "the channel one-off refuses a Worker admission denial before Agent Stop",
+      "worker",
+    ],
+    [
+      "api-admission-denied",
+      "the channel one-off refuses an API admission denial before Agent Stop",
+      "api",
     ],
   ] as const) {
     const conservative = scenario === "conservative";
@@ -2977,10 +2983,10 @@ exec "$0.fixture" "$@"
             await installationFile.close();
           }
         }
-        if (scenario === "worker-admission-denied") {
-          // Patch access is allowed, but admission refuses changing the Worker to zero replicas.
+        if (denyAdmission) {
+          // Patch access is allowed, but admission refuses changing this writer to zero replicas.
           const state = await f.state();
-          state.denyWorkerAdmission = true;
+          state[denyAdmission === "worker" ? "denyWorkerAdmission" : "denyApiAdmission"] = true;
           await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
         }
         const failure = await runForFailure(
@@ -3001,16 +3007,22 @@ exec "$0.fixture" "$@"
             [],
           );
         }
-        if (scenario === "worker-admission-denied") {
+        if (denyAdmission) {
+          const writer = denyAdmission === "worker" ? "Worker" : "API";
           assert.deepEqual(f.stopRequests, []);
           assert.equal(failure.code, 1);
-          assert.match(
+          assert.ok(
+            failure.stderr.includes(
+              `Server-side dry-run of the ${writer} stop failed for system/openclaw-enterprise-${denyAdmission}.`,
+            ),
             failure.stderr,
-            /Server-side dry-run of the Worker stop failed for system\/openclaw-enterprise-worker\./,
           );
-          assert.match(
-            await f.readEvidence("quiescence-worker-preview.err"),
-            /admission webhook "writer-policy\.test" denied the Worker stop/,
+          const previewError = await f.readEvidence(`quiescence-${denyAdmission}-preview.err`);
+          assert.ok(
+            previewError.includes(
+              `admission webhook "writer-policy.test" denied the ${writer} stop`,
+            ),
+            previewError,
           );
           await assertStoppedBeforeWriters(f);
           assert.equal(existsSync(join(f.evidence, "helm-started")), false);

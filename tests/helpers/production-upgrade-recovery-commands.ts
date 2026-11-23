@@ -1108,12 +1108,15 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const preview = args.includes("--dry-run=server");
         if (preview) {
           assert.ok(args.includes("patch"));
-          assert.equal(component, "worker");
+          assert.ok(args.includes("deployment/openclaw-enterprise-" + component));
           assert.equal(fileArg("--namespace"), "system");
           assert.equal(fileArg("--context"), "selected");
           assert.equal(fileArg("--output"), "jsonpath={.spec.replicas}");
-          assert.deepEqual([state.api, state.worker], [1, 1]);
-          appendFileSync(join(root, "worker-patch-previews"), "worker\n");
+          assert.equal(state.api, 1);
+          if (component === "worker") {
+            assert.equal(state.worker, 1);
+            appendFileSync(join(root, "worker-patch-previews"), "worker\n");
+          }
         }
         if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
           return fail(1, "Forbidden: cannot patch the worker Deployment");
@@ -1171,12 +1174,16 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             typeof replicas === "number" && Number.isSafeInteger(replicas) && replicas >= 0,
             "expected a nonnegative replica count",
           );
-          if (component === "worker" && state.denyWorkerAdmission) {
-            return fail(1, 'admission webhook "writer-policy.test" denied the Worker stop');
+          const denyAdmission =
+            component === "worker" ? state.denyWorkerAdmission : state.denyApiAdmission;
+          if (replicas === 0 && denyAdmission) {
+            const writer = component === "worker" ? "Worker" : "API";
+            return fail(1, `admission webhook "writer-policy.test" denied the ${writer} stop`);
           }
           if (preview) {
-            if (!take("empty-worker-patch-preview")) {
-              out(String(take("nonzero-worker-patch-preview") ? state.worker : replicas));
+            if (component !== "worker" || !take("empty-worker-patch-preview")) {
+              const nonzero = component === "worker" && take("nonzero-worker-patch-preview");
+              out(String(nonzero ? state.worker : replicas));
             }
             return io.exit(0);
           }

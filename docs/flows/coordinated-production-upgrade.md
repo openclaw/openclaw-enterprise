@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: 2026-11-23
-last_updated_session: authoring-run/cdd15e8b-8040-4505-bb79-d9ccd1dc5682
+last_updated_session: authoring-run/80b539ac-f508-454c-a905-70939d30ec31
 ---
 
 # Production image upgrade flow
@@ -240,16 +240,15 @@ remain operator attestations.
 ### 3. Quiesce writers and run the candidate release
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. Running Workers require stable inventory through resume.
+Validate Deployments. Running Workers require stable inventory through resume.
 Named patch denial blocks. Inconclusive reviews warn.
-With both running, `preview_worker_stop` requires server-side dry-run to confirm zero replicas
-before channel Agent Stop and again before shutdown. Inspect `quiescence-worker-preview.err`.
+`preview_writer_stop` requires server-side dry runs confirming zero replicas for running writers before channel Agent Stop and the Worker before API shutdown. Inspect `quiescence-<component>-preview.err`.
 Skip stopped writers. Patches test UID, resource version and replicas.
-If a conflict stops the API, restore access under exclusive maintenance before retry.
+If conflicts stop the API, restore access under exclusive maintenance.
 Verify original Deployments at zero and Pods absent.
-Keep nodes reachable and other writers/autoscalers stopped.
-Separate mode rechecks Secret identities before stopping writers and again before
-recording their stopped UIDs and generations, then exits 3. `apply_database_migration`
+Keep nodes reachable, other writers/autoscalers stopped.
+Separate mode rechecks Secret identities before shutdown and before recording
+stopped UIDs and generations, then exits 3. `apply_database_migration`
 requires irreversible SQL approval, a verified separate render and no Helm
 submission. Its journal records Job create/delete intent. Unknown effects retain
 the lock and kubeconfig snapshot. Cleanup observes prior deletes.
@@ -374,6 +373,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-23 04:18: Preview API. (authoring-run/80b539ac-f508-454c-a905-70939d30ec31 - b24f6ec158b861b13f2baff95bf661346de7f767)
 - 2026-11-23 02:02: Preview earlier. (authoring-run/cdd15e8b-8040-4505-bb79-d9ccd1dc5682 - 96519cbee73d4ee54528626c0517ee7aaa6e1822)
 - 2026-11-22 17:37: Preview Worker stop. (authoring-run/8a4cdeff-6237-46d6-ad85-7ea5bfa0c302 - 3eedffbaae63cdc1b006e51d49b88504462d2a5c)
 - 2026-11-21 09:16: Trace rendered mode and retry. (authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0 - f9fb2a1f6fed7afd4ba8e69737f611e55604f587)
