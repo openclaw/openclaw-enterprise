@@ -4123,6 +4123,27 @@ test("a Worker upgrade keeps saved bindings current and releases nothing to a Sa
   assert.equal(held.activity.updates, 1);
 });
 
+test("a Sandbox loaded with a creation route that an ungranted binding withholds receives no material", async (t) => {
+  // An earlier Worker compiled creation on delivery although example/outside is bound without a
+  // saved grant. This Worker withholds it, so the loaded policy differs until a redeploy.
+  const held = await heldGit(t, true, undefined, { permissions: { pull_requests: "write" } });
+  const writable = held.loadedGitRule.endpoints.find(
+    ({ path }) => path === "/repos/example/delivery/**",
+  );
+  assert.ok(writable && "rules" in writable);
+  assert.ok(writable.rules.every(({ allow }) => allow.method === "GET"));
+  const current = structuredClone(writable.rules);
+  Object.assign(writable, {
+    rules: [{ allow: { method: "POST", path: "/repos/example/delivery/pulls" } }, ...current],
+  });
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  Object.assign(writable, { rules: current });
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+});
+
 test("native issue reads refuse a loaded API write before material selection", async (t) => {
   const held = await heldGit(t, true, undefined, {
     permissions: { issues: "write" },
