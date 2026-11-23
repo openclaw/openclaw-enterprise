@@ -100,9 +100,9 @@ tenant_kubectl create rolebinding openclaw-enterprise-automation-observer \
 ```
 
 It grants Services, HTTPRoutes and NetworkPolicies `get`, and EndpointSlices `list`.
-ConfigMaps `get` comes from the existing configuration binding. The operator creates
-this binding; the worker does not write RBAC. Dedicated nonempty MCP is refused;
-no automation-observer binding belongs in the Agent execution namespace.
+ConfigMaps `get` comes from the existing configuration binding. For either eligible
+Harness, bind the observer in the Gateway namespace, never in the dedicated Agent
+execution namespace. The operator creates the binding; the worker does not write RBAC.
 
 ### Confirm the Namespace is ready
 
