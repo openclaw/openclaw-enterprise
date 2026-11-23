@@ -377,6 +377,20 @@ const pr = (base: string, head: string) => ({
 const untrustedSelector = (marker: string, output: string) =>
   `import { writeFileSync, appendFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\nappendFileSync(process.argv[3], '${output}');\n`;
 
+// A trusted older selector can verify full but cannot authorize any narrower mode.
+const legacyFullSelector = `import { appendFileSync } from "node:fs";
+const [option, value, ...rest] = process.argv.slice(2);
+if (option === "--github-output") {
+  const reason = process.env.GITHUB_EVENT_NAME === "push" ? "non_pr_event" : "ineligible_change";
+  appendFileSync(value, "mode=full\\nreason=" + reason + "\\n");
+} else if (option !== "--verify-mode") {
+  throw new Error("Unexpected selector command");
+} else if (value !== "full") {
+  console.log("Cannot verify:", value, ...rest);
+  process.exitCode = 23;
+}
+`;
+
 function repository(repo: string) {
   const git = (...args: string[]) => command(repo, "git", args);
   const put = (path: string, content: string | Buffer = "text\n") => {
@@ -1714,12 +1728,7 @@ test("main push cannot execute its new policy or narrow with an old policy", asy
   assert.notEqual((await transitionCheckout.run("verify", "tests", mainPushEnvironment)).status, 0);
   assert.equal(existsSync(transitionMarker), false);
 
-  const old = await fixture(t, docsChange, {
-    "scripts/ci/impact.ts": `import { appendFileSync } from "node:fs";
-if (process.argv[2] === "--github-output") appendFileSync(process.argv[3], "mode=full\\nreason=non_pr_event\\n");
-else if (process.argv[3] !== "full") process.exit(1);
-`,
-  });
+  const old = await fixture(t, docsChange, { "scripts/ci/impact.ts": legacyFullSelector });
   mainPushEvent(old);
   await (await shallowBootstrap(old)).expectReason("non_pr_event", mainPushEnvironment);
 });
@@ -3574,20 +3583,25 @@ test("the pull request's own selector never decides test-only mode", async (t) =
   const [shallow, legacy, fallback] = await each(
     [
       [postgresEdit(({ put }) => put("scripts/ci/impact.ts", untrusted)), suiteFiles()],
-      // A base policy that only knows documentation selects full for tests.
-      [editA, suiteFiles(untrusted.replace("mode=tests", "mode=bogus"))],
+      [editA, suiteFiles(legacyFullSelector)],
       // Without a base policy the bootstrap falls back to full.
       [editA, missing],
     ] satisfies ChangeCase[],
     async ([change, initial]) => shallowBootstrap(await fixture(t, change, initial)),
   );
   await present(shallow).expect("full", {}, "ineligible_change");
-  // Checked before the legacy base policy below runs, since it writes the same marker.
   assert.equal(existsSync(marker), false);
-  const verify = await present(legacy).run("verify", "tests", {
-    EXPECTED_LANES: '["checks-baseline-1"]',
-  });
-  assert.notEqual(verify.status, 0);
+
+  const trusted = present(legacy);
+  assert.equal(await trusted.select(), "mode=full\nreason=ineligible_change\n");
+  const full = await trusted.run("verify", "full");
+  assert.equal(full.status, 0, full.stderr);
+
+  // Require the selector's refusal of this request, not just a failed workflow step.
+  const lanes = '["checks-baseline-1"]';
+  const refused = await trusted.run("verify", "tests", { EXPECTED_LANES: lanes });
+  assert.equal(refused.status, 23, refused.stderr);
+  assert.equal(refused.stdout.trim(), `Cannot verify: tests --lanes ${lanes}`);
   await present(fallback).expect("full", {}, "bootstrap_policy_unavailable");
 });
 
