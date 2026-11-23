@@ -261,8 +261,10 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       resolved,
     );
     await validatePluginCredentialSources(driver, plugins, plugin.sources, harnessAuth);
-    const descriptions = await describePluginBindings(driver, plugins, selected, plugin.sources);
-    validatePluginRequestAuthority(descriptions, plugin.templates);
+    if (selected.length > 0) {
+      const descriptions = await describePluginBindings(driver, plugins, selected, plugin.sources);
+      validatePluginRequestAuthority(descriptions, plugin.templates);
+    }
     return selected;
   }
 

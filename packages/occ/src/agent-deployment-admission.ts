@@ -365,6 +365,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     }
     const environments = new Set(bindings.map(({ projection }) => projection.environment));
     for (const [pluginId, description] of descriptions) {
+      const roles = new Map(description.tools.map(({ id, role }) => [id, role]));
+      if (description.networkRequirements.some(({ toolId }) => !roles.has(toolId))) {
+        throw new ResourceStateConflictError("The Plugin network requirement has no consumer.");
+      }
       const credentialRequirements = new Set(
         Object.values(description.credentials).flatMap((accounts) =>
           Object.values(accounts).flatMap(({ networkRequirementIds }) => networkRequirementIds),
@@ -372,7 +376,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       );
       network.push(
         ...description.networkRequirements
-          .filter(({ id }) => !credentialRequirements.has(id))
+          .filter(
+            ({ id, toolId }) => !credentialRequirements.has(id) && roles.get(toolId) === "harness",
+          )
           .map(({ match }) => match),
       );
       for (const [requirement, accounts] of Object.entries(description.credentials)) {

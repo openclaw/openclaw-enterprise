@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import type { ConnectionEndpoint } from "./connection-templates.ts";
+import type { ConnectionEndpoint, StaticKeyDestination } from "./connection-templates.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { DeploymentRequestMatch, DeploymentRequestPolicy } from "./credential-deployment.ts";
 import { networkMatchDetails, SandboxNetworkGrantSchema, validDnsHost } from "./sandbox-policy.ts";
@@ -129,14 +129,14 @@ export function requestCovered(
 /** Narrow reviewed consumer requests to the exact destinations authorized for its Source. */
 export function intersectCredentialRequests(
   reviewed: readonly DeploymentRequestMatch[],
-  destinations: readonly (ConnectionEndpoint & { readonly method: string | null })[],
+  destinations: readonly (ConnectionEndpoint | StaticKeyDestination)[],
 ): DeploymentRequestMatch[] {
   const matches: DeploymentRequestMatch[] = [];
   for (const rule of reviewed) {
     for (const destination of destinations) {
       const { host, port, path } = destination;
       if (
-        destination.method !== null &&
+        "method" in destination &&
         (rule.requestPolicy?.type !== "http" || rule.requestPolicy.method !== destination.method)
       ) {
         continue;

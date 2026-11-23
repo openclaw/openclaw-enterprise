@@ -57,9 +57,11 @@ export async function describePluginBindings(
 ): Promise<ReadonlyMap<string, PluginDeploymentDescription>> {
   const descriptions = new Map<string, PluginDeploymentDescription>();
   const authorized = new Map(sources.map((source) => [source.id, source]));
-  for (const pluginId of new Set(bindings.map((binding) => binding.pluginId))) {
-    const selection = plugins?.[pluginId];
-    if (!selection?.enabled || !driver?.describeDeployment) {
+  for (const [pluginId, selection] of Object.entries(plugins ?? {})) {
+    if (!selection.enabled) {
+      continue;
+    }
+    if (!driver?.describeDeployment) {
       throw new ResourceStateConflictError(
         "The selected Plugin has no reviewed deployment description.",
       );
@@ -113,6 +115,10 @@ export function pluginCredentialRequests(
   account: PluginCredentialConnection,
   template: PluginSourceTemplate | undefined,
 ): readonly DeploymentRequestMatch[] {
+  const roles = new Map(description.tools.map(({ id, role }) => [id, role]));
+  if (account.toolIds.some((id) => roles.get(id) !== "harness")) {
+    throw new ResourceStateConflictError("The Plugin credential requires a Harness consumer.");
+  }
   const rules = new Map(description.networkRequirements.map((rule) => [rule.id, rule]));
   if (rules.size !== description.networkRequirements.length) {
     throw new ResourceStateConflictError(
@@ -137,18 +143,10 @@ export function pluginCredentialRequests(
     throw new ResourceStateConflictError("The Plugin Source has no approved Connection Template.");
   }
   const { current } = template;
-  const approved = intersectCredentialRequests(
-    reviewed,
-    current.mode === "static_bearer"
-      ? current.destinations
-      : current.destinations.map((destination) => ({ ...destination, method: null })),
-  );
+  const approved = intersectCredentialRequests(reviewed, current.destinations);
   const allowed =
     "consent" in template
-      ? intersectCredentialRequests(
-          approved,
-          template.consent.destinations.map((destination) => ({ ...destination, method: null })),
-        )
+      ? intersectCredentialRequests(approved, template.consent.destinations)
       : approved;
   if (allowed.length === 0) {
     throw new ResourceStateConflictError(

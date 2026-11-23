@@ -19,6 +19,7 @@ import {
   type CredentialSourceSnapshot,
   type HarnessAuthBinding,
   type PluginDriver,
+  type PluginDeploymentDescription,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SecretBindings,
@@ -280,6 +281,11 @@ export function createAgentCredentialAccess({
             "The Plugin Source's original OAuth consent version is unavailable.",
           );
         }
+        if (current.issuer !== consent.issuer) {
+          throw new ResourceStateConflictError(
+            "Reconnect the Plugin Source after its Connection Template issuer changes.",
+          );
+        }
         templates.set(sourceId, { current, consent });
       }
       sources.set(sourceId, source);
@@ -327,7 +333,10 @@ export function createAgentCredentialAccess({
       );
     }
     await validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
-    const descriptions = await describePluginBindings(driver, agent.plugins, selected, sources);
+    const descriptions =
+      selected.length > 0
+        ? await describePluginBindings(driver, agent.plugins, selected, sources)
+        : new Map<string, PluginDeploymentDescription>();
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const source of sources) {
       const sourceId = source.id;

@@ -5,6 +5,8 @@ import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedCliInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
@@ -18,6 +20,7 @@ import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
@@ -446,6 +449,28 @@ test(
       scopes: [],
     });
     assert.equal(incompatible.statusCode, 200, incompatible.body);
+    // Refresh keeps using the original grant, but a Plugin cannot admit it under a new issuer.
+    controller.installPluginDrivers([new OCCPluginDriver()]);
+    const google = managedCliInstalls.find(
+      ({ packageName }) => packageName === "oce-google-workspace",
+    );
+    assert.ok(google);
+    const changedIssuer = await inject("POST", `${base}/agents/validate`, {
+      configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-4.1") },
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key" },
+      plugins: {
+        [google.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: google.releaseSha256,
+            credentials: { account: defaultsId },
+          },
+        },
+      },
+    });
+    assert.equal(changedIssuer.statusCode, 409, changedIssuer.body);
+    assert.match(changedIssuer.json().error.message, /Reconnect.*issuer changes/);
     assert.deepEqual(
       (await owner("GET", `${sources}/${defaultsId}`)).json().data.consent,
       defaultConsent,
