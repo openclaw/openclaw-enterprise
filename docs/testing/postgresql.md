@@ -299,6 +299,33 @@ support both the saved-connection APIs and configured IAM startup policy exercis
 by these cases. Each case removes its containers and database on completion,
 including assertion failure.
 
+### Check a recovery controller before maintenance
+
+The API tests can pass even if the released controller's migrator refuses the
+upgraded history. To screen a recovery image, keep the candidate fixed and
+select the recovery image and revision as the released controller above.
+Run the whole file with `--lifecycle complete`. If you use
+`--controller-compatibility-results` for the upgrade, supply the report for the
+**installed** controller and candidate.
+
+Set `REPORT` to the trusted recovery run's final `result.json`. Obtain both
+image digests and the full test checkout commit (`RUNNER_SHA`) independently
+of the report. Supply distinct digests in the form `sha256:<64 lowercase hex digits>`.
+
+```sh
+python3 scripts/upgrade-evidence.py recovery-history \
+  "$REPORT" "$RECOVERY_DIGEST" "$CANDIDATE_DIGEST" "$RUNNER_SHA"
+```
+
+Exit 0 requires passing API cases for that pair, successful preparation, run
+and cleanup, and one `released-controller-history` measurement of `current`.
+If the measurement is missing, repeat qualification with a runner that records
+it. If the migrator rejects the history, qualify a different recovery image.
+
+This check reads a local report. Before rollout, check the recovery image against
+the Installation's upgraded history and [verify that an acknowledged write
+survives controller return](populated-controller-return.md).
+
 ## Azure workload-identity connections
 
 The `postgres-azure-workload-identity` lane reads an existing authorized Azure
