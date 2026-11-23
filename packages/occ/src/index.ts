@@ -94,6 +94,11 @@ export type {
 } from "./configuration-operations.ts";
 export { credentialWithdrawalCompanionRevisions } from "./agent-credential-withdrawal.ts";
 export type { AgentCredentialSourceInput } from "./agent-credential-withdrawal.ts";
+export type {
+  AgentCredentialPushAudit,
+  AgentCredentialPushResult,
+  PushAgentCredentialsInput,
+} from "./agent-credential-retry.ts";
 export type { CreateSecretInput, UpdateSecretInput } from "./secret-operations.ts";
 export type {
   CreateServiceAccountInput,

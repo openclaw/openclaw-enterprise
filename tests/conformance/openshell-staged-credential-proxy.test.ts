@@ -896,6 +896,16 @@ test("OpenShell Source notification leaves an absent delivery Provider absent", 
   assert.equal(f.state.updates.length, 0);
 });
 
+test("OpenShell Source notification refuses a version that differs from resolved custody", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.setResolvedCredential("synthetic-material-v3", "source-v3");
+
+  await assert.rejects(f.notify("source-v2"), DependencyUnavailableError);
+  assert.equal(f.state.updates.length, 0);
+  assert.equal(f.state.provider!.config.oce_source_version, "source-v1");
+});
+
 test("OpenShell Source notification rejects a mismatched Source Namespace placement", async (t) => {
   const f = await fixture(t);
   const proxy = f.createProxy("occ/token-service");
@@ -966,7 +976,7 @@ test("OpenShell Source notification updates an attached Provider copy and confir
   assert.equal(typeof receiptQueries[0], "string");
 });
 
-test("OpenShell Source notification stops on caller cancellation and rejects stale READY", async (t) => {
+test("OpenShell Source notification rejects stale readiness and can retry the persisted version", async (t) => {
   for (const readiness of ["cancel-pending", "stale-ready"] as const) {
     await t.test(readiness, async (t) => {
       const f = await fixture(t);
@@ -994,6 +1004,23 @@ test("OpenShell Source notification stops on caller cancellation and rejects sta
         "13",
       );
       assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "12");
+
+      if (readiness === "stale-ready") {
+        const providerId = f.state.provider!.metadata.id;
+        const failedReceiptId = record(f.state.providerStatus!.receipt).receipt_id;
+        f.state.updateReadiness = "converge";
+
+        // Source custody is already at v2. A manual delivery retry reuses the Provider and
+        // succeeds only after a new UPDATE receipt confirms that its serving target caught up.
+        await f.notify("source-v2");
+
+        assert.equal(f.state.updates.length, 2);
+        assert.equal(f.state.creates.length, 1);
+        assert.equal(f.state.provider!.metadata.id, providerId);
+        assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
+        assert.notEqual(record(f.state.providerStatus!.receipt).receipt_id, failedReceiptId);
+        assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "14");
+      }
     });
   }
 });

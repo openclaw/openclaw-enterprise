@@ -138,6 +138,7 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
+        "manual Agent push fully preflights deployed Source authority and recovers a stale serving copy",
         "standalone activation commits the prepared revision and delivers an active Source PATCH",
         "standalone activation refuses a source grant removed during preparation",
         "credential withdrawal work revokes from the active revision without redeploying it",
