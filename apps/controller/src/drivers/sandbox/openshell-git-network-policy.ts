@@ -25,8 +25,11 @@ export type OpenShellGitNetworkTarget =
       readonly credentialSource: string;
     };
 
-/** The installation or Source Provider a bound rule names; the name is derived, never chosen. */
-const boundGitProviderPattern = /^oce-github-(?:installation|token)-[a-f0-9]{32}$/;
+/** The Provider a bound rule names, by the credential it binds; the name is derived, never chosen. */
+const boundGitProviderPattern = Object.freeze({
+  installation: /^oce-github-installation-[a-f0-9]{32}$/,
+  source: /^oce-github-token-[a-f0-9]{32}$/,
+});
 
 const binaries = Object.freeze([
   "/usr/bin/git",
@@ -222,15 +225,27 @@ function scopedApiEndpoints(
   return endpoints;
 }
 
-/** The Sandbox owns the grants. The attached Provider supplies only the credential. */
+/**
+ * The Sandbox owns the grants. The attached Provider supplies only the credential. Only a caller
+ * that binds a TokenService Source accepts a Source Provider; every other caller, an installation.
+ */
 export function compileOpenShellBoundGitRule(
   grants: readonly RepositoryNetworkGrant[],
   provider: string,
   binaries: readonly string[],
   scopedRest?: readonly OpenShellScopedRestGrant[],
+  credential: keyof typeof boundGitProviderPattern = "installation",
 ) {
-  if (typeof provider !== "string" || !boundGitProviderPattern.test(provider)) {
-    throw new Error("Expected an installation or Source Git Provider.");
+  if (
+    typeof provider !== "string" ||
+    !Object.hasOwn(boundGitProviderPattern, credential) ||
+    !boundGitProviderPattern[credential].test(provider)
+  ) {
+    throw new Error(
+      credential === "source"
+        ? "Expected a Source Git Provider."
+        : "Expected an installation Git Provider.",
+    );
   }
   if (!Array.isArray(binaries) || binaries.length === 0) {
     throw new Error("Expected exact Git transport binary paths.");

@@ -19,11 +19,10 @@ export const openShellInstallationGitProviderPrefix = "oce-github-installation-"
 export const openShellSourceGitProviderPrefix = "oce-github-token-";
 export const openShellGitDeliveryTransport = "openshell-repository-git/v1";
 const observedInstallationProfile =
-  "r.observed->>'provider' ~ '^(" +
-  openShellInstallationGitProviderPrefix +
-  "|" +
-  openShellSourceGitProviderPrefix +
-  ")[0-9a-f]{32}$'";
+  "r.observed->>'provider' ~ '^" + openShellInstallationGitProviderPrefix + "[0-9a-f]{32}$'";
+// Only the native network-policy recipient lends a Source; the App's recipients keep main's names.
+const observedSourceProfile =
+  "r.observed->>'provider' ~ '^" + openShellSourceGitProviderPrefix + "[0-9a-f]{32}$'";
 
 // The preview correlates a denial at the held launcher with the authenticated callback.
 // It cannot prove an operator will retain that hook. Strict senders never accept this branch.
@@ -60,7 +59,8 @@ export const protectedRepositoryGitInstallationSql = `
   AND ((${registeredGitSelection} AND NOT (r.observed ? 'observedHook'))
     OR ${observedHookSelection} OR ${networkPolicyGitSelection})
   AND CASE WHEN ${recipient} ? 'deliveryProfile'
-    THEN ${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed','network-policy')
+    THEN (${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed','network-policy'))
+      OR (${observedSourceProfile} AND ${networkPolicyGitSelection})
     ELSE NOT (${observedInstallationProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'

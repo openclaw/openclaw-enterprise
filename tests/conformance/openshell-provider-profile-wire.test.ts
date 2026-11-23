@@ -632,24 +632,36 @@ test("the Git rule compiler rejects nonconcrete grants and transport paths", () 
   assert.throws(
     () =>
       compileOpenShellBoundGitRule([{ ...read, access: "read" }], "ordinary-provider", binaries),
-    /installation or Source Git Provider/,
+    /installation Git Provider/,
   );
-  // A Source's Provider is bound the same way; any other name in that space is refused.
+  // A caller that binds a Source names its Provider; any other name in that space is refused.
   const source = "oce-github-token-0123456789abcdef0123456789abcdef";
   assert.deepEqual(
-    compileOpenShellBoundGitRule([{ ...read, access: "read" }], source, binaries).endpoints.map(
-      ({ credential_binding }) => credential_binding,
-    ),
+    compileOpenShellBoundGitRule(
+      [{ ...read, access: "read" }],
+      source,
+      binaries,
+      undefined,
+      "source",
+    ).endpoints.map(({ credential_binding }) => credential_binding),
     [{ provider: source }],
   );
   for (const name of [
     "oce-github-token-0123456789ABCDEF0123456789abcdef",
     "oce-github-token-0123456789abcdef",
     "oce-github-source-0123456789abcdef0123456789abcdef",
+    provider,
   ]) {
     assert.throws(
-      () => compileOpenShellBoundGitRule([{ ...read, access: "read" }], name, binaries),
-      /installation or Source Git Provider/,
+      () =>
+        compileOpenShellBoundGitRule(
+          [{ ...read, access: "read" }],
+          name,
+          binaries,
+          undefined,
+          "source",
+        ),
+      /Expected a Source Git Provider/,
     );
   }
   for (const paths of [
@@ -666,6 +678,29 @@ test("the Git rule compiler rejects nonconcrete grants and transport paths", () 
       /exact Git transport binary/,
     );
   }
+});
+
+test("an installation caller's Git rule refuses a Source Provider name, as before Sources", () => {
+  const binaries = ["/usr/lib/git-core/git-remote-https"];
+  const grants = [{ repository: "fixture/a", access: "read" }] as const;
+  const source = "oce-github-token-0123456789abcdef0123456789abcdef";
+  for (const credential of [undefined, "installation"] as const) {
+    assert.throws(
+      () => compileOpenShellBoundGitRule(grants, source, binaries, undefined, credential),
+      /Expected an installation Git Provider/,
+    );
+  }
+  assert.throws(
+    () =>
+      compileOpenShellBoundGitRule(
+        grants,
+        source,
+        binaries,
+        undefined,
+        "toString" as unknown as "source",
+      ),
+    /Expected an installation Git Provider/,
+  );
 });
 
 test("provider profile wire defaults preserve Git overlap enforcement", async (t) => {

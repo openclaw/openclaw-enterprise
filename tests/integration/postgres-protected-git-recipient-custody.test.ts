@@ -6,7 +6,11 @@ import {
   selectBundledRepositoryGitCustody,
   selectRegisteredRepositoryGitCustody,
 } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/egress-proxy/openshell-repository-git-evidence.ts";
+import {
+  openShellGitRecipientEvidence,
+  openShellInstallationGitProviderPrefix,
+  openShellSourceGitProviderPrefix,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-repository-git-evidence.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { postgresRepositorySessions } from "../../packages/occ/src/state/postgres-repository-sessions.ts";
 import {
@@ -857,6 +861,57 @@ test(
           { absent: "unprepared" },
         );
         assert.equal(f.gh.issuesOfTokens.length, 1);
+      });
+    }
+  },
+);
+
+test(
+  "an App installation recipient releases nothing to a Provider observed with a Source's name",
+  requiresPostgres,
+  async (t) => {
+    for (const provider of [
+      openShellInstallationGitProviderPrefix,
+      openShellSourceGitProviderPrefix,
+    ] as const) {
+      await t.test(provider, async (t) => {
+        const f = await fixture(t, { installationAccess: true });
+        await disposeNativeSession(f);
+        const binding = resolveGitHubRepositoryBinding(f.registry, {
+          namespaceId: f.revision.namespaceId,
+          repositoryRef: "team-install",
+          profile: "github-installation",
+        });
+        const driver = {
+          id: "installation-name",
+          implementation: "openshell",
+          configurationId: "c".repeat(64),
+        };
+        const owner = await f.startOwner({
+          controlSocket: undefined,
+          repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
+        });
+        const { installation, revisionId } = await admitProtectedSession(f, driver, binding, {
+          mode: 6,
+        });
+        const routes = new PostgresOpenShellGitRouteStore(f.pool);
+        const recorded = await recordBootstrapRoute(f, routes, installation, revisionId);
+        // Only the native network-policy recipient lends a Source; this one keeps main's names.
+        const observed = { ...recorded.observed, provider: provider + "a".repeat(32) };
+        await f.pool.query(
+          "UPDATE occ.credential_deliveries SET observed=$2::jsonb WHERE revision_id=$1",
+          [revisionId, JSON.stringify(observed)],
+        );
+        await owner.maintain();
+        const material = await owner.protectedGit!.observedHook!.readMaterial(
+          { revisionId, fence: 1, observed },
+          t.signal,
+        );
+        if (provider === openShellInstallationGitProviderPrefix) {
+          assert.ok(material && "value" in material, "the installation name is released");
+        } else {
+          assert.ok(!material || !("value" in material), "a Source's name is not released");
+        }
       });
     }
   },

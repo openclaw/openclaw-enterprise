@@ -892,7 +892,12 @@ export class OpenShellGitRuntime {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
       nativePolicy: entry.preview.native
-        ? { binaries: openShellGitNetworkDefaults(scope.delivery).binaries, scopedRest }
+        ? {
+            binaries: openShellGitNetworkDefaults(scope.delivery).binaries,
+            scopedRest,
+            ...("credentialSource" in scope.delivery &&
+              scope.delivery.credentialSource !== undefined && { credential: "source" as const }),
+          }
         : undefined,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [

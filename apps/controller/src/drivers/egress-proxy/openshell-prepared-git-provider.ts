@@ -700,6 +700,7 @@ export class OpenShellPreparedGitProvider {
         this.provider,
         this.scope.binaries,
         this.scope.scopedRest,
+        this.scope.credentialSource === undefined ? "installation" : "source",
       )
     );
   }

@@ -4087,6 +4087,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           git.provider,
           git.nativePolicy.binaries,
           git.nativePolicy.scopedRest,
+          git.nativePolicy.credential,
         );
         issueReads = rule.endpoints.some(({ host }) => host === "api.github.com");
         if (Object.hasOwn(composedPolicies, rule.name)) {
