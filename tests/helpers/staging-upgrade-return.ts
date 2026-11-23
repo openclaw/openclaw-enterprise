@@ -732,6 +732,7 @@ async function assertReturnedInstallationAuthentication(
 }
 type Rehearsal = {
   controllers: Controllers;
+  ordinaryUpgrade: boolean;
   kubeconfig: string;
   context: string;
   namespace: string;
@@ -1085,6 +1086,7 @@ export function rehearsalPlane({
 
 export async function rehearsePopulatedReturn({
   controllers,
+  ordinaryUpgrade,
   kubeconfig,
   context,
   namespace,
@@ -1431,13 +1433,24 @@ export async function rehearsePopulatedReturn({
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase("Recover the interrupted controller upgrade after committed initialization", () =>
+  const forwardPhase = ordinaryUpgrade
+    ? "Complete the ordinary controller upgrade"
+    : "Recover the interrupted controller upgrade after committed initialization";
+  await phase(forwardPhase, () =>
     measureUpgradeAvailability(
       externalRequest,
       installationId,
       directory,
       async (measureGuardedResume) => {
         const evidence = join(directory, "forward");
+        if (ordinaryUpgrade) {
+          await upgrade(["--evidence-dir", evidence]);
+          const deployed = await helmStatus();
+          assert.equal(deployed.version, baselineRelease.version + 1);
+          assert.equal(deployed.info.status, "deployed");
+          await verifyInstallation();
+          return;
+        }
         const client = join(directory, "helm-client.json");
         const shimDirectory = join(directory, "helm-client-bin");
         const shim = join(shimDirectory, "helm");

@@ -55,7 +55,9 @@ import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts"
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
-const returnSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const returnMode = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL;
+const ordinaryUpgrade = returnMode === "ordinary";
+const returnSelected = returnMode === "1" || ordinaryUpgrade;
 const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
 const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
 const protectedTuiSelection = {
@@ -79,6 +81,9 @@ function selectedTestTitle() {
   }
   if (onlineSelected) {
     return "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL";
+  }
+  if (ordinaryUpgrade) {
+    return "A populated production Helm Installation retains the acknowledged write after an ordinary upgrade and controller return";
   }
   if (returnSelected) {
     return "A populated production Helm Installation retains the acknowledged write after controller return";
@@ -2111,6 +2116,7 @@ test(
       }
       await rehearsePopulatedReturn({
         controllers: rehearsal,
+        ordinaryUpgrade,
         kubeconfig: selection.kubeconfigPath,
         context: selection.kubernetesContext,
         namespace: system,
