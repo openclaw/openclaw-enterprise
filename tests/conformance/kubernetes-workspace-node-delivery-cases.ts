@@ -1,42 +1,16 @@
 import assert from "node:assert/strict";
-import {
-  kubernetesNamespaceName,
-  type KubernetesComputeDriver,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { withComputeWorkWaiting } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { digest, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
-import type { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
+import type { DedicatedDeployFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
 import {
   assertExecStringsWithinBudget,
   containerProgram,
   EXEC_STRING_BUDGET,
 } from "./kubernetes-workload-program-cases.ts";
-
-type DeployTransport = ReturnType<typeof createDedicatedDeployKubernetesFixture>;
-type DedicatedDeployFixture = DeployTransport & {
-  driver: KubernetesComputeDriver;
-  revision: AgentRevision;
-  namespace: string;
-  gatewayName: string;
-  agentName: string;
-  state: {
-    setupCalls: number;
-    connected: boolean;
-    gatewayAppliesBinding: boolean;
-    gatewayWorkspaceNodeId: unknown;
-    gatewayWorkspaceNodeFailure: unknown;
-    pairAfterSetupMs: number | undefined;
-    observeWaits: number[];
-    pairAtMs: number | undefined;
-    failAtMs: number | undefined;
-    stepObservations: boolean;
-  };
-  prepare: () => ReturnType<KubernetesComputeDriver["prepareRevision"]>;
-  markWorkloadsReady: () => void;
-};
 
 export type DedicatedDeployFixtureFactory = (options?: {
   statusProxy?: boolean;
@@ -84,7 +58,7 @@ export function containerEnv(container: Record<string, unknown>) {
   return renderedRecords(container.env, "container environment entry");
 }
 
-function workspaceSetupSecret(objects: DeployTransport["objects"]) {
+function workspaceSetupSecret(objects: DedicatedDeployFixture["objects"]) {
   const secret = [...objects.values()].find(
     (object) => object.kind === "Secret" && typeof asRecord(object.data)?.setupCode === "string",
   );
