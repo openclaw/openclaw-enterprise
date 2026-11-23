@@ -96,7 +96,11 @@ records. The Collector drops it.
 The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`,
 and the `auth:maintain` event's `command` only as identifier codes. It keeps
 `fence` only as a nonnegative safe integer and `installationId` and
-`orphanedConfigurationId` only as OCC-assigned `ins_` and `cfg_` UUIDs.
+`orphanedConfigurationId` only as OCC-assigned `ins_` and `cfg_` UUIDs. A
+repository token Source's delivery and loan refusal keep `credentialSourceId`
+only as a `cs_` UUID, `credentialSourceVersion` only as a UUID (TokenService
+writes it at random with the value) and `tokenClass` only as a known class.
+The Collector does not export these fields for these events.
 
 `apps/controller/src/worker.ts:finalizeActiveRevision` normalizes the runtime
 failure code through the shared vocabulary and adds only that code to active

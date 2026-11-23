@@ -194,13 +194,14 @@ principal's `operate` and the token class. The ceiling check covers the access
 the revision was deployed with: a ceiling lowered since then refuses the loan
 with reason `source_access_exceeded`; redeploy within it. A refused loan logs
 `REPOSITORY_SOURCE_LOAN_REFUSED` once per revision, Source version and reason, with the
-Source ID and version and never the value. The current loan stays in the
+`reason`, `credentialSourceId` and `credentialSourceVersion` and never the value. The current loan stays in the
 Sandbox until it ends.
 
 - **Replacement.** `PATCH` of the Source's `secret` commits the replacement.
   The Worker's next refresh (every 10 seconds) rotates it into the same Provider,
-  with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with the
-  Source ID and version once OpenShell reports it installed. Revoke the old token
+  with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with
+  `credentialSourceId` and `credentialSourceVersion` once OpenShell reports it
+  installed. Read these in the Worker's own log: the Collector does not export them. Revoke the old token
   at GitHub once every running Agent that uses the Source has logged that event
   for the new version, or 15 minutes after the replacement. A `github` Source has
   no Credential Proxy Provider, so

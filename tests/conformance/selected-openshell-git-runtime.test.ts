@@ -72,6 +72,8 @@ import type {
   OpenShellGitRouteStore,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { protocol } from "./postgres-transaction-protocol-fixture.ts";
+import { createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+import { captureLogs } from "../integration/common-logging-output.ts";
 
 // These are fixture-to-production port assertions, not alternative runtime implementations.
 type Fixture = ReturnType<typeof bootstrappingOpenShellGitRuntimeFixture>;
@@ -4731,19 +4733,30 @@ test("native Git releases a lent Source's hold on every path that writes nothing
 });
 
 test("native Git confirms a lent Source's delivery once per Source version, not at each renewal", async (t) => {
-  const { f, revision, reconcile, activity } = await heldGit(
+  const credentialSourceId = `cs_${randomUUID()}`;
+  const { f, revision, reconcile, activity, lentVersion } = await heldGit(
     t,
     true,
     undefined,
     undefined,
-    "cs_fixture_token",
+    credentialSourceId,
   );
-  const confirmed = () =>
-    f.events
+  // TokenService's custody version is a random UUID; the Worker log keeps it in that shape only.
+  lentVersion.value = randomUUID();
+  const firstVersion = lentVersion.value;
+  const output = captureLogs("occ-worker");
+  const log = createWorkerLogEmitter(output.logger);
+  const confirmed = () => {
+    output.lines.length = 0;
+    for (const event of f.events) {
+      log(event);
+    }
+    return output.lines
       .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
-      .map(({ credentialSourceVersion }) => credentialSourceVersion);
+      .map((line) => [line.credentialSourceId, line.credentialSourceVersion, line.revisionId]);
+  };
   await reconcile();
-  assert.deepEqual(confirmed(), ["version-1"]);
+  assert.deepEqual(confirmed(), [[credentialSourceId, firstVersion, revision.id]]);
   // The 7.5-minute renewal is new material with the same Source version.
   f.owner.material = {
     ...f.owner.material,
@@ -4753,7 +4766,23 @@ test("native Git confirms a lent Source's delivery once per Source version, not 
   await reconcile();
   assert.equal(activity.updates, 2, "the renewal is rotated in");
   assert.equal(f.runtime.route(revision.id).state, "installed");
-  assert.deepEqual(confirmed(), ["version-1"], "a renewal is not a new delivery");
+  assert.deepEqual(
+    confirmed(),
+    [[credentialSourceId, firstVersion, revision.id]],
+    "a renewal is not a new delivery",
+  );
+  // A replacement is: its version is logged, in the shape an operator waits for.
+  lentVersion.value = randomUUID();
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.deepEqual(confirmed(), [
+    [credentialSourceId, firstVersion, revision.id],
+    [credentialSourceId, lentVersion.value, revision.id],
+  ]);
 });
 
 test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {
