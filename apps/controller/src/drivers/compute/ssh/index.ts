@@ -30,6 +30,7 @@ import {
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
   keyedSettingPath,
+  refuseClaudeCodeRuntime,
 } from "@openclaw-enterprise/occ";
 import {
   asRecord,
@@ -624,12 +625,12 @@ export class SshComputeDriver implements ComputeDriver {
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
-    validateGatewayToolPolicy(
-      configuration,
-      (setting, requirement) =>
-        new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
-      options,
-    );
+    const settingError = (setting: string, requirement: string) =>
+      new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+    // The host helper prepares none of the Claude Code runtime's managed settings, sealed
+    // configuration or telemetry denial.
+    refuseClaudeCodeRuntime(configuration, settingError, "SSH Compute");
+    validateGatewayToolPolicy(configuration, settingError, options);
   }
 
   // Agent create and update refuse a roster or workspace the host helper refuses at deployment,

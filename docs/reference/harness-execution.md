@@ -193,7 +193,7 @@ Configuration takes effect on the next deployment.
 ### Native runtime selection
 
 Select `provider/model` (model IDs may contain slashes) and `agentRuntime.id`
-(`openclaw` or `codex`). Agent entries must agree on primary model and Harness.
+(`openclaw`, `codex` or [`claude-cli`](claude-code-runtime.md)). Agent entries must agree on primary model and Harness.
 Fallbacks must use that provider and Harness; admission preserves their order.
 
 The [model policy resolver](../../packages/occ/src/configured-harness.ts) selects

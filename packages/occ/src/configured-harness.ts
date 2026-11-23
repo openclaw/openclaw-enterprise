@@ -4,6 +4,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
+import {
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  claudeCodeRuntimeRunsProvider,
+  harnessIdForAgentRuntime,
+} from "./agent-runtime-ids.ts";
 import { canSpell } from "./configuration-settings.ts";
 import {
   agentEntryMessage,
@@ -16,6 +21,111 @@ import {
 } from "./errors.ts";
 import { providerModelsListError } from "./model-provider-settings.ts";
 
+export {
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  claudeCodeRuntimeRunsProvider,
+  harnessIdForAgentRuntime,
+} from "./agent-runtime-ids.ts";
+
+const SUPPORTED_AGENT_RUNTIME_IDS: ReadonlySet<string> = new Set([
+  "openclaw",
+  "codex",
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+]);
+
+/**
+ * The setting path (`....agentRuntime.id`) of the policy that selects the Claude Code agent
+ * runtime for the Configuration's models, or undefined when they select another runtime. It reads
+ * resolveConfiguredAgentRuntimeId's resolution, as Configuration save does
+ * (requireConsistentModelPolicy): every primary and fallback model of agents.defaults.model and of
+ * each agents.entries model, with the entry's, the defaults', the catalog row's and the provider's
+ * policy for it. Each of them must select the same runtime, and every model listed in
+ * agents.defaults.models or an entry's models (the models a chat may switch to) must set the
+ * primary model's, so one of them selecting Claude Code means they all do. A policy no selected
+ * model reads, such as an unused provider's, selects nothing. A document the resolution refuses,
+ * or one that waits on a Preset variable, gives undefined: every deployment resolves the filled
+ * document and refuses it before Compute renders it.
+ */
+export function claudeCodeRuntimeSetting(
+  values: Readonly<OpenClawConfigurationDocument>,
+): string | undefined {
+  let resolution: ModelPolicyResolution;
+  try {
+    resolution = resolveModelPolicy(values, true);
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError) {
+      return undefined;
+    }
+    throw error;
+  }
+  return resolution.runtime === CLAUDE_CLI_AGENT_RUNTIME_ID
+    ? `${resolution.policy!()}.agentRuntime.id`
+    : undefined;
+}
+
+/** Whether the Configuration's models select the Claude Code agent runtime. */
+export function selectsClaudeCodeRuntime(values: Readonly<OpenClawConfigurationDocument>): boolean {
+  return claudeCodeRuntimeSetting(values) !== undefined;
+}
+
+/**
+ * Refuses a Configuration that selects the Claude Code agent runtime and sets an exec host of
+ * "node" (`tools.exec.host`, or an `agents.entries.<id>.tools.exec.host`, the only spellings OCE
+ * admits: openClawSandboxProblem). With exec host node the pinned OpenClaw skips tool mediation
+ * for Claude Code (`src/agents/cli-runner/prepare-tool-policy.ts`), so the CLI runs with its
+ * native tools outside tool policy. Embedded OpenClaw, the only mode this runtime runs in, has no
+ * use for both. On a Preset save, a host that waits on an unfilled variable is checked once
+ * filled, at deployment. Compute calls it for every Configuration it admits.
+ */
+export function refuseClaudeCodeNodeExecHost(
+  values: Readonly<OpenClawConfigurationDocument>,
+  settingError: (setting: string, requirement: string) => Error,
+  options?: ConfigurationValidationOptions,
+): void {
+  if (!selectsClaudeCodeRuntime(values)) {
+    return;
+  }
+  const execHost = (scope: unknown) => asRecord(asRecord(asRecord(scope)?.tools)?.exec)?.host;
+  const hosts: Array<readonly [unknown, readonly string[], string]> = [
+    [execHost(values), ["tools", "exec", "host"], "tools.exec.host"],
+    ...Object.entries(asRecord(asRecord(values.agents)?.entries) ?? {}).map(
+      ([key, entry]) =>
+        [
+          execHost(entry),
+          ["agents", "entries", key, "tools", "exec", "host"],
+          `${keyedSettingPath("agents.entries", key)}.tools.exec.host`,
+        ] as const,
+    ),
+  ];
+  for (const [host, path, setting] of hosts) {
+    if (host === "node" && options?.unresolved?.(path) === undefined) {
+      throw settingError(
+        setting,
+        'must be "auto" or "gateway" with the claude-cli agent runtime: on exec host "node", OpenClaw runs Claude Code outside tool policy',
+      );
+    }
+  }
+}
+
+/**
+ * Refuses the Claude Code agent runtime on a Compute Driver that does not prepare it: only
+ * Kubernetes Compute mounts its managed settings and sealed configuration directory and turns its
+ * telemetry off. `compute` names the Driver in the refusal, such as "SSH Compute".
+ */
+export function refuseClaudeCodeRuntime(
+  values: Readonly<OpenClawConfigurationDocument>,
+  settingError: (setting: string, requirement: string) => Error,
+  compute: string,
+): void {
+  const runtime = claudeCodeRuntimeSetting(values);
+  if (runtime !== undefined) {
+    throw settingError(
+      runtime,
+      `selects claude-cli, the Claude Code agent runtime, which runs only on Kubernetes Compute, not ${compute}: set it to openclaw`,
+    );
+  }
+}
+
 // The runtime a model policy selects. `policy` gives the setting path of the object that holds
 // agentRuntime, such as agents.defaults.models["openai/gpt-5.1"]; it is built only for a refusal,
 // so a large policy map stays cheap to read (finding 1316).
@@ -25,9 +135,16 @@ function configuredRuntime(value: unknown, policy: () => string): string | undef
     return undefined;
   }
   const runtime = asRecord(runtimeValue);
-  if (runtime === undefined || (runtime.id !== "openclaw" && runtime.id !== "codex")) {
+  if (
+    runtime === undefined ||
+    typeof runtime.id !== "string" ||
+    !SUPPORTED_AGENT_RUNTIME_IDS.has(runtime.id)
+  ) {
     throw new ConfigurationHarnessError(
-      configurationSettingMessage(`${policy()}.agentRuntime.id`, "must be openclaw or codex"),
+      configurationSettingMessage(
+        `${policy()}.agentRuntime.id`,
+        "must be openclaw, codex or claude-cli",
+      ),
     );
   }
   return runtime.id;
@@ -529,6 +646,13 @@ export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocumen
   }
 }
 
+// The runtime resolveModelPolicy resolves, and the setting path of the first policy that selects
+// it, when a policy does.
+interface ModelPolicyResolution {
+  readonly runtime: string | undefined;
+  readonly policy?: (() => string) | undefined;
+}
+
 /**
  * resolveConfiguredHarnessId's rules, in its order, for deployment and, as a `draft`, for
  * Configuration save (requireConsistentModelPolicy). A draft skips only the rules that a document
@@ -543,7 +667,7 @@ function resolveModelPolicy(
   values: Readonly<OpenClawConfigurationDocument>,
   draft: boolean,
   agent?: ModelPolicyAgent,
-): string | undefined {
+): ModelPolicyResolution {
   // Shape refusals come first.
   requireAgentsShape(values);
   const agents = asRecord(values.agents);
@@ -698,9 +822,11 @@ function resolveModelPolicy(
   );
 
   if (primary === undefined) {
-    return draft ? undefined : "openclaw";
+    return { runtime: draft ? undefined : "openclaw" };
   }
   const resolved = new Set<string>();
+  // The first candidate's policy that selects its runtime; all candidates select the same one.
+  let selectingPolicy: (() => string) | undefined;
   const catalogs = new Map<string, CatalogIndex>();
 
   // The Harness one candidate selects. `entryKey` names the agents.entries entry whose `models`
@@ -841,6 +967,16 @@ function resolveModelPolicy(
         ),
       );
     }
+    // Any other provider would select a runtime that cannot run.
+    if (selected === CLAUDE_CLI_AGENT_RUNTIME_ID && !claudeCodeRuntimeRunsProvider(providerId)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `${first![1]()}.agentRuntime.id`,
+          "selects claude-cli for a model outside the anthropic provider: select an anthropic/<model> model, or set it to openclaw",
+        ),
+      );
+    }
+    selectingPolicy ??= first?.[1];
     return selected ?? "openclaw";
   };
 
@@ -890,7 +1026,7 @@ function resolveModelPolicy(
       "The configured Agent models select conflicting Harness runtimes.",
     );
   }
-  return [...resolved][0];
+  return { runtime: [...resolved][0], policy: selectingPolicy };
 }
 
 /**
@@ -902,7 +1038,19 @@ export function resolveConfiguredHarnessId(
   values: Readonly<OpenClawConfigurationDocument>,
   agent?: ModelPolicyAgent,
 ): string {
-  return resolveModelPolicy(values, false, agent)!;
+  return harnessIdForAgentRuntime(resolveConfiguredAgentRuntimeId(values, agent));
+}
+
+/**
+ * The agent runtime every candidate selects: `openclaw`, `codex`, or `claude-cli` (Claude Code,
+ * spawned by an OpenClaw Gateway). resolveConfiguredHarnessId maps it to the Harness; Compute
+ * reads it to prepare the runtime the Gateway spawns.
+ */
+export function resolveConfiguredAgentRuntimeId(
+  values: Readonly<OpenClawConfigurationDocument>,
+  agent?: ModelPolicyAgent,
+): string {
+  return resolveModelPolicy(values, false, agent).runtime!;
 }
 
 /**

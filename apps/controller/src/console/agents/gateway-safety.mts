@@ -35,6 +35,15 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     strict: true,
     gatewayDefault: false,
   },
+  {
+    id: "runtime-telemetry",
+    path: ["telemetry", "enabled"],
+    label: "Agent runtimes can send telemetry to their vendors",
+    help: () =>
+      "On: an agent runtime OCE configures, such as Claude Code, can send usage telemetry and error reports to its vendor. Where a Sandbox network policy controls egress, the runtime also needs access to its vendor’s telemetry hosts. Off: OCE turns that telemetry and the runtime’s other nonessential traffic off.",
+    strict: false,
+    gatewayDefault: false,
+  },
 ];
 
 export type GatewaySafetyValue =

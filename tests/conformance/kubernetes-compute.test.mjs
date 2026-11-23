@@ -17,6 +17,7 @@ import { inspect } from "node:util";
 import test from "node:test";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
@@ -38,6 +39,10 @@ import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/g
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
+import {
+  NODE_CLAUDE_CODE_RUN_COMMAND,
+  renderedGatewayNodes,
+} from "../helpers/kubernetes-gateway-nodes.ts";
 import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   EMBEDDED_API_KEY_REQUIRED,
@@ -3342,7 +3347,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     },
   );
   const endpoint = "https://models.example.test/api/v1";
-  for (const [bind, modelEndpoint, cluster] of [
+  for (const [bind, modelEndpoint, cluster, nodes] of [
     [undefined, undefined],
     ["auto", undefined],
     ["lan", undefined],
@@ -3351,6 +3356,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     ["lan", endpoint],
     [undefined, undefined, executionCluster],
     [undefined, endpoint, executionCluster],
+    [undefined, undefined, undefined, { commands: { allow: ["camera.snap"], deny: ["sms.send"] } }],
   ]) {
     const computeOptions = {
       ...(cluster === undefined ? {} : { executionCluster: cluster }),
@@ -3378,6 +3384,9 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     if (bind !== undefined) {
       revision.configuration.gateway.bind = bind;
     }
+    if (nodes !== undefined) {
+      revision.configuration.gateway.nodes = nodes;
+    }
     state.ready = true;
     assert.equal((await driver.prepareRevision(revision, context)).ready, true);
     const documentKey = [...objects.keys()].find((key) =>
@@ -3387,35 +3396,59 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     assert.equal(current.data["execution-ca.pem"], computeOptions.executionCluster?.caBundle);
     const rendered = JSON.parse(current.data["openclaw.json"]);
     assert.equal(rendered.gateway.bind, "lan");
+    // Every Gateway denies the node command that runs Claude Code (finding 3523); the
+    // Configuration's own node command entries stay.
+    assert.deepEqual(rendered.gateway.nodes, {
+      commands: {
+        ...(nodes === undefined ? {} : { allow: ["camera.snap"] }),
+        deny: [...(nodes === undefined ? [] : ["sms.send"]), NODE_CLAUDE_CODE_RUN_COMMAND],
+      },
+    });
+    assert.deepEqual(rendered.gateway.nodes, renderedGatewayNodes(nodes));
     if (modelEndpoint !== undefined) {
       assert.equal(rendered.agents.defaults.model, "codex/openai-compatible/gpt-5");
       assert.equal(revision.configuration.agents.defaults.model, "codex/gpt-5");
     }
-    // Earlier controllers wrote an omitted or auto bind as submitted; that rendering differed
-    // from the current one only in this key. Kubernetes refuses edits to an immutable
-    // ConfigMap, so re-preparing a revision prepared then (as maintenance and recovery do)
-    // must keep that document instead of failing.
-    const earlier = structuredClone(rendered);
+    // Earlier controllers wrote gateway.nodes as submitted (before finding 3523) and, before
+    // that, an omitted or auto bind as submitted; those renderings differed from the current
+    // one only in these keys. Kubernetes refuses edits to an immutable ConfigMap, so
+    // re-preparing a revision prepared then (as maintenance and recovery do) must keep that
+    // document instead of failing.
+    const beforeDeny = structuredClone(rendered);
+    if (nodes === undefined) {
+      delete beforeDeny.gateway.nodes;
+    } else {
+      beforeDeny.gateway.nodes = nodes;
+    }
+    const keep = async (document) => {
+      const kept = {
+        ...current,
+        data: { ...current.data, "openclaw.json": JSON.stringify(document) },
+      };
+      objects.set(documentKey, structuredClone(kept));
+      assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+      assert.deepEqual(objects.get(documentKey).data, kept.data, "the earlier document stays");
+    };
+    const writes = records.length;
+    await keep(beforeDeny);
+    const earlier = structuredClone(beforeDeny);
     if (bind === "auto") {
       earlier.gateway.bind = bind;
     } else {
       delete earlier.gateway.bind;
     }
-    const kept = {
-      ...current,
-      data: { ...current.data, "openclaw.json": JSON.stringify(earlier) },
-    };
-    objects.set(documentKey, structuredClone(kept));
-    const writes = records.length;
     if (bind === "lan") {
       // An explicit lan bind always rendered lan: nothing earlier to keep.
+      objects.set(documentKey, {
+        ...structuredClone(current),
+        data: { ...current.data, "openclaw.json": JSON.stringify(earlier) },
+      });
       await assert.rejects(
         driver.prepareRevision(revision, context),
         /Refusing invalid immutable Kubernetes ConfigMap gateway-/,
       );
     } else {
-      assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-      assert.deepEqual(objects.get(documentKey).data, kept.data, "the earlier document stays");
+      await keep(earlier);
     }
     assert.equal(
       records.slice(writes).some(({ kind }) => kind === "ConfigMap"),
@@ -3423,7 +3456,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
       "an immutable gateway document is never rewritten",
     );
     if (modelEndpoint !== undefined && bind !== "lan") {
-      // The earlier-document allowance changes only bind. It cannot erase the
+      // The earlier-document allowance changes only bind and gateway.nodes. It cannot erase the
       // source endpoint projection while adopting an immutable revision.
       const unprojected = structuredClone(earlier);
       unprojected.agents.defaults.model = "codex/gpt-5";
@@ -4711,8 +4744,18 @@ test(
 );
 
 async function exerciseEmbeddedReplacement(scenario) {
-  const { providerId, model, environmentName, api, baseUrl, predecessorManagedMode } = scenario;
+  const {
+    providerId,
+    model,
+    environmentName,
+    api,
+    baseUrl,
+    predecessorManagedMode,
+    agentRuntimeId,
+    unusedProviderPolicy,
+  } = scenario;
   const modelRef = `${providerId}/${model}`;
+  const modelPolicy = agentRuntimeId === undefined ? {} : { agentRuntime: { id: agentRuntimeId } };
   const driver = createKubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -4781,7 +4824,9 @@ async function exerciseEmbeddedReplacement(scenario) {
       agents: {
         defaults: {
           model: modelRef,
-          models: { [modelRef]: { alias: "Selected model", params: { temperature: 0.2 } } },
+          models: {
+            [modelRef]: { alias: "Selected model", params: { temperature: 0.2 }, ...modelPolicy },
+          },
         },
       },
       models: {
@@ -4792,6 +4837,7 @@ async function exerciseEmbeddedReplacement(scenario) {
             apiKey: `\${${environmentName}}`,
             models: [{ id: model, name: "Selected model", contextWindow: 128000, maxTokens: 8192 }],
           },
+          ...unusedProviderPolicy,
         },
       },
       channels: { slack: { enabled: false, botToken: "${SLACK_BOT_TOKEN}" } },
@@ -4975,6 +5021,169 @@ async function exerciseEmbeddedReplacement(scenario) {
     name: `harness-secrets-${digest(agentId)}-${digest(replacement.id)}`,
     key: environmentName,
   });
+  // The Gateway learns the Claude Code selection from one variable; the probe keeps
+  // OpenClaw's own HTTP client, so the credential is proven before the CLI is prepared.
+  assert.equal(
+    gatewayEnvironment.OPENCLAW_HARNESS_AGENT_RUNTIME?.value,
+    agentRuntimeId === "claude-cli" ? "claude-cli" : undefined,
+  );
+  // Admission fills telemetry.enabled false, so the runtime's vendor telemetry stays off.
+  assert.equal(
+    gatewayEnvironment.OCE_AGENT_RUNTIME_TELEMETRY?.value,
+    agentRuntimeId === "claude-cli" ? "disabled" : undefined,
+  );
+  // Claude Code transcripts live on the Agent's private state claim, so `claude --resume`
+  // finds a conversation after a restart or redeploy; the rest of its configuration
+  // directory is the init's read-only skeleton (finding 3178).
+  const gatewayPod = replaced.spec.template.spec;
+  const transcriptMounts = gatewayPod.containers[0].volumeMounts.filter(
+    ({ mountPath }) => mountPath === "/home/node/.claude/projects",
+  );
+  const preparation = gatewayPod.initContainers.find(({ name }) => name === "prepare-private-state")
+    .args[0];
+  if (agentRuntimeId === "claude-cli") {
+    assert.deepEqual(transcriptMounts, [
+      {
+        name: "openclaw-gateway-state",
+        mountPath: "/home/node/.claude/projects",
+        subPath: "claude-projects",
+        readOnly: false,
+      },
+    ]);
+    assert.match(preparation, /"\/runtime-state\/home\/\.claude"/u);
+    assert.match(preparation, /"\/gateway-state\/claude-projects"/u);
+    // A session placed on a paired node (exec host node) would run Claude Code there without
+    // tool mediation; the rendered Gateway denies that node command.
+    const rendered = JSON.parse(
+      objects.get(key("ConfigMap", `${gatewayName}-rev-${digest(replacement.id)}`)).data[
+        "openclaw.json"
+      ],
+    );
+    assert.deepEqual(rendered.gateway.nodes, renderedGatewayNodes());
+    // Claude Code's admin-managed settings carry the credential and outrank every other
+    // tier, and the model's tools run as the Gateway's uid. Only the settings init mounts
+    // the Memory volume writable; the Gateway sees it read-only at /etc/claude-code.
+    const settingsVolume = gatewayPod.volumes.find(({ name }) => name === "claude-code-settings");
+    assert.deepEqual(settingsVolume, {
+      name: "claude-code-settings",
+      emptyDir: { medium: "Memory", sizeLimit: "64Ki" },
+    });
+    const settingsMounts = (container) =>
+      container.volumeMounts.filter(({ name }) => name === "claude-code-settings");
+    // The configuration directory is read-only too: every file that can supply remote
+    // managed settings or make a session eligible for them (remote-settings.json,
+    // .credentials.json, settings.json and the rest) lives directly in it. Only the
+    // transcript directory, mounted after it and into it, is writable.
+    assert.deepEqual(settingsMounts(gatewayPod.containers[0]), [
+      {
+        name: "claude-code-settings",
+        mountPath: "/home/node/.claude",
+        subPath: "config",
+        readOnly: true,
+      },
+      {
+        name: "claude-code-settings",
+        mountPath: "/etc/claude-code",
+        subPath: "managed",
+        readOnly: true,
+      },
+    ]);
+    const gatewayMountPaths = gatewayPod.containers[0].volumeMounts.map(
+      ({ mountPath }) => mountPath,
+    );
+    assert.ok(
+      gatewayMountPaths.indexOf("/home/node/.claude") <
+        gatewayMountPaths.indexOf("/home/node/.claude/projects"),
+    );
+    const writableClaudePaths = gatewayPod.containers[0].volumeMounts.filter(
+      ({ mountPath, readOnly }) =>
+        readOnly !== true &&
+        (mountPath === "/home/node/.claude" || mountPath.startsWith("/home/node/.claude/")),
+    );
+    assert.deepEqual(
+      writableClaudePaths.map(({ mountPath }) => mountPath),
+      ["/home/node/.claude/projects"],
+    );
+    const writers = gatewayPod.initContainers.filter(
+      (container) => settingsMounts(container).length > 0,
+    );
+    assert.deepEqual(
+      writers.map(({ name }) => name),
+      ["prepare-claude-code-settings"],
+    );
+    const [settingsInit] = writers;
+    assert.deepEqual(settingsMounts(settingsInit), [
+      { name: "claude-code-settings", mountPath: "/run/oce/claude-code-settings" },
+    ]);
+    assert.equal(settingsInit.args[0], CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT);
+    assert.deepEqual(settingsInit.securityContext, {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+    // It receives only its inputs and the one credential they name, from the same Secret.
+    const settingsEnvironment = Object.fromEntries(
+      settingsInit.env.map((entry) => [entry.name, entry]),
+    );
+    assert.deepEqual(Object.keys(settingsEnvironment).sort(), [
+      environmentName,
+      "OCE_AGENT_RUNTIME_TELEMETRY",
+      "OPENCLAW_HARNESS_AGENT_RUNTIME",
+      "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+      "OPENCLAW_HARNESS_MODEL",
+      "OPENCLAW_HARNESS_PROBE_CONFIG",
+      "OPENCLAW_HARNESS_PROVIDER",
+    ]);
+    for (const [name, entry] of Object.entries(settingsEnvironment)) {
+      assert.deepEqual(entry, gatewayEnvironment[name], name);
+    }
+    // The settings init has no mount of Agent-controlled state.
+    assert.deepEqual(
+      settingsInit.volumeMounts.map(({ name }) => name),
+      ["claude-code-settings"],
+    );
+  } else {
+    assert.deepEqual(transcriptMounts, []);
+    assert.doesNotMatch(preparation, /claude/u);
+    for (const container of [...gatewayPod.containers, ...gatewayPod.initContainers]) {
+      assert.equal(
+        container.volumeMounts?.some(({ mountPath }) => mountPath === "/etc/claude-code"),
+        false,
+        container.name,
+      );
+    }
+  }
+  assert.equal(
+    gatewayPod.containers[0].volumeMounts.some(
+      ({ name, mountPath }) =>
+        name === "openclaw-gateway-state" &&
+        (mountPath === "/home/node/.claude" || mountPath === "/etc/claude-code"),
+    ),
+    false,
+    "the Claude Code settings and configuration never reach the claim",
+  );
+  if (agentRuntimeId !== "claude-cli") {
+    assert.equal(
+      gatewayPod.containers[0].volumeMounts.some(({ mountPath }) =>
+        mountPath.startsWith("/home/node/.claude"),
+      ),
+      false,
+    );
+    assert.equal(
+      gatewayPod.initContainers.some(({ name }) => name === "prepare-claude-code-settings"),
+      false,
+    );
+    // A Gateway that did not select Claude Code denies the node command too: an authorized
+    // sender can still switch a session to the runtime at chat time (finding 3523).
+    assert.deepEqual(
+      JSON.parse(
+        objects.get(key("ConfigMap", `${gatewayName}-rev-${digest(replacement.id)}`)).data[
+          "openclaw.json"
+        ],
+      ).gateway.nodes,
+      renderedGatewayNodes(),
+    );
+  }
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
   assert.equal(probeConfiguration.agents.defaults.model, modelRef);
   assert.deepEqual(probeConfiguration.agents.defaults.models, {
@@ -5057,6 +5266,17 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       baseUrl: "https://api.openai.com/v1",
       predecessorManagedMode: false,
     },
+    // A Claude Code policy on a provider no selected model uses selects nothing: the Gateway
+    // renders as an ordinary one.
+    {
+      providerId: "openai",
+      model: "gpt-5",
+      environmentName: "OPENAI_API_KEY",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      predecessorManagedMode: false,
+      unusedProviderPolicy: { anthropic: { agentRuntime: { id: "claude-cli" } } },
+    },
     {
       providerId: "anthropic",
       model: "claude-sonnet-4-5",
@@ -5065,9 +5285,139 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       baseUrl: "https://api.anthropic.com",
       predecessorManagedMode: true,
     },
+    {
+      providerId: "anthropic",
+      model: "claude-sonnet-4-5",
+      environmentName: "ANTHROPIC_API_KEY",
+      api: "anthropic-messages",
+      baseUrl: "https://models.example.test/anthropic",
+      predecessorManagedMode: true,
+      agentRuntimeId: "claude-cli",
+    },
   ]) {
-    await t.test(scenario.providerId, () => exerciseEmbeddedReplacement(scenario));
+    await t.test(
+      scenario.agentRuntimeId !== undefined
+        ? `${scenario.providerId} through ${scenario.agentRuntimeId}`
+        : scenario.unusedProviderPolicy !== undefined
+          ? `${scenario.providerId} beside an unused claude-cli provider policy`
+          : scenario.providerId,
+      () => exerciseEmbeddedReplacement(scenario),
+    );
   }
+});
+
+test("the Claude Code agent runtime is admitted for embedded OpenClaw only", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const model = "anthropic/claude-sonnet-4-5";
+  const configuration = {
+    agents: { defaults: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } } },
+    models: { providers: { anthropic: { baseUrl: "https://api.anthropic.com" } } },
+  };
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      apiKeyAuth,
+      configuration,
+    ),
+  );
+  // The dedicated OpenClaw worker never spawns Claude Code; the refusal names the setting the
+  // caller changes (Agent save passes null bindings, so no Sandbox is required first).
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        apiKeyAuth,
+        configuration,
+        null,
+      ),
+    /agents\.defaults\.models selects the Claude Code agent runtime, which runs only under embedded OpenClaw: set the Agent's executionMode to embedded/,
+  );
+  // A runtime an agents.entries model alone selects counts the same; the refusal comes before
+  // any other rule, and the node host refusal applies too.
+  const entryLocal = {
+    agents: {
+      entries: {
+        main: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } },
+      },
+    },
+    models: configuration.models,
+  };
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        apiKeyAuth,
+        entryLocal,
+        null,
+      ),
+    /selects the Claude Code agent runtime, which runs only under embedded OpenClaw/,
+  );
+  assert.throws(
+    () => driver.validateConfiguration({ ...entryLocal, tools: { exec: { host: "node" } } }),
+    /tools\.exec\.host must be "auto" or "gateway" with the claude-cli agent runtime/,
+  );
+  // The runtime applies tool policy to file and web tools, so Configuration save admits a deny
+  // of them, and the setting that turns native WebSearch off, as for the default runtime.
+  for (const tools of [
+    { deny: ["write", "web_search"] },
+    { deny: ["exec", "process"] },
+    { web: { search: { enabled: false } } },
+  ]) {
+    assert.doesNotThrow(() => driver.validateConfiguration({ ...configuration, tools }));
+  }
+});
+
+test("an exec host of node is refused with the Claude Code agent runtime at save and deployment", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const model = "anthropic/claude-sonnet-4-5";
+  const providers = { anthropic: { baseUrl: "https://api.anthropic.com" } };
+  const claudeCode = {
+    agents: { defaults: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } } },
+    models: { providers },
+  };
+  const defaultRuntime = { agents: { defaults: { model } }, models: { providers } };
+  const withHost = (configuration, spelling, host) => {
+    const tools = { exec: { host } };
+    return spelling === "tools.exec.host"
+      ? { ...configuration, tools }
+      : {
+          ...configuration,
+          agents: { ...configuration.agents, entries: { [spelling]: { tools } } },
+        };
+  };
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  // Under exec host node the pinned OpenClaw skips the tool mediation that applies tool policy
+  // to Claude Code, which then runs with its native tools. Both admitted spellings, the global
+  // setting and each Agent entry's, are refused for this runtime and
+  // stay admitted for the default runtime, which applies tool policy on every host.
+  for (const [spelling, setting] of [
+    ["tools.exec.host", "tools.exec.host"],
+    ["main", "agents.entries.main.tools.exec.host"],
+    ["ops-team", "agents.entries.ops-team.tools.exec.host"],
+  ]) {
+    const refusal = `Configuration setting ${setting} must be "auto" or "gateway" with the claude-cli agent runtime: on exec host "node", OpenClaw runs Claude Code outside tool policy.`;
+    assert.throws(() => driver.validateConfiguration(withHost(claudeCode, spelling, "node")), {
+      name: "ConfigurationHarnessError",
+      message: refusal,
+    });
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(embedded, apiKeyAuth, withHost(claudeCode, spelling, "node")),
+      { message: refusal },
+    );
+    assert.doesNotThrow(() =>
+      driver.validateConfiguration(withHost(defaultRuntime, spelling, "node")),
+    );
+    for (const host of ["auto", "gateway"]) {
+      assert.doesNotThrow(() => driver.validateConfiguration(withHost(claudeCode, spelling, host)));
+    }
+  }
+  // A Preset host that waits on an unfilled variable is checked once filled, at deployment.
+  assert.doesNotThrow(() =>
+    driver.validateConfiguration(withHost(claudeCode, "tools.exec.host", "node"), {
+      unresolved: (path) => (path.join(".") === "tools.exec.host" ? ["", ""] : undefined),
+    }),
+  );
 });
 
 test(

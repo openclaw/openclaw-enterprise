@@ -56,11 +56,12 @@ graph TD
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`,
+OCC locks the authorized Agent and Configuration, resolves
+[`agentRuntime.id`](../reference/harness-execution.md#native-runtime-selection),
 and validates primary/fallback routes and Harness modes. Fallbacks preserve native order,
 primary provider and Harness. Only unambiguous built-in configuration defaults
-to embedded OpenClaw. Missing/ambiguous policies, unsupported IDs and incompatible
-modes fail closed.
+to embedded OpenClaw.
+Missing/ambiguous policies, unsupported IDs and incompatible modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
 Docker, SSH and Kubernetes require native HTTP.

@@ -17,6 +17,11 @@ export {
   wholeEnvironmentReferenceName,
   workspaceNodeGatewayPasswordProblem,
 } from "./environment-references.ts";
+export {
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  claudeCodeRuntimeRunsProvider,
+  harnessIdForAgentRuntime,
+} from "./agent-runtime-ids.ts";
 export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 export { storedConfigurationProblem } from "./stored-configuration-rules.ts";
 export type { StoredConfigurationRule } from "./stored-configuration-rules.ts";

@@ -7,6 +7,7 @@ import type {
   ServiceAccount,
 } from "@openclaw-enterprise/contracts";
 import { INSTALLATION_ADMINISTRATION, requestFailure, responseFields } from "../api-client.mjs";
+import { harnessIdForAgentRuntime } from "../agent-runtime-ids.mjs";
 import { element, setUnavailable } from "../dom.mjs";
 import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
@@ -59,8 +60,10 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
       .filter(Boolean),
   );
   if (runtimes.size === 1) {
+    // The Claude Code agent runtime (claude-cli) runs inside the OpenClaw Harness.
     const [runtime] = runtimes;
-    return runtime === "codex" || runtime === "openclaw" ? runtime : undefined;
+    const harness = typeof runtime === "string" ? harnessIdForAgentRuntime(runtime) : undefined;
+    return harness === "codex" || harness === "openclaw" ? harness : undefined;
   }
   return runtimes.size === 0 && !provider && !["openai", "codex"].includes(providerId)
     ? "openclaw"

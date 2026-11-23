@@ -43,6 +43,7 @@ export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const GatewaySafety = story("gatewaySafety");
 export const GatewaySafetyStrict = story("gatewaySafetyStrict");
+export const GatewaySafetyRuntimeTelemetry = story("gatewaySafetyRuntimeTelemetry");
 export const GatewaySafetyRejectSteering = story("gatewaySafetyRejectSteering");
 export const GatewaySafetyReader = story("gatewaySafetyReader");
 export const PluginsDraft = story("pluginsDraft");

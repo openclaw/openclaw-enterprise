@@ -158,6 +158,14 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // The Console keeps a Claude Code agent runtime policy by OCC's own rule for it.
+  [
+    "/console/agent-runtime-ids.mjs",
+    {
+      path: new URL("../../../packages/occ/src/agent-runtime-ids.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
   // The Console offers each failed deployment's next step from OCC's own table.
   [
     "/console/deployment-failure-steps.mjs",

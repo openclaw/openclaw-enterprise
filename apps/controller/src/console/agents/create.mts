@@ -40,6 +40,10 @@ import {
   withRequestId,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
+import {
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  claudeCodeRuntimeRunsProvider,
+} from "../agent-runtime-ids.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
@@ -1568,12 +1572,26 @@ function renderAgentForm(
     const previousModel = modelPrimary(configuredModelSelection(values)) ?? pendingPrimaryModel;
     const modelSettings = spreadFields(defaults.models);
     const selectedModel = next.agents?.defaults.model;
-    const selectedSettings = {
-      ...(((selectedModel && modelSettings[selectedModel]) ||
+    // The form offers no control for the Claude Code agent runtime, which runs inside the
+    // OpenClaw Harness: keep a policy that selects it while the model is still one it runs.
+    const keptRuntime = (policy: unknown) => {
+      const runtime = objectFields(objectFields(policy).agentRuntime);
+      return harness.value === "openclaw" &&
+        runtime.id === CLAUDE_CLI_AGENT_RUNTIME_ID &&
+        selectedModel &&
+        claudeCodeRuntimeRunsProvider(selectedModel.slice(0, selectedModel.indexOf("/")))
+        ? { agentRuntime: runtime }
+        : {};
+    };
+    const retainedSettings =
+      ((selectedModel && modelSettings[selectedModel]) ||
         (previousModel && modelSettings[previousModel]) ||
         pendingModelSettings) ??
-        {}),
+      {};
+    const selectedSettings = {
+      ...retainedSettings,
       ...(selectedModel ? next.agents?.defaults.models[selectedModel] : {}),
+      ...keptRuntime(retainedSettings),
     };
     pendingModelSettings = selectedModel ? undefined : selectedSettings;
     const nextModel =
@@ -1634,6 +1652,7 @@ function renderAgentForm(
                           [selectedModel]: {
                             ...localPolicy,
                             ...next.agents?.defaults.models[selectedModel],
+                            ...keptRuntime(localPolicy),
                           },
                         },
                       }

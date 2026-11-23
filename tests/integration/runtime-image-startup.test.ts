@@ -26,6 +26,10 @@ import { verifyOpenShellPolicy } from "./runtime-image-openshell-policy-case.ts"
 import { verifyStockBroker } from "./runtime-image-stock-broker-case.ts";
 import { verifyCodexPackaging } from "./runtime-image-codex-packaging-case.ts";
 import { verifyNativeThread } from "./runtime-image-native-thread-case.ts";
+import {
+  verifyClaudeCodeBinary,
+  verifyClaudeCodeSettingsMounts,
+} from "./runtime-image-claude-code-case.ts";
 import { selectStartupProfile } from "./runtime-image-startup-support.ts";
 
 const profile = await selectStartupProfile(process.env);
@@ -133,6 +137,25 @@ test(
   "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
   imageTestOptions,
   () => verifyCodexPackaging(requiredImage(), profile),
+);
+
+// The historical staging image predates Claude Code. The runner counts any skip as a failure,
+// so these cases pass with a diagnostic on that profile instead of skipping.
+function claudeCodeCase(verify: (t: TestContext) => Promise<void>) {
+  return (t: TestContext) =>
+    historicalCodex ? t.diagnostic("The historical runtime image has no Claude Code.") : verify(t);
+}
+
+test(
+  "runtime image ships the pinned Claude Code binary and an empty managed settings mount point",
+  imageTestOptions,
+  claudeCodeCase(() => verifyClaudeCodeBinary(requiredImage())),
+);
+
+test(
+  "runtime image Claude Code managed settings and configuration are written by the init and read-only to the Gateway uid",
+  imageTestOptions,
+  claudeCodeCase((t) => verifyClaudeCodeSettingsMounts(t, requiredImage())),
 );
 
 test(

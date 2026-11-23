@@ -28,7 +28,7 @@ If OpenClaw cannot read the generated reference on the default env alias, for
 example because that provider's `allowlist` omits `OPENCLAW_GATEWAY_PASSWORD`,
 the page states why and hides the button until you fix it.
 
-**Collaboration and safety** shows two Gateway settings as a deployment of the
+**Collaboration and safety** shows three Gateway settings as a deployment of the
 draft applies them, and whether each value is the default or set in the
 Configuration:
 
@@ -44,9 +44,15 @@ Configuration:
   the Gateway asks the participant to resend the message with `/followup`.
 - **apply_patch changes files only in the workspace**
   (`tools.exec.applyPatch.workspaceOnly`, default on).
+- **Agent runtimes can send telemetry to their vendors** (`telemetry.enabled`,
+  default off): when on, an agent runtime OCE configures, such as
+  [Claude Code](../../reference/claude-code-runtime.md#telemetry-and-model-pins), can send usage
+  telemetry and error reports to its vendor. Where a Sandbox network policy
+  controls egress, also grant the runtime its vendor's telemetry hosts.
 
-**Strict mode** turns collaborative steering off and restricts `apply_patch` to
-the workspace. Turning Strict mode off removes those two settings. Setting an
+**Strict mode** turns collaborative steering and runtime telemetry off and
+restricts `apply_patch` to the workspace. Turning Strict mode off removes those
+three settings. Setting an
 individual toggle back to its default removes just that value. Changing the
 toggles requires Configuration `update`. Save the draft, then deploy a new version.
 

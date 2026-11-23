@@ -1967,6 +1967,80 @@ test("Static model selection survives credential edits and resets for provider o
   );
 });
 
+// The form has no control for the Claude Code agent runtime (claude-cli): a model edit keeps a
+// policy that selects it while the model is still an anthropic one, and drops it otherwise.
+test("Create keeps a claude-cli model policy through anthropic model edits only", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Claude Code runtime policy");
+  const { page } = await newPage(t, fixture);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const choice = page.getByLabel("Model", { exact: true });
+  const chooseList = page.getByRole("button", {
+    name: "Choose a model from the list",
+    exact: true,
+  });
+  const provider = page.getByLabel("Provider", { exact: true });
+  type Values = {
+    agents: {
+      defaults: { model?: string; models: Record<string, { agentRuntime?: { id?: string } }> };
+      entries?: Record<string, { model?: string; models?: Record<string, unknown> }>;
+    };
+  };
+  const readValues = async () => JSON.parse(await configuration.inputValue()) as Values;
+  const runtime = (values: Values, model: string) =>
+    values.agents.defaults.models[model]?.agentRuntime?.id;
+
+  // The default runtime is unchanged: the form writes openclaw for an anthropic model.
+  await provider.selectOption("anthropic");
+  await choice.selectOption("claude-opus-5-5");
+  assert.equal(runtime(await readValues(), "anthropic/claude-opus-5-5"), "openclaw");
+  await choice.selectOption("claude-fable-5-1");
+  assert.equal(runtime(await readValues(), "anthropic/claude-fable-5-1"), "openclaw");
+
+  // Select claude-cli in the JSON, with an entry-local policy for the same model.
+  const authored = await readValues();
+  const model = "anthropic/claude-fable-5-1";
+  authored.agents.defaults.models[model] = { agentRuntime: { id: "claude-cli" } };
+  authored.agents.entries = {
+    main: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } },
+  };
+  await configuration.fill(JSON.stringify(authored, null, 2) + "\n");
+  assert.equal(await configuration.getAttribute("aria-invalid"), null);
+
+  // An edit within anthropic/* keeps the policy, in the defaults and in the entry.
+  await chooseList.click();
+  await choice.selectOption("claude-opus-5-5");
+  const kept = await readValues();
+  assert.equal(kept.agents.defaults.model, "anthropic/claude-opus-5-5");
+  assert.equal(runtime(kept, "anthropic/claude-opus-5-5"), "claude-cli");
+  assert.equal(kept.agents.defaults.models[model], undefined);
+  assert.equal(kept.agents.entries?.main?.model, "anthropic/claude-opus-5-5");
+  assert.deepEqual(kept.agents.entries?.main?.models?.["anthropic/claude-opus-5-5"], {
+    agentRuntime: { id: "claude-cli" },
+  });
+
+  // A move to another provider drops it: claude-cli runs only anthropic/<model> models.
+  await provider.selectOption("openai");
+  const [openaiModel] = (await optionValues(choice))
+    .map(({ value }) => value)
+    .filter((value) => value !== "");
+  assert.ok(openaiModel);
+  await choice.selectOption(openaiModel);
+  const moved = await readValues();
+  const movedModel = moved.agents.defaults.model;
+  assert.ok(movedModel && !movedModel.startsWith("anthropic/"));
+  assert.equal(
+    runtime(moved, movedModel),
+    await page.getByLabel("Harness", { exact: true }).inputValue(),
+  );
+  assert.equal(JSON.stringify(moved).includes("claude-cli"), false);
+  assert.deepEqual(errors, []);
+});
+
 // Exercise the real draft editor without submitting or providing model credentials.
 for (const width of [1440, 390]) {
   test(`Create preserves invalid plugins.allow through model changes at ${width}px`, async (t) => {

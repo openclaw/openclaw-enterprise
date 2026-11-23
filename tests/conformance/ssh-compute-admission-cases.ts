@@ -216,6 +216,26 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
   assert.doesNotThrow(() => new SshComputeDriver(optional));
 });
 
+// The host helper prepares none of the Claude Code runtime's managed settings, sealed
+// configuration or telemetry denial, so the runtime is refused at save with a setting-named error.
+test("SSH Compute refuses the Claude Code agent runtime and names the setting", () => {
+  const driver = new SshComputeDriver(options());
+  const runtime = (id: string) => ({
+    agents: {
+      defaults: {
+        model: "anthropic/claude-sonnet-4-5",
+        models: { "anthropic/claude-sonnet-4-5": { agentRuntime: { id } } },
+      },
+    },
+  });
+  assert.throws(() => driver.validateConfiguration(runtime("claude-cli")), {
+    name: "ConfigurationHarnessError",
+    message:
+      'Configuration setting agents.defaults.models["anthropic/claude-sonnet-4-5"].agentRuntime.id selects claude-cli, the Claude Code agent runtime, which runs only on Kubernetes Compute, not SSH Compute: set it to openclaw.',
+  });
+  assert.doesNotThrow(() => driver.validateConfiguration(runtime("openclaw")));
+});
+
 test("SSH preflight probes configured hosts, names failures, and checks local files", async (t) => {
   const f = await fixture(t);
   await f.driver.preflight();
