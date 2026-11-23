@@ -97,7 +97,8 @@ test("protected inference uses real admission, fresh IAM, versioned Secret reads
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.notEqual(f.namespace.name, f.runtimeNamespace.name);
   assert.equal(f.namespace.id, f.runtimeNamespace.id);
-  assert.deepEqual(f.source.egress, { adoption: "live", retention: "none" });
+  assert.equal(f.source.egress.adoption, "live");
+  assert.equal(f.source.egress.retention, "none");
   assert.throws(
     () => pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(f.revision)),
     /explicit normalized model endpoint/,
@@ -307,7 +308,7 @@ test("provider authentication rejection fences the exact material version and en
 });
 
 test("protected admission requires the actual counterpart and exact loaded policy; revision removal deletes only its owned Sandbox", async (t) => {
-  const f = await staticEgressFixture(t, { includeLegacy: true });
+  const f = await staticEgressFixture(t);
   // Inspect the production attachment before protobuf can erase an explicit zero.
   // OpenShell requires omission for automatic TLS termination, not TERMINATE or SKIP.
   for (const [index, route] of f.context.plan.routes.entries()) {
@@ -370,32 +371,6 @@ test("protected admission requires the actual counterpart and exact loaded polic
   );
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
-  const refused = await f.request("POST", f.path, {
-    body: {
-      name: "unsupported-peer",
-      type: "openai",
-      config: { authorized_base_url: f.modelProvider.baseUrl },
-      secrets: { api_key: f.secret.ref },
-    },
-  });
-  assert.equal(refused.status, 503, JSON.stringify(refused.body));
-  assert.equal(
-    (await f.request("GET", f.path)).data.length,
-    2,
-    "failed candidate cannot leave admitted source metadata",
-  );
-  // Retained Gateway sources need explicit adoption and the same available peer.
-  const retainedBefore = (await f.request("GET", `${f.path}/${f.legacySource.id}`)).data;
-  const gatewayBefore = structuredClone([...f.providers.entries()]);
-  const effectsBefore = [...f.gatewayEffects];
-  const adoption = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
-    body: { adoption: "live", authorityScope: "execution" },
-  });
-  assert.equal(adoption.status, 503, JSON.stringify(adoption.body));
-  assert.equal(retainedBefore.egress, undefined);
-  assert.deepEqual((await f.request("GET", `${f.path}/${f.legacySource.id}`)).data, retainedBefore);
-  assert.deepEqual([...f.providers.entries()], gatewayBefore);
-  assert.deepEqual(f.gatewayEffects, effectsBefore);
   await assert.rejects(f.egress.configureRevision(f.context), {
     name: "RetryLaterError",
     message: PROXY_REGISTRATION_UNAVAILABLE,
@@ -476,142 +451,18 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.equal(f.observed.deleted.length, 1);
 });
 
-test("legacy approved copies survive Secret rotation and failed live adoption; only exact source update opts in", async (t) => {
+test("historical approved Gateway copies survive input Secret rotation", async (t) => {
   const f = await staticEgressFixture(t, { includeLegacy: true });
-  const path = `${f.path}/${f.legacySource.id}`;
   const before = structuredClone([...f.providers.values()]);
   assert.equal(before.length, 1);
   assert.equal(before[0].credentials.OPENAI_API_KEY, "synthetic-key-initial");
   assert.equal(f.legacySource.egress, undefined);
   await f.rotateSecret("synthetic-key-replacement");
-  assert.equal((await f.request("GET", path)).data.egress, undefined);
   assert.deepEqual(
     [...f.providers.values()],
     before,
-    "editing the input Secret must not reinterpret a legacy approved copy as live",
+    "editing the input Secret must not reinterpret a retained approved copy as live",
   );
-  f.observed.available = false;
-  const consent = { adoption: "live", authorityScope: "execution" };
-  assert.equal(
-    (await f.request("PATCH", path, { body: { adoption: "live" } })).status,
-    409,
-    "live reads alone are not consent to whole-execution authority",
-  );
-  assert.equal((await f.request("PATCH", path, { body: consent })).status, 503);
-  assert.equal((await f.request("GET", path)).data.egress, undefined);
-  assert.deepEqual([...f.providers.values()], before);
-  f.observed.available = true;
-  // A provider that needs managed login tokens cannot adopt a static key.
-  const proxy = f.controller.selectedDriver("credential_proxy");
-  const control = proxy.sourceControl;
-  const original = control.providers.find((entry) => entry.sourceType.type === "openai");
-  assert.ok(original);
-  const providerType = structuredClone(original.sourceType);
-  const gateway = f.controller.selectedDriver("credential_gateway");
-  const listTypes = gateway.listSourceTypes;
-  let gatewayType;
-  let changeDuringAdmission;
-  const reads = f.secretReads;
-  try {
-    // Simulate a Driver returning a retained mutable catalog entry. Keep the
-    // real catalog, peer availability check, and Secret transport.
-    gateway.listSourceTypes = async (...args) => {
-      const catalog = await listTypes.apply(gateway, args);
-      return catalog.map((entry) => {
-        if (entry.type !== "openai") {
-          return entry;
-        }
-        gatewayType ??= structuredClone(entry);
-        return gatewayType;
-      });
-    };
-    assert.ok(
-      Reflect.set(proxy, "sourceControl", {
-        ...control,
-        providers: control.providers.map((p) =>
-          p === original ? { ...p, sourceType: providerType } : p,
-        ),
-        async assertAvailable(signal) {
-          await control.assertAvailable(signal);
-          if (changeDuringAdmission) {
-            changeDuringAdmission.harnessAuth.loginMode = "chatgptAuthTokens";
-          }
-        },
-      }),
-    );
-    assert.equal(providerType.harnessAuth.loginMode, "api_key");
-    providerType.harnessAuth.loginMode = "chatgptAuthTokens";
-    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
-    assert.equal(catalog.status, 200);
-    const offered = catalog.data.capabilities.credentialSources.types.some(
-      (entry) => entry.type === "openai",
-    );
-    const create = await f.request("POST", f.path, {
-      body: {
-        name: "incompatible-lifecycle",
-        type: "openai",
-        config: { authorized_base_url: f.modelProvider.baseUrl },
-        secrets: { api_key: f.secret.ref },
-      },
-    });
-    const patch = await f.request("PATCH", path, { body: consent });
-    assert.deepEqual(
-      { offered, create: create.status, patch: patch.status, reads: f.secretReads - reads },
-      { offered: false, create: 409, patch: 409, reads: 0 },
-    );
-    providerType.harnessAuth.loginMode = "api_key";
-    for (const [side, type] of [
-      ["Proxy", providerType],
-      ["Gateway", gatewayType],
-    ]) {
-      // Change one declaration across the await while its counterpart stays static.
-      assert.equal(type.harnessAuth.loginMode, "api_key");
-      changeDuringAdmission = type;
-      const raced = await f.request("PATCH", path, { body: consent });
-      assert.equal(type.harnessAuth.loginMode, "chatgptAuthTokens");
-      assert.deepEqual(
-        { status: raced.status, reads: f.secretReads - reads },
-        { status: 409, reads: 0 },
-        side + " lifecycle changed before Secret access",
-      );
-      type.harnessAuth.loginMode = "api_key";
-      assert.equal((await f.request("GET", path)).data.egress, undefined);
-      assert.deepEqual([...f.providers.values()], before);
-    }
-  } finally {
-    gateway.listSourceTypes = listTypes;
-    Reflect.set(proxy, "sourceControl", control);
-  }
-  const adopted = await f.request("PATCH", path, { body: consent });
-  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
-  assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
-  assert.deepEqual(
-    [...f.providers.values()],
-    before,
-    "adoption never overwrites the previous gateway material",
-  );
-  // Restore a fixture in the *persisted* prior narrow provider generation. An
-  // old PATCH must not be able to turn that approval into whole-execution use.
-  const { id, namespaceId } = f.legacySource;
-  await f.controller.transact(async ({ credentialSources: sources }) => {
-    const { egress } = await sources.findCredentialSource(namespaceId, id);
-    assert.equal(egress.key.provider.generation, 3);
-    const key = {
-      ...egress.key,
-      source: { id, generation: egress.key.source.generation + 1 },
-      provider: { ...egress.key.provider, generation: 1 },
-    };
-    await sources.admitEgressSource(namespaceId, id, egress.key.source.generation, {
-      ...egress,
-      key,
-    });
-  });
-  assert.equal((await f.request("PATCH", path, { body: { adoption: "live" } })).status, 409);
-  assert.equal((await f.request("PATCH", path, { body: consent })).status, 200);
-  const bound = await f.request("PATCH", `${f.path}/${f.source.id}`, {
-    body: { adoption: "live" },
-  });
-  assert.equal(bound.status, 409, "running source cutover is explicitly unsupported");
 });
 
 test("current supplier evidence is required at access and send; stored receipts cannot authorize a replacement", async (t) => {

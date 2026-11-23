@@ -1946,7 +1946,7 @@ test("an issued-account denial read under ChatGPT OAuth is reachable after switc
   // has no reason to read and is natively disabled.
   assert.ok(list, "The issued-account request must be held");
   await list.requested();
-  await method.selectOption("credential_source");
+  await method.selectOption("device_login");
   list.release();
   await denied();
   await feedback.waitFor({ state: "attached" });

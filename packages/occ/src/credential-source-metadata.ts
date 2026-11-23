@@ -67,7 +67,7 @@ export function credentialSourceMetadata(
   });
 }
 
-/** Derive historical client and endpoint details from the original consent version. */
+/** Derive nonsecret issuer details from the Source's server-owned OAuth provenance. */
 export async function oauthCredentialSourceMetadata(
   view: PlatformReadView,
   source: Readonly<OAuthCredentialSource>,
@@ -79,6 +79,25 @@ export async function oauthCredentialSourceMetadata(
     }
   >
 > {
+  const common = {
+    id: source.id,
+    namespaceId: source.namespaceId,
+    name: source.name,
+    type: source.type,
+    state: source.state,
+    createdAt: source.createdAt,
+    ref: Object.freeze(credentialSourceRef(source)),
+    ...(status === undefined ? {} : { status }),
+  };
+  if (source.consent.kind !== "connection_template") {
+    return Object.freeze({
+      ...common,
+      consent: source.consent,
+    });
+  }
+  if (source.connectionTemplateId === undefined) {
+    throw new ResourceStateConflictError("The original OAuth consent Template is unavailable.");
+  }
   const version = await view.connectionTemplates.findOAuthConnectionTemplateVersion(
     source.connectionTemplateId,
     source.consent.version,
@@ -93,10 +112,7 @@ export async function oauthCredentialSourceMetadata(
     throw new ResourceStateConflictError("The original OAuth consent registration is unavailable.");
   }
   return Object.freeze({
-    id: source.id,
-    namespaceId: source.namespaceId,
-    name: source.name,
-    type: source.type,
+    ...common,
     connectionTemplateId: source.connectionTemplateId,
     consent: Object.freeze({
       ...source.consent,
@@ -108,9 +124,5 @@ export async function oauthCredentialSourceMetadata(
         ? {}
         : { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }),
     }),
-    state: source.state,
-    createdAt: source.createdAt,
-    ref: Object.freeze(credentialSourceRef(source)),
-    ...(status === undefined ? {} : { status }),
   });
 }

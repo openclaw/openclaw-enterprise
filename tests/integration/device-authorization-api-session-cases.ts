@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  AgentDeviceAuthorizationResponse,
-  CredentialSourceListResponse,
-} from "../../packages/contracts/src/api/resources.ts";
+import { AgentDeviceAuthorizationResponse } from "../../packages/contracts/src/api/resources.ts";
 import {
   assertNoCredentials,
   createFixture,
@@ -63,7 +60,7 @@ export function registerDeviceAuthorizationSessionCases() {
       fixture.gateway.calls.some((call) => call.operation === "removeSource"),
       false,
     );
-    assert.equal(await firstListedSourceId(fixture), sourceId);
+    assert.equal(await retainedSourceId(fixture), sourceId);
     assertNoCredentials(fixture);
   });
 
@@ -87,7 +84,7 @@ export function registerDeviceAuthorizationSessionCases() {
     assert.equal(stored.sourceId, original.sourceId);
     assert.equal(stored.phase, "pending");
     assert.equal(stored.privateState, original.privateState);
-    assert.equal(await firstListedSourceId(fixture), original.sourceId);
+    assert.equal(await retainedSourceId(fixture), original.sourceId);
     assertNoCredentials(fixture);
   });
 
@@ -127,7 +124,7 @@ export function registerDeviceAuthorizationSessionCases() {
       "an externally completed grant cannot mark this session ready",
     );
     assert.equal(fixture.gateway.sources.get(original.sourceId), "ready");
-    assert.equal(await firstListedSourceId(fixture), original.sourceId);
+    assert.equal(await retainedSourceId(fixture), original.sourceId);
     assert.equal(
       fixture.gateway.calls.some(
         ({ operation }) => operation === "removeRefresh" || operation === "removeSource",
@@ -195,15 +192,14 @@ export function registerDeviceAuthorizationSessionCases() {
   });
 }
 
-async function firstListedSourceId(fixture: DeviceAuthFixture) {
-  const response = await fixture.request("GET", fixture.sourcesPath);
-  const { data } = fixture.fixtureResponse(
-    response,
-    200,
-    CredentialSourceListResponse,
-    "list sources",
+async function retainedSourceId(fixture: DeviceAuthFixture) {
+  const sources = await fixture.controller.transact((unit) =>
+    unit.credentialSources.listCredentialSources(fixture.namespace.id),
   );
-  const first = data[0];
-  assert.ok(first, "the credential source must remain listed");
+  const first = sources[0];
+  assert.ok(
+    first && first.ownerCapability === "credential_gateway",
+    "retained Gateway-owned device Source",
+  );
   return first.id;
 }

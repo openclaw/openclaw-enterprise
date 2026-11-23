@@ -6,11 +6,9 @@ import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import {
   AuthorizationDeniedError,
-  CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
   CredentialSourceTypeNotOfferedError,
   DependencyUnavailableError,
-  ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
 import { CREDENTIAL_SOURCE_DRIVER_CHANGED } from "../helpers/refusal-credential-admission.ts";
 import { administrator, editor, fixture, zeroGrant } from "./credential-source-occ-fixture.ts";
@@ -151,10 +149,7 @@ export function registerAgentAdmissionCases(): void {
   });
 
   test("binding refuses a missing, deleting, other-Namespace or foreign-gateway source", async () => {
-    let failRemove = false;
-    const { controller, dedicatedAgent, gateway, makeReady, namespace } = await fixture({
-      gateway: { removeError: () => (failRemove ? new Error("gateway unavailable") : undefined) },
-    });
+    const { controller, dedicatedAgent, gateway, makeReady, namespace } = await fixture();
     await makeReady();
     const registry = (name: string) =>
       controller.createCredentialSource(administrator, {
@@ -188,10 +183,10 @@ export function registerAgentAdmissionCases(): void {
       config: { host: "registry-foreign.example.com" },
     });
     await assert.rejects(bind(foreign.id), unavailable);
-    failRemove = true;
-    await assert.rejects(
-      controller.deleteCredentialSource(administrator, namespace.id, deleting.id),
-      DependencyUnavailableError,
+    // Recreate a deletion state committed by a prior process; current Agent binding still
+    // has to refuse that historical Source.
+    await controller.transact((unit) =>
+      unit.credentialSources.markCredentialSourceDeleting(namespace.id, deleting.id),
     );
     // A source being deleted still exists, but it can no longer be newly bound.
     await assert.rejects(bind(deleting.id), unavailable);
@@ -569,16 +564,9 @@ export function registerAgentAdmissionCases(): void {
     assert.equal((await deploy()).credentialSources?.length, 2);
   });
 
-  test("after a Credential Gateway change, every path refuses an old source with one fixed message and DELETE keeps it ready", async () => {
-    const {
-      controller,
-      dedicatedAgent,
-      gateway,
-      makeReady,
-      modelSecret,
-      namespace,
-      passRegistrationFence,
-    } = await fixture();
+  test("after a Credential Gateway change, Agent binding and deploy refuse the old owner", async () => {
+    const { controller, dedicatedAgent, gateway, makeReady, modelSecret, namespace } =
+      await fixture();
     await makeReady();
     const registry = (name: string) =>
       controller.createCredentialSource(administrator, {
@@ -595,21 +583,6 @@ export function registerAgentAdmissionCases(): void {
       type: "openai",
       secrets: { api_key: (await modelSecret()).ref },
     });
-    // A source an earlier deletion left `deleting` through the old gateway, as before this fix.
-    const stuck = await controller.transact((unit) =>
-      unit.credentialSources.createCredentialSource({
-        id: `cs_${crypto.randomUUID()}`,
-        namespaceId: namespace.id,
-        name: "registry-stuck",
-        type: "registry",
-        config: { host: "registry-stuck.example.com" },
-        secrets: {},
-        ownerCapability: "credential_gateway",
-        driverId: gateway.id,
-        state: "deleting",
-        createdAt: "2026-09-27T12:00:00.000Z",
-      }),
-    );
     const agent = await dedicatedAgent();
     const update = (
       fields: Omit<UpdateAgentInput, "namespaceId" | "agentId" | "configurationId">,
@@ -663,104 +636,10 @@ export function registerAgentAdmissionCases(): void {
       ),
       ownership,
     );
-    await assert.rejects(
-      controller.updateCredentialSource(administrator, {
-        namespaceId: namespace.id,
-        credentialSourceId: model.id,
-      }),
-      ownership,
+    const unchanged = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(namespace.id, unbound.id),
     );
-    for (const source of [unbound, stuck]) {
-      await assert.rejects(
-        controller.deleteCredentialSource(administrator, namespace.id, source.id),
-        ownership,
-      );
-    }
-    // The refused deletion committed nothing: the source is still ready, so it is not stranded
-    // in the one-way `deleting` state, and no gateway was asked to remove anything.
-    const unchanged = await controller.readCredentialSource(
-      administrator,
-      namespace.id,
-      unbound.id,
-    );
-    assert.equal(unchanged.state, "ready");
-    // Its live status names the driver change rather than an outage.
-    assert.deepEqual(unchanged.status, {
-      state: "failed",
-      reason: "A Credential Gateway Driver that is no longer selected registered the source.",
-    });
+    assert.equal(unchanged?.state, "ready");
     assert.equal(removals().length, removalsBefore);
-    // A referenced source still reports the reference first.
-    await assert.rejects(
-      controller.deleteCredentialSource(administrator, namespace.id, bound.id),
-      ResourceConflictError,
-    );
-
-    // Selecting the registering driver again lets both sources be deleted.
-    controller.selectDriver("credential_gateway", gateway.id);
-    passRegistrationFence();
-    for (const source of [unbound, stuck]) {
-      await controller.deleteCredentialSource(administrator, namespace.id, source.id);
-    }
-    assert.deepEqual(
-      (await controller.listCredentialSources(administrator, namespace.id))
-        .map(({ name }) => name)
-        .toSorted(),
-      ["openai-old", "registry-bound"],
-    );
-  });
-
-  test("Source mutations without a Gateway preserve owner errors and report missing DELETE after authorization", async () => {
-    const { controller, makeReady, namespace } = await fixture({ withoutGateway: true });
-    await makeReady();
-    const stored = await controller.transact((unit) =>
-      unit.credentialSources.createCredentialSource({
-        id: `cs_${crypto.randomUUID()}`,
-        namespaceId: namespace.id,
-        name: "stored",
-        type: "registry",
-        config: { host: "registry.example.com" },
-        secrets: {},
-        ownerCapability: "credential_gateway",
-        driverId: "credential-gateway-test",
-        state: "ready",
-        createdAt: "2026-09-27T12:00:00.000Z",
-      }),
-    );
-    const missing = "cs_00000000-0000-4000-8000-00000000ffff";
-    const notConfigured = (error: unknown) => {
-      assert.ok(error instanceof CredentialGatewayNotConfiguredError, String(error));
-      assert.equal(requestFailure(error).status, 409);
-      return true;
-    };
-    for (const id of [stored.id, missing]) {
-      await assert.rejects(
-        controller.updateCredentialSource(administrator, {
-          namespaceId: namespace.id,
-          credentialSourceId: id,
-        }),
-        notConfigured,
-      );
-      // A caller without the grant is denied first.
-      await assert.rejects(
-        controller.deleteCredentialSource(zeroGrant, namespace.id, id),
-        AuthorizationDeniedError,
-      );
-    }
-    await assert.rejects(
-      controller.deleteCredentialSource(administrator, namespace.id, stored.id),
-      notConfigured,
-    );
-    await assert.rejects(
-      controller.deleteCredentialSource(administrator, namespace.id, missing),
-      (error) => {
-        const failed = requestFailure(error);
-        assert.equal(failed.status, 404);
-        assert.equal(failed.code, "NOT_FOUND");
-        return true;
-      },
-    );
-    const [after] = await controller.listCredentialSources(administrator, namespace.id);
-    assert.equal(after?.state, "ready");
   });
 }

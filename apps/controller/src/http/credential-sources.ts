@@ -8,6 +8,7 @@ import {
   type SourceProviderPresetId,
 } from "@openclaw-enterprise/contracts";
 import type { UpdateManagedCredentialSourceInput } from "@openclaw-enterprise/occ";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../backends/token-service/codex-oauth-preset.ts";
 
 import { failure } from "./errors.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
@@ -34,6 +35,9 @@ function phaseAudit(event: AuditEvent, phase: string | undefined): AuditEvent {
 function clientCredentialSource(
   source: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>,
 ): Record<string, unknown> {
+  if (source.type === "oauth2-refresh-token" && source.consent.kind === "builtin_codex") {
+    return { ...source, consent: { ...source.consent, ...BUILTIN_CODEX_OAUTH_PRESET } };
+  }
   return { ...source };
 }
 

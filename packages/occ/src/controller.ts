@@ -18,7 +18,6 @@ import {
 import {
   type CompleteNamespaceConnectionInput,
   type StartNamespaceConnectionInput,
-  type OAuthApproval,
 } from "./oauth-consent.ts";
 import {
   type CreateIAMAccessBindingInput,
@@ -680,9 +679,12 @@ export class OpenClawController {
   }
   async resolveConnectionClient(
     reference: OAuthAccountRef,
-    approval?: OAuthApproval,
+    registrationSource?: Readonly<OAuthCredentialSource>,
   ): Promise<OAuthConnectionClient> {
-    return this.composition.credentials.oauthConsent.resolveConnectionClient(reference, approval);
+    return this.composition.credentials.oauthConsent.resolveConnectionClient(
+      reference,
+      registrationSource,
+    );
   }
   async maintainConnectionToken(
     namespaceId: string,

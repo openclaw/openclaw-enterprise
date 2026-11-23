@@ -413,6 +413,8 @@ test(
     const defaultSource = await oauthSource(unrestrictedManual.json().data.id);
     const defaultsId = defaultSource.id;
     const defaultConsent = defaultSource.consent;
+    assert.equal(defaultConsent.kind, "connection_template");
+    assert.equal(defaultConsent.version, unrestrictedManual.json().data.current.version);
     assert.deepEqual(defaultConsent.requestedScopes, []);
     assert.deepEqual(defaultConsent.grantedScopes, ["profile"]);
     assert.deepEqual(defaultConsent.destinations, manualDestinations);

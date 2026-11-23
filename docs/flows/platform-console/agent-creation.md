@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-22
-last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
+updated: 2026-11-23
+last_updated_session: authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e
 ---
 
 # Console Agent creation
@@ -30,7 +30,9 @@ graph TD
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
   B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
-  B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
+  B -->|Credential Source draft| S["Validate, then register the static Source"]
+  S --> E["POST Configuration and Agent"]
+  B -->|ordinary draft| E
   E --> F["Grant Agent use of selected Secrets"]
   F -->|failed| G["Retry credential access"]
 ```
@@ -133,10 +135,8 @@ discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILA
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
-The credential catalog includes ordinary Gateway sources even when a Git Proxy
-is selected. Repository access remains optional in the form. An ordinary Gateway
-source without protected sources or repository bindings needs no Proxy admission.
-Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
+Repository access remains optional in the form. Source admission and deployment
+follow the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -144,9 +144,14 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret or registers a
-Credential Source for the request, the form runs the preflight below with the planned method.
-The worker reauthorizes, creates resources and exact Secret grants, and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
+a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources
+and exact Secret grants, and deploys; Console polls and opens the saved version.
+For a Dedicated OpenAI API key, **Credential storage** defaults to **Credential Source**.
+The form first validates the Agent, then posts `{type: "static", secret: {opaque: key},
+config: {provider_preset: "openai"}}` to the Namespace's `credential-sources` collection.
+TokenService creates the ready Source. Console clears the key, saves the Agent draft with
+that Source ID, and opens the draft. Guided provisioning does not yet admit managed Sources.
+Where the form cannot follow a placement
 refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
 
 The Installation capabilities do not show whether the Compute Driver supplies a Preset's
@@ -161,7 +166,7 @@ settings to it. A new Secret gets no `operate` grant, so where the `operate` ans
 any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
 is refused before any write. It then checks the Agent name, draft values with their staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
-(only the method for a Secret it saves next or registers with a Credential Gateway; none for
+(only the planned method for a credential it saves next; none for
 ChatGPT sign-in) with
 `POST /namespaces/:namespaceId/agents/validate`. After Agent create authorization,
 OCC rejects Configuration Secret bindings that name another Namespace, then applies
@@ -191,11 +196,9 @@ IAM Restrictions. The alert keeps the request ID. Once access changes, a manual
 **Create Agent** retry in this draft reuses the Configuration.
 **Cancel** warns that the saved Configuration remains and a fresh draft can save
 another. An uncertain Agent write stays locked.
-For an uncertain Credential Source registration, **Check credential registration** reads
-the source for this request and confirms its type and Secret references before continuing.
-After a known registration refusal, empty checks retain the refusal and the saved Secret.
-They do not retry writes. A confirmed validation refusal unlocks source correction;
-other known refusals keep the same registration for an explicit **Create Agent** retry.
+If Source creation has an unknown outcome, Console clears the key, stops the save,
+and asks the caller to check Credential Sources before another action. A confirmed
+Source is reused if a later step fails.
 If the Console times out waiting for validation, it stops before the save step,
 keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
@@ -219,8 +222,7 @@ if an authorized request names a missing Namespace. The lookup needs no
 Namespace `read` grant.
 
 The form applies these capabilities as it applies the Installation's. The
-Namespace response gives the form the credential source types to register a
-model Secret with a Credential Gateway as in step 4. It omits
+Namespace response omits
 `agentProvisioning`, so the form saves a draft. When browser access is enabled,
 the response includes `nativeAdmin` and the form offers **Enable browser chat**.
 [Agent browser access](../../reference/agent-native-admin.md) owns the later
@@ -256,6 +258,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-23 07:52: Trace direct static Source creation and draft save in Console. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

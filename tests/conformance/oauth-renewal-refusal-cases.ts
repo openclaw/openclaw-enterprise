@@ -93,6 +93,7 @@ export function registerOAuthRenewalRefusalCases({
     const server = createServer(async (req, res) => {
       const form = await readRefreshForm(req);
       requests++;
+      assert.equal(req.url, "/token");
       assert.equal(form.get("grant_type"), "refresh_token");
       assert.ok(form.get("refresh_token") === grant.refreshToken);
       assert.equal(form.get("client_id"), "test-client");
@@ -120,11 +121,6 @@ export function registerOAuthRenewalRefusalCases({
     };
     const { custody, driver, service, worker } = await oauthCustody();
     await service.storeInitialGrant(custody, grant, t.signal);
-    const material = driver.valueFor(custody.secret);
-    assert.ok(material);
-    const saved: unknown = JSON.parse(material);
-    const record = asRecord(saved);
-    assert.ok(record);
     const accepted = (await service.observe(custody, t.signal, 0)).token;
     assert.ok(accepted);
     const { version } = accepted;
@@ -133,21 +129,6 @@ export function registerOAuthRenewalRefusalCases({
       registration: grant,
       readSecret,
     });
-    // Changing the private custody reference cannot export another client's secret or redirect
-    // the issuer request. The controller supplies an independent registration for this source.
-    for (const edited of [
-      { oauthClientId: "another-registration" },
-      { tokenUrl: grant.tokenUrl + "/unapproved" },
-      { resource: "https://unapproved.test" },
-    ]) {
-      await driver.update(custody.secret, JSON.stringify({ ...record, ...edited }));
-      const refused = await service.renew(custody, t.signal, resolveClient, version);
-      assert.equal(refused.failureCode, "client_registration_mismatch");
-      assert.equal((await service.observe(custody, t.signal, 0)).token, undefined);
-    }
-    assert.equal(requests, 0);
-    assert.equal(readSecret.mock.callCount(), 0);
-    await driver.update(custody.secret, material);
     // A registration store outage keeps the same upstream grant. Re-observing the old SQL due
     // version after interruption must recover the persisted retry without making another read.
     const unavailable = t.mock.fn(async () => {
@@ -173,6 +154,20 @@ export function registerOAuthRenewalRefusalCases({
     assert.deepEqual(previousDue, down);
     assert.equal(unavailable.mock.callCount(), 1);
     assert.equal(requests, 0);
+    // Source metadata, not private token custody, chooses the registered client and endpoint.
+    const retryMaterial = driver.valueFor(custody.secret);
+    assert.ok(retryMaterial);
+    const record = asRecord(JSON.parse(retryMaterial));
+    assert.ok(record);
+    await driver.update(
+      custody.secret,
+      JSON.stringify({
+        ...record,
+        oauthClientId: "another-registration",
+        tokenUrl: grant.tokenUrl + "/unapproved",
+        resource: "https://unapproved.test",
+      }),
+    );
     const refused = await service.renew(custody, t.signal, resolveClient, down.schedule.version);
     assert.equal(refused.state, "failed");
     assert.equal(refused.failureCode, "client_refused");

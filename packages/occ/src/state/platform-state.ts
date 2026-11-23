@@ -88,6 +88,8 @@ import type {
   AgentRevision,
   AuditEvent,
   StoredCredentialSource as CredentialSource,
+  OAuthCredentialSource,
+  OAuthSourceConsent,
   CredentialSourceSnapshot,
   CredentialWithdrawal,
   SecretReference,
@@ -1196,6 +1198,35 @@ function assertCredentialSource(source: CredentialSource): void {
   }
 }
 
+function updateOAuthConsent(
+  source: OAuthCredentialSource,
+  update: Partial<
+    Pick<OAuthSourceConsent, "grantedScopes" | "revocationRequestedBy" | "revokedAt">
+  >,
+): OAuthCredentialSource {
+  const common = {
+    id: source.id,
+    namespaceId: source.namespaceId,
+    name: source.name,
+    type: source.type,
+    ownerCapability: source.ownerCapability,
+    tokenServiceInstanceId: source.tokenServiceInstanceId,
+    state: source.state,
+    createdAt: source.createdAt,
+  };
+  if (source.consent.kind === "connection_template") {
+    if (source.connectionTemplateId === undefined) {
+      throw new ResourceStateConflictError("The OAuth Source requires its approved Template.");
+    }
+    return {
+      ...common,
+      connectionTemplateId: source.connectionTemplateId,
+      consent: { ...source.consent, ...update },
+    };
+  }
+  return { ...common, consent: { ...source.consent, ...update } };
+}
+
 function namespaceResourceExists(
   resources: Iterable<{ readonly namespaceId: string }>,
   namespaceId: string,
@@ -1719,10 +1750,7 @@ function repositories(
           }
           snapshot.credentialSources.set(
             key,
-            storedCopy({
-              ...source,
-              consent: { ...source.consent, grantedScopes: schedule.grantedScopes },
-            }),
+            storedCopy(updateOAuthConsent(source, { grantedScopes: schedule.grantedScopes })),
           );
         }
       }
@@ -2222,10 +2250,7 @@ function repositories(
       ) {
         snapshot.credentialSources.set(
           key,
-          storedCopy({
-            ...source,
-            consent: { ...source.consent, revocationRequestedBy: principalId },
-          }),
+          storedCopy(updateOAuthConsent(source, { revocationRequestedBy: principalId })),
         );
       }
     },
@@ -2240,7 +2265,7 @@ function repositories(
       ) {
         snapshot.credentialSources.set(
           key,
-          storedCopy({ ...source, consent: { ...source.consent, revokedAt: at } }),
+          storedCopy(updateOAuthConsent(source, { revokedAt: at })),
         );
       }
     },
@@ -2480,6 +2505,41 @@ function repositories(
     createCredentialSource: async (source) => {
       assertInitialized(snapshot);
       assertCredentialSource(source);
+      if (source.ownerCapability === "token_service" && source.type === "oauth2-refresh-token") {
+        if (source.consent.kind === "builtin_codex") {
+          const account = source.consent.account;
+          const accountFields = [
+            "accountId",
+            "planType",
+            "isFedramp",
+            "userId",
+            "email",
+            "accountUserId",
+          ];
+          const validText = (value: unknown) =>
+            typeof value === "string" &&
+            Array.from(value).length >= 1 &&
+            Array.from(value).length <= 512;
+          if (
+            source.connectionTemplateId !== undefined ||
+            !isPlainRecord(account) ||
+            Object.keys(account).some((field) => !accountFields.includes(field)) ||
+            !validText(account.accountId) ||
+            !validText(account.planType) ||
+            typeof account.isFedramp !== "boolean" ||
+            [account.userId, account.email, account.accountUserId].some(
+              (value) => value !== undefined && !validText(value),
+            )
+          ) {
+            throw new ResourceStateConflictError("The built-in Codex OAuth Source is invalid.");
+          }
+        } else if (
+          source.consent.kind !== "connection_template" ||
+          source.connectionTemplateId === undefined
+        ) {
+          throw new ResourceStateConflictError("The OAuth Source requires its approved Template.");
+        }
+      }
       if (source.ownerCapability === "token_service" && source.connectionTemplateId !== undefined) {
         const template = snapshot.connectionTemplates.get(source.connectionTemplateId);
         if (
@@ -2494,6 +2554,11 @@ function repositories(
           );
         }
         if (source.type === "oauth2-refresh-token") {
+          if (source.consent.kind !== "connection_template") {
+            throw new ResourceStateConflictError(
+              "The OAuth Source provenance does not match its Template.",
+            );
+          }
           const version = snapshot.connectionTemplateVersions.get(
             versionKey(source.connectionTemplateId, source.consent.version),
           );

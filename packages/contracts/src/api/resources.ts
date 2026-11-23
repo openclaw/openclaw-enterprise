@@ -703,21 +703,26 @@ const CredentialSourceCommon = {
   status: Type.Optional(CredentialSourceStatusSchema),
 };
 
-export const OAuthSourceConsentSchema = Type.Object(
+const OAuthConsentCommon = {
+  ownerPrincipalId: Type.String(),
+  requestedScopes: Type.Array(OAuthScope),
+  grantedScopes: Type.Array(OAuthScope),
+  revocationRequestedBy: Type.Optional(Type.String()),
+  revokedAt: Type.Optional(Type.String({ format: "date-time" })),
+};
+
+export const OAuthTemplateSourceConsentSchema = Type.Object(
   {
+    ...OAuthConsentCommon,
+    kind: Type.Literal("connection_template"),
     version: Type.Integer({ minimum: 1 }),
     oauthClientId: Type.String(),
-    ownerPrincipalId: Type.String(),
-    requestedScopes: Type.Array(OAuthScope),
-    grantedScopes: Type.Array(OAuthScope),
     issuer: Type.String(),
     tokenUrl: Type.String(),
     clientId: Type.String(),
     destinations: Type.Array(ConnectionDestinationsSchema.items),
     resource: Type.Optional(Type.String()),
     mcpServerUrl: Type.Optional(Type.String()),
-    revocationRequestedBy: Type.Optional(Type.String()),
-    revokedAt: Type.Optional(Type.String({ format: "date-time" })),
   },
   {
     additionalProperties: false,
@@ -725,6 +730,38 @@ export const OAuthSourceConsentSchema = Type.Object(
       "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
   },
 );
+
+const CodexAccountText = Type.String({ minLength: 1, maxLength: 512 });
+export const OAuthBuiltinCodexSourceConsentSchema = Type.Object(
+  {
+    ...OAuthConsentCommon,
+    kind: Type.Literal("builtin_codex"),
+    issuer: Type.String(),
+    tokenUrl: Type.String(),
+    clientId: Type.String(),
+    account: Type.Object(
+      {
+        accountId: CodexAccountText,
+        planType: CodexAccountText,
+        isFedramp: Type.Boolean(),
+        userId: Type.Optional(CodexAccountText),
+        email: Type.Optional(CodexAccountText),
+        accountUserId: Type.Optional(CodexAccountText),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Authorization for the fixed, server-owned Codex OAuth preset. Never contains tokens.",
+  },
+);
+
+export const OAuthSourceConsentSchema = Type.Union([
+  OAuthTemplateSourceConsentSchema,
+  OAuthBuiltinCodexSourceConsentSchema,
+]);
 
 export const StaticCredentialSourceSchema = Type.Object(
   {
@@ -736,15 +773,25 @@ export const StaticCredentialSourceSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const OAuthCredentialSourceSchema = Type.Object(
-  {
-    ...CredentialSourceCommon,
-    type: Type.Literal("oauth2-refresh-token"),
-    connectionTemplateId: ConnectionTemplateId,
-    consent: OAuthSourceConsentSchema,
-  },
-  { additionalProperties: false },
-);
+export const OAuthCredentialSourceSchema = Type.Union([
+  Type.Object(
+    {
+      ...CredentialSourceCommon,
+      type: Type.Literal("oauth2-refresh-token"),
+      connectionTemplateId: ConnectionTemplateId,
+      consent: OAuthTemplateSourceConsentSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      ...CredentialSourceCommon,
+      type: Type.Literal("oauth2-refresh-token"),
+      consent: OAuthBuiltinCodexSourceConsentSchema,
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export const CredentialSourceSchema = Type.Union([
   StaticCredentialSourceSchema,

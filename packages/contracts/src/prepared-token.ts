@@ -145,7 +145,6 @@ export interface OAuthRefreshTokenIssuer {
 export interface OAuthConnectionRegistration {
   readonly issuer: string;
   readonly tokenUrl: string;
-  readonly oauthClientId: string;
   readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
   readonly resource?: string;
   readonly clientId: string;

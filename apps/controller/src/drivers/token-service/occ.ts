@@ -6,6 +6,7 @@ import type {
   CredentialRefreshStatus,
   CredentialProxyDriver,
   CredentialSource,
+  OAuthCredentialSource,
   StoredCredentialSource,
   CredentialSourceReference,
   ErrorDetail,
@@ -211,20 +212,34 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     if (!oauth) {
       throw new ResourceStateConflictError("OAuth custody is unavailable for this TokenService.");
     }
-    const source: CredentialSource = {
+    const common = {
       id,
       namespaceId: input.namespaceId,
       name: input.name,
-      type: "oauth2-refresh-token",
-      ownerCapability: "token_service",
+      type: "oauth2-refresh-token" as const,
+      ownerCapability: "token_service" as const,
       tokenServiceInstanceId: this.tokenServiceInstanceId,
-      state: "ready",
+      state: "ready" as const,
       createdAt: new Date().toISOString(),
-      connectionTemplateId: input.connectionTemplateId,
-      consent: input.consent,
     };
-    await oauth.registerSource(source, input.grant, signal);
-    return source;
+    const scopes = {
+      requestedScopes: input.grant.requestedScopes,
+      grantedScopes: input.grant.grantedScopes,
+    };
+    let source: OAuthCredentialSource;
+    if (input.consent.kind === "connection_template") {
+      if (!input.connectionTemplateId) {
+        throw new ScopeViolationError("The OAuth Source requires its approved Template.");
+      }
+      source = {
+        ...common,
+        connectionTemplateId: input.connectionTemplateId,
+        consent: { ...input.consent, ...scopes },
+      };
+    } else {
+      source = { ...common, consent: { ...input.consent, ...scopes } };
+    }
+    return oauth.registerSource(source, input.grant, signal);
   }
 
   async updateSource(
@@ -302,7 +317,17 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       if (!token) {
         throw new ResourceStateConflictError("The OAuth credential is unavailable.");
       }
-      return { credential: token.accessToken, version: token.version, expiresAt: token.expiresAt };
+      return {
+        credential: token.accessToken,
+        version: token.version,
+        expiresAt: token.expiresAt,
+        ...(found.consent.kind === "builtin_codex"
+          ? {
+              accountId: found.consent.account.accountId,
+              isFedramp: found.consent.account.isFedramp,
+            }
+          : {}),
+      };
     }
     const resolved = await withComputeAbortSignal(signal, () =>
       this.store.withValue(this.storageRef(ref), async (value) => decodeCredential(value)),

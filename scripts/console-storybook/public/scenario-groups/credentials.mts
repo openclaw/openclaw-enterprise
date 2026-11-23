@@ -27,7 +27,7 @@ type CredentialScenario = Pick<
   extraSecrets?: readonly Pick<SecretMetadata, "id" | "name">[];
   // These authored permission snapshots omit readLogs; preserve the fixture response.
   agentPermissionSummary?: Omit<NonNullable<Parameters<typeof agentSaveGap>[0]>, "readLogs">;
-  auth?: "oauth" | "runtime" | "service" | null;
+  auth?: "api-source" | "oauth" | "runtime" | "service" | null;
   configurationChangedElsewhere?: boolean | { afterReads: number; values: Configuration["values"] };
   deployed?: boolean;
   harnessGrantMissing?: boolean;
@@ -63,6 +63,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
       description:
         "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
@@ -74,6 +75,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       oauthPending: true,
       rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
       description:
@@ -86,6 +88,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       rules: [
         {
           suffix: "/poll",
@@ -107,6 +110,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       rules: [
         {
           suffix: "/device-authorizations",
@@ -126,6 +130,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       oauthPending: true,
       rules: [
         { suffix: "/device-authorizations", method: "POST", delayMs: 3000, skip: 1, once: true },
@@ -140,6 +145,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       credentialSources: [
         { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
         { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
@@ -165,6 +171,17 @@ export function credentialsScenarios({
       path: `${draft}&tab=credentials`,
       description:
         "The saved harness authentication source can be reviewed or changed before deployment.",
+    },
+    credentialsExistingSource: {
+      group: "Components/Credentials",
+      name: "Existing Credential Source",
+      path: `${draft}&tab=credentials`,
+      auth: "api-source",
+      description:
+        "The Agent retains its saved static Credential Source. ChatGPT sign-in is a separate optional replacement, not the current Source's authentication type.",
+      steps: [
+        "Confirm Authentication source shows Credential Source and no device-login guidance appears. Select ChatGPT OAuth to review the separate replacement flow.",
+      ],
     },
     credentialsSecretCreateNotPermitted: {
       group: "Components/Credentials",

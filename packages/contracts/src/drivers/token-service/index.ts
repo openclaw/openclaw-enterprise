@@ -3,7 +3,8 @@ import type {
   CredentialSource,
   CredentialSourceReference,
   OAuthConnectionGrant,
-  OAuthSourceConsent,
+  OAuthBuiltinCodexSourceConsent,
+  OAuthTemplateSourceConsent,
 } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
@@ -43,14 +44,27 @@ export type SourceRegistrationInput =
       readonly config: SourceConfig;
       readonly connectionTemplateId?: string;
     }
-  | {
+  | ({
       readonly kind: "oauth_refresh_token";
       readonly namespaceId: string;
       readonly name: string;
-      readonly connectionTemplateId: string;
-      readonly consent: Omit<OAuthSourceConsent, "revocationRequestedBy" | "revokedAt">;
       readonly grant: OAuthConnectionGrant;
-    };
+    } & (
+      | {
+          readonly connectionTemplateId: string;
+          readonly consent: Omit<
+            OAuthTemplateSourceConsent,
+            "revocationRequestedBy" | "revokedAt" | "requestedScopes" | "grantedScopes"
+          >;
+        }
+      | {
+          readonly connectionTemplateId?: never;
+          readonly consent: Omit<
+            OAuthBuiltinCodexSourceConsent,
+            "revocationRequestedBy" | "revokedAt" | "requestedScopes" | "grantedScopes"
+          >;
+        }
+    ));
 
 export type SourceUpdate =
   | {

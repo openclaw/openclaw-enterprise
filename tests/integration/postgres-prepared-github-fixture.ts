@@ -27,7 +27,6 @@ import {
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { hasResourceId } from "../helpers/egress-observation-values.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
   record,
@@ -49,6 +48,7 @@ type Request = (method: string, path: string, options?: { body?: unknown }) => P
 interface PostgresApp {
   readonly state: PostgresPlatformState;
   readonly controller: OpenClawController;
+  readonly principal: { readonly id: string };
   readonly pool: Pool;
   readonly request: Request;
 }
@@ -91,7 +91,8 @@ interface Registration {
 }
 
 /**
- * A prepared GitHub metadata source registered through the real API, bound to an Agent, over
+ * A historical prepared GitHub metadata Source registered through its former controller owner,
+ * then bound to an Agent through the current API, over
  * PostgreSQL and a synthetic HTTPS GitHub App issuer. Both keys are generated here; only the
  * dedicated issuer Secret receives the private App key.
  */
@@ -183,13 +184,11 @@ export async function preparedLifecycleFixture(
       agent,
       namespace,
       secret,
-      path,
     }: {
       app: PostgresApp;
       agent: Pick<Agent, "id" | "configurationId">;
       namespace: Pick<Namespace, "id">;
       secret: unknown;
-      path: string;
     }) {
       issuer = issuerSecret(secret);
       registration = {
@@ -205,11 +204,12 @@ export async function preparedLifecycleFixture(
         },
         secrets: { private_key: issuer.ref },
       };
-      const created = await app.request("POST", path, { body: registration });
-      assert.equal(created.status, 201);
-      assert.ok(hasResourceId(created.data));
-      sourceId = created.data.id;
-      return bindRuntimeSource(app, namespace, agent, created.data);
+      const source = await app.controller.createCredentialSource(app.principal.id, {
+        namespaceId: namespace.id,
+        ...registration,
+      });
+      sourceId = source.id;
+      return bindRuntimeSource(app, namespace, agent, source);
     },
   };
   const raw = await callFixture(staticEgressFixture, undefined, [t, options]);
@@ -241,12 +241,15 @@ export async function preparedLifecycleFixture(
     },
   };
   const sourceRegistration = registration;
-  /** Register another prepared source with the same grant; no Agent revision holds it. */
+  const platform = postgres;
+  /** Recreate another historical prepared Source with the same grant; no Agent revision holds it. */
   const registerSource = async (name: string) => {
-    const path = `/namespaces/${namespace.id}/credential-sources`;
-    const { status, data } = await request("POST", path, { body: { ...sourceRegistration, name } });
-    assert.equal(status, 201);
-    return resourceId(data);
+    const source = await platform.controller.createCredentialSource(platform.principal.id, {
+      namespaceId: namespace.id,
+      ...sourceRegistration,
+      name,
+    });
+    return source.id;
   };
   return {
     gh,

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-23
-last_updated_session: authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a
+last_updated_session: authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e
 ---
 
 # Credential source lifecycle flow
@@ -44,7 +44,7 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the canonical Source, saves its optional Template ID, and stores the write-only credential in its private custody. OCC then grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
 
-OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the returned authorization code, and calls the same selected TokenService registration boundary with the grant and original consent metadata. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. Both Source types return their Template ID. The OAuth subtype also retains the original consent version and selected client. Resolving the current Template version during Plugin credential admission remains pending.
+Template OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the authorization code, and calls the selected TokenService registration boundary with the grant and `connection_template` consent. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. The Source retains its Template ID, original consent version, and selected client. The same Source schema also permits trusted `builtin_codex` authorization without a Template; moving device-login completion to that path is a separate cutover. Resolving the current Template version during Plugin credential admission remains pending.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -110,6 +110,7 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 
 ## Changelog
 
+- 2026-11-23 08:04: Distinguish Template consent from the fixed built-in Codex OAuth preset. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
 - 2026-11-23 13:30: Trace canonical static and OAuth Source creation through the selected TokenService and remove the separate association and saved connection. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
 
 - 2026-11-23 01:53: Change Source associations and metadata to use a Template ID while preserving the OAuth consent version. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - cd806684a)

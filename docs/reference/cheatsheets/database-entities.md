@@ -218,6 +218,7 @@ Stores the canonical static and OAuth Sources created by the selected TokenServi
 - `driver_id` (Gateway and Proxy sources)
 - `token_service_instance_id` (selected TokenService owner)
 - `connection_template_id` (optional immutable association)
+- `oauth_provenance`, `oauth_account` (Template consent or the fixed Codex preset)
 - `oauth_consent_version`, `oauth_client_id`, `oauth_owner_principal_id`
 - `oauth_requested_scopes`, `oauth_granted_scopes`
 - `oauth_revocation_requested_by`, `oauth_revoked_at`

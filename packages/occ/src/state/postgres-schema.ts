@@ -8,6 +8,7 @@ import type {
   AgentStatus,
   CredentialSourceState,
   CredentialSourceOwnerCapability,
+  BuiltinCodexOAuthAccount,
   HarnessExecutionMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
@@ -542,6 +543,8 @@ export const credentialSources = occSchema.table(
       onDelete: "restrict",
       onUpdate: "restrict",
     }),
+    oauthProvenance: text("oauth_provenance").$type<"connection_template" | "builtin_codex">(),
+    oauthAccount: jsonb("oauth_account").$type<BuiltinCodexOAuthAccount>(),
     oauthConsentVersion: integer("oauth_consent_version"),
     oauthClientId: text("oauth_client_id").references(() => oauthClients.id, {
       onDelete: "restrict",
@@ -603,7 +606,18 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_oauth_shape",
-      sql`CASE WHEN ${table.ownerCapability}='token_service' AND ${table.type}='oauth2-refresh-token' THEN ${table.connectionTemplateId} IS NOT NULL AND ${table.oauthConsentVersion} IS NOT NULL AND ${table.oauthConsentVersion}>0 AND ${table.oauthClientId} IS NOT NULL AND ${table.oauthOwnerPrincipalId} IS NOT NULL AND ${table.oauthRequestedScopes} IS NOT NULL AND ${table.oauthGrantedScopes} IS NOT NULL AND array_position(${table.oauthRequestedScopes},NULL) IS NULL AND array_position(${table.oauthGrantedScopes},NULL) IS NULL AND (cardinality(${table.oauthRequestedScopes})=0 OR ${table.oauthGrantedScopes}<@${table.oauthRequestedScopes}) AND (${table.oauthRevokedAt} IS NULL OR ${table.oauthRevocationRequestedBy} IS NOT NULL) AND ${table.config}='{}'::jsonb ELSE ${table.oauthConsentVersion} IS NULL AND ${table.oauthClientId} IS NULL AND ${table.oauthOwnerPrincipalId} IS NULL AND ${table.oauthRequestedScopes} IS NULL AND ${table.oauthGrantedScopes} IS NULL AND ${table.oauthRevocationRequestedBy} IS NULL AND ${table.oauthRevokedAt} IS NULL END IS TRUE`,
+      sql`CASE WHEN ${table.ownerCapability}='token_service' AND ${table.type}='oauth2-refresh-token' THEN
+      ((${table.oauthProvenance}='connection_template' AND ${table.connectionTemplateId} IS NOT NULL AND ${table.oauthConsentVersion}>0 AND ${table.oauthClientId} IS NOT NULL AND ${table.oauthAccount} IS NULL)
+      OR (${table.oauthProvenance}='builtin_codex' AND ${table.connectionTemplateId} IS NULL AND ${table.oauthConsentVersion} IS NULL AND ${table.oauthClientId} IS NULL AND jsonb_typeof(${table.oauthAccount})='object'
+      AND ${table.oauthAccount} - ARRAY['accountId','planType','isFedramp','userId','email','accountUserId']::text[]='{}'::jsonb
+      AND jsonb_typeof(${table.oauthAccount}->'accountId')='string' AND char_length(${table.oauthAccount}->>'accountId') BETWEEN 1 AND 512
+      AND jsonb_typeof(${table.oauthAccount}->'planType')='string' AND char_length(${table.oauthAccount}->>'planType') BETWEEN 1 AND 512
+      AND jsonb_typeof(${table.oauthAccount}->'isFedramp')='boolean'
+      AND (NOT ${table.oauthAccount} ? 'userId' OR (jsonb_typeof(${table.oauthAccount}->'userId')='string' AND char_length(${table.oauthAccount}->>'userId') BETWEEN 1 AND 512))
+      AND (NOT ${table.oauthAccount} ? 'email' OR (jsonb_typeof(${table.oauthAccount}->'email')='string' AND char_length(${table.oauthAccount}->>'email') BETWEEN 1 AND 512))
+      AND (NOT ${table.oauthAccount} ? 'accountUserId' OR (jsonb_typeof(${table.oauthAccount}->'accountUserId')='string' AND char_length(${table.oauthAccount}->>'accountUserId') BETWEEN 1 AND 512))))
+      AND ${table.oauthOwnerPrincipalId} IS NOT NULL AND ${table.oauthRequestedScopes} IS NOT NULL AND ${table.oauthGrantedScopes} IS NOT NULL AND array_position(${table.oauthRequestedScopes},NULL) IS NULL AND array_position(${table.oauthGrantedScopes},NULL) IS NULL AND (cardinality(${table.oauthRequestedScopes})=0 OR ${table.oauthGrantedScopes}<@${table.oauthRequestedScopes}) AND (${table.oauthRevokedAt} IS NULL OR ${table.oauthRevocationRequestedBy} IS NOT NULL) AND ${table.config}='{}'::jsonb
+      ELSE ${table.oauthProvenance} IS NULL AND ${table.oauthAccount} IS NULL AND ${table.oauthConsentVersion} IS NULL AND ${table.oauthClientId} IS NULL AND ${table.oauthOwnerPrincipalId} IS NULL AND ${table.oauthRequestedScopes} IS NULL AND ${table.oauthGrantedScopes} IS NULL AND ${table.oauthRevocationRequestedBy} IS NULL AND ${table.oauthRevokedAt} IS NULL END IS TRUE`,
     ),
     check(
       "credential_sources_template_preset_exclusive",

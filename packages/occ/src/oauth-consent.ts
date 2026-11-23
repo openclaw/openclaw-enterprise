@@ -47,11 +47,6 @@ export interface CompleteNamespaceConnectionInput {
 }
 export const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
-export interface OAuthApproval {
-  readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
-  readonly oauthClientId: string;
-}
 function connectionConsentScopes(
   version: Readonly<OAuthConnectionTemplateVersion>,
   selection?: readonly string[],
@@ -92,7 +87,6 @@ function browserAuthorizationRequest(
   selectedScopes: readonly string[],
 ) {
   return {
-    oauthClientId: client.id,
     issuer: version.issuer,
     clientId: client.clientId,
     tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
@@ -276,11 +270,10 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         name: `Connection ${randomUUID()}`,
         connectionTemplateId: session.connectionTemplateId,
         consent: {
+          kind: "connection_template",
           version: session.connectionTemplateVersion,
           oauthClientId: client.id,
           ownerPrincipalId: principalId,
-          requestedScopes: session.selectedScopes,
-          grantedScopes: grant.grantedScopes,
         },
         grant,
       },
@@ -292,6 +285,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       source.ownerCapability !== "token_service" ||
       source.tokenServiceInstanceId !== tokenServiceInstanceId ||
       source.namespaceId !== session.namespaceId ||
+      source.consent.kind !== "connection_template" ||
       source.connectionTemplateId !== session.connectionTemplateId ||
       source.consent.version !== session.connectionTemplateVersion ||
       source.consent.oauthClientId !== client.id ||
@@ -311,39 +305,35 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
   }
   async function resolveConnectionClient(
     ref: OAuthAccountRef,
-    approval?: OAuthApproval,
+    registrationSource?: Readonly<OAuthCredentialSource>,
   ): Promise<OAuthConnectionClient> {
     return deps.read(async (view) => {
-      let pinned = approval;
-      if (!pinned) {
-        const source = await view.credentialSources.findCredentialSource(
-          ref.namespaceId,
-          ref.sourceId,
-        );
-        if (
-          source?.ownerCapability !== "token_service" ||
-          source.type !== "oauth2-refresh-token" ||
-          source.consent.revocationRequestedBy !== undefined
-        ) {
-          throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
-        }
-        pinned = {
-          connectionTemplateId: source.connectionTemplateId,
-          connectionTemplateVersion: source.consent.version,
-          oauthClientId: source.consent.oauthClientId,
-        };
+      const source =
+        registrationSource ??
+        (await view.credentialSources.findCredentialSource(ref.namespaceId, ref.sourceId));
+      if (
+        source?.ownerCapability !== "token_service" ||
+        source.type !== "oauth2-refresh-token" ||
+        source.id !== ref.sourceId ||
+        source.namespaceId !== ref.namespaceId ||
+        source.consent.revocationRequestedBy !== undefined ||
+        source.consent.kind !== "connection_template"
+      ) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+      if (source.connectionTemplateId === undefined) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
       const version = await view.connectionTemplates.findOAuthConnectionTemplateVersion(
-        pinned.connectionTemplateId,
-        pinned.connectionTemplateVersion,
+        source.connectionTemplateId,
+        source.consent.version,
       );
-      if (!version || version.oauthClientId !== pinned.oauthClientId) {
+      if (!version || version.oauthClientId !== source.consent.oauthClientId) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
       const client = await connectionClientForVersion(view, ref.namespaceId, version);
       return {
         registration: {
-          oauthClientId: client.id,
           issuer: client.issuer,
           clientId: client.clientId,
           tokenUrl: client.tokenUrl,

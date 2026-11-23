@@ -7,6 +7,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 
 const uuid = "0000000a-0000-4000-8000-00000000000b";
 const id = `cs_${uuid}`;
@@ -148,6 +149,7 @@ test("existing Source responses serialize sanitized managed metadata for detail 
     type: "oauth2-refresh-token",
     connectionTemplateId: `ctp_${uuid}`,
     consent: {
+      kind: "connection_template",
       version: 1,
       oauthClientId: `oac_${uuid}`,
       ownerPrincipalId: `prn_${uuid}`,
@@ -159,7 +161,19 @@ test("existing Source responses serialize sanitized managed metadata for detail 
       destinations: [{ host: "api.example.test", port: 443, path: "/v1/**" }],
     },
   };
-  for (const source of [metadata, oauth]) {
+  const builtin = {
+    ...identity,
+    type: "oauth2-refresh-token",
+    consent: {
+      kind: "builtin_codex",
+      ownerPrincipalId: `prn_${uuid}`,
+      requestedScopes: ["openid"],
+      grantedScopes: ["openid"],
+      account: { accountId: "account-1", planType: "plus", isFedramp: false },
+      ...BUILTIN_CODEX_OAUTH_PRESET,
+    },
+  };
+  for (const source of [metadata, oauth, builtin]) {
     const privateSource = {
       ...source,
       secret: { opaque: "synthetic-material" },
@@ -186,6 +200,29 @@ test("existing Source responses serialize sanitized managed metadata for detail 
       assert.deepEqual(JSON.parse(serialize(publicPayload)), publicPayload);
       assert.throws(() => serialize(internal), TypeError);
     }
+  }
+  const validate = validatorCompiler({ ...route, schema: get.schema.response[200] });
+  assert.equal(
+    validate({ data: { ...builtin, connectionTemplateId: `ctp_${uuid}` }, meta }),
+    false,
+  );
+  for (const extra of [{ refreshToken: "synthetic-refresh" }, { arbitrary: "value" }]) {
+    assert.equal(
+      validate({
+        data: {
+          ...builtin,
+          consent: { ...builtin.consent, account: { ...builtin.consent.account, ...extra } },
+        },
+        meta,
+      }),
+      false,
+    );
+  }
+  for (const field of ["issuer", "tokenUrl", "clientId"]) {
+    assert.equal(
+      validate({ data: { ...builtin, consent: { ...builtin.consent, [field]: undefined } }, meta }),
+      false,
+    );
   }
 });
 

@@ -145,14 +145,11 @@ export function createHarnessAuthFields(
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "API key"),
     harnessId === "codex" ? element("option", { value: "codex_pat" }, "Service Accounts") : null,
-    harnessId === "codex" || binding?.method === "credential_source"
-      ? element(
-          "option",
-          { value: "credential_source" },
-          binding?.method === "credential_source"
-            ? "Credential source"
-            : "ChatGPT OAuth (Experimental)",
-        )
+    binding?.method === "credential_source"
+      ? element("option", { value: "credential_source" }, "Credential Source")
+      : null,
+    harnessId === "codex"
+      ? element("option", { value: "device_login" }, "ChatGPT OAuth (Experimental)")
       : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     harnessId === "codex"
@@ -167,6 +164,7 @@ export function createHarnessAuthFields(
   let selectedSecretSource = originalSecretSource;
   let changedSecret: SecretMetadata | null = null;
   let selectedCredentialSource: CredentialSourceReference | null = null;
+  let clearingReplacement = false;
   const account = element(
     "select",
     { id: "service-account-id", disabled: true },
@@ -226,8 +224,22 @@ export function createHarnessAuthFields(
     initial: draft?.oauthLogin,
     hint: "Sign in to explicitly replace this Agent's credential. Save authentication source, then deploy a new version. The deployed login stays in use until deployment.",
     onChange(source) {
-      if (method.value === "credential_source") {
+      if (method.value === "device_login") {
+        const cleared = selectedCredentialSource !== null && source === null;
         selectedCredentialSource = source;
+        if (cleared && binding?.method === "credential_source") {
+          clearingReplacement = true;
+          method.value = "credential_source";
+          update();
+          method.focus();
+        }
+        options.onChange?.();
+      } else if (clearingReplacement && source) {
+        // A refused discard restores the staged login and its visible replacement choice.
+        clearingReplacement = false;
+        method.value = "device_login";
+        selectedCredentialSource = source;
+        update();
         options.onChange?.();
       }
     },
@@ -298,7 +310,7 @@ export function createHarnessAuthFields(
   function update() {
     runtimeHint.hidden = method.value !== "runtime";
     const directSecret = ["api_key", "codex_pat"].includes(method.value);
-    const usesOAuth = method.value === "credential_source" && harnessId === "codex";
+    const usesOAuth = method.value === "device_login" && harnessId === "codex";
     feedback.hidden = usesOAuth;
     validationHint.hidden = usesOAuth;
     oauthLogin.setActive(usesOAuth);
@@ -323,6 +335,8 @@ export function createHarnessAuthFields(
     }
     if (usesOAuth) {
       selectedCredentialSource = oauthLogin.source;
+    } else {
+      selectedCredentialSource = null;
     }
     secretPicker.setRequired(directSecret);
     secretPicker.setDisabled(disabled || !directSecret);
@@ -331,7 +345,10 @@ export function createHarnessAuthFields(
     // The read's failure shows only beside this select's own method.
     updateAccount();
   }
-  method.addEventListener("change", update);
+  method.addEventListener("change", () => {
+    clearingReplacement = false;
+    update();
+  });
   update();
   context
     .request(`${namespacePath(context.namespaceId)}/service-accounts`)
@@ -403,9 +420,13 @@ export function createHarnessAuthFields(
         };
       }
       if (method.value === "credential_source") {
-        const sourceId =
-          selectedCredentialSource?.id ??
-          (binding?.method === "credential_source" ? binding.sourceId : undefined);
+        if (binding?.method !== "credential_source") {
+          throw new Error("Select an authentication source.");
+        }
+        return binding;
+      }
+      if (method.value === "device_login") {
+        const sourceId = selectedCredentialSource?.id;
         if (!sourceId) {
           throw new Error("Complete ChatGPT sign-in before saving.");
         }

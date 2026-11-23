@@ -642,7 +642,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id, cs.connection_template_id, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at,
+  cs.token_service_instance_id, cs.connection_template_id, cs.oauth_provenance, cs.oauth_account, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -726,27 +726,67 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     if (
       type !== "oauth2-refresh-token" ||
       !Array.isArray(row.oauth_requested_scopes) ||
-      !Array.isArray(row.oauth_granted_scopes) ||
-      !Number.isSafeInteger(row.oauth_consent_version)
+      !Array.isArray(row.oauth_granted_scopes)
     ) {
       throw new PersistedStateInvalidError("Persisted OAuth Source consent is invalid.");
     }
-    return immutableCopy({
-      ...owned,
-      type,
-      connectionTemplateId: text(row, "connection_template_id"),
-      consent: {
-        version: row.oauth_consent_version as number,
-        oauthClientId: text(row, "oauth_client_id"),
-        ownerPrincipalId: text(row, "oauth_owner_principal_id"),
-        requestedScopes: row.oauth_requested_scopes as string[],
-        grantedScopes: row.oauth_granted_scopes as string[],
-        ...(row.oauth_revocation_requested_by == null
-          ? {}
-          : { revocationRequestedBy: text(row, "oauth_revocation_requested_by") }),
-        ...(row.oauth_revoked_at == null ? {} : { revokedAt: timestamp(row, "oauth_revoked_at") }),
-      },
-    });
+    const consent = {
+      ownerPrincipalId: text(row, "oauth_owner_principal_id"),
+      requestedScopes: row.oauth_requested_scopes as string[],
+      grantedScopes: row.oauth_granted_scopes as string[],
+      ...(row.oauth_revocation_requested_by == null
+        ? {}
+        : { revocationRequestedBy: text(row, "oauth_revocation_requested_by") }),
+      ...(row.oauth_revoked_at == null ? {} : { revokedAt: timestamp(row, "oauth_revoked_at") }),
+    };
+    if (
+      row.oauth_provenance === "connection_template" &&
+      Number.isSafeInteger(row.oauth_consent_version)
+    ) {
+      return immutableCopy({
+        ...owned,
+        type,
+        connectionTemplateId: text(row, "connection_template_id"),
+        consent: {
+          ...consent,
+          kind: "connection_template",
+          version: row.oauth_consent_version as number,
+          oauthClientId: text(row, "oauth_client_id"),
+        },
+      });
+    }
+    if (row.oauth_provenance === "builtin_codex") {
+      const account = jsonObject(row.oauth_account);
+      if (
+        typeof account.accountId !== "string" ||
+        typeof account.planType !== "string" ||
+        typeof account.isFedramp !== "boolean" ||
+        [account.userId, account.email, account.accountUserId].some(
+          (value) => value !== undefined && typeof value !== "string",
+        )
+      ) {
+        throw new PersistedStateInvalidError("Persisted Codex OAuth account is invalid.");
+      }
+      return immutableCopy({
+        ...owned,
+        type,
+        consent: {
+          ...consent,
+          kind: "builtin_codex",
+          account: {
+            accountId: account.accountId,
+            planType: account.planType,
+            isFedramp: account.isFedramp,
+            ...(account.userId === undefined ? {} : { userId: account.userId as string }),
+            ...(account.email === undefined ? {} : { email: account.email as string }),
+            ...(account.accountUserId === undefined
+              ? {}
+              : { accountUserId: account.accountUserId as string }),
+          },
+        },
+      });
+    }
+    throw new PersistedStateInvalidError("Persisted OAuth Source provenance is invalid.");
   }
   if (ownerCapability !== "credential_gateway" && ownerCapability !== "credential_proxy") {
     throw new PersistedStateInvalidError("Persisted credential source owner is invalid.");
@@ -3328,8 +3368,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         try {
           await client.query(
             `INSERT INTO occ.credential_sources
-             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, connection_template_id, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, connection_template_id, oauth_provenance, oauth_account, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21)`,
             [
               source.id,
               source.namespaceId,
@@ -3356,15 +3396,21 @@ export class PostgresPlatformState implements PlatformStateStore {
               ...(source.ownerCapability === "token_service" &&
               source.type === "oauth2-refresh-token"
                 ? [
-                    source.consent.version,
-                    source.consent.oauthClientId,
+                    source.consent.kind,
+                    source.consent.kind === "builtin_codex"
+                      ? JSON.stringify(source.consent.account)
+                      : null,
+                    source.consent.kind === "connection_template" ? source.consent.version : null,
+                    source.consent.kind === "connection_template"
+                      ? source.consent.oauthClientId
+                      : null,
                     source.consent.ownerPrincipalId,
                     source.consent.requestedScopes,
                     source.consent.grantedScopes,
                     source.consent.revocationRequestedBy ?? null,
                     source.consent.revokedAt ?? null,
                   ]
-                : [null, null, null, null, null, null, null]),
+                : [null, null, null, null, null, null, null, null, null]),
             ],
           );
         } catch (error) {

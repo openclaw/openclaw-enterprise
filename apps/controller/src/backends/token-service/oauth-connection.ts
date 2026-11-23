@@ -20,18 +20,13 @@ import {
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-
-interface OAuthApproval {
-  readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
-  readonly oauthClientId: string;
-}
+import { BUILTIN_CODEX_OAUTH_PRESET } from "./codex-oauth-preset.ts";
 
 type OAuthConnectionCustody = Pick<OAuthTokenCustody, "sourceId" | "secret">;
 
 const PENDING_OAUTH_CONNECTION = "pending";
 
-type ClientRetry = "client_refused" | "client_unavailable" | "client_registration_mismatch";
+type ClientRetry = "client_refused" | "client_unavailable";
 
 type ApprovedGrant = Pick<
   OAuthConnectionGrant,
@@ -76,13 +71,7 @@ function material(value: string): StoredConnection {
     return data as unknown as FailedRefresh;
   }
   if (
-    ![
-      "ready",
-      "renewing",
-      "client_refused",
-      "client_unavailable",
-      "client_registration_mismatch",
-    ].includes(String(data.phase)) ||
+    !["ready", "renewing", "client_refused", "client_unavailable"].includes(String(data.phase)) ||
     !["version", "accessToken", "refreshToken", "expiresAt", "renewAt"].every((key) =>
       isNonEmptyString(data[key]),
     ) ||
@@ -295,14 +284,10 @@ export class OAuthGrantStore {
       if (registration.tokenEndpointAuthMethod !== "none" && !isNonEmptyString(clientSecret)) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
-    } catch (error) {
+    } catch {
       // No request reached the issuer. Preserve this grant and schedule a bounded retry,
       // including when a downstream credential store or the registration itself is unavailable.
-      const phase =
-        error instanceof BrowserAuthorizationError && error.code === "client_registration_mismatch"
-          ? "client_registration_mismatch"
-          : "client_unavailable";
-      const next = retryClient(current, phase);
+      const next = retryClient(current, "client_unavailable");
       return (await driver.compareAndSwap!(custody.secret, previous, JSON.stringify(next)))
         ? status(next)
         : (await this.observe(custody, signal)).status;
@@ -395,7 +380,7 @@ export class OAuthAccountTokens {
   private readonly state: PlatformStateStore;
   private readonly client: (
     ref: OAuthAccountRef,
-    approval?: OAuthApproval,
+    registrationSource?: Readonly<OAuthCredentialSource>,
   ) => Promise<OAuthConnectionClient>;
   private readonly renewing = new Map<string, Promise<OAuthConnectionStatus>>();
 
@@ -404,7 +389,7 @@ export class OAuthAccountTokens {
     secrets: SecretDriver,
     resolveClient: (
       ref: OAuthAccountRef,
-      approval?: OAuthApproval,
+      registrationSource?: Readonly<OAuthCredentialSource>,
     ) => Promise<OAuthConnectionClient>,
   ) {
     this.state = state;
@@ -418,23 +403,44 @@ export class OAuthAccountTokens {
     );
   }
 
+  private async resolveClient(
+    ref: OAuthAccountRef,
+    registrationSource?: Readonly<OAuthCredentialSource>,
+  ): Promise<OAuthConnectionClient> {
+    const source =
+      registrationSource ??
+      (await this.state.read((view) =>
+        view.credentialSources.findCredentialSource(ref.namespaceId, ref.sourceId),
+      ));
+    if (
+      source?.ownerCapability !== "token_service" ||
+      source.type !== "oauth2-refresh-token" ||
+      source.id !== ref.sourceId ||
+      source.namespaceId !== ref.namespaceId ||
+      source.consent.revocationRequestedBy !== undefined
+    ) {
+      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+    }
+    if (source.consent.kind === "builtin_codex") {
+      return {
+        registration: { ...BUILTIN_CODEX_OAUTH_PRESET, tokenEndpointAuthMethod: "none" },
+      };
+    }
+    return this.client(ref, source);
+  }
+
   /** Publish the ready Source and its usable private grant as one database mutation. */
   async registerSource(
     source: OAuthCredentialSource,
     grant: OAuthConnectionGrant,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<OAuthCredentialSource> {
     const ref: OAuthAccountRef = {
       kind: "oauth_refresh_token",
       namespaceId: source.namespaceId,
       sourceId: source.id,
     };
-    const approval = {
-      connectionTemplateId: source.connectionTemplateId,
-      connectionTemplateVersion: source.consent.version,
-      oauthClientId: source.consent.oauthClientId,
-    };
-    await this.client(ref, approval);
+    await this.resolveClient(ref, source);
     const custody = await this.grants.reserve(ref);
     try {
       await this.grants.storeInitialGrant(custody, grant, signal);
@@ -443,12 +449,18 @@ export class OAuthAccountTokens {
         throw new ResourceStateConflictError("No eligible OAuth access token was prepared.");
       }
       const schedule = status.schedule;
-      await this.state.transact(async (unit) => {
+      return await this.state.transact(async (unit) => {
         const namespace = await unit.namespaces.lockNamespace(source.namespaceId);
         if (namespace?.status !== "ready") {
           throw new ResourceStateConflictError("The credential source Namespace is not ready.");
         }
-        await unit.credentialSources.createCredentialSource(source);
+        const created = await unit.credentialSources.createCredentialSource(source);
+        if (
+          created.ownerCapability !== "token_service" ||
+          created.type !== "oauth2-refresh-token"
+        ) {
+          throw new ResourceStateConflictError("The persisted OAuth Source is invalid.");
+        }
         await unit.oauthCredentials.createTokenCustody({
           ...custody,
           namespaceId: source.namespaceId,
@@ -459,6 +471,7 @@ export class OAuthAccountTokens {
           grantedScopes: schedule.grantedScopes,
         });
         signal.throwIfAborted();
+        return created;
       });
     } catch (error) {
       // A lost commit acknowledgement cannot justify deleting custody that the database owns.
@@ -513,7 +526,7 @@ export class OAuthAccountTokens {
     // After sending a rotating grant, this owner must finish publishing even if one waiter leaves.
     const signal = AbortSignal.timeout(RENEWAL_BUDGET_MS);
     const attempt = this.grants
-      .renew(custody, signal, () => this.client(ref), expectedVersion)
+      .renew(custody, signal, () => this.resolveClient(ref), expectedVersion)
       .then(async (outcome) => {
         if (outcome.state === "pending") {
           return outcome;

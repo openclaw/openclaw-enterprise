@@ -589,16 +589,36 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** The original, non-secret approval attached to an OAuth Source. */
-export interface OAuthSourceConsent {
-  readonly version: number;
-  readonly oauthClientId: string;
+interface OAuthSourceConsentBase {
   readonly ownerPrincipalId: string;
   readonly requestedScopes: readonly string[];
   readonly grantedScopes: readonly string[];
   readonly revocationRequestedBy?: string;
   readonly revokedAt?: string;
 }
+
+export interface OAuthTemplateSourceConsent extends OAuthSourceConsentBase {
+  readonly kind: "connection_template";
+  readonly version: number;
+  readonly oauthClientId: string;
+}
+
+export interface BuiltinCodexOAuthAccount {
+  readonly accountId: string;
+  readonly planType: string;
+  readonly isFedramp: boolean;
+  readonly userId?: string;
+  readonly email?: string;
+  readonly accountUserId?: string;
+}
+
+export interface OAuthBuiltinCodexSourceConsent extends OAuthSourceConsentBase {
+  readonly kind: "builtin_codex";
+  readonly account: BuiltinCodexOAuthAccount;
+}
+
+/** The original, nonsecret authorization attached to an OAuth Source. */
+export type OAuthSourceConsent = OAuthTemplateSourceConsent | OAuthBuiltinCodexSourceConsent;
 
 interface TokenServiceCredentialSource {
   readonly id: string;
@@ -616,11 +636,15 @@ export interface StaticCredentialSource extends TokenServiceCredentialSource {
   readonly config: Readonly<Record<string, string>>;
 }
 
-export interface OAuthCredentialSource extends TokenServiceCredentialSource {
+interface OAuthCredentialSourceBase extends TokenServiceCredentialSource {
   readonly type: "oauth2-refresh-token";
-  readonly connectionTemplateId: string;
-  readonly consent: OAuthSourceConsent;
 }
+
+export type OAuthCredentialSource = OAuthCredentialSourceBase &
+  (
+    | { readonly connectionTemplateId: string; readonly consent: OAuthTemplateSourceConsent }
+    | { readonly connectionTemplateId?: never; readonly consent: OAuthBuiltinCodexSourceConsent }
+  );
 
 /** The selected TokenService creates and owns either supported Source type. */
 export type CredentialSource = StaticCredentialSource | OAuthCredentialSource;
@@ -645,14 +669,22 @@ export type StoredCredentialSource = CredentialSource | LegacyCredentialSource;
 
 export type CredentialSourceOwnerCapability = StoredCredentialSource["ownerCapability"];
 
-export interface OAuthSourceConsentMetadata extends OAuthSourceConsent {
+interface OAuthIssuerMetadata {
   readonly issuer: string;
   readonly tokenUrl: string;
   readonly clientId: string;
+}
+
+export interface OAuthTemplateSourceConsentMetadata
+  extends OAuthTemplateSourceConsent, OAuthIssuerMetadata {
   readonly destinations: readonly ConnectionEndpoint[];
   readonly resource?: string;
   readonly mcpServerUrl?: string;
 }
+
+export type OAuthBuiltinCodexSourceConsentMetadata = OAuthBuiltinCodexSourceConsent;
+export type OAuthSourceConsentMetadata =
+  OAuthTemplateSourceConsentMetadata | OAuthBuiltinCodexSourceConsentMetadata;
 
 interface CredentialSourceMetadataBase {
   readonly id: string;
@@ -669,11 +701,16 @@ export type CredentialSourceMetadata =
       readonly connectionTemplateId?: string;
       readonly config: Readonly<Record<string, string>>;
     })
-  | (CredentialSourceMetadataBase & {
-      readonly type: "oauth2-refresh-token";
-      readonly connectionTemplateId: string;
-      readonly consent: OAuthSourceConsentMetadata;
-    });
+  | (CredentialSourceMetadataBase & { readonly type: "oauth2-refresh-token" } & (
+        | {
+            readonly connectionTemplateId: string;
+            readonly consent: OAuthTemplateSourceConsentMetadata;
+          }
+        | {
+            readonly connectionTemplateId?: never;
+            readonly consent: OAuthBuiltinCodexSourceConsentMetadata;
+          }
+      ));
 
 /**
  * An authorized request to revoke one credential source from one Agent revision. `revoked`

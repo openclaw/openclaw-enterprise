@@ -165,8 +165,8 @@ const reviewedImports: ReviewedModules = {
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
   },
-  // The OAuth grant's private CAS record pins client, endpoint, and scope. Only the
-  // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
+  // Source consent pins the client and endpoint; private custody retains the grant.
+  // Only the refresh adapter can POST that grant. TokenService has no general HTTP capability.
   "backends/token-service/oauth-connection.ts": {
     "node:crypto": ["randomUUID"],
     "node:timers/promises": ["setTimeout"],

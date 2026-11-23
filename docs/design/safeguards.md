@@ -46,7 +46,9 @@ and its static credential or OAuth grant. OCC authorizes Source operations and
 can query nonsecret metadata directly; usable token access goes through
 TokenService. Credential Proxy prepares delivery for an admitted binding, while
 Sandbox enforces the admitted network policy. A Template ID associates a Source
-with approved settings; OAuth consent retains its original version and client.
+with approved settings; Template-based OAuth consent retains its original version
+and client. Template-free Codex OAuth uses a fixed, server-owned issuer and client
+preset instead.
 See [Source lifecycle](../reference/credential-sources.md) for supported delivery
 and admission limits.
 

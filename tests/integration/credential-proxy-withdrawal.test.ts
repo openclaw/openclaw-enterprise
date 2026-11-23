@@ -73,7 +73,6 @@ test(
         agent,
         namespace,
         secret,
-        path,
         origin,
         computeAuthentication,
       }: {
@@ -81,7 +80,6 @@ test(
         agent: Agent;
         namespace: Namespace;
         secret: { ref: SecretReference };
-        path: string;
         origin: string;
         computeAuthentication: { mode: "kubeconfig"; kubeconfigPath: string; context: string };
       }) {
@@ -199,22 +197,21 @@ test(
         app.controller.registerDriver(compute);
         app.controller.selectDriver("compute", compute.id);
         const createSource = async (name: string, type: string, baseUrl: string) => {
-          const result = await app.request("POST", path, {
-            body: {
-              name,
-              type,
-              config: { authorized_base_url: `${baseUrl}/v1` },
-              secrets: { api_key: secret.ref },
-            },
+          const source = await app.controller.createCredentialSource(app.principal.id, {
+            namespaceId: namespace.id,
+            name,
+            type,
+            config: { authorized_base_url: `${baseUrl}/v1` },
+            secrets: { api_key: secret.ref },
           });
-          assert.equal(result.status, 201, JSON.stringify(result.body));
-          // Both sources must be protected before binding; selecting a Proxy alone
-          // no longer enrolls a newly registered Gateway source.
-          const adopted = await app.request("PATCH", `${path}/${result.data.id}`, {
-            body: { adoption: "live", authorityScope: "execution" },
+          // Recreate the former enrollment and adoption path as historical setup. Current
+          // withdrawal and policy reduction still run through their supported Agent callers.
+          return app.controller.updateCredentialSource(app.principal.id, {
+            namespaceId: namespace.id,
+            credentialSourceId: source.id,
+            adoption: "live",
+            authorityScope: "execution",
           });
-          assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
-          return adopted.data;
         };
         const source = await createSource(
           "first-reduced-source",

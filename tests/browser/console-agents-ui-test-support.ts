@@ -21,6 +21,10 @@ export async function openCreateSecretDialog(
 export async function createModelCredentialSecret(page: Page, secretValue: string) {
   // Preset quick-start reads the installed template before rendering its credential fields.
   await page.locator("#create-agent-form").waitFor();
+  const storage = page.getByLabel("Credential storage", { exact: true });
+  if ((await storage.count()) > 0 && (await storage.isVisible())) {
+    await storage.selectOption("secret");
+  }
   const picker = page.locator("#provider-credential-secret");
   if ((await picker.count()) === 0 || !(await picker.isVisible())) {
     const legacyCredential = page.getByLabel("API key", { exact: true });
