@@ -116,10 +116,16 @@ Gateway role, ordinary network profile and server-owned binding label. Other
 Agents and Harnesses receive no grant. Compute checks the complete policy sets
 for broader additive grants before and after installing its rules.
 
-Envoy accepts only matching CONNECT targets and ports. It resolves destinations
-through strict-DNS subclusters and checks each selected upstream address before
-connecting. It excludes loopback, link-local, metadata, private, reserved and
-configured installation ranges. Provider TLS stays inside the tunnel. Ordinary
+Envoy checks the CONNECT authority and port against the Driver declarations.
+For direct connections, it resolves hostnames through strict-DNS subclusters
+and checks each selected address before connecting. Loopback, link-local,
+metadata, private, reserved and Installation-excluded destinations are denied.
+
+With a [configured upstream proxy](#upstream-proxy-configuration), Envoy still
+checks literal destination IPs and restricts the proxy connection to its
+configured addresses and port. For hostnames, Envoy relies on the proxy to resolve
+and enforce the final address. Envoy cannot verify which address the proxy
+connects to. Provider TLS stays inside the tunnel on both paths. Ordinary
 HTTP proxying and caller-supplied identity headers do not grant access.
 
 IPv4 DNS, explicit IP and CIDR rules are supported. IPv6 rule forms fail

@@ -36,7 +36,10 @@ cleanup fails. Disabled channel candidates exit without dependency changes.
 The [Kubernetes](kubernetes-setup.md) and [Amazon EKS](eks-openshell-setup.md)
 quickstart templates explicitly set `channelEgress.enabled: false`. After
 generating `$RUN_DIR/values.json` and `$RUN_DIR/installation.json`, and before
-installing OCC, configure channels in those protected files.
+installing OCC, use this block only with the original disabled channel settings.
+If either file has custom channel settings, [configure both inputs](#configure-upstream-proxy-endpoints)
+instead. Keep `upstreamProxies` and any `proxyTrust` in sync.
+Make sure no other person or process edits either file until both copies finish.
 
 Set `CHANNEL_EXCLUDED_CIDRS` to a JSON array from your operator's network
 inventory: include every Pod range, Service range, and node address (as `/32`),
@@ -49,6 +52,17 @@ set -euo pipefail
 channel_stage=$(mktemp -d "$RUN_DIR/channel-egress.XXXXXXXX")
 yq -o=json '.channelEgress' deploy/helm/openclaw-enterprise/values.yaml \
   > "$channel_stage/defaults.json"
+jq -es '
+  length == 3 and
+  .[0].channelEgress == {enabled:false} and
+  (.[1].drivers.compute.configuration.runtime |
+    type == "object" and (has("channelEgress") | not)) and
+  .[2].upstreamProxies == [] and
+  .[2].proxyTrust == {caSecretName:"", caKey:"ca.pem"}
+' "$RUN_DIR/values.json" "$RUN_DIR/installation.json" "$channel_stage/defaults.json" >/dev/null || {
+  echo "Expected fresh quickstart inputs. Check both files and chart defaults before continuing." >&2
+  exit 1
+}
 jq --slurpfile defaults "$channel_stage/defaults.json" \
   --argjson cidrs "$CHANNEL_EXCLUDED_CIDRS" '
   if ($cidrs | type == "array" and length > 0 and all(.[]; type == "string"))
@@ -63,6 +77,7 @@ jq --slurpfile values "$channel_stage/values.json" --arg namespace "$PLATFORM_NS
       listenerPortEnd, occListenerPort, inspectionPort, excludedCidrs
     } + {gatewayNamespace:$namespace})
 ' "$RUN_DIR/installation.json" > "$channel_stage/installation.json"
+printf 'Staged channel inputs: %s\n' "$channel_stage"
 scripts/setup-channel-egress check \
   --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
   --namespace "$PLATFORM_NS" --values "$channel_stage/values.json"
@@ -71,19 +86,27 @@ install -m 600 "$channel_stage/values.json" "$RUN_DIR/values.json"
 install -m 600 "$channel_stage/installation.json" "$RUN_DIR/installation.json"
 ```
 
-This preserves unrelated Helm and Installation fields and existing channel
-customizations, then enables the fleet and sets its class and exclusions.
-The runtime receives the same names, ports, and exclusions. The chart's qualified
-channel image stays separate from `ENVOY_IMAGE`, which selects workspace ingress.
-Retain the staged files if the check fails; repair dependencies before retrying.
+The example preserves unrelated fields and enables the fleet with the selected
+class and exclusions. Compute receives the same names, ports and exclusions.
+The chart's channel image stays separate from `ENVOY_IMAGE`, which selects
+workspace ingress.
+
+The dependency check reads the Helm values only. If it fails, retain the
+staged files and repair the dependencies. If either copy is interrupted,
+stop before installing OCC. Check for intervening edits and reconcile them
+before repeating both copies from the same checked directory. Use `cmp -s`
+to verify each destination matches its staged file before continuing.
 
 The quickstarts already require an Envoy controller for workspace routing. If
 the check reports disabled patch policies or incompatible dependencies, have
 that controller's owner repair them before continuing. This command does not
 alter existing dependencies. Continue installation only after the check passes.
 
-For an existing installation, prepare the matching settings through the
-[installation change procedure](production-installation-changes.md). Saving an
+If Kubernetes Compute uses legacy Helm `slackProxy` and matching
+`runtime.channels.managedProxy`, follow the [Envoy channel-egress upgrade](one-off-upgrades.md#envoy-channel-egress).
+When legacy channels are enabled, fresh setup skips the required Agent
+transitions. For other supported installations,
+use the [installation change procedure](production-installation-changes.md). Saving an
 Agent's Slack settings cannot enable installation-level egress.
 
 ## Configure upstream proxy endpoints
@@ -129,6 +152,3 @@ Service CIDRs and node addresses, including public addresses, and writes the sam
 channel settings into Helm and the external Installation. Incomplete discovery
 fails setup. Production operators provide the complete exclusions explicitly;
 the worker does not need cluster-wide discovery permissions.
-
-An existing Slack-proxy installation needs [One Off Upgrades](one-off-upgrades.md).
-Fresh installation setup does not perform historical Agent transitions.
