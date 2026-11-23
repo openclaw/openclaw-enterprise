@@ -26,6 +26,7 @@
       "expectedTests": [
         "Gateway automation MCP proxy pins approved sockets and refuses redirect replay",
         "Gateway automation MCP supervisor holds before Doctor and recovers after native restart",
+        "dedicated Gateway automation MCP accepts only the server-owned Codex filesystem overlay",
         "the dedicated worker launches the pinned gog on PATH only for the selected release",
         "the dedicated worker loads a different CLI package with its declared credential slot",
         "the native Gateway discovers the Google instructions with Slack selected alongside it",

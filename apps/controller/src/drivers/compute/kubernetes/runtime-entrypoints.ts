@@ -2741,8 +2741,8 @@ export function gatewayRuntimeEntrypoint(
   automationMcpProxy?: AutomationMcpProxyConfiguration,
   workspaceNodeProfile?: GatewayWorkspaceNodeProfile,
 ): string {
-  if (automationMcpProxy && !automationGuardBinding) {
-    throw new Error("Automation MCP proxy requires a qualified policy binding.");
+  if (Boolean(automationMcpProxy) !== Boolean(automationGuardBinding)) {
+    throw new Error("Automation MCP proxy and qualified policy binding must be selected together.");
   }
   if (
     workspaceNodeProfile !== undefined &&
@@ -3812,23 +3812,27 @@ peerStatus = followsPeerStatus
 }`
      : ""
  }
-if (AUTOMATION_MCP_PROXY) {
-  try {
-    assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, JSON.parse(pluginReadFileSync(initialConfigPath, "utf8")));
-  } catch {
-    holdAutomationMcpProxyFailure();
-    return;
-  }
+${
+  automationMcpProxy
+    ? String.raw`try {
+  assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, JSON.parse(pluginReadFileSync(initialConfigPath, "utf8")));
+} catch {
+  holdAutomationMcpProxyFailure();
+  return;
+}`
+    : ""
 }
 const started = configureGateway(peerStatus);
-if (AUTOMATION_MCP_PROXY) {
-  try {
-    assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, readOpenClawConfig());
-    automationMcpProxy = await startAutomationMcpProxy(AUTOMATION_MCP_PROXY, holdAutomationMcpProxyFailure);
-  } catch {
-    holdAutomationMcpProxyFailure();
-    return;
-  }
+${
+  automationMcpProxy
+    ? String.raw`try {
+  assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, readOpenClawConfig());
+  automationMcpProxy = await startAutomationMcpProxy(AUTOMATION_MCP_PROXY, holdAutomationMcpProxyFailure);
+} catch {
+  holdAutomationMcpProxyFailure();
+  return;
+}`
+    : ""
 }
 // Doctor reads the configuration the Gateway starts with. Current state adds
 // no await before the spawn.

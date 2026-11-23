@@ -50,8 +50,10 @@ and `sandbox: "workspace-write"`. `networkProxy` requires `enabled: true`,
 DNS `domains` mapped to `allow` or `deny`, and empty `unixSockets`. Set
 `enableSocks5`, `enableSocks5Udp`, `allowUpstreamProxy`, `allowLocalBinding`,
 `dangerouslyAllowNonLoopbackProxy` and `dangerouslyAllowAllUnixSockets` to `false`.
-Reject IPs, wildcards, localhost, extra keys and overrides. Grants bind the full
-reviewer/proxy policy and native filesystem permissions; proxy hosts do not
+Reject IPs, wildcards, localhost, extra keys, overrides and caller `readOnlyPaths`.
+Grants bind reviewer/proxy, filesystem permissions and ordered server-owned
+`readOnlyPaths` (`/app/node_modules/openclaw`, `/home/node/.codex/skills/.system`);
+proxy hosts do not
 authorize MCP endpoint access. [App approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
 remains outside this pilot.
 

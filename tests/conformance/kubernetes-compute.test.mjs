@@ -733,7 +733,6 @@ test("automation qualification binds Standard Codex reviewer and limited proxy p
   );
   assert.equal(appServer.approvalsReviewer, "user");
   assert.equal(appServer.networkProxy.enabled, true);
-
   const changedDomain = await evaluate((value) => {
     value.networkProxy.domains["github.com"] = "deny";
   });
@@ -760,6 +759,9 @@ test("automation qualification binds Standard Codex reviewer and limited proxy p
     },
     (value) => {
       value.networkProxy.profileName = "custom";
+    },
+    (value) => {
+      value.networkProxy.readOnlyPaths = ["/app/node_modules/openclaw"];
     },
     (value) => {
       value.networkProxy.unixSockets["/tmp/socket"] = "allow";

@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../gateway/agent-automations-runtime.ts";
+import { DEDICATED_AUTOMATION_READ_ONLY_PATHS } from "./agent-automation-limits.ts";
 
 // Checkout CI and the in-image supervisor proof load this renderer before workspace
 // packages are installed. Compiled callers use the contracts build output.
@@ -100,6 +101,7 @@ const AUTOMATION_NAME_MAX_CHARACTERS = ${NAME_MAX_CHARACTERS};
 const AUTOMATION_NAME_PATTERN = new RegExp(${JSON.stringify(PLAIN_TEXT_PATTERN)}, "u");
 const AUTOMATION_BUNDLED_PLUGIN_ROOT = "/app/node_modules/openclaw/dist/extensions";
 const AUTOMATION_BUNDLED_PLUGIN_IDS = ${JSON.stringify(AUTOMATION_NO_MCP_PLUGIN_IDS)};
+const AUTOMATION_DEDICATED_READ_ONLY_PATHS = ${JSON.stringify(DEDICATED_AUTOMATION_READ_ONLY_PATHS)};
 function assertCleanAutomationOrigins(env, gatewayToolPolicyInput, initialConfigPath) {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -175,6 +177,9 @@ function assertCleanAutomationOrigins(env, gatewayToolPolicyInput, initialConfig
     configureWorkspaceNodePlugins(expected, workspaceNodeId);
     const codex = expected.plugins?.entries?.codex;
     if (!record(codex) || !record(codex.config) || !Array.isArray(codex.config.codexDynamicToolsExclude ?? [])) fail();
+    const proxy = codex.config.appServer?.networkProxy;
+    if (!record(proxy) || Object.prototype.hasOwnProperty.call(proxy, "readOnlyPaths")) fail();
+    proxy.readOnlyPaths = [...AUTOMATION_DEDICATED_READ_ONLY_PATHS];
     codex.config.codexDynamicToolsExclude = [...new Set([...(codex.config.codexDynamicToolsExclude ?? []), ...GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS])];
     if (!deepEqual(config.plugins, expected.plugins)) fail();
   }

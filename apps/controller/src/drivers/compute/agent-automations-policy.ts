@@ -8,7 +8,10 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { AUTOMATION_NO_MCP_PLUGIN_IDS } from "./agent-automation-guard.ts";
-import { AUTOMATION_MCP_MAX_ROUTES } from "./agent-automation-limits.ts";
+import {
+  AUTOMATION_MCP_MAX_ROUTES,
+  DEDICATED_AUTOMATION_READ_ONLY_PATHS,
+} from "./agent-automation-limits.ts";
 import {
   trustedAnonymousMcpEndpointDescriptor,
   type TrustedAnonymousMcpEndpoint,
@@ -251,6 +254,7 @@ function qualifiedCodexNetworkProxy(value: unknown): Record<string, unknown> | u
     enabled: true,
     baseProfile: "workspace",
     filesystem: { ":minimal": "read", ":project_roots": { ".": "write" } },
+    readOnlyPaths: [...DEDICATED_AUTOMATION_READ_ONLY_PATHS],
     mode: "limited",
     domains: sortedDomains,
     unixSockets: {},

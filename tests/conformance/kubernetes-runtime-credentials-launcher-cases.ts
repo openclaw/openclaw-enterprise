@@ -97,6 +97,27 @@ export function registerCodexLauncher(): void {
   // runs: the probe's dead chatgpt_service_account branch named an undefined workspaceId (finding 1295).
   test("generated runtime modules reference only declared names", () => {
     const linter = new Linter();
+    const proxy = {
+      port: runtimeEntrypoints.AUTOMATION_MCP_PROXY_PORT,
+      routes: [
+        {
+          server: "approved",
+          path: "/mcp/" + "c".repeat(64),
+          url: "https://192.0.2.5/mcp",
+          egressCidrs: ["192.0.2.5/32"],
+        },
+      ],
+    };
+    // A binding and its fixed-route proxy form one launch authority; neither
+    // incomplete pairing may produce a runnable generated program.
+    assert.throws(
+      () => runtimeEntrypoints.gatewayRuntimeEntrypoint(false, "a".repeat(64)),
+      /proxy and qualified policy binding must be selected together/,
+    );
+    assert.throws(
+      () => runtimeEntrypoints.gatewayRuntimeEntrypoint(false, undefined, false, proxy),
+      /proxy and qualified policy binding must be selected together/,
+    );
     const programs: Record<string, unknown> = {
       ...Object.fromEntries(
         Object.entries(runtimeEntrypoints).filter(([name]) => name.endsWith("_ENTRYPOINT")),
@@ -105,6 +126,18 @@ export function registerCodexLauncher(): void {
       REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
       WORKSPACE_SETUP_RUNTIME,
       DOCKER_GATEWAY_RUNTIME_ENTRYPOINT,
+      EMBEDDED_AUTOMATION_GUARDED_GATEWAY_ENTRYPOINT: runtimeEntrypoints.gatewayRuntimeEntrypoint(
+        false,
+        "a".repeat(64),
+        true,
+        proxy,
+      ),
+      DEDICATED_AUTOMATION_GUARDED_GATEWAY_ENTRYPOINT: runtimeEntrypoints.gatewayRuntimeEntrypoint(
+        true,
+        "a".repeat(64),
+        false,
+        proxy,
+      ),
     };
     for (const [name, source] of Object.entries(programs)) {
       // nodeProgramArguments runs each as a script (vm.runInThisContext), not a CommonJS module.

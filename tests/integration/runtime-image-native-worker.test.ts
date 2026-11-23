@@ -298,6 +298,80 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
   );
 
   test(
+    "dedicated Gateway automation MCP accepts only the server-owned Codex filesystem overlay",
+    imageTestOptions,
+    async (t) => {
+      const containerName = "oce-runtime-automation-dedicated-" + randomBytes(6).toString("hex");
+      t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
+      const path = "/mcp/" + "c".repeat(64);
+      const proxy = {
+        port: 47731,
+        routes: [
+          { server: "approved", path, url: "https://192.0.2.5/mcp", egressCidrs: ["192.0.2.5/32"] },
+        ],
+      };
+      const wrapper = gatewayRuntimeEntrypoint(true, "a".repeat(64), false, proxy);
+      const preset = JSON.parse(
+        await readFile(
+          new URL("../../deploy/presets/standard-codex.json", import.meta.url),
+          "utf8",
+        ),
+      );
+      const appServer = preset.template.configuration.values.plugins.entries.codex.config.appServer;
+      const launch = await readFile(
+        new URL("../fixtures/runtime-automation-mcp-dedicated-proof.mjs", import.meta.url),
+        "utf8",
+      );
+      // A plugin-free dedicated Codex manifest still adds a server-owned filesystem
+      // restriction. The admitted source must not supply or replace those paths.
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "-i",
+          "--rm",
+          "--user",
+          "1000:1000",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--network",
+          "none",
+          "--tmpfs",
+          "/home/node:size=256m,uid=1000,gid=1000,mode=700",
+          "--tmpfs",
+          "/etc/openclaw:size=1m,uid=1000,gid=1000,mode=700",
+          "--tmpfs",
+          "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+          "--name",
+          containerName,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          launch,
+        ],
+        { timeout: 120_000 * imageSmokeTimeoutMultiplier },
+        JSON.stringify({ wrapper, path, appServer }),
+      );
+      assert.deepEqual(decodedRecord(stdout), {
+        positive: {
+          ready: 200,
+          native: true,
+          paths: ["/app/node_modules/openclaw", "/home/node/.codex/skills/.system"],
+        },
+        negative: { native: false, originRefused: true },
+        generated: ["missing", "extra", "reordered", "altered"].map((mode) => ({
+          mode,
+          native: false,
+          originRefused: true,
+        })),
+      });
+    },
+  );
+
+  test(
     "the dedicated worker launches the pinned gog on PATH only for the selected release",
     imageTestOptions,
     async () => {

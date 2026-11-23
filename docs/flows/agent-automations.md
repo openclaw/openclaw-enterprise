@@ -164,8 +164,8 @@ requires server approval and the qualified Standard guardian WebSocket configura
 `qualifiedCodexPluginConfig` preserves reviewer `user`, on-request approval,
 workspace-write sandbox and the limited workspace proxy. It rejects unsafe proxy
 flags, noncanonical domains, sockets and unknown keys. The canonical grant binds
-the full reviewer, sorted domain decisions, proxy flags and native filesystem
-permissions alongside workspace, transport/authentication provenance, exclusions
+reviewer, sorted domains, proxy flags, filesystem permissions and ordered
+server-owned `readOnlyPaths` alongside workspace, transport/authentication provenance, exclusions
 and immutable images; it stores no raw app-server token or URL. Proxy domains do
 not authorize the independent Gateway MCP callback. Unsupported qualification refuses without fallback; qualified model-only paths
 remain available. Genuine HTTPS execution proof is a separate qualification gate.
@@ -222,9 +222,10 @@ discovery/index before configuration or Doctor; refusal holds `gateway-config`
 unavailable. Existing `compat` is never repaired or adopted. Doctor and
 missing-plugin repair still run, while configured-plugin release bookkeeping/restamp
 is suppressed. `AGENT_AUTOMATION_ORIGIN_GUARD` repeats the check before each spawn and
-compares canonical entries and MCP against the immutable mounted source for
-embedded OpenClaw, or the immutable rendered ConfigMap for dedicated Codex. It
-checks writable discovery roots, installed-plugin state and bundled manifests. It
+compares entries/MCP to immutable embedded source or the dedicated rendered
+ConfigMap. Dedicated reconstructs server-owned `readOnlyPaths` from the shared
+constant, rejecting caller paths before full plugin equality. It checks writable
+discovery roots, installed-plugin state and bundled manifests. It
 also rechecks disabled Code Mode/tool search, node plugin/skill controls and
 canonical `agents.entries` and model overrides; legacy `agents.list` is refused.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:gatewayRuntimeEntrypoint`
