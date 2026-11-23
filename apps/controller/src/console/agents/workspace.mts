@@ -550,9 +550,10 @@ export function renderWorkspaceFiles(
         status.textContent = canCreate ? missingText() : "";
         errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
         // Retry never replaces unsaved edits or settles an unknown save. A file that holds
-        // either waits for its own Reload.
+        // either waits for its own Reload, and Retry reads without Reload's discard, so edits
+        // kept from an earlier visit come back.
         if (unanswered(cause.status) && !outcomeUnknown && editor.value === (baseline ?? "")) {
-          unreached.set(name, () => load(discard));
+          unreached.set(name, () => load());
         }
       } finally {
         reading -= 1;
