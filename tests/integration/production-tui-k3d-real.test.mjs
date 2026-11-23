@@ -51,6 +51,7 @@ import {
   selectRehearsalControllers,
 } from "../helpers/staging-upgrade-return.ts";
 import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts";
+import { upgradeRehearsalDiagnostic } from "../helpers/upgrade-rehearsal-diagnostic.ts";
 
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -334,7 +335,7 @@ test(
       await writeFile(join(directory, "proof.json"), JSON.stringify(evidence, null, 2) + "\n", {
         mode: 0o600,
       });
-      context.diagnostic(`${details.disposition ?? "PASS"} ${row}`);
+      context.diagnostic(upgradeRehearsalDiagnostic(row, details));
     };
     // Sign-in qualifies controller images; host tools and both Helm operations belong to this harness.
     const occCli = rehearsal ? join(directory, "occ") : join(process.cwd(), "bin", "occ");
