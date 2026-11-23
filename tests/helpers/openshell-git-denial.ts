@@ -396,3 +396,170 @@ export function createOpenShellGitDenial({
     },
   });
 }
+
+type GitAclDenial =
+  { kind: "git" } | { kind: "rest"; method: "GET" | "POST"; path: string; host: string };
+
+function gitAclCheckCommand(token: string) {
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  const fingerprints = [token, basic].flatMap((value) => [
+    String(Buffer.byteLength(value)),
+    createHash("sha256").update(value).digest("hex"),
+  ]);
+  // Node's TypeScript loader erases types. The guest needs only Node builtins.
+  const script = `(${checkGitAclCommand.toString()})().catch(() => {
+    process.stderr.write("ACL_DENIAL_CAPTURE\\n");
+    process.exitCode = 1;
+  });`;
+  return ["node", "--eval", script, "--", ...fingerprints];
+}
+
+/** Check the alias and require the broad credential to be absent from every guest value. */
+export function createGitAclEnvironmentGuard(token: string): string {
+  return [...gitAclCheckCommand(token), "environment"]
+    .map((argument) => "'" + argument.replaceAll("'", "'\\''") + "'")
+    .join(" ");
+}
+
+/** Run the same bounded denial check in the installed guest and the local test. */
+export function createGitAclDenialCommand(token: string) {
+  const command = gitAclCheckCommand(token);
+  return (denial: GitAclDenial, [executable, ...args]: [string, ...string[]]) => [
+    ...command,
+    denial.kind,
+    denial.kind === "rest" ? denial.method : "",
+    denial.kind === "rest" ? denial.path : "",
+    denial.kind === "rest" ? denial.host : "",
+    executable,
+    ...args,
+  ];
+}
+
+async function checkGitAclCommand() {
+  const { createHash } = await import("node:crypto");
+  const [
+    rawLength,
+    rawHash,
+    basicLength,
+    basicHash,
+    kind,
+    method,
+    path,
+    host,
+    executable,
+    ...args
+  ] = process.argv.slice(1);
+  const limit = 8192;
+  const fail = (diagnostic: string) => {
+    process.stderr.write(diagnostic + "\n");
+    process.exitCode = 1;
+  };
+  const fingerprints = [
+    [Number(rawLength), rawHash],
+    [Number(basicLength), basicHash],
+  ] as const;
+  if (
+    fingerprints.some(
+      ([size, hash]) =>
+        !Number.isSafeInteger(size) || size <= 0 || !hash || !/^[a-f0-9]{64}$/.test(hash),
+    )
+  ) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  // A credential can be embedded in a URL, JSON, or an Authorization header.
+  const containsCredential = (value: Buffer): boolean =>
+    fingerprints.some(([size, hash]) => {
+      for (let offset = 0; offset + size <= value.length; offset++) {
+        if (
+          createHash("sha256")
+            .update(value.subarray(offset, offset + size))
+            .digest("hex") === hash
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+  if (kind === "environment") {
+    if (
+      !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(process.env.GITHUB_TOKEN ?? "")
+    ) {
+      return fail("ACL_GITHUB_PLACEHOLDER");
+    }
+    if (
+      Object.values(process.env).some(
+        (value) => value !== undefined && containsCredential(Buffer.from(value)),
+      )
+    ) {
+      return fail("ACL_CREDENTIAL_IN_ENVIRONMENT");
+    }
+    return;
+  }
+
+  if (!executable || (kind !== "git" && kind !== "rest")) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  if (kind === "rest") {
+    args.push(
+      "-u",
+      `x-access-token:${process.env.GITHUB_TOKEN}`,
+      "--show-error",
+      "--max-filesize",
+      String(limit),
+      "--write-out",
+      "\n%{http_code} %{content_type}\n",
+    );
+  }
+  const { spawnSync } = await import("node:child_process");
+  const { stdout, stderr, status, error } = spawnSync(executable, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: limit + 1,
+  });
+  if (error || status === null || !stdout || !stderr || stdout.length + stderr.length > limit) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+
+  // Scan complete bytes in both streams before interpreting a status or body.
+  if (containsCredential(stdout) || containsCredential(stderr)) {
+    return fail("ACL_CREDENTIAL_IN_OUTPUT");
+  }
+
+  if (kind === "git") {
+    if (status === 0) {
+      return fail("ACL_NATIVE_UNEXPECTED_SUCCESS");
+    }
+    if (!/^fatal: .*The requested URL returned error: 403$/m.test(stderr.toString("utf8"))) {
+      return fail("ACL_NATIVE_HTTP");
+    }
+    process.stdout.write("403 native-git\n");
+    return;
+  }
+
+  // A transport failure can leave a convincing status and body in stdout.
+  if (status !== 0) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  const response = stdout.toString("utf8");
+  const footer = /\n403 application\/json\n$/.exec(response);
+  if (!footer) {
+    return fail("ACL_NATIVE_REST_DENIAL");
+  }
+  const body = JSON.parse(response.slice(0, footer.index));
+  if (
+    body?.error !== "policy_denied" ||
+    body.layer !== "l7" ||
+    body.protocol !== "rest" ||
+    body.method !== method ||
+    body.path !== path ||
+    body.host !== host ||
+    body.port !== 443 ||
+    body.rule_missing?.type !== "rest_allow" ||
+    body.rule_missing.layer !== "l7" ||
+    body.rule_missing.method !== method ||
+    body.rule_missing.path !== path
+  ) {
+    return fail("ACL_NATIVE_REST_DENIAL");
+  }
+  process.stdout.write("403 native-rest-policy\n");
+}

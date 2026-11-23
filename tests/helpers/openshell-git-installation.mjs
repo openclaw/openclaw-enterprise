@@ -211,18 +211,26 @@ async function certificates(command, directory, originHost, authorityHost) {
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, onSetupStep?: (step: string) => void }} [options]
+ * @param {{ witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, networkAcl?: boolean, onSetupStep?: (step: string) => void }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
-  { witnessIssuedGit = false, allowStandingApprovals = false, onSetupStep } = {},
+  {
+    witnessIssuedGit = false,
+    allowStandingApprovals = false,
+    networkAcl = false,
+    onSetupStep,
+  } = {},
 ) {
   return ownFirstAgentWork(t)(
-    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }),
+    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, networkAcl, onSetupStep }),
   );
 }
 
-async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }) {
+async function installOpenShellGit(
+  t,
+  { witnessIssuedGit, allowStandingApprovals, networkAcl, onSetupStep },
+) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -394,6 +402,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     host: bridge,
     advertisedHost: originHost,
     witnessIssuedGit,
+    ...(networkAcl && { networkAcl: true, repository: "fixture/a" }),
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -1501,6 +1510,8 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     modelSource,
     repositoryRef: origin.repositoryRef,
     origin,
+    sandboxImage: installation.drivers.compute.configuration.images.agent,
+    originBridge: bridge,
     kube,
     gatewayBackend,
     gatewayClient,
