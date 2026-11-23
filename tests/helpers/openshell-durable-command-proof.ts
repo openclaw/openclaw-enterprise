@@ -13,7 +13,7 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     return false;
   }
 
-  let nonce = first;
+  const firstMatches = new Set<string | undefined>();
   // The rollout writer may still be flushing its final record.
   for (const line of content.split("\n").slice(0, -1).filter(Boolean)) {
     let record: unknown;
@@ -45,7 +45,7 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     if (item.type !== "CommandExecution") {
       continue;
     }
-    const { command, exit_code: exitCode, aggregated_output: output } = item;
+    const { command, exit_code: exitCode, aggregated_output: output, id, status } = item;
     if (
       !isArray(command) ||
       !command.every((arg) => typeof arg === "string") ||
@@ -54,11 +54,29 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     ) {
       return false;
     }
-    if (exitCode === 0 && output?.trim() === nonce && command.join(" ").includes(nonce)) {
-      if (nonce === second) {
-        return true;
-      }
-      nonce = second;
+    const nonce = output?.trim();
+    if (
+      exitCode !== 0 ||
+      (status !== undefined && status !== "completed") ||
+      (nonce !== first && nonce !== second) ||
+      !command.join(" ").includes(nonce)
+    ) {
+      continue;
+    }
+
+    const { thread_id: threadId, turn_id: turnId } = payload;
+    const identity =
+      typeof threadId === "string" && typeof turnId === "string" && typeof id === "string"
+        ? JSON.stringify([threadId, turnId, id])
+        : undefined;
+    if (nonce === first) {
+      firstMatches.add(identity);
+    } else if (
+      firstMatches.size > 0 &&
+      // Only two complete, equal identities can establish that the witnesses are the same item.
+      (identity === undefined || !firstMatches.has(identity) || firstMatches.size > 1)
+    ) {
+      return true;
     }
   }
   return false;

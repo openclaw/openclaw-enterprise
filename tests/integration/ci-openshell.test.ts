@@ -148,6 +148,100 @@ test("OpenShell durable proof rejects corruption before proof and ignores later 
   }
 });
 
+const rolloutThread = "10000000-0000-4000-8000-000000000001";
+const otherRolloutThread = "10000000-0000-4000-8000-000000000002";
+
+function stockRolloutCommand(
+  nonce: string,
+  id: string,
+  { threadId = rolloutThread, turnId = "turn-a", status = "completed", exitCode = 0 } = {},
+): string {
+  return (
+    JSON.stringify({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: threadId,
+        turn_id: turnId,
+        completed_at_ms: 1_767_225_600_000,
+        item: {
+          type: "CommandExecution",
+          id,
+          command: ["sh", "-c", `printf '%s' '${nonce}'`],
+          cwd: "file:///workspace",
+          parsed_cmd: [],
+          source: "agent",
+          status,
+          exit_code: exitCode,
+          aggregated_output: nonce,
+        },
+      },
+    }) + "\n"
+  );
+}
+
+test("OpenShell durable proof rejects two nonce witnesses from one completed command", () => {
+  const [firstNonce, secondNonce] = gatewayCommandNonces;
+  const first = stockRolloutCommand(firstNonce, "call-a");
+  const conflictingSecond = stockRolloutCommand(secondNonce, "call-a");
+  const second = stockRolloutCommand(secondNonce, "call-b");
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+
+  assert.equal(provesCommands(first + conflictingSecond), false, "same thread, turn and item");
+  assert.equal(provesCommands(first + second), true, "different items");
+  assert.equal(provesCommands(first + conflictingSecond + second), true, "later distinct second");
+  assert.equal(
+    provesCommands(first + stockRolloutCommand(firstNonce, "call-b") + conflictingSecond),
+    true,
+    "earlier distinct first",
+  );
+  assert.equal(
+    provesCommands(first + stockRolloutCommand(secondNonce, "call-a", { turnId: "turn-b" })),
+    true,
+    "same item ID in distinct turns",
+  );
+  assert.equal(
+    provesCommands(
+      first + stockRolloutCommand(secondNonce, "call-a", { threadId: otherRolloutThread }),
+    ),
+    true,
+    "same turn and item IDs in distinct threads",
+  );
+  assert.equal(
+    provesCommands(first + completedRolloutCommand(secondNonce)),
+    true,
+    "legacy second has no identity",
+  );
+  assert.equal(
+    provesCommands(completedRolloutCommand(firstNonce) + conflictingSecond),
+    true,
+    "legacy first has no identity",
+  );
+  assert.equal(
+    provesCommands(
+      stockRolloutCommand(firstNonce, "call-a", { status: "failed", exitCode: 1 }) + first + second,
+    ),
+    true,
+    "successful retry of the first command",
+  );
+});
+
+test("OpenShell durable proof credits only successful command completions", () => {
+  const [firstNonce, secondNonce] = gatewayCommandNonces;
+  const first = stockRolloutCommand(firstNonce, "call-a");
+  const second = stockRolloutCommand(secondNonce, "call-b");
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+
+  for (const status of ["in_progress", "failed", "declined"]) {
+    const incomplete = stockRolloutCommand(secondNonce, "call-b", { status });
+    assert.equal(provesCommands(first + incomplete), false, status);
+    assert.equal(provesCommands(first + incomplete + second), true, "later success");
+  }
+});
+
 test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
   const revisionId = "rev_10000000-0000-4000-8000-000000000003";
   const failure = {
