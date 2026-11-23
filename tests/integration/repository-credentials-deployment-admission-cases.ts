@@ -40,6 +40,7 @@ import {
   type ComputeDriver,
   type ConfigurationDriver,
   type CreateAgentBody,
+  type CredentialSource,
   type LegacyEgressProxyDriver,
   type Identity,
   type Namespace,
@@ -1379,6 +1380,60 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       beyond.error.details?.map(({ path: detailPath }) => detailPath),
       ["/repositoryNetworkPolicy"],
     );
+    checkedEnvelope(await save([selected]), SandboxPolicyResponse, 200);
+
+    // A Source the save cannot use answers 409. Only the Source row the save reads is rewritten;
+    // IAM, the ceiling, the policy write and the HTTP path are the ordinary ones.
+    const transact = f.state.transact.bind(f.state);
+    const rows: readonly (readonly [
+      string,
+      (source: CredentialSource) => CredentialSource | undefined,
+    ])[] = [
+      ["missing", () => undefined],
+      ["in another Namespace", (source) => ({ ...source, namespaceId: "another-namespace" })],
+      [
+        "owned by another TokenService instance",
+        (source) => ({ ...source, tokenServiceInstanceId: randomUUID() }) as CredentialSource,
+      ],
+      [
+        "not a github Source",
+        (source) => ({ ...source, config: { ...source.config, provider_preset: "openai" } }),
+      ],
+    ];
+    for (const [row, rewrite] of rows) {
+      const read = t.mock.fn();
+      const rewritten = t.mock.method(f.state, "transact", ((
+        work: Parameters<typeof f.state.transact>[0],
+      ) =>
+        transact((unit) =>
+          work({
+            ...unit,
+            credentialSources: {
+              ...unit.credentialSources,
+              async lockCredentialSource(namespaceId: string, sourceId: string) {
+                const source = await unit.credentialSources.lockCredentialSource(
+                  namespaceId,
+                  sourceId,
+                );
+                if (sourceId !== repositorySourceId || source === undefined) {
+                  return source;
+                }
+                read();
+                return rewrite(source);
+              },
+            },
+          }),
+        )) as typeof f.state.transact);
+      const refused = await save([selected]);
+      rewritten.mock.restore();
+      assert.equal(refused.status, 409, row);
+      assert.match(
+        checkedEnvelope(refused, ErrorResponse, 409).error.message,
+        /not a ready github source of this Namespace and its TokenService/,
+        row,
+      );
+      assert.equal(read.mock.callCount(), 1, row);
+    }
     checkedEnvelope(await save([selected]), SandboxPolicyResponse, 200);
 
     // While the loaded registry names the Source, it can be neither deleted nor re-scoped.
