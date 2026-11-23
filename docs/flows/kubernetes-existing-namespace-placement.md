@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-23
+last_updated_session: authoring-run/cf4336a8-7bdc-4a0b-bdae-84b275c7b44a
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -164,13 +164,21 @@ Deleting a failed selection that was never bound to either tenant marker also
 leaves the external namespace untouched; partial or foreign markers fail
 closed. An already-missing namespace counts as deleted. After deleting an
 unclaimed failed tenant, an administrator can correct preparation and retry.
-Previously claimed namespaces cannot be readopted until an operator deliberately
-clears the old `openclaw.dev/namespace` label, `openclaw.dev/namespace-id`
-annotation and, in single-cluster Compute, `openclaw.dev/gateway-namespace`
-label. Deleting a failed selection whose namespace still carries another
-tenant's `openclaw.dev/namespace` label or `namespace-id` annotation fails
-permanently and leaves the Namespace `deleting`; clear those markers, then have
-the initiator repeat `DELETE`. Managed namespaces retain their existing
+
+Retained markers block readoption. If the `openclaw.dev/namespace` label
+or `openclaw.dev/namespace-id` annotation names another tenant, deletion of
+the failed selection fails permanently and its status stays `deleting`.
+
+Preserve the Kubernetes namespace. Before clearing any markers, follow the
+[reuse checks](../reference/namespaces.md#ownership-and-supported-operations).
+All tenant markers present must identify the same earlier OCC Namespace.
+If they disagree or you cannot confirm OCC finished deleting that Namespace,
+leave the markers in place. Otherwise, the operator can clear that Namespace's
+stale label and annotation and, in single-cluster Compute, its
+`openclaw.dev/gateway-namespace` label. Then
+[retry deletion](../reference/namespaces.md#failure-semantics-and-limitations)
+for the failed selection. Completing that retry establishes only that the
+failed selection was deleted. Managed namespaces retain their existing
 complete-deletion lifecycle.
 
 ## Debugging and Verification
@@ -214,6 +222,8 @@ complete-deletion lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 15:30: Verify the marked tenant before retrying a failed selection. (authoring-run/cf4336a8-7bdc-4a0b-bdae-84b275c7b44a - 17c71bd601a523a0606797f89f741dbaa1dc00ce)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-07 22:02: Trace the startup quota precision prerequisite before namespace placement. (authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)

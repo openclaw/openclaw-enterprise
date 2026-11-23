@@ -95,8 +95,10 @@ Configuration in an explicitly selected external Namespace returns
 `409 NAMESPACE_NOT_READY` until worker provisioning completes. After OCC deletes
 the Namespace, its tenant markers remain on the operator-owned Kubernetes
 namespace. Selecting it again ends in status `failed` while those markers remain. Before
-clearing them for reuse, verify that OCC finished deleting the Namespace
-they identify. If ownership is uncertain, leave the markers in place. See
+clearing markers for reuse, verify that all tenant markers present identify the
+same earlier OCC Namespace and that OCC finished deleting that exact Namespace.
+A `202` response or `deleting` status doesn't establish completion. If the
+markers disagree or deletion is unconfirmed, leave them in place. See
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
 
 The API reports `failed` without a cause. Check the worker's `worker.completed`
@@ -232,9 +234,11 @@ workload is ready.
 
   Retrying does not reset the deadline. At or after the deadline, the worker
   can still confirm completion. If it reports teardown pending, the work
-  fails permanently again. Successful teardown preserves an operator-owned
-  Kubernetes namespace. Do not delete it or clear tenant markers to force
-  teardown.
+  fails permanently again. Preserve the operator-owned Kubernetes
+  namespace. If an earlier tenant's markers block deletion of a later failed
+  selection, follow the [reuse checks](#ownership-and-supported-operations).
+  Only after confirming the earlier tenant's deletion may the operator clear
+  its stale markers. Then retry `DELETE` for the failed selection.
 
 ## Related
 
