@@ -162,12 +162,36 @@ export function validateConfiguration(input: Readonly<StrandsBoxOptions>): reado
   return errors;
 }
 
-const POD_UID = /^[0-9a-f-]{36}$/u;
 const MANAGED = "openclaw.dev/strands-box";
 const OWNER = "openclaw.dev/namespace";
 const AGENT = "openclaw.dev/agent";
 const REVISION = "openclaw.dev/revision";
 const HASH = "openclaw.dev/strands-box-input-sha256";
+
+function isPodUid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f-]{36}$/u.test(value);
+}
+
+function listenerState(statuses: unknown = []): Record<string, unknown> | undefined {
+  if (!Array.isArray(statuses)) {
+    throw new DependencyUnavailableError("Invalid Strands init container statuses.");
+  }
+  let state: Record<string, unknown> | undefined;
+  for (const entry of statuses) {
+    const container = asRecord(entry);
+    if (typeof container?.name !== "string" || !container.name) {
+      throw new DependencyUnavailableError("Invalid Strands init container statuses.");
+    }
+    if (container.name === "initialize-listener") {
+      const current = asRecord(container.state);
+      if (state || !current || Object.keys(current).length !== 1) {
+        throw new DependencyUnavailableError("Invalid Strands listener state.");
+      }
+      state = current;
+    }
+  }
+  return state;
+}
 
 function api(context: SandboxNamespaceContext): KubernetesObjectApi {
   if (!(context.kubernetes instanceof KubernetesObjectApi)) {
@@ -823,8 +847,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
           pem.trim(),
         ) ||
-        typeof podUid !== "string" ||
-        !POD_UID.test(podUid)
+        !isPodUid(podUid)
       ) {
         throw new Error("Invalid Strands execution certificate evidence.");
       }
@@ -872,14 +895,13 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       undefined,
       selector,
     );
-    if (Array.isArray(pods.items) && pods.items.length === 0) {
-      throw new TransientDependencyError(
-        "sandbox_gateway",
-        "unavailable",
-        "Awaiting the first Strands execution Pod.",
-      );
+    const pending = (message: string) =>
+      new TransientDependencyError("sandbox_gateway", "unavailable", message);
+    const items = Array.isArray(pods.items) ? pods.items : undefined;
+    if (items?.length === 0) {
+      throw pending("Awaiting the first Strands execution Pod.");
     }
-    const pod = Array.isArray(pods.items) && pods.items.length === 1 ? pods.items[0] : undefined;
+    const pod = items?.length === 1 ? items[0] : undefined;
     const owner = pod?.metadata?.ownerReferences?.find((item) => item.controller === true);
     if (
       !pod?.metadata?.uid ||
@@ -909,24 +931,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     }
     const rawStatus = asRecord(pod)?.status;
     const status = asRecord(rawStatus);
-    const init = status?.initContainerStatuses === undefined ? [] : status.initContainerStatuses;
-    if (
-      !Array.isArray(init) ||
-      init.some((entry) => {
-        const name = asRecord(entry)?.name;
-        return typeof name !== "string" || !name;
-      })
-    ) {
-      throw new DependencyUnavailableError("Invalid Strands init container statuses.");
-    }
-    const listeners = init.filter((entry) => entry.name === "initialize-listener");
-    const state = asRecord(listeners[0]?.state);
-    if (
-      listeners.length > 1 ||
-      (listeners.length === 1 && (!state || Object.keys(state).length !== 1))
-    ) {
-      throw new DependencyUnavailableError("Invalid Strands listener state.");
-    }
+    const state = listenerState(status?.initContainerStatuses);
     const terminated = asRecord(state?.terminated);
     if (terminated?.exitCode !== 0) {
       // Only normal startup observations justify retrying without a certificate.
@@ -938,17 +943,12 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
           waiting.reason === "ContainerCreating" ||
           waiting.reason === "PodInitializing");
       if (
-        typeof pod.metadata.uid === "string" &&
-        POD_UID.test(pod.metadata.uid) &&
+        isPodUid(pod.metadata.uid) &&
         (rawStatus === undefined || status) &&
         (phase === undefined || phase === "Pending" || phase === "Running") &&
-        (listeners.length === 0 || starting || asRecord(state?.running))
+        (!state || starting || asRecord(state.running))
       ) {
-        throw new TransientDependencyError(
-          "sandbox_gateway",
-          "unavailable",
-          "Awaiting Strands listener certificate.",
-        );
+        throw pending("Awaiting Strands listener certificate.");
       }
       throw new DependencyUnavailableError("Awaiting Strands listener certificate.");
     }

@@ -157,12 +157,11 @@ test("Box bounds listener startup retries to a missing Pod or an owned initializ
   };
   const rs = { ...deployment, kind: "ReplicaSet", name: "execution-rs", uid: "rs" };
   const pod = { metadata: { uid: "00000000-0000-4000-8000-000000000001", ownerReferences: [rs] } };
-  const withStatus = (...initContainerStatuses: unknown[]) => ({
-    ...pod,
-    status: { initContainerStatuses },
-  });
-  const listener = (state: unknown) => ({ name: "initialize-listener", state });
-  const waiting = listener({ waiting: { reason: "ContainerCreating" } });
+  const listener = (...states: unknown[]) => {
+    const initContainerStatuses = states.map((state) => ({ name: "initialize-listener", state }));
+    return [{ ...pod, status: { initContainerStatuses } }];
+  };
+  const waiting = { waiting: { reason: "ContainerCreating" } };
   const transient = {
     name: "TransientDependencyError",
     code: "SANDBOX_GATEWAY_UNAVAILABLE",
@@ -174,26 +173,23 @@ test("Box bounds listener startup retries to a missing Pod or an owned initializ
   const cases: Array<[string, unknown[], object, typeof deployment?]> = [
     ["no Pod", [], transient],
     ["no Pod status", [pod], transient],
-    ["no listener yet", [withStatus()], transient],
-    ["listener waiting", [withStatus(waiting)], transient],
-    ["listener running", [withStatus(listener({ running: {} }))], transient],
+    ["no listener yet", listener(), transient],
+    ["listener waiting", listener(waiting), transient],
+    ["listener running", listener({ running: {} }), transient],
     ["two Pods", [pod, { metadata: { uid: "other" } }], unavailable],
     ["invalid Pod UID", [{ metadata: { ...pod.metadata, uid: "bad" } }], unavailable],
     ["unowned Pod", [{ metadata: { uid: pod.metadata.uid } }], unavailable],
     ["foreign Deployment", [pod], /does not belong to the prepared Deployment/, foreign],
     ["terminal Pod", [{ ...pod, status: { phase: "Failed" } }], unavailable],
-    ["malformed status", [withStatus(null)], unavailable],
-    ["duplicate listener", [withStatus(listener(completed), waiting)], unavailable],
-    ["conflicting states", [withStatus(listener({ running: {}, ...completed }))], unavailable],
-    [
-      "crash loop",
-      [withStatus(listener({ waiting: { reason: "CrashLoopBackOff" } }))],
-      unavailable,
-    ],
-    ["failed listener", [withStatus(listener({ terminated: { exitCode: 1 } }))], unavailable],
+    ["malformed status", [{ ...pod, status: { initContainerStatuses: [null] } }], unavailable],
+    ["duplicate listener", listener(completed, waiting), unavailable],
+    ["conflicting states", listener({ running: {}, ...completed }), unavailable],
+    ["crash loop", listener({ waiting: { reason: "CrashLoopBackOff" } }), unavailable],
+    ["unknown state", listener({ unknown: {} }), unavailable],
+    ["failed listener", listener({ terminated: { exitCode: 1 } }), unavailable],
     [
       "completed without valid certificate",
-      [withStatus(listener(completed))],
+      listener(completed),
       /Invalid Strands execution certificate evidence/,
     ],
   ];
