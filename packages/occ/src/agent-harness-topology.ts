@@ -6,6 +6,7 @@ import {
   type HarnessDescriptor,
   type HarnessExecutionMode,
   type LoggingLevel,
+  type Namespace,
   type OpenClawConfigurationDocument,
   type PluginDesiredState,
   type PluginDriver,
@@ -17,7 +18,7 @@ import { asRecord } from "@openclaw-enterprise/utils";
 import {
   codexRunsPrimaryModel,
   requireFallbackProviders,
-  resolveConfiguredHarnessId,
+  deploymentSelection,
   type ModelPolicyAgent,
 } from "./configured-harness.ts";
 import {
@@ -341,6 +342,7 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
   async function validateSavedAgentTopology(
     resolveHarness: HarnessResolver | undefined,
     agent: {
+      readonly namespace: Readonly<Namespace>;
       readonly executionMode: HarnessExecutionMode;
       /** The admission snapshot of the Agent's binding, if save can build one. */
       readonly harnessAuth: () => Promise<HarnessAuthSnapshot | undefined>;
@@ -362,7 +364,11 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
     refuseStoredConfigurationSettings(configuration.values);
     let configuredHarnessId: string;
     try {
-      configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
+      configuredHarnessId = deploymentSelection(
+        configuration.values,
+        agent.executionMode === "embedded" &&
+          compute.supportsEmbeddedCodex?.(agent.namespace, configuration.values) === true,
+      ).harness;
     } catch (error) {
       // Deployment reports an unsupported Harness. Save still rejects fallbacks
       // on another provider by name.

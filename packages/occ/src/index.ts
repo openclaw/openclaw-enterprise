@@ -263,7 +263,7 @@ export type { PlatformReadView } from "./ports/platform-read-view.ts";
 export type { PlatformStateStore } from "./ports/platform-state-store.ts";
 export type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 export type { ServiceAccountReadRepository } from "./ports/service-accounts.ts";
-export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { deploymentSelection, resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";

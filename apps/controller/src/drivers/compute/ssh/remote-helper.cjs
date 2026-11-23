@@ -1,6 +1,6 @@
 /* global SSH_OPERATION */
 const fs = require("node:fs");
-const { join, resolve, isAbsolute, relative } = require("node:path");
+const { dirname, join, resolve, isAbsolute, relative } = require("node:path");
 const { createHash, randomBytes } = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
 const { setTimeout: delay } = require("node:timers/promises");
@@ -132,7 +132,46 @@ async function userOwner(user) {
   return { uid, gid };
 }
 
+// Qualify the operator-installed artifact without executing it as the SSH login user.
+async function verifyCodexBinary(pin) {
+  if (pin === undefined) return;
+  // A matching file in a replaceable directory is not a pin: the Gateway opens
+  // this path again as its own uid, possibly much later after a service restart.
+  for (let dir = dirname(pin.path); ; dir = dirname(dir)) {
+    const info = await fs.promises.lstat(dir);
+    if (!info.isDirectory() || info.uid !== 0 || (info.mode & 0o022) !== 0) {
+      throw new ConfigurationFailure(
+        "Codex executable requires a root-owned, non-writable directory chain.",
+      );
+    }
+    if (dir === "/") break;
+  }
+  const binary = await fs.promises.open(
+    pin.path,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+  );
+  try {
+    const info = await binary.stat();
+    if (
+      !info.isFile() ||
+      info.uid !== 0 ||
+      (info.mode & 0o001) === 0 ||
+      (info.mode & 0o6022) !== 0
+    ) {
+      throw new ConfigurationFailure("Expected a non-writable-by-others Codex executable.");
+    }
+    const digest = createHash("sha256");
+    for await (const part of binary.createReadStream({ autoClose: false })) digest.update(part);
+    if (digest.digest("hex") !== pin.sha256) {
+      throw new ConfigurationFailure("Host Codex executable does not match its configured digest.");
+    }
+  } finally {
+    await binary.close();
+  }
+}
+
 async function probe(runtime) {
+  await verifyCodexBinary(runtime.codexBinary);
   await systemctl("--version");
   await command("sh", ["-c", "command -v flock"]);
   await command("sh", ["-c", "command -v runuser"]);
@@ -960,6 +999,14 @@ async function run(input) {
   if (input.operation === "probe") {
     await probe(input.runtime);
     return {};
+  }
+  if (input.operation === "prepare-revision" || input.operation === "activate-revision") {
+    const server = input.revision.configuration?.plugins?.entries?.codex?.config?.appServer;
+    if (server?.transport === "stdio" && input.runtime.codexBinary) {
+      if (server.command !== input.runtime.codexBinary.path)
+        throw new ConfigurationFailure("Unexpected Codex executable.");
+      await verifyCodexBinary(input.runtime.codexBinary);
+    }
   }
   const nsDir = namespaceDirectory(input);
   await acquireLock(input.runtime.root);

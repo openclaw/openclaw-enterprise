@@ -258,6 +258,11 @@ export interface ProtectedRepositoryNetworkPolicySaveContext {
 }
 
 export interface ComputeDriver extends Driver {
+  /** Optional host capability, scoped to the exact Namespace and operator-owned executable. */
+  supportsEmbeddedCodex?(
+    namespace: Readonly<Namespace>,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): boolean;
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
     revision: Readonly<AgentRevision>,

@@ -78,7 +78,7 @@ import {
   freezeConfigurationValues,
   refuseUndeployableConfigurationValues,
 } from "./configuration-settings.ts";
-import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
+import { deploymentSelection, type ModelPolicyAgent } from "./configured-harness.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import type { ControllerWorkRecorder } from "./controller-work-recorder.ts";
@@ -712,8 +712,12 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           true,
         );
       }
-      const configuredHarnessId = resolveConfiguredHarnessId(
+      const localCodex =
+        lockedAgent.executionMode === "embedded" &&
+        compute.supportsEmbeddedCodex?.(namespace, configuration.values) === true;
+      const { harness: configuredHarnessId, turnRuntime } = deploymentSelection(
         configuration.values,
+        localCodex,
         dependencies.modelPolicyAgent(lockedAgent.executionMode, resolveHarness),
       );
       const approvedHarness = resolveAgentHarness(
@@ -850,7 +854,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       refuseUndeployableConfigurationValues(configuration.values);
       dependencies.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
-      if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
+      const renderedLocal =
+        lockedAgent.executionMode === "embedded" &&
+        compute.supportsEmbeddedCodex?.(namespace, admittedConfiguration) === true;
+      const renderedSelection = deploymentSelection(admittedConfiguration, renderedLocal);
+      if (
+        renderedSelection.harness !== configuredHarnessId ||
+        renderedSelection.turnRuntime !== turnRuntime
+      ) {
         throw new ScopeViolationError(
           "A Sandbox Driver cannot change the selected Harness runtime.",
         );

@@ -25,6 +25,7 @@ import type {
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
 import {
   ComputeGatewaySettingError,
+  deploymentSelection,
   ConfigurationHarnessError,
   configurationSettingMessage,
   gatewayPasswordRequirement,
@@ -58,6 +59,7 @@ export interface SshComputeHost {
   readonly user: string;
   readonly nodePath?: string;
   readonly openclawPath?: string;
+  readonly codexBinary?: { readonly path: string; readonly sha256: string };
 }
 
 export interface SshComputeDriverOptions {
@@ -389,6 +391,15 @@ export class SshComputeDriver implements ComputeDriver {
             user: { const: "root" },
             nodePath: PATH_SCHEMA,
             openclawPath: PATH_SCHEMA,
+            codexBinary: {
+              type: "object",
+              additionalProperties: false,
+              required: ["path", "sha256"],
+              properties: {
+                path: PATH_SCHEMA,
+                sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+              },
+            },
           },
         },
       },
@@ -472,6 +483,10 @@ export class SshComputeDriver implements ComputeDriver {
           throw new ConfigurationFailure(
             "SSH hosts require user root; non-root SSH and sudo are unsupported.",
           );
+        }
+        if (host.codexBinary !== undefined) {
+          path(host.codexBinary.path, "Host codexBinary.path");
+          requireUsablePath(host.codexBinary.path, "/hosts", stateRootProblem);
         }
         if (host.port !== undefined) {
           port(host.port, 1, "Host port");
@@ -660,6 +675,38 @@ export class SshComputeDriver implements ComputeDriver {
     }
   }
 
+  supportsEmbeddedCodex(
+    namespace: Readonly<Namespace>,
+    values: Readonly<OpenClawConfigurationDocument>,
+  ): boolean {
+    const pin = this.options.hosts[namespace.name]?.codexBinary;
+    if (!pin) return false;
+    const entry = asRecord(asRecord(asRecord(values.plugins)?.entries)?.codex);
+    const config = asRecord(entry?.config);
+    const server = asRecord(config?.appServer);
+    // No remote endpoint, alternate command, extra launch args, or user-home authority.
+    if (
+      entry?.enabled !== true ||
+      !config ||
+      !server ||
+      Object.keys(config).some((key) => key !== "appServer") ||
+      Object.keys(server).some(
+        (key) => !["transport", "command", "sandbox", "approvalPolicy"].includes(key),
+      )
+    )
+      return false;
+    const model = asRecord(asRecord(values.agents)?.defaults)?.model;
+    const primary = typeof model === "string" ? model : asRecord(model)?.primary;
+    return (
+      typeof primary === "string" &&
+      primary.startsWith("openai/") &&
+      server.transport === "stdio" &&
+      server.command === pin.path &&
+      server.sandbox === "read-only" &&
+      server.approvalPolicy === "on-request"
+    );
+  }
+
   validateHarnessAuth(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
@@ -780,7 +827,19 @@ export class SshComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): void {
-    this.validateRevision(revision);
+    const namespace = this.validateRevision(revision);
+    const plugin = asRecord(asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex);
+    const appServer = asRecord(asRecord(plugin?.config)?.appServer);
+    if (appServer?.transport === "stdio" && plugin?.enabled === true) {
+      // Repeat admission against the worker's actual host mapping, before prepare or activation.
+      const selection = deploymentSelection(
+        revision.configuration,
+        this.supportsEmbeddedCodex(namespace, revision.configuration),
+      );
+      if (selection.harness !== revision.harness.id) {
+        throw new ConfigurationFailure("Host does not qualify the selected embedded turn runtime.");
+      }
+    }
     if (revision.gatewayManagedMode) {
       throw new ConfigurationHarnessError(
         "Agent setting gatewayManagedMode is not supported on SSH Compute.",
@@ -892,6 +951,7 @@ export class SshComputeDriver implements ComputeDriver {
     const runtime = {
       ...this.options.runtime,
       systemdUnitDirectory: this.options.runtime.systemdUnitDirectory ?? "/etc/systemd/system",
+      ...(host.codexBinary === undefined ? {} : { codexBinary: host.codexBinary }),
       nodePath: host.nodePath ?? this.options.runtime.nodePath,
       openclawPath: host.openclawPath ?? this.options.runtime.openclawPath,
     };

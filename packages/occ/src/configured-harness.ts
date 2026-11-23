@@ -44,6 +44,7 @@ function policyRuntime(value: unknown): "openclaw" | "codex" | undefined {
 // or an openai model through the Codex plugin's WebSocket app server.
 function codexRunsProvider(
   values: Readonly<OpenClawConfigurationDocument>,
+  localCodex = false,
 ): (providerId: string) => boolean {
   const codexPlugin = asRecord(asRecord(asRecord(values.plugins)?.entries)?.codex);
   const codexAppServer = asRecord(asRecord(codexPlugin?.config)?.appServer);
@@ -51,7 +52,8 @@ function codexRunsProvider(
     providerId === "codex" ||
     (providerId === "openai" &&
       codexPlugin?.enabled === true &&
-      codexAppServer?.transport === "websocket");
+      (codexAppServer?.transport === "websocket" ||
+        (localCodex && codexAppServer?.transport === "stdio")));
 }
 
 /**
@@ -543,6 +545,7 @@ function resolveModelPolicy(
   values: Readonly<OpenClawConfigurationDocument>,
   draft: boolean,
   agent?: ModelPolicyAgent,
+  localCodex = false,
 ): string | undefined {
   // Shape refusals come first.
   requireAgentsShape(values);
@@ -551,7 +554,7 @@ function resolveModelPolicy(
   const entries = asRecord(agents?.entries);
   const providerConfigurations = asRecord(asRecord(values.models)?.providers);
   const plugins = asRecord(asRecord(values.plugins)?.entries);
-  const codexRuns = codexRunsProvider(values);
+  const codexRuns = codexRunsProvider(values, localCodex);
   // The values a refusal offers for a runtime, which deployment then accepts: codex only where
   // Codex runs the model.
   const runtimeChoices = (providerId: string): ReadonlyArray<"openclaw" | "codex"> =>
@@ -921,5 +924,15 @@ export function requireConsistentModelPolicy(
   values: Readonly<OpenClawConfigurationDocument>,
   agent?: ModelPolicyAgent,
 ): void {
-  resolveModelPolicy(values, true, agent);
+  resolveModelPolicy(values, true, agent, true);
+}
+
+/** Resolve the model policy independently of the service the selected Driver deploys. */
+export function deploymentSelection(
+  values: Readonly<OpenClawConfigurationDocument>,
+  localCodex: boolean,
+  agent?: ModelPolicyAgent,
+): { turnRuntime: string; harness: string } {
+  const turnRuntime = resolveModelPolicy(values, false, agent, localCodex)!;
+  return { turnRuntime, harness: localCodex && turnRuntime === "codex" ? "openclaw" : turnRuntime };
 }
