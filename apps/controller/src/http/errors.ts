@@ -218,6 +218,11 @@ function forgetValidationValues(entries: readonly ValidationEntry[]): void {
   }
 }
 
+// A write-only credential map can contain a credential in the key as well as the value.
+function publicValidationPath(path: string): string {
+  return path.startsWith("/secret/") ? "/secret" : path;
+}
+
 // Runs once per error (the app's error handler): a discriminated union is read from the
 // verbose fields that this drops, so a second call would report every shape again.
 function validationProblems(error: FastifyError): readonly ContractProblem[] {
@@ -230,7 +235,7 @@ function validationProblems(error: FastifyError): readonly ContractProblem[] {
   // they are capped like other detail paths.
   const problems = collapseScalarUnions(error.validation)
     .map((problem): ContractProblem => {
-      const path = cappedPath(problem.detail.path);
+      const path = publicValidationPath(cappedPath(problem.detail.path));
       // Dropped segments make the path an ancestor of the field. A cut inside one long first key
       // still names that key, so it keeps the field's own wording.
       const shortened = path.split("/").length < problem.detail.path.split("/").length;
@@ -468,7 +473,7 @@ export function unstorableTextFailure(
     segments.push(jsonPointer(node.key.replaceAll("\u0000", "?").replace(/\p{Cs}/gu, "?")));
   }
   segments.reverse();
-  const path = cappedPointer(segments);
+  const path = publicValidationPath(cappedPointer(segments));
   const nul = found.problem === "nul";
   return failure(
     400,
@@ -812,7 +817,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       400,
       "INVALID_REQUEST",
       capped(error.message),
-      pointerDetail(`/${error.group}`, error.field),
+      error.group === "secret"
+        ? [{ path: "/secret", code: "INVALID_VALUE" }]
+        : pointerDetail(`/${error.group}`, error.field),
     );
   }
   if (error instanceof ConnectionTemplateValidationError) {

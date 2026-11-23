@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Check } from "typebox/value";
+import { CredentialDeliveryFailedError } from "../../packages/occ/src/index.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import { isGitHubFineGrainedToken } from "../../packages/contracts/src/repository-token-source.ts";
 import { classifyGitHubToken } from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
@@ -497,12 +498,13 @@ test("a github Source holds only a fine-grained token and an explicit repository
   // Every class other than fine-grained is refused before custody, without echoing the value.
   for (const [tokenClass, token] of Object.entries(REFUSED_CLASSES)) {
     const refused = await f.request("POST", f.path, { body: githubSourceBody(token) });
-    assertManagedRefused(refused, "/secret/token", CLASS_REFUSAL);
+    assertManagedRefused(refused, "/secret", CLASS_REFUSAL);
     assert.equal(leaks(refused.body), false, tokenClass);
   }
   // The ceiling is required, well-formed and free of duplicates; only github carries one.
   for (const [repositories, label] of [
     [undefined, "missing"],
+    [FINE_GRAINED, "token pasted as an entry"],
     ["octo/app", "no access"],
     ["octo/app:admin", "unknown access"],
     ["octo/App:write", "not canonical"],
@@ -517,13 +519,13 @@ test("a github Source holds only a fine-grained token and an explicit repository
     assertManagedRefused(refused, "/config/repositories");
     assert.equal(leaks(refused.body), false, label);
   }
-  // An error names the entry it refuses; the ceiling is configuration, not secret.
+  // Identify the entry without echoing untrusted input.
   assertManagedRefused(
     await f.request("POST", f.path, {
       body: githubSourceBody(FINE_GRAINED, { repositories: "octo/app:read,Octo/web:read" }),
     }),
     "/config/repositories",
-    'Repository entry 2 ("Octo/web:read"): Use a canonical lowercase owner/name without a .git suffix.',
+    "Repository entry 2: Use a canonical lowercase owner/name without a .git suffix.",
   );
   // At most 32 entries.
   const entries = (count) => Array.from({ length: count }, (_, i) => `octo/r${i}:read`).join(",");
@@ -549,6 +551,12 @@ test("a github Source holds only a fine-grained token and an explicit repository
   );
   assert.deepEqual((await f.request("GET", f.path)).data, []);
 
+  // JSONB can return repositories before provider_preset. Keep real TokenService custody.
+  const createSource = f.tokenServiceOwner.createSource.bind(f.tokenServiceOwner);
+  t.mock.method(f.tokenServiceOwner, "createSource", async (...args) => {
+    const source = await createSource(...args);
+    return { ...source, config: Object.fromEntries(Object.entries(source.config).reverse()) };
+  });
   // The accepted Source returns its canonical ceiling as metadata; the value stays write-only.
   const created = await f.request("POST", f.path, {
     body: githubSourceBody(FINE_GRAINED, { repositories: "octo/web:read,octo/app:write" }),
@@ -565,7 +573,10 @@ test("a github Source holds only a fine-grained token and an explicit repository
   // The audit records the ceiling, so who widened or narrowed repository scope stays visible.
   const lastDetails = (action) =>
     f.auditSink.events
-      .filter((event) => event.resource?.id === created.data.id && event.action === action)
+      .filter(
+        (event) =>
+          event.resource?.id === created.data.id && event.action === action && !event.reasonCode,
+      )
       .at(-1)?.details;
   assert.deepEqual(lastDetails("openclaw.credential_sources.create"), {
     providerPreset: "github",
@@ -582,14 +593,36 @@ test("a github Source holds only a fine-grained token and an explicit repository
   const first = await custody();
   assert.equal(first.credential, FINE_GRAINED);
 
+  // A token pasted as a key must stay out of class and HTTP validation errors.
+  for (const value of ["placeholder", "", "bad\u0000value"]) {
+    const secret = { [FINE_GRAINED]: value };
+    for (const refused of [
+      await f.request("POST", f.path, { body: { ...githubSourceBody(FINE_GRAINED), secret } }),
+      await f.request("PATCH", sourcePath, { body: { secret } }),
+    ]) {
+      assert.equal(refused.status, 400);
+      assert.equal(leaks(refused.body), false);
+      if (value === "placeholder") {
+        assertManagedRefused(refused, "/secret", CLASS_REFUSAL);
+      }
+    }
+  }
   // Replacement applies the same class check; a refused value never reaches custody.
   for (const token of Object.values(REFUSED_CLASSES)) {
     const refused = await f.request("PATCH", sourcePath, { body: { secret: { token } } });
-    assertManagedRefused(refused, "/secret/token", CLASS_REFUSAL);
+    assertManagedRefused(refused, "/secret", CLASS_REFUSAL);
     assert.equal(leaks(refused.body), false);
   }
   assert.equal((await custody()).version, first.version);
   const replacement = fakeToken("github", "pat", "replacement");
+  const rotated = await f.request("PATCH", sourcePath, {
+    body: { secret: { token: replacement } },
+  });
+  assert.equal(rotated.status, 200);
+  assert.deepEqual(lastDetails("openclaw.credential_sources.update"), {
+    providerPreset: "github",
+    repositories: expectedConfig.repositories,
+  });
   const replaced = await f.request("PATCH", sourcePath, {
     body: { config: expectedConfig, secret: { token: replacement } },
   });
@@ -624,6 +657,7 @@ test("a github Source holds only a fine-grained token and an explicit repository
       secret: { token: replacement },
     },
     { config: { provider_preset: "openai" } },
+    { config: { repositories: "octo/app:write" } },
     { config: {} },
   ]) {
     const refused = await f.request("PATCH", sourcePath, { body });
@@ -634,6 +668,14 @@ test("a github Source holds only a fine-grained token and an explicit repository
       body: { config: { provider_preset: "github", repositories: "octo/app:read,octo/app:read" } },
     }),
     "/config/repositories",
+  );
+  const pasted = await f.request("PATCH", sourcePath, {
+    body: { config: { provider_preset: "github", repositories: `octo/app:${FINE_GRAINED}` } },
+  });
+  assertManagedRefused(
+    pasted,
+    "/config/repositories",
+    "Repository entry 1: Use read or write access.",
   );
   // A config update repeats the ceiling: the preset alone does not keep or clear it.
   assertManagedRefused(
@@ -678,6 +720,37 @@ test("a github Source holds only a fine-grained token and an explicit repository
   });
   assert.equal(foreign.status, 404);
   assert.deepEqual((await f.request("GET", sourcePath)).data.config, narrowed.data.config);
+
+  // OCC releases its locks before custody. An unbound edit can win even if rotation
+  // repeated the exact config that was current at admission.
+  const updateSource = f.tokenServiceOwner.updateSource.bind(f.tokenServiceOwner);
+  const ownerUpdate = t.mock.method(f.tokenServiceOwner, "updateSource", async (...args) => {
+    const edit = await f.request("PATCH", sourcePath, { body: { config: expectedConfig } });
+    assert.equal(edit.status, 200);
+    return updateSource(...args);
+  });
+  const concurrent = await f.request("PATCH", sourcePath, {
+    body: { config: narrowed.data.config, secret: { token: FINE_GRAINED } },
+  });
+  assert.equal(concurrent.status, 200);
+  assert.deepEqual(concurrent.data.config, expectedConfig);
+  assert.deepEqual(lastDetails("openclaw.credential_sources.update"), {
+    providerPreset: "github",
+    repositories: expectedConfig.repositories,
+  });
+
+  // Custody committed but a failed delivery returns no receipt of the effective policy.
+  ownerUpdate.mock.mockImplementation(async (...args) => {
+    await updateSource(...args);
+    throw new CredentialDeliveryFailedError();
+  });
+  const failed = await f.request("PATCH", sourcePath, { body: { secret: { token: replacement } } });
+  assert.equal(failed.status, 503);
+  assert.equal((await custody()).credential, replacement);
+  assert.deepEqual(lastDetails("openclaw.credential_sources.update"), {
+    providerPreset: "github",
+    repositoriesAtAdmission: expectedConfig.repositories,
+  });
 
   // Retirement uses the existing managed flow and erases custody.
   assert.equal((await f.request("DELETE", sourcePath)).status, 204);
