@@ -118,7 +118,13 @@ type AgentDetailScenario = {
   stopElsewhereOnReread?: true;
   diagnosticsState?: "noSlack" | "unknown";
   runtimePod?:
-    "startupWarnings" | "dedicatedPair" | "missingAgent" | "none" | "replaced" | "rollover";
+    | "startupWarnings"
+    | "dedicatedPair"
+    | "missingAgent"
+    | "none"
+    | "replaced"
+    | "rollover"
+    | "scaleDown";
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
@@ -3103,6 +3109,18 @@ export function createAgentDetailScenarios({
         steps: [
           "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
           "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
+        ],
+      },
+      runtimeLogOnePodRemains: {
+        ...runtimeLogsPage,
+        name: "One Pod remains while reading logs",
+        runtimePod: "scaleDown",
+        description:
+          "The selected Pod keeps serving logs when the other Pod disappears. The Pod / container picker is no longer needed.",
+        steps: [
+          "Tab from Source to Pod / container. Leave the first Pod selected.",
+          "After the next status update, check that the picker disappears, Source has focus, and the same output remains visible. Tab to Previous instance.",
+          "Reload and tab to Previous instance before the update. Focus should stay there.",
         ],
       },
       runtimeLogPodReplaced: {
