@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-21"
-last_updated_session: "authoring-run/5ee5925d-a18c-4ea3-b360-a02c2ad9f162"
+updated: "2026-11-23"
+last_updated_session: "authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476"
 ---
 
 # Production Startup Flow
@@ -335,10 +335,10 @@ The shell initializes the missing annotation, patches with UID and
   mounts; `BOOTSTRAP_INPUT_INVALID` indicates rejected contents.
 - Upgrade Jobs must omit bootstrap projections. Rendering does not prove live
   mounts or authentication.
-- `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
-  should succeed before API and worker rollout checks.
+- If the chart requires initialization, [confirm the recorded Job completed](../guides/deploy/production-handoff.md#resume-an-installation-in-progress)
+  before checking API and worker rollouts.
 - `pnpm db:migrate:production --check` reports the accepted database history
-  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
+  without applying migrations. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
   `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
@@ -352,10 +352,9 @@ The shell initializes the missing annotation, patches with UID and
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
   `apps/controller/src/api-startup.ts:startupFailureFields` passes these diagnostics
   to `server.mjs`.
-- `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
-  failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
-  administrator/IAM mismatch.
+- [Diagnose failures by Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
+  Check for unsafe output storage, existing outputs, database-role failures,
+  `AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID` and administrator/IAM mismatch.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
@@ -381,6 +380,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 12:51: Correct Job checks. (authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476 - 7ef4d08319f4ad8dfd1dd52473db764ccad53235)
 
 - 2026-11-21 16:06: Detect unfinished TokenService registrations before shutdown. (authoring-run/5ee5925d-a18c-4ea3-b360-a02c2ad9f162 - 883d6d5cf59ac4184550954f2f8d1625c24164a0)
 
