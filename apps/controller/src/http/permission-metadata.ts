@@ -80,10 +80,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         requirement("administer", "installation", "requested", "existing_namespace"),
       ];
     case "createConfiguration":
-    case "updateConfiguration":
-    case "createCredentialSource":
-    case "updateCredentialSource": {
-      // Credential Source updates also operate on current references when they name no Secrets.
+    case "updateConfiguration": {
       const create = operationId.startsWith("create");
       return [
         primary(create ? "namespace" : "requested"),
@@ -349,12 +346,6 @@ function permissionDescription(
         }
         if (operationId === "updateConfiguration") {
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
-        }
-        if (operationId === "createCredentialSource") {
-          return `Requires ${action} permission on each ${name} named in the request body secrets.`;
-        }
-        if (operationId === "updateCredentialSource") {
-          return `For a legacy Gateway update, requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
         }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }

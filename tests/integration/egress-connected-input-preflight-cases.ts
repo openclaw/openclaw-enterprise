@@ -22,11 +22,9 @@ import {
   assertConnectedResponse,
   assertConnectedCheckout,
   assertNoConnectedAssistantOutput,
-  assertSecretReference,
   connectedReceiptRevision,
   protectedAgentBody,
   protectedConfigurationBody,
-  protectedSourceBody,
   sendConnectedRequest,
   serializeConnectedRequest,
   sourceAccessBindingBody,
@@ -1011,16 +1009,12 @@ export function registerConnectedEgressInputPreflightCases(): void {
   test("connected request bytes pass the real Fastify parser and preserve missing-capability refusals", async (t) => {
     // This is offline HTTP admission proof only. In-memory storage/Compute keep
     // the parser test source-only; no installed receipt or provider is substituted.
-    const { app, bootstrap, createNamespace, createSecret, signIn } = await createConsoleAppFixture(
-      t,
-      {
-        backends: [],
-        computeDriver: createReadyComputeDriver("egress-preflight-compute"),
-      },
-    );
+    const { app, bootstrap, createNamespace, signIn } = await createConsoleAppFixture(t, {
+      backends: [],
+      computeDriver: createReadyComputeDriver("egress-preflight-compute"),
+    });
     await bootstrap("Connected wire preflight");
     const namespace = await createNamespace("egress-preflight", { ready: true });
-    const secret = await createSecret(namespace.id, "synthetic", "SYNTHETIC-preflight-only");
     const session = await signIn();
     const prefix = "/namespaces/" + namespace.id;
     const post = async (route: string, body: object, expectedStatus = 201) => {
@@ -1041,23 +1035,6 @@ export function registerConnectedEgressInputPreflightCases(): void {
       assert.ok(isRecord(result), "expected a resource or error response");
       return result;
     };
-    assertSecretReference(secret);
-    const sourceBody = protectedSourceBody(
-      "synthetic",
-      secret.ref,
-      "https://provider.test:9443/v1",
-    );
-    const unknownField = await post("/credential-sources", { ...sourceBody, invented: true }, 400);
-    assert.equal(unknownField.code, "INVALID_REQUEST");
-    // A valid body must reach the missing real counterpart guard, rather than a generic 400.
-    for (const origin of [
-      "https://provider.test:9443/v1",
-      "https://host.openshell.internal:9443/v1",
-    ]) {
-      const source = protectedSourceBody("synthetic", secret.ref, origin);
-      const error = await post("/credential-sources", source, 409);
-      assert.equal(error.code, "CREDENTIAL_GATEWAY_NOT_CONFIGURED");
-    }
     const configuration = await post("/configurations", protectedConfigurationBody("gpt-6"));
     assert.ok(hasResourceId(configuration));
     const agentBody = protectedAgentBody("synthetic", configuration.id, `cs_${randomUUID()}`);

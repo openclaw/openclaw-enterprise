@@ -1690,7 +1690,7 @@
                   { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" },
                   {
                     "const": "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
-                    "description": "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+                    "description": "The operation requires a configured Credential Gateway.",
                     "type": "string"
                   },
                   {
@@ -19603,7 +19603,7 @@
                       },
                       { "type": "null" }
                     ],
-                    "description": "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission."
+                    "description": "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -37472,6 +37472,7 @@
                             ],
                             "grantedScopes": ["profile.read"],
                             "issuer": "https://accounts.example.com",
+                            "kind": "connection_template",
                             "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                             "ownerPrincipalId": "user-docs-admin",
                             "requestedScopes": ["profile.read"],
@@ -38057,7 +38058,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.",
+        "description": "Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "createCredentialSource",
         "parameters": [
           {
@@ -38224,13 +38225,7 @@
         "summary": "Register a credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
-          {
-            "action": "operate",
-            "condition": "bound_secret",
-            "resourceKind": "secret",
-            "scope": "request_body"
-          }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
@@ -38407,6 +38402,7 @@
                           ],
                           "grantedScopes": ["profile.read"],
                           "issuer": "https://accounts.example.com",
+                          "kind": "connection_template",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "ownerPrincipalId": "user-docs-admin",
                           "requestedScopes": ["profile.read"],
@@ -38498,7 +38494,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
+        "description": "Requires update permission on the requested CredentialSource.",
         "operationId": "updateCredentialSource",
         "parameters": [
           {
@@ -38666,13 +38662,7 @@
         "summary": "Update a Source through its recorded owner",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
-          { "action": "update", "resourceKind": "credential_source", "scope": "requested" },
-          {
-            "action": "operate",
-            "condition": "bound_secret",
-            "resourceKind": "secret",
-            "scope": "requested"
-          }
+          { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -38729,6 +38719,7 @@
                           ],
                           "grantedScopes": ["profile.read"],
                           "issuer": "https://accounts.example.com",
+                          "kind": "connection_template",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "ownerPrincipalId": "user-docs-admin",
                           "requestedScopes": ["profile.read"],

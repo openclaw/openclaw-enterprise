@@ -7,7 +7,6 @@ import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
 import type { WorkerEvent } from "../helpers/postgres-worker-refused-candidate.ts";
 import {
   CredentialWithdrawalRefusedError,
-  ResourceStateConflictError,
   SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
@@ -30,7 +29,6 @@ import {
   admitInitialRevisionWithHarnessSource,
   agentWithHarnessAndToolSources,
   assertRetryDelay,
-  credentialGatewayFixture,
   currentAgent,
   findWithdrawal,
   gatewayOutage,
@@ -221,7 +219,7 @@ export function registerWithdrawalCases({ setup, revisionTest }: CredentialSourc
   );
 
   test(
-    "a source that only a queued withdrawal series blocks is refused with its own 409, not the redeploy advice",
+    "a queued withdrawal continues blocking its Source after a redeploy drops the Source",
     requiresPostgres,
     async (context) => {
       const fixture = await setup(context, { maxAttempts: 2 });
@@ -265,33 +263,12 @@ export function registerWithdrawalCases({ setup, revisionTest }: CredentialSourc
       assert.equal((await currentAgent(fixture, owner)).activeRevisionId, second.id);
       const retry = await queuedWithdrawal(fixture, first);
 
-      const gateway = credentialGatewayFixture();
-      fixture.controller.registerDriver(gateway);
-      fixture.controller.selectDriver("credential_gateway", gateway.id);
-      const deleteSource = (sourceId: string) =>
-        fixture.controller.deleteCredentialSource(fixture.actor.id, fixture.namespace.id, sourceId);
-      // Redeploying again cannot help, so the refusal names the wait and Agent deletion instead.
-      await assert.rejects(deleteSource(tool), (error) => {
-        assert.ok(error instanceof ResourceStateConflictError);
-        assert.equal(error.name, "CredentialWithdrawalInProgressError");
-        assert.match(error.message, /^A credential withdrawal is still queued or running/);
-        return true;
-      });
-      // The Harness source the active revision still uses keeps the reference refusal.
-      await assert.rejects(deleteSource(owner.harnessAuth.sourceId), (error) => {
-        assert.ok(error instanceof ResourceStateConflictError);
-        assert.equal(error.name, "ResourceStateConflictError");
-        assert.match(
-          error.message,
-          /^An Agent, active revision, pending deployment, or provisioning request/,
-        );
-        return true;
-      });
       const blocking = (sourceId: string) =>
         fixture.state.transact((unit) =>
           unit.credentialSources.findBlockingReference(fixture.namespace.id, sourceId),
         );
       assert.equal(await blocking(tool), "withdrawal_work");
+      assert.equal(await blocking(owner.harnessAuth.sourceId), "reference");
       assert.equal(
         (
           await fixture.state.read((view) =>
@@ -299,10 +276,10 @@ export function registerWithdrawalCases({ setup, revisionTest }: CredentialSourc
           )
         )?.state,
         "ready",
-        "a refused deletion leaves the source as it was",
+        "a queued withdrawal leaves the Source ready",
       );
 
-      // Once the series confirms, nothing blocks the deletion.
+      // Once the series confirms, the withdrawal no longer blocks the Source.
       outage.down = false;
       await startWithGateway(fixture, compute);
       await runScheduledRetryNow(fixture, retry);

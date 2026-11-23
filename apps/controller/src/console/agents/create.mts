@@ -1113,6 +1113,10 @@ function renderAgentForm(
     element("option", { value: "source" }, "Credential Source"),
     element("option", { value: "secret" }, "Namespace Secret"),
   );
+  // A Preset's password or bound Secret keeps its declared authentication path.
+  if (passwordAuth || boundSource?.kind === "secret" || modelCredentialSource?.kind === "secret") {
+    credentialStorage.value = "secret";
+  }
   const credentialStorageField = field("Credential storage", credentialStorage);
 
   const credentialLabel = element("label", { for: apiKey.id }, "API key");

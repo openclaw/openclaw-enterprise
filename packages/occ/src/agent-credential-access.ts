@@ -461,6 +461,9 @@ export function createAgentCredentialAccess({
     agent: Readonly<Agent>,
     selected: readonly string[],
   ): Promise<void> {
+    if (iamPolicy.occBindingDriver("createNamespaceAccessBinding") === undefined) {
+      return;
+    }
     const created = await ensureAgentOperateGrants(
       state,
       agent.namespaceId,

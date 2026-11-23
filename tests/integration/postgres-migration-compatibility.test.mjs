@@ -1752,7 +1752,13 @@ test(
       ).rows[0].document;
     const readStatic = async (database = db) => ({
       instances: (await database.app.query("SELECT * FROM occ.token_service_instances")).rows,
-      sources: (await database.app.query("SELECT * FROM occ.credential_sources")).rows,
+      sources: (
+        await database.app.query(
+          `SELECT id, namespace_id, name, type, config, driver_id, state, created_at,
+                  owner_capability, egress, token_service_instance_id
+             FROM occ.credential_sources`,
+        )
+      ).rows,
     });
     const egress = await readEgress();
     const policy = await readPolicy();

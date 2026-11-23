@@ -1777,6 +1777,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await page.getByText("This installation creates draft Agents for later deployment.").waitFor();
   await assert.rejects(
     page

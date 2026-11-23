@@ -40,6 +40,7 @@ func TestCreateCommandsShowAJSONExample(t *testing.T) {
 		// (finding D766).
 		{"configuration", "update"},
 		{"agent", "update"},
+		{"credential-source", "update"},
 	} {
 		command, _, err := root.Find(path)
 		if err != nil || command == root {
@@ -47,7 +48,11 @@ func TestCreateCommandsShowAJSONExample(t *testing.T) {
 		}
 		invocation := "occ " + strings.Join(path, " ")
 		if path[len(path)-1] == "update" {
-			invocation += " <" + path[0] + "-id>"
+			if path[0] == "credential-source" {
+				invocation += " cs_00000000-0000-4000-8000-000000000001"
+			} else {
+				invocation += " <" + path[0] + "-id>"
+			}
 		}
 		checkJSONExample(t, command, invocation+" --file")
 	}
@@ -62,5 +67,22 @@ func checkJSONExample(t *testing.T, command *cobra.Command, invocation string) {
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(body), &decoded); err != nil || len(decoded) == 0 {
 		t.Fatalf("%s: example body %q is not a JSON object: %v", command.CommandPath(), body, err)
+	}
+	if command.CommandPath() == "occ credential-source create" || command.CommandPath() == "occ credential-source update" {
+		for _, safeInput := range []string{"umask 077", "$(mktemp -- ", "trap 'rm -f --", "jq -Rs ", "< /path/to/key", `--file "$source_file"`} {
+			if !strings.Contains(command.Example, safeInput) {
+				t.Fatalf("%s: example does not protect credential input with %q", command.CommandPath(), safeInput)
+			}
+		}
+		if strings.Contains(command.Example, "<<") {
+			t.Fatalf("%s: example must not put credentials in a shell heredoc", command.CommandPath())
+		}
+		secret, ok := decoded["secret"].(map[string]any)
+		if !ok || len(secret) != 1 || secret["opaque"] == "" || secret["opaque"] == nil {
+			t.Fatalf("%s: example must supply one write-only credential: %#v", command.CommandPath(), decoded)
+		}
+		if command.Name() == "create" && decoded["type"] != "static" {
+			t.Fatalf("%s: example type = %#v, want static", command.CommandPath(), decoded["type"])
+		}
 	}
 }

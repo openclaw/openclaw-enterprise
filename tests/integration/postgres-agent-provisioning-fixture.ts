@@ -25,7 +25,7 @@ import {
 } from "../../apps/controller/src/worker.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
@@ -561,6 +561,28 @@ export async function createProvisioningFixture<
     return principals[0]!.id;
   }
 
+  async function createHistoricalGatewaySource(
+    input: Parameters<OpenClawController["createCredentialSource"]>[1],
+  ) {
+    assert.ok(options.credentialGatewayDriver);
+    const installation = await state.loadInstallation();
+    assert.ok(installation);
+    const controller = new OpenClawController(installation, { state, recordOperations: false });
+    const iamDriver = new NativeIAMDriver(state, { id: "native-iam", implementation: "native" });
+    for (const driver of [
+      iamDriver,
+      computeDriver,
+      secretDriver,
+      options.credentialGatewayDriver,
+    ]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+    // Historical Gateway records were created by this controller owner before public
+    // enrollment moved to TokenService Sources. Subsequent requests use the current API.
+    return controller.createCredentialSource(await administratorPrincipalId(), input);
+  }
+
   async function revokeCurrentPrincipal() {
     const principalId = await administratorPrincipalId();
     const result = await pool.query<RevokedBindingRow>(
@@ -595,6 +617,7 @@ export async function createProvisioningFixture<
     cancelProvisioningAtTeardown,
     cancelQueuedWorkAtTeardown,
     computeDriver,
+    createHistoricalGatewaySource,
     pool,
     configurationDriver,
     revokeCurrentPrincipal,

@@ -466,15 +466,14 @@
       "path": "tests/integration/postgres-prepared-github-lifecycle.test.ts",
       "expectedTests": [
         "authorized GitHub proxy requests mint the registered grant and share one replacement",
-        "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
+        "PostgreSQL prepared custody: source consent, proactive renewal, restart and issuer rotation",
         "current proof preserves caller SQL limits and restores them in its unit",
         "signed PostgreSQL dispatch uses one shared connection for current material proof",
         "concurrent signed checks drain the shared single-connection pool",
         "before-send bounds a real PostgreSQL lock wait and refuses late permission",
         "before-send refuses expired material and an elapsed signed deadline",
         "before-send refuses displaced material and accepts renewed material",
-        "before-send refuses a rejected prepared selection",
-        "before-send refuses a withdrawn prepared family"
+        "before-send refuses a rejected prepared selection"
       ]
     },
     {
@@ -527,6 +526,7 @@
       "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",
       "expectedTests": [
         "prepared Git use binds durable admission, exact ref, session and one exchange before retirement",
+        "a new protected version gets Git material once its predecessor's unconfirmed revocation has settled",
         "a native revision's token state stays pending until GitHub issues it and quarantined after a refusal"
       ]
     },
@@ -617,10 +617,8 @@
     {
       "path": "tests/integration/postgres-static-retired-admission.test.ts",
       "expectedTests": [
-        "a fresh retired owner preserves admitted state but refuses re-admission and deploy",
+        "a fresh retired owner preserves admitted state but refuses deploy",
         "the retired owner recovers the original active revision",
-        "unbound protected source re-admission PATCH",
-        "stored-provider Secret-only PATCH without adoption consent",
         "deploy with the retained protected source",
         "missing middleware cannot hide permanent deployment retirement"
       ]

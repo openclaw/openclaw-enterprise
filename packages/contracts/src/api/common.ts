@@ -820,7 +820,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission.",
+          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
@@ -1098,8 +1098,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
           Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
-            description:
-              "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+            description: "The operation requires a configured Credential Gateway.",
           }),
           Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
             description:

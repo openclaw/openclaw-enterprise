@@ -295,6 +295,7 @@ const oauthSource = {
   createdAt: time,
   ref: { kind: "credential_source", namespaceId, id: oauthSourceId },
   consent: {
+    kind: "connection_template",
     version: 2,
     oauthClientId,
     ownerPrincipalId: userId,
