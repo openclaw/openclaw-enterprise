@@ -11,6 +11,18 @@ import type { SessionEvidenceOptions } from "../helpers/plugin-gateway-session-e
 import { registerQaSecret } from "../helpers/qa-secrets.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
+type ApprovalReview = NonNullable<
+  Parameters<typeof import("../helpers/plugin-transcript-assertions.ts").approvalReviewKind>[0]
+>;
+type ApprovalResult = Parameters<
+  typeof import("../helpers/plugin-transcript-assertions.ts").automaticReviewerErrored
+>[0][number];
+type NativeOptions = Parameters<typeof createNativePluginAssertions>[0];
+type RuntimeLogReader = NonNullable<NativeOptions["readRuntimeLogs"]>;
+type RuntimeLogTarget = Parameters<RuntimeLogReader>[0];
+type RuntimeLogEntry = Awaited<ReturnType<RuntimeLogReader>>["records"][number];
+type RuntimeLogEvidence = Parameters<NonNullable<NativeOptions["recordRuntimeLogs"]>>[0];
+
 type AssistantCall<Arguments> = {
   role: "assistant";
   content: [{ type: "toolCall"; id: string; name: string; arguments: Arguments }];
@@ -1024,4 +1036,246 @@ export function registerQaNativeToolEvidenceCase(): void {
       );
     });
   });
+}
+
+// The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
+// judgement carries risk and authorization; a failed-closed review carries neither.
+export const judgedDeny = {
+  id: "review-judged",
+  status: "denied",
+  riskLevel: "high",
+  userAuthorization: "low",
+  rationale: "The read targets a calendar the user did not mention.",
+} satisfies ApprovalReview;
+export const failedClosed = {
+  id: "review-failed",
+  status: "denied",
+  rationale:
+    "Automatic approval review failed: guardian review completed without an assessment payload",
+} satisfies ApprovalReview;
+const timedOut = {
+  id: "review-timeout",
+  status: "timed_out",
+  rationale: "Automatic approval review timed out while evaluating the requested approval.",
+} satisfies ApprovalReview;
+
+export async function runQaApprovalReviewEvidenceCase(): Promise<void> {
+  const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
+    await import("../helpers/plugin-transcript-assertions.ts");
+  assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
+  assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
+  assert.equal(approvalReviewKind(timedOut), "reviewer-error");
+  assert.equal(approvalReviewKind({ id: "a", status: "approved", riskLevel: "low" }), "approved");
+  assert.equal(approvalReviewKind({ id: "c", status: "aborted" }), "aborted");
+  // Without the reviewer's own failure text, or with a judgement's risk level, a denial
+  // stays a judgement or unclassified: a rationale alone cannot claim a reviewer error.
+  assert.equal(approvalReviewKind({ id: "d", status: "denied" }), "denied-unclassified");
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, riskLevel: "high" }),
+    "judged-deny",
+    "a judged rationale that quotes the failure text is still a judgement",
+  );
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
+    "judged-deny",
+  );
+  // A changed authorization may be the policy's own change, not reviewer trouble.
+  const staleAuthorization = {
+    id: "review-stale",
+    status: "denied",
+    rationale:
+      "Automatic approval review failed: authorization changed before approval could be applied",
+  };
+  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
+
+  const failedResult = (reviews: readonly ApprovalReview[]): ApprovalResult[] => [
+    { toolCallId: "call-1", isError: true, approvalReviews: reviews },
+  ];
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed])), true);
+  assert.equal(automaticReviewerErrored(failedResult([timedOut])), true);
+  assert.equal(automaticReviewerErrored(failedResult([judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed, judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
+  assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
+  assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
+  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
+  assert.equal(
+    automaticReviewerErrored([
+      ...failedResult([failedClosed]),
+      { toolCallId: "call-2", isError: true, approvalReviews: [] },
+    ]),
+    false,
+    "every failed call needs its own reviewer error",
+  );
+  assert.equal(
+    automaticReviewerErrored([
+      { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
+    ]),
+    false,
+    "a call that did not fail was not blocked by its reviewer",
+  );
+
+  assert.equal(
+    describeApprovalReviews(failedResult([judgedDeny])),
+    "judged-deny (risk: high, authorization: low): The read targets a calendar the user did not mention.",
+  );
+  assert.equal(
+    describeApprovalReviews(failedResult([failedClosed])),
+    `reviewer-error: ${failedClosed.rationale}`,
+  );
+  assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
+  assert.equal(
+    describeApprovalReviews(
+      failedResult([
+        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
+      ]),
+    ),
+    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
+    "a multi-line rationale stays on the failure's first line",
+  );
+}
+
+function calendarEvidence(reviews: readonly ApprovalReview[]) {
+  return {
+    exists: true,
+    sessionId: "session-1",
+    userMarkerSeen: true,
+    assistantMarkerSeen: true,
+    assistantError: false,
+    calls: [{ seq: 5, id: "call-1", name: "calendar_read", mirrorIdentity: "t:tool:call-1:call" }],
+    results: [
+      {
+        seq: 8,
+        toolCallId: "call-1",
+        toolName: "calendar_read",
+        isError: true,
+        deniedByUser: false,
+        matchesResult: false,
+        mirrorIdentity: "t:tool:call-1:result",
+        approvalReviews: reviews,
+      },
+    ],
+    codexTurns: [],
+    diagnostics: {},
+  };
+}
+
+export async function runQaFailedReviewedReadCase(
+  createNativePluginAssertions: typeof import("../helpers/native-plugin-assertions.ts").createNativePluginAssertions,
+  reviews: readonly ApprovalReview[],
+  errored: boolean,
+  reason: string,
+): Promise<void> {
+  const fixture = createNativePluginAssertions({
+    gatewayUrl: async () => assert.fail("no Gateway turn"),
+    proofMode: "codex",
+    execGateway: async () => ({
+      label: "fixture",
+      stdout: JSON.stringify(calendarEvidence(reviews)),
+    }),
+  });
+  await assert.rejects(
+    fixture.assertSessionToolCallEvidence(
+      {},
+      {
+        sessionKey: "agent:main:fixture",
+        turnMarker: "M",
+        toolName: "calendar_read",
+        resultPattern: "x",
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof assert.AssertionError);
+      assert.ok("automaticReviewerErrored" in error);
+      assert.ok(
+        "approvalReviewSummary" in error && typeof error.approvalReviewSummary === "string",
+      );
+      assert.equal(error.name, "AssertionError");
+      assert.equal(error.automaticReviewerErrored, errored);
+      assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
+      const [head] = error.message.split(": {");
+      assert.ok(head);
+      assert.ok(head.includes(`(approval reviews: ${reason}`), head);
+      assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
+      return true;
+    },
+  );
+}
+
+export async function runQaModelFailureEvidenceCase(
+  randomUUID: typeof import("node:crypto").randomUUID,
+  registerSecret: typeof registerQaSecret,
+): Promise<void> {
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads: RuntimeLogTarget[] = [];
+  const evidence: RuntimeLogEvidence[] = [];
+  const failure = new Error("original model assertion");
+  const execGateway: NativeOptions["execGateway"] = async () =>
+    assert.fail("unexpected gateway execution");
+  const native = createNativePluginAssertions({
+    execGateway,
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      const privateRecord = {
+        type: "line",
+        time: null,
+        level: "error",
+        message: `failure ${secret}`,
+        private: secret,
+      } satisfies RuntimeLogEntry & { private: string };
+      return { records: [privateRecord] };
+    },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  const [record] = evidence;
+  assert.ok(record);
+  const [gatewayLogs, agentLogs] = record.sources;
+  assert.ok(gatewayLogs && "lines" in gatewayLogs);
+  const [firstLine] = gatewayLogs.lines;
+  assert.ok(firstLine);
+  assert.equal(record.revisionId, "original");
+  assert.match(firstLine, /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(agentLogs, { source: "agent", unavailable: true });
+
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    execGateway,
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
+  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
 }

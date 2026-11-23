@@ -20,11 +20,11 @@ import { startupDependencyFailure } from "../../apps/controller/src/startup-fail
 import {
   conformanceKubernetesOptions,
   createTestKubernetesComputeDriver,
-} from "../helpers/kubernetes-compute.mjs";
+} from "../helpers/kubernetes-compute.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
-import { jsonChunkDestination } from "../helpers/json-lines.mjs";
+import { jsonChunkDestination } from "../helpers/json-lines.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type CoreClient = InstanceType<KubernetesSdk["CoreV1Api"]>;

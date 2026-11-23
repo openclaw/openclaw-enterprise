@@ -2,6 +2,7 @@
 
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { InstallationId } from "../packages/contracts/src/index.ts";
 import {
   preflight,
   readManifest,
@@ -16,6 +17,10 @@ const { drizzle } = dependency("drizzle-orm/node-postgres");
 /** @type {{ readMigrationFiles: import("./migration-history-preflight.ts").MigrationReader }} */
 const { readMigrationFiles } = dependency("drizzle-orm/migrator");
 const lock = [1868785005, 1835624306];
+const installationIdPattern =
+  "pattern" in InstallationId && typeof InstallationId.pattern === "string"
+    ? new RegExp(InstallationId.pattern, "u")
+    : undefined;
 
 export class UnsupportedPostgresVersionError extends Error {
   constructor() {
@@ -120,6 +125,27 @@ function catalogAtMigrationCount(count, completedCount) {
   }
   if (count === 82 && completedCount > 82) {
     return "preNativeRestartRecovery";
+  }
+  if (count === 83 && completedCount > 83) {
+    return "preRevisionEgressInstallations";
+  }
+  if (count === 84 && completedCount > 84) {
+    return "preStaticTokenServiceSources";
+  }
+  if (count === 85 && completedCount > 85) {
+    return "preTokenServiceSourceOwnership";
+  }
+  if (count === 86 && completedCount > 86) {
+    return "preRepositoryNetworkPolicy";
+  }
+  if (count === 87 && completedCount > 87) {
+    return "preStandaloneCredentialDeployment";
+  }
+  if (count === 88 && completedCount > 88) {
+    return "preStaticConnectionTemplates";
+  }
+  if (count === 89 && completedCount > 89) {
+    return "preNativeGitDelivery";
   }
   if (count === completedCount) {
     return "completed";
@@ -237,12 +263,15 @@ function catalogAtMigrationCount(count, completedCount) {
 
 /**
  * @param {Pick<import("pg").Pool, "connect">} pool
- * @param {{ checkOnly?: boolean; expectEmpty?: boolean; requireCurrent?: boolean }} [options]
+ * @param {{ checkOnly?: boolean; expectEmpty?: boolean; requireCurrent?: boolean; installationId?: string | undefined }} [options]
  */
 export async function migrateWithHistory(
   pool,
-  { checkOnly = false, expectEmpty = false, requireCurrent = false } = {},
+  { checkOnly = false, expectEmpty = false, requireCurrent = false, installationId } = {},
 ) {
+  if (installationId !== undefined && !installationIdPattern?.test(installationId)) {
+    refuse("an expected Installation ID is invalid");
+  }
   const { manifest, migrations } = await readManifest(directory, readMigrationFiles);
   const client = await pool.connect();
   let locked = false;
@@ -268,6 +297,20 @@ export async function migrateWithHistory(
         { code: "MIGRATION_HISTORY_NOT_EMPTY" },
       );
     }
+    if (installationId !== undefined) {
+      if (history === "empty") {
+        refuse("the selected migration database has empty Installation history");
+      }
+      // Read the actual ledger owner before applying SQL, on the same client
+      // and under the same advisory lock used by the stock migrator.
+      const { rows: installations } = await client.query(
+        "SELECT id = $1 AS matches FROM occ.installation LIMIT 2",
+        [installationId],
+      );
+      if (installations.length !== 1 || installations[0]?.matches !== true) {
+        refuse("the selected migration database does not own the expected Installation");
+      }
+    }
     if (requireCurrent) {
       if (history !== "completed") {
         throw Object.assign(
@@ -279,6 +322,23 @@ export async function migrateWithHistory(
         );
       }
       return history;
+    }
+    // Migration 0086 cannot preserve an unfinished managed registration. Detect it
+    // while the old controller can still reconcile it. Apply repeats the check,
+    // and the migration constraint still guards changes after this read.
+    if (history === "preTokenServiceSourceOwnership") {
+      const { rows } = await client.query(
+        "SELECT 1 FROM occ.credential_sources WHERE token_service_instance_id IS NOT NULL AND state = 'registering' LIMIT 1",
+      );
+      if (rows.length > 0) {
+        throw Object.assign(
+          new Error(
+            "Migration 0086 is blocked by an unfinished TokenService registration. " +
+              "Reconcile the registration with its original owner before retrying the upgrade.",
+          ),
+          { code: "MIGRATION_REGISTRATION_PENDING" },
+        );
+      }
     }
     if (!checkOnly) {
       if (history === "completed") {

@@ -30,10 +30,13 @@ ingress grant. Connect your collectors using this guide and the metrics guide.
 For disposable visualization, use the [demonstration stack](observability/demo.md),
 which is not recommended for production.
 
-The Collector exports predefined operational events and approved fields. It
-excludes arbitrary messages, prompts, responses, and Codex protocol output, even
-at `debug`. See the
-[security boundary](../reference/security.md#operational-log-collection-boundary).
+The Collector exports predefined operational events and approved fields.
+It drops prompt and response fields and Codex stdout protocol records even at
+`debug`. Some Codex operational messages and Gateway startup failures can reach
+the log backend with their original text. That text can still contain sensitive
+information. See the
+[operational log collection boundary](../reference/security.md#operational-log-collection-boundary)
+for the message filters.
 
 If your Compute Driver declares
 [deployment-managed runtime logging](../reference/drivers/compute.md#runtime-logging-ownership),
@@ -133,11 +136,18 @@ Use production setup's `KUBECONFIG_FILE`, `CONTEXT`, `OCC_INPUT_DIRECTORY`, and
 existing `openclaw-system` namespace. Retain the complete `values.yaml`; the
 logging block alone cannot install OCC.
 
-If an existing cluster Collector already reads the OCC and tenant CRI files,
-use it only after applying the same [native receiver](../../deploy/logging/kubernetes.yaml)
-and [shared policy](../../deploy/logging/collector.yaml): trusted metadata,
-privacy, filtering, egress, and limits on memory, storage, and queues. Use one collection route per
-stream. Otherwise, enable the bundled Collector below.
+To reuse an existing cluster Collector that reads OCC and tenant CRI files, run
+it in the OCC control-plane namespace (`openclaw-system`) and mount its
+Kubernetes-projected ServiceAccount namespace file at
+`/var/run/secrets/kubernetes.io/serviceaccount/namespace`. The shipped
+[native receiver](../../deploy/logging/kubernetes.yaml) requires this file at
+startup and assigns OCC identity only when the Pod namespace matches it. Retain
+this namespace check; labels alone are not trusted OCC identity. A Collector in
+another namespace needs its own explicitly reviewed identity policy.
+
+Apply the [shared policy](../../deploy/logging/collector.yaml) and equivalent
+trusted metadata, privacy, filtering, egress, memory, storage, and queue limits.
+Use one collection route per stream. Otherwise, enable the bundled Collector below.
 
 Create its two dedicated Secrets before installing or upgrading the chart:
 
@@ -196,8 +206,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 Helm never updates these Secrets, so an upgrade keeps the previous release's
 filtering until you refresh them. Before each upgrade, including image-only
 releases, reapply `collector.yaml` and `kubernetes.yaml` from the target
-commit's checkout and merge any reviewed local changes. Substitute your
-protected exporter file if you use one. Then restart the Collector as shown above:
+commit's checkout and merge any reviewed local changes. Before applying the
+receiver, confirm that the Collector runs in the OCC control-plane namespace and
+mounts its projected ServiceAccount namespace file. For a Collector elsewhere,
+review its separate identity policy instead of applying the shipped receiver
+unchanged. Preserve the namespace trust check. Substitute your protected exporter
+file if you use one. Then restart the Collector as shown above:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
@@ -229,11 +243,14 @@ only to keep a reviewed custom configuration.
    app-server. Check the corresponding `openclaw-gateway` or `codex-app-server`
    records and `openclaw.agent.id` / `openclaw.revision.id` resource attributes.
 
-Retained record bodies hold the event name; `codex.turn` and `codex.tool_call`
-bodies are fixed text, and `codex.operational` keeps Codex's message when it is
-short plain text. Search for a request, Agent,
-or version by its attribute, not by body text; in Loki these are structured
-metadata, for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
+The Collector uses the event name as the record body by default. `codex.turn`
+and `codex.tool_call` use fixed text. For `codex.operational`, only messages from
+Codex app-server targets and two predefined retry messages can keep their
+original text. The Collector keeps the original text for these messages and
+`gateway.startup_failed` only if it passes the message filters. It drops
+`codex.operational` warnings whose body is the event name. Search by request,
+Agent, or Agent revision ID. In Loki, these attributes are structured metadata,
+for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
 
 A healthy Collector and local container output do not prove that the backend
 received the records. Only approved runtime events appear. Receiving API logs

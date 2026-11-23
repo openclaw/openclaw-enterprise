@@ -214,6 +214,8 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "credential_gateway",
     "credential_refresh",
     "credential_proxy",
+    "credential_proxy_delivery",
+    "token_service",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -554,6 +556,75 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   assert.throws(() => {
     // @ts-expect-error Exercise the runtime freeze of a nested tool policy.
     admittedListTool.enabled = false;
+  }, TypeError);
+});
+
+test("an admitted standalone credential policy cannot be retargeted through its draft", () => {
+  const namespaceId = `ns_${randomUUID()}`;
+  const sourceId = `cs_${randomUUID()}`;
+  const tokenServiceInstanceId = randomUUID();
+  const request = {
+    binary: "/usr/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  };
+  const binding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source" as const, namespaceId, id: sourceId },
+    consumer: { kind: "model" as const, providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
+  };
+  const revision = {
+    id: `rev_${randomUUID()}`,
+    namespaceId,
+    agentId: `agt_${randomUUID()}`,
+    revision: 1,
+    executionAdmission: { version: 8, mode: "standalone" },
+    backendId: null,
+    configurationId: `cfg_${randomUUID()}`,
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: { agents: { defaults: { model: "codex/gpt-5" } } },
+    gatewayManagedMode: true,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+    compute: { id: "kubernetes", implementation: "kubernetes-local" },
+    sandboxDriverId: "openshell",
+    harnessAuth: {
+      method: "credential_source",
+      sourceId,
+      tokenServiceInstanceId,
+      sourceType: "static",
+    },
+    credentialSources: [{ sourceId, tokenServiceInstanceId, sourceType: "static" }],
+    credentialDeployment: {
+      driver: { id: "openshell", implementation: "openshell", configurationId: "a".repeat(64) },
+      proxyDriverId: "native-proxy",
+      networkAccessPolicy: { allowed: [request] },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    },
+    servicePrincipalId: "agent-principal",
+    createdAt: "2026-11-20T00:00:00.000Z",
+  } satisfies AgentRevision;
+  const admitted = freezeAgentRevision(revision);
+  const policy = admitted.credentialDeployment;
+  assert.ok(policy);
+
+  // A Driver callback must not be able to change the validated destination or source through the draft.
+  request.host = "other.example.org";
+  request.requestPolicy.path = "/other";
+  binding.sourceRef.id = `cs_${randomUUID()}`;
+  assert.equal(policy.networkAccessPolicy.allowed[0]?.host, "api.openai.com");
+  assert.equal(
+    policy.injectionPolicies[0]?.allowedRequests[0]?.requestPolicy?.path,
+    "/v1/responses",
+  );
+  assert.equal(policy.bindings[0]?.sourceRef.id, sourceId);
+  assert.equal(Object.isFrozen(policy.bindings[0]?.sourceRef), true);
+  assert.throws(() => {
+    // @ts-expect-error Verify the runtime freeze for an untyped Driver callback.
+    policy.bindings[0].sourceRef.id = "replacement";
   }, TypeError);
 });
 

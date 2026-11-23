@@ -1,4 +1,5 @@
 import type { Driver } from "../index.ts";
+import type { NetworkDestinationRule } from "../../network-destination.ts";
 
 export interface ChannelDirectoryLookupInput {
   readonly token: string;
@@ -29,6 +30,8 @@ export type ChannelCredentialReader = (
 
 export interface ChannelDriver extends Driver {
   readonly capability: "channel";
+  /** Deterministic provider requirements; never reads credentials or changes infrastructure. */
+  enableRouting(): readonly NetworkDestinationRule[];
   validateCredentials?(
     values: Readonly<Record<string, unknown>>,
     withSecret: ChannelCredentialReader,

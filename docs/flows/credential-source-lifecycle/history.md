@@ -8,6 +8,60 @@ This record preserves the dated changes to the credential source lifecycle flow.
 
 ## Changelog
 
+- 2026-11-20 07:52: Trace managed source permission, standalone admission and live release checks. (authoring-run/6a2ac989-1b9e-4a4a-becf-4de572752f27 - d6853a84e)
+
+- 2026-11-20 04:19: Describe the staged worker and Compute path and its deployment hold. (authoring-run/4c6987ec-ea41-4485-98ca-62d6e617244f - daa612511)
+
+- 2026-11-20: Document native staged Proxy operation and holds. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 291d3b1de)
+
+- 2026-11-20 04:20: Link the separate internal static custody flow. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)
+
+- 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
+
+- 2026-11-18 14:02: Check the selected catalog type during registration. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 293833c72)
+
+- 2026-11-18 12:46: Check catalog field names and report malformed config keys. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 4875ab0f5)
+
+- 2026-11-17 19:44: Distinguish the published TokenService schemas from the current registration handler. (01a1eb01-0dea-7f01-8613-761574377d3f - 23b54e285)
+
+- 2026-11-17 19:24: Correct session ownership. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
+
+- 2026-11-13 15:44: Recheck the Git-only model lifecycle before Kubernetes attachment and release. (authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce - a14ccd99)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
+
+- 2026-11-11 16:45: Expose structured retry guidance for the existing registration deletion fence. (authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4 - 5eed51d18d8ea86a6c9450c352e967b433fa47da)
+
+- 2026-11-03 16:57: Correct catalog-field refusal status. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 82a04653d)
+
+- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
+
+- 2026-10-30 02:05: Resolve fresh static provider identities consistently with source updates. (authoring-run/ddbd21a8-0432-4c61-b4ad-e48d12268c8c - 262a2188226cbcd2ee22630040617f6c39969352)
+
+- 2026-10-29 21:40: Validate an owned revision snapshot under ordered storage locks. (authoring-run/833462ab-9c82-438a-95c4-53d1dbb2e7e9 - a9884d11bf325a39f3308f787a5ea266ebab5144)
+
+- 2026-10-29 20:41: Validate static source endpoints without Gateway placement. (authoring-run/cf8bb25e-ffb8-4349-9770-a0b07d6bf50f - 2eed3c36a)
+
+- 2026-10-29 19:11: Use the recorded owner’s catalog for fresh source admission. (authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741 - 3a4244461)
+
+- 2026-10-29 15:48: Preserve DELETE ownership when live registration loses readiness without an external write. (authoring-run/0f4f447d-cd98-4f49-9d16-217bf7500d1d - 6ead449d5)
+
+- 2026-10-23 08:05: Refuse unselected protected withdrawals. (fix-2235 - 860eea712)
+
+- 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from protected source admission. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
+
+- 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+
+- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
+
+- 2026-10-13 20:30: Document provider-managed Codex PAT authentication. (01a136ee-8824-7043-b9e2-49eccacac3bd - ed9018c09)
+
+- 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
+
+- 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
+
 - 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
 
 - 2026-10-10 04:53: Reconcile credential refresh; report invalid offered-source values as field-specific 400 before effects. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)

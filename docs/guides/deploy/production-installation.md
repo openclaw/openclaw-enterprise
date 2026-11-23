@@ -19,7 +19,10 @@ once, [authenticate to the API](#authenticate-to-the-production-api), and
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [requirements below](#requirements), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Private routing is enabled by default. The chart does not install Envoy Gateway,
+Private routing and managed channel egress are enabled by default. Prepare the
+[channel prerequisites](channel-egress.md)
+and matching Installation settings before installing the chart. Set
+`channelEgress.enabled: false` explicitly when channels are disabled. The chart does not install Envoy Gateway,
 Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
 controllers first; create the service-key Secret and match Helm and Installation
 settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.

@@ -66,7 +66,10 @@ export function assertSlackBotAuthor(message: SlackMessage, identity: SlackIdent
 }
 
 interface DeliveryCheck<Native> {
-  readonly slack: { readonly channelId: string; readonly senderBotToken: string };
+  readonly slack: {
+    readonly channelId: string;
+    readonly senderBotToken: string;
+  };
   readonly gatewayIdentity: SlackIdentity;
   readonly senderIdentity: SlackIdentity;
   readonly nativeEvidence: (nonce: string) => Native | PromiseLike<Native>;
@@ -90,9 +93,10 @@ export async function verifySingleSlackDelivery<Native>({
   assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
   assert.ok(observationMs >= 60_000 && observationMs <= 300_000);
   const nonce = `OCC-SLACK-${randomUUID()}`;
+  const text = `<@${gatewayIdentity.user_id}> Reply with exactly this nonce and no other text: ${nonce}`;
   const sent = await slackApi("chat.postMessage", slack.senderBotToken, {
     channel: slack.channelId,
-    text: `<@${gatewayIdentity.user_id}> Reply with exactly this nonce and no other text: ${nonce}`,
+    text,
   });
   assert.equal(sent.channel, slack.channelId);
   assert.match(sent.ts, /^\d+\.\d+$/);
@@ -112,6 +116,13 @@ export async function verifySingleSlackDelivery<Native>({
     const unique = [
       ...new Map([...roots, ...thread].map((message) => [message.ts, message])).values(),
     ];
+    const initial = unique.find((message) => message.ts === sent.ts);
+    assert.ok(initial, "Slack must expose the exact initial message");
+    assertSlackBotAuthor(initial, senderIdentity);
+    assert.ok(
+      initial.text?.includes(nonce),
+      "the confirmed initial message must contain this run's nonce",
+    );
     const matches = unique.filter(
       (message) => message.ts !== sent.ts && message.text?.includes(nonce),
     );

@@ -67,6 +67,12 @@ rules:
     resources: [replicasets]
     verbs: [get]
   {{- end }}
+  {{- if .Values.channelEgress.enabled }}
+  # Fence old Gateway controllers before reusing a channel listener port.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
+  {{- end }}
   # Read canonical control-plane sources and manage revision-owned runtime material.
   - apiGroups: [""]
     resources: [secrets]
@@ -98,7 +104,7 @@ rules:
     verbs: [get, create, delete]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [get, list, create, patch, delete]
+    verbs: [get, list, create, update, patch, delete]
   - apiGroups: [gateway.networking.k8s.io]
     resources: [httproutes]
     verbs: [get, create, patch, delete]

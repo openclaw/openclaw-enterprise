@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-18
-last_updated_session: authoring-run/427e95c2-8e34-4624-8497-52493b5980f5
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Service API Keys Flow
@@ -39,7 +39,8 @@ optional Namespace at issuance, but it does not snapshot or grant permissions.
 - `POST /api/auth/service-keys`: a human session or Installation-scoped service
   key with current IAM `administer` on the bootstrapped Installation names an
   existing principal in its exact scope.
-  [apps/controller/src/index.ts:requireInstallationAdmin](../../apps/controller/src/index.ts).
+  [Installation authorization](../../apps/controller/src/index.ts) and
+  [HTTP schema](../../apps/controller/src/http/auth-schemas.ts).
 - `GET /namespaces/:namespaceId` with `x-api-key`: a stored, unexpired key
   authenticates the service identity before IAM evaluates the resource request.
   [apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify](../../apps/controller/src/auth/index.ts).
@@ -53,7 +54,7 @@ Driver. Native IAM requires an existing ServicePrincipal, Role, and
 AccessBinding; issuance creates none of them. For Namespace automation, an
 administrator creates the ServicePrincipal through `POST
 /namespaces/:namespaceId/iam/service-principals`
-([`createIAMServicePrincipal`](../../packages/occ/src/index.ts)), which writes a
+([`createIAMServicePrincipal`](../../packages/occ/src/iam-policy-operations.ts)), which writes a
 non-Agent `iam_identities` row under the Namespace lock with no grant and audits
 `openclaw.iam.service_principals.create` in the same transaction. Request fields and lifetime
 limits are defined in the [authentication reference](../reference/authentication/service-api-keys.md#issuance)
@@ -169,7 +170,7 @@ The audit records `create` on the requested Agent collection with
 ### 4. Authorize the exact read with current IAM policy
 
 [apps/controller/src/index.ts:perform](../../apps/controller/src/index.ts);
-[packages/occ/src/index.ts:OpenClawController.getNamespace](../../packages/occ/src/index.ts);
+[packages/occ/src/namespace-operations.ts:getNamespace](../../packages/occ/src/namespace-operations.ts);
 [packages/iam/src/index.ts:NativeIAMDriver.authorize](../../packages/iam/src/index.ts).
 
 `perform` passes the resolved service-principal ID and requested Namespace to
@@ -259,6 +260,7 @@ These commands describe the proof hooks, not a new runtime execution record.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 04:25: Trace the request, method, route pattern and operation on auth library refusal and error lines. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
 
 - 2026-11-16 09:39: Distinguish bootstrap key registration from ordinary generated issuance. (pi/01a1e4f4-3138-71b5-b224-7ecf7ed57406 - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)

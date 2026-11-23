@@ -1,3 +1,4 @@
+import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -99,9 +100,7 @@ function productionInstallation(adminKeyPath) {
           runtime: {
             transportSecretPrefix: "agent-transport",
             gatewayStorageClassName: "sqlite-block",
-            channels: {
-              proxyUrl: "http://198.51.100.10:8080",
-            },
+            channelEgress: channelEgressOptions,
           },
         },
       },
@@ -112,9 +111,8 @@ function productionInstallation(adminKeyPath) {
       sandbox: {
         id: "sandbox-openshell",
         configuration: {
-          gateway: {
-            workspaceMode: "operator",
-          },
+          integrationMode: "legacy",
+          gateway: {},
           kubernetes: {
             serviceAccount: { mode: "gatewayConfigured" },
             sandboxDataMount: {

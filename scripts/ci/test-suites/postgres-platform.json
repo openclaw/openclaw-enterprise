@@ -30,6 +30,8 @@
     "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
+    "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+    "tests/integration/postgres-staged-agent-credential-binding.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -37,6 +39,7 @@
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
     "tests/integration/postgres-presets.test.ts",
+    "tests/integration/postgres-preset-update-authority.test.ts",
     "tests/integration/postgres-workspace-setup.test.ts",
     "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
@@ -79,7 +82,8 @@
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
-    "tests/integration/postgres-iam-durable-authority.test.ts"
+    "tests/integration/postgres-iam-durable-authority.test.ts",
+    "tests/integration/postgres-egress-replacement.test.ts"
   ],
   "files": [
     {
@@ -140,6 +144,8 @@
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
+        "memory State admits both execution modes with repository network policy",
+        "PostgreSQL saves repository network policy and binds reader markers for both execution modes",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
         "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
@@ -190,8 +196,21 @@
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
+      "path": "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+      "expectedTests": [
+        "staged TokenService lifecycle keeps private custody, audit, and exact update authority"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
+      "expectedTests": [
+        "public managed Source enrollment preserves custody and admits an authorized staged Agent"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
+        "static Connection Templates preserve configured request destinations across scoped CRUD and immutable versions",
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
         "an administrator registers OAuth clients against a pinned template and its availability",
         "OAuth client secret mutations refuse an enclosing controller transaction",
@@ -234,6 +253,12 @@
         "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
         "shipped Preset API preserves contract-sized templates through PostgreSQL",
         "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-preset-update-authority.test.ts",
+      "expectedTests": [
+        "Preset PATCH refuses an exact grant withdrawn while waiting for its Namespace lock"
       ]
     },
     {
@@ -320,7 +345,8 @@
     {
       "path": "tests/integration/postgres-api-request-audit.test.ts",
       "expectedTests": [
-        "PostgreSQL records API admission and results and blocks work when admission cannot be saved"
+        "PostgreSQL records API admission and results and blocks work when admission cannot be saved",
+        "PostgreSQL retains the mutation and result audit when an admitted client disconnects"
       ]
     },
     {
@@ -479,6 +505,7 @@
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
         "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
+        "bundled OpenShell custody discovers and prepares a native v9 repository session",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
@@ -580,7 +607,7 @@
       "path": "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
       "expectedTests": [
         "a cold worker persists redeploy-required standing Git status without renewing it",
-        "a cold worker after session expiry checks expired-original-pods",
+        "a cold worker after session expiry checks expired-original-execution",
         "a cold worker after session expiry checks expired-replaced-supervisor"
       ]
     },
@@ -616,8 +643,12 @@
     {
       "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
       "expectedTests": [
+        "PostgreSQL rejects scoped SandboxPolicy saves after IAM revocation during an advisory lock wait",
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
+        "Agent policy HTTP preserves and withdraws stored repository grants",
+        "scoped deployment channel observes IAM revocation after the writer lock",
+        "scoped deployment admission observes IAM revocation after the writer lock",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]
@@ -796,6 +827,9 @@
       "expectedTests": [
         "durable authority writes order configured-policy withdrawal at the real callers"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-egress-replacement.test.ts"
     }
   ]
 }

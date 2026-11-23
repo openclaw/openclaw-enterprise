@@ -6,8 +6,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { sanitizeError } from "./failure-redaction.ts";
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
+import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
-import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellRequiredEnv } from "./openshell-model-inputs.ts";
 import { aggregateGroup } from "./runner-aggregate.ts";
 import {
   case2PhaseEnv,
@@ -63,6 +64,8 @@ import {
 } from "./runner-preparation.ts";
 import { jobCancelling, killDescendants, runNode, type NodeResult } from "./runner-process.ts";
 import {
+  nativeProofCaseFailed,
+  nativeProofFailureStage,
   readFileEvidence,
   validateExpectedTests,
   type FileEvidence,
@@ -99,6 +102,7 @@ function emptyFileResult(path: string, issues: RunnerIssue[]) {
     tests,
     issues,
     cleanup: null,
+    [nativeProofCaseFailed]: false,
   };
 }
 
@@ -108,6 +112,8 @@ function imageDigests(env: NodeJS.ProcessEnv) {
     runtime: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
     controllerUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
     runtimeUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+    nativeBaselineController: "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+    nativeBaselineRuntime: "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
     repositoryCredentials: "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
     postgres: "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
     node: "OCC_TEST_PRODUCTION_NODE_IMAGE",
@@ -546,6 +552,7 @@ async function runFile(
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
     ...(openShellReplacement ? { openShellReplacement } : {}),
+    [nativeProofCaseFailed]: evidence[nativeProofCaseFailed],
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -620,6 +627,11 @@ async function runLane(
     };
     const results = new Array<ScheduledFileResult>(lane.files.length);
     let annotateFailure = process.env.GITHUB_ACTIONS === "true";
+    // The Full Integration view splits the OpenShell lane before selection.
+    const splitOpenShellLane =
+      process.env.OCC_CI_SUITE_VIEW === "full-integration" && isOpenShellLane(lane.name);
+    const originalFileOrder =
+      lane.files.length === manifest.lanes.get(lane.name)?.files.length && !splitOpenShellLane;
     const runAt = async (index: number, mode: FileMode) => {
       const file = lane.files[index];
       if (!file) {
@@ -646,9 +658,28 @@ async function runLane(
           result.counts.failed > 0 && result.cleanup?.status === "passed"
             ? "A test file reported failed tests and its cleanup passed."
             : "A test file failed.";
+        const ordinal = originalFileOrder ? index + 1 : "UNKNOWN";
         process.stderr.write(
-          `::error title=Test lane failure::${message} Final lane results will follow.\n`,
+          `::error title=Test lane failure::${message} Final lane results will follow.\n` +
+            `::notice title=Test lane first failed file hint::Original manifest file ordinal ${ordinal}.\n`,
         );
+        if (splitOpenShellLane && selectedFile === undefined && testName === undefined) {
+          process.stderr.write(
+            `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
+          );
+          const proofStage =
+            result[nativeProofCaseFailed] &&
+            result.cleanup?.status === "passed" &&
+            result.issues.every(
+              ({ code, status }) => code === "expected-test-not-passed" && status === "failed",
+            ) &&
+            nativeProofFailureStage(result.tests);
+          if (proofStage) {
+            process.stderr.write(
+              `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${proofStage}.\n`,
+            );
+          }
+        }
       }
       process.stderr.write(
         `run-tests: ${result.status} ${result.path} ${(wallDurationMs / 1000).toFixed(1)}s${mode === "parallel" ? " (parallel)" : ""}\n`,
@@ -776,7 +807,7 @@ async function completePhaseChild() {
   });
   let exitCode = 1;
   let uncertain = false;
-  let error: { code: "phase-failed" } | undefined;
+  let phaseError: { code: "phase-failed"; reason?: "docker-subnet-exhausted" } | undefined;
   try {
     // Null has no fields. Other JSON values with no phase leave the default reply.
     if (request === null || request === undefined) {
@@ -822,13 +853,22 @@ async function completePhaseChild() {
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
-  } catch {
-    // Command owners can embed opaque argv and output in Error.message. Only
-    // this closed category crosses the phase boundary, never exception text.
-    error = { code: "phase-failed" };
+  } catch (error) {
+    // Command owners can embed opaque argv and output in Error.message. Send
+    // only fixed categories and reasons across the phase boundary.
+    phaseError = { code: "phase-failed" };
+    if (
+      isRecord(request) &&
+      request.phase === "prepare" &&
+      error instanceof Error &&
+      "dockerSubnetExhausted" in error &&
+      error.dockerSubnetExhausted === true
+    ) {
+      phaseError.reason = "docker-subnet-exhausted";
+    }
     exitCode = 1;
   }
-  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error: phaseError });
   await new Promise(() => {});
 }
 

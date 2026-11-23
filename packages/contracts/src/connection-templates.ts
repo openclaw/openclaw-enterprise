@@ -1,3 +1,5 @@
+import { validRequestPath } from "./request-path.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -11,7 +13,7 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
-/** An approved HTTP request that can receive a static bearer credential. */
+/** An allowed HTTP request that can receive a static bearer credential. */
 export interface StaticKeyDestination extends ConnectionEndpoint {
   readonly method: string;
 }
@@ -21,7 +23,7 @@ export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
 
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
-/** A client may send its credentials only to its explicitly approved provider endpoints. */
+/** A client may send its credentials only to its configured provider endpoints. */
 export interface OAuthClient {
   readonly id: string;
   readonly namespaceId?: string;
@@ -34,7 +36,7 @@ export interface OAuthClient {
   readonly createdAt: string;
 }
 
-/** Public metadata observed during MCP discovery. The administrator approves a subset. */
+/** Public metadata observed during MCP discovery. The administrator selects a subset. */
 export interface McpAuthorizationMetadata {
   readonly serverUrl: string;
   readonly resource: string;
@@ -87,7 +89,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 
@@ -235,14 +237,14 @@ function compareStaticDestination(left: StaticKeyDestination, right: StaticKeyDe
   return compareEndpoint(left, right) || compareText(left.method, right.method);
 }
 
-/** Canonicalize the complete approved HTTP destination set, including each method. */
+/** Canonicalize the configured HTTP destination set, including each method. */
 export function normalizeStaticKeyDestinations(
   rows: readonly StaticKeyDestination[],
 ): StaticKeyDestination[] {
   if (!rows.length || rows.length > 128) {
     throw new ConnectionTemplateValidationError(
       "destinations",
-      "Choose 1 to 128 approved HTTP destinations.",
+      "Choose 1 to 128 HTTP destinations.",
     );
   }
   const destinations = rows
@@ -251,6 +253,7 @@ export function normalizeStaticKeyDestinations(
       if (
         !isApprovedDestinationHost(host) ||
         !validEndpoint(port, path) ||
+        !validRequestPath(path, true) ||
         !staticKeyHttpMethodPattern.test(method)
       ) {
         throw new ConnectionTemplateValidationError(
@@ -267,7 +270,22 @@ export function normalizeStaticKeyDestinations(
 }
 
 /** The in-memory repository mirrors the persisted version's nonempty, canonical destination set. */
-export function validateConnectionTemplateDestinations(values: ConnectionTemplateValues): void {
+export function validateConnectionTemplateDestinations(values: ConnectionTemplateSettings): void {
+  if (values.mode === "static_bearer") {
+    const canonical = normalizeStaticKeyDestinations(values.destinations);
+    if (
+      values.destinations.length !== canonical.length ||
+      values.destinations.some(
+        (row, index) => compareStaticDestination(row, canonical[index]!) !== 0,
+      )
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "destinations",
+        "The saved static destinations must be canonical.",
+      );
+    }
+    return;
+  }
   const canonical = normalizeConnectionDestinations(values.destinations);
   if (
     !sameDestinations(values.destinations, canonical) ||
@@ -290,7 +308,7 @@ function sameDestinations(
   );
 }
 
-/** True when `next` changes a value a person approved, so it needs a new version. */
+/** True when `next` changes settings that require a new template version. */
 export function connectionValuesChanged(
   current: Readonly<ConnectionTemplateSettings>,
   next: Readonly<ConnectionTemplateSettings>,

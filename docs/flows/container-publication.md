@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: "2026-11-19 15:20"
-last_updated_session: "authoring-run/fce9aadb-9500-4a97-949d-80408d45b612"
+updated: "2026-11-23 01:11"
+last_updated_session: "authoring-run/815d54c2-4420-4421-8561-9b92e61353c1"
 ---
 
 # Container publication flow
@@ -83,10 +83,9 @@ docker build -f deploy/runtime/Dockerfile \
 `openclaw-bridge-tests` typechecks and runs only the tests that exercise a kept
 carried patch; upstream CI covers the rest. Failure blocks smoke and upload.
 
-The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
-Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
-smaller or unknown limits. Before smoke, `scripts/ci/setup-tools.sh` installs
-checksum-pinned kubectl, k3d, Helm and yq. See [build settings](../release/configuration.md#build-settings).
+The resource step checks the native architecture, CPU count, and memory.
+Before smoke, `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d,
+Helm and yq. See [build settings](../release/configuration.md#build-settings).
 
 Buildx runs up to two steps at once and caches by image and architecture on
 Blacksmith sticky disks or in GitHub Actions. Standalone `container-check.yml`
@@ -104,22 +103,19 @@ The `openclaw-source` stage verifies and patches the archive. Then
 `scripts/build-runtime-assets.ts inputs` copies preparation manifests and lists
 required bundled plugins, Codex, and Slack for the frozen production install.
 The standalone Codex command uses the plugin's installation. Build stages use full Bookworm; final images use separately
-pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
-The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
-the archive and patch digests in `deploy/runtime/node/source.json` before applying the
-worker-termination repair. `node-compiled` builds native Node with full ICU and runs
-the worker regression and adjacent loader tests. Slim Bookworm repeats the tests
-with the copied executable. Missing libraries, ABI changes or regression failures
-stop assembly. The repository-credential service retains its original base.
+pinned slim bases. The controller and runtime require stock Node 24.22.1+
+within the 24 series. The runtime uses the executable from each selected base
+without compiling Node or applying a Node patch. The repository-credential
+service retains its original base.
 Both bases apply updates from mutable Debian repositories, even with pinned image digests.
 Every index refresh uses
 `apt-get update --error-on=any` to stop builds on incomplete downloads.
 
-`deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
-The `inventory` command checks its running executable's digest
-before recording `node` in final runtime provenance. Image startup compares that
-record with the checkout and installed executable. Native qualification requires
-packaged Gateway restart tests.
+The `inventory` command records the installed Node executable digest in
+`downloadClients`, with the other native download clients. Native qualification
+requires packaged Gateway shutdown and restart tests. Stock Node 24.22.1 can
+abort the Gateway if worker termination interrupts synchronous ESM loading;
+see the [runtime limits](../../deploy/runtime/README.md#build-a-local-runtime-image).
 
 `deploy/runtime/Dockerfile` and `deploy/runtime/repository-credentials/Dockerfile.client`
 retry pinned GitHub CLI archive and manifest downloads up to six times, including partial
@@ -237,8 +233,8 @@ child manifests.
 After both source tags verify, ordinary publication copies each sealed archive to
 `latest` or the selected custom alias, then checks both source and alias digests.
 The custom alias replaces `latest` for that dispatch; recovery does not move an
-alias. The two aliases are updated separately, so a failed run can leave them on
-different digests. The receipt is written only after both verify.
+alias. Aliases update separately. Failure can leave one on the previous build.
+The receipt follows verification of both aliases.
 
 Package metadata must report the expected name and public visibility. Reported
 repository linkage must match the public Enterprise repository. Omitted linkage
@@ -298,9 +294,14 @@ owns package-write access and coordination.
   registry index identity is stable; the second run must retain the existing
   source tag. Mutable external package inputs can still produce a legitimate
   conflict, which remains fail-closed.
-- Use `docker buildx imagetools inspect` on both the source tag and selected alias.
-  Require Linux amd64 and arm64 plus the receipt's index digest. Startup checks
-  do not establish native ARM64 performance, cluster behavior, or model turns.
+- Inspect each image's source tag and selected alias with `docker buildx imagetools inspect`.
+  Require Linux amd64 and arm64. Compare both index digests with the digest recorded
+  for that image in the publication receipt.
+  After alias failure, compare tags with `digest` from its verified original
+  `metadata.json` for the same trusted run and attempt.
+  [Use verified digest references](../release/containers.md#prepare-and-publish)
+  until publication updates both aliases. Startup checks do not establish native
+  ARM64 performance, cluster behavior, or model turns.
 
 ## Related docs
 
@@ -312,6 +313,12 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 01:11: Correct alias digest verification. (authoring-run/815d54c2-4420-4421-8561-9b92e61353c1 - b4f0775e12dcd79f2ee4724d8b73baeda139f6db)
+
+- 2026-11-19 18:56: Remove the custom Node build and worker-termination patch; use stock Node from the pinned bases. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
+
+- The source-built Node repair is removed from runtime packaging. (NOT_IN_SPEC)
 
 - 2026-11-19 15:20: Bridge tests cover only kept carried patches.
 

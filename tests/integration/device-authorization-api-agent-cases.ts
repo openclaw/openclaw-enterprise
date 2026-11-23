@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Check } from "typebox/value";
 
+import { AuditEventFactory } from "../../packages/audit/src/index.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentCallerPermissionsResponse,
@@ -11,7 +12,7 @@ import {
   CredentialSourceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { Identity } from "../../packages/contracts/src/index.ts";
-import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.mjs";
+import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import {
@@ -26,7 +27,9 @@ export function registerDeviceAuthorizationAgentCases(): void {
   test("Gateway device login saves a source-backed Agent and reuses discovery after closing its login", async (t) => {
     let approved = false;
     const fixture = await createFixture(t, { approve: async () => approved });
+    const createEvent = t.mock.method(AuditEventFactory.prototype, "create");
     const login = await fixture.start();
+    createEvent.mock.restore();
     assertDeviceAudit(fixture, "start");
     const startResponse = fixture.responses.at(-1);
     assert.ok(Check(AgentDeviceAuthorizationResponse, startResponse), "start response envelope");
@@ -41,6 +44,17 @@ export function registerDeviceAuthorizationAgentCases(): void {
     assert.deepEqual(
       startEvents.map((event) => event.details?.phase),
       ["source_registering", "source_ready", "session_pending"],
+    );
+    // The sink sanitizes again, so stored events alone cannot show what the factory received.
+    const factoryDetails = createEvent.mock.calls
+      .map(({ arguments: [input] }) => input)
+      .filter(
+        (input) => input.requestId === startRequestId && input.action === startEvents[0]?.action,
+      )
+      .map((input) => [input.details?.phase, input.details?.sourceId]);
+    assert.deepEqual(
+      factoryDetails,
+      startEvents.map(({ details }) => [details?.phase, details?.sourceId]),
     );
     for (const event of startEvents) {
       assert.equal(event.actorId, fixture.principal.id);

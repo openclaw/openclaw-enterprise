@@ -44,6 +44,43 @@ function runPrepare(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
+// These engine fixtures exercise stages after dependency admission.
+function allowDependencyPreflight(root: string) {
+  return writeCommand(root, "corepack", '[ "$*" = "pnpm exec node --version" ]');
+}
+
+test("PostgreSQL preparation rejects stale pnpm dependencies before starting a database", async (t) => {
+  const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+  const statePath = join(root, "state.json");
+  const corepackLog = join(root, "corepack.log");
+  const dockerLog = join(root, "docker.log");
+  // Simulate pnpm refusing the checkout while permitting only the read-only probe.
+  const corepack = await writeCommand(
+    root,
+    "corepack",
+    `[ "$#" -eq 4 ] && [ "$1" = pnpm ] && [ "$2" = exec ] &&
+  [ "$3" = node ] && [ "$4" = --version ] || exit 99
+printf '%s\\n' 'ERR_PNPM_VERIFY_DEPS_BEFORE_RUN' 'Run "pnpm install"' >&2
+exit 1`,
+    { log: corepackLog },
+  );
+  const docker = await writeCommand(root, "docker", "exit 98", { log: dockerLog });
+
+  const result = await spawnResult(
+    process.execPath,
+    [preparePath, "--lane", "postgres-auth", "--state", statePath],
+    { env: { PATH: root, OCC_DOCKER_BIN: docker, OPENCLAW_CI_COREPACK_BIN: corepack } },
+  );
+
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, result.stderr);
+  assert.deepEqual(await commandCalls(dockerLog), [], result.stderr);
+  assert.deepEqual(await commandCalls(corepackLog), ["pnpm exec node --version"]);
+  assert.match(result.stderr, /ERR_PNPM_VERIFY_DEPS_BEFORE_RUN/);
+  assert.match(result.stderr, /pnpm install/);
+  assert.deepEqual(await readResources(statePath), []);
+});
+
 const container = "a".repeat(64);
 const malformedPortResponse = "private-invalid-json";
 
@@ -86,6 +123,7 @@ esac`,
     const env = {
       ...process.env,
       OCC_DOCKER_BIN: engine,
+      OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
       TEST_BOOTSTRAP_ROOT: root,
       TEST_PODMAN_IDS_SET: podmanIds === undefined ? "0" : "1",
       TEST_PODMAN_IDS: podmanIds,
@@ -133,7 +171,7 @@ esac`,
         "--state",
         statePath,
         "--file",
-        "tests/integration/native-admin-session-postgres.test.mjs",
+        "tests/integration/native-admin-session-postgres.test.ts",
       ],
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );
@@ -157,26 +195,37 @@ esac`,
   });
 }
 
-for (const [failure, subnetExhaustion] of [
-  ["all predefined address pools have been fully subnetted", true],
-  ["permission denied while trying to connect to the Docker daemon socket", false],
-  ["container is unhealthy", false],
-] as const) {
-  test(`PostgreSQL preparation reports Compose failure: ${failure}`, async (t) => {
-    const root = await temporaryDirectory(t, "ci-prepare-postgres-");
-    const statePath = join(root, "run's state.json");
-    const log = join(root, "docker.log");
-    const docker = await writeCommand(
-      root,
-      "docker",
-      `case "$1:$6" in
+const composeSubnetFailure = "all predefined address pools have been fully subnetted";
+const composePermissionFailure =
+  "permission denied while trying to connect to the Docker daemon socket";
+
+async function failingPostgresCompose(root: string, failure: string) {
+  const log = join(root, "docker.log");
+  const docker = await writeCommand(
+    root,
+    "docker",
+    `case "$1:$6" in
   version:|compose:down) exit 0 ;;
   compose:up) printf '%s\\n' "$TEST_DOCKER_FAILURE" >&2; exit 17 ;;
   *) exit 99 ;;
 esac`,
-      { log },
-    );
-    const env = { ...process.env, OCC_DOCKER_BIN: docker, TEST_DOCKER_FAILURE: failure };
+    { log },
+  );
+  const env = {
+    OCC_DOCKER_BIN: docker,
+    OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
+    TEST_DOCKER_FAILURE: failure,
+  };
+  return { docker, env, log };
+}
+
+for (const failure of [composeSubnetFailure, composePermissionFailure, "container is unhealthy"]) {
+  test(`PostgreSQL preparation reports Compose failure: ${failure}`, async (t) => {
+    const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+    const statePath = join(root, "run's state.json");
+    const fixture = await failingPostgresCompose(root, failure);
+    const { docker, log } = fixture;
+    const env = { ...process.env, ...fixture.env };
     const prepared = spawnSync(
       process.execPath,
       [preparePath, "--lane", "postgres-auth", "--state", statePath],
@@ -187,7 +236,7 @@ esac`,
     assert.equal(resources.length, 1);
     const { server, compose, directory } = observedProject(resources);
     const originalError = `${docker} ${compose} up -d --wait failed: ${failure}\n`;
-    if (!subnetExhaustion) {
+    if (failure !== composeSubnetFailure) {
       assert.equal(prepared.stderr, originalError);
       return;
     }
@@ -216,6 +265,66 @@ esac`,
     await assert.rejects(stat(statePath), { code: "ENOENT" });
     await assert.rejects(stat(directory), { code: "ENOENT" });
   });
+}
+
+for (const failure of [composeSubnetFailure, composePermissionFailure]) {
+  test(
+    `complete lifecycle records PostgreSQL preparation failure: ${failure}`,
+    { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+    async (t) => {
+      const root = await temporaryDirectory(t, "ci-postgres-lifecycle-");
+      const attempt = join(root, "attempt");
+      const privateOutput = "fixture-compose-stderr-must-stay-private";
+      const { env, log } = await failingPostgresCompose(root, `${failure}\n${privateOutput}`);
+      const result = await spawnResult(
+        process.execPath,
+        [
+          join(repositoryRoot, "scripts/ci/run-tests.ts"),
+          "run",
+          "postgres-auth",
+          "--lifecycle",
+          "complete",
+          "--attempt",
+          attempt,
+        ],
+        { env: { ...env, PATH: root }, timeout: 30_000 },
+      );
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+
+      // Preserve a recognized reason while keeping Compose output out of the receipt and logs.
+      const receipt = await readFile(join(attempt, "result.json"), "utf8");
+      assert.ok(!receipt.includes(privateOutput));
+      assert.ok(!result.stdout.includes(privateOutput));
+      assert.ok(!result.stderr.includes(privateOutput));
+      const decoded: unknown = JSON.parse(receipt);
+      const summary = asRecord(decoded);
+      const phases = asRecord(asRecord(summary?.lifecycle)?.phases);
+      const prepare = asRecord(phases?.prepare);
+      assert.ok(prepare);
+      assert.equal(prepare.status, "failed");
+      assert.deepEqual(
+        prepare.error,
+        failure === composeSubnetFailure
+          ? { code: "phase-failed", reason: "docker-subnet-exhausted" }
+          : { code: "phase-failed" },
+      );
+
+      // Preparation failure must block tests and still tear down the same partial project.
+      assert.equal(asRecord(phases?.run)?.status, "not-run");
+      assert.equal(asRecord(summary?.counts)?.total, 0);
+      assert.equal(asRecord(phases?.cleanup)?.status, "passed");
+      const calls = await commandCalls(log);
+      const project = /^(compose -f .+ -p \S+) up -d --wait$/u.exec(calls[1] ?? "")?.[1];
+      assert.ok(project, "Compose startup reached the failing fixture");
+      assert.deepEqual(calls, [
+        "version --format {{.Server.Version}}",
+        `${project} up -d --wait`,
+        `${project} down --volumes --remove-orphans`,
+      ]);
+      assert.deepEqual(await readdir(attempt), ["result.json"]);
+    },
+  );
 }
 
 test(
@@ -248,6 +357,7 @@ console.log("29.9.2");
     try {
       result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
         OCC_DOCKER_BIN: docker,
+        OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
         RUNNER_TEMP: runnerTemp,
         CI_TEST_STATE_DIRECTORY: stateDirectory,
       });
@@ -310,6 +420,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       try {
         result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
           OCC_DOCKER_BIN: docker,
+          OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
           NODE_OPTIONS: `--import=${preload}`,
         });
       } finally {
@@ -394,6 +505,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       try {
         result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
           OCC_DOCKER_BIN: docker,
+          OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
           NODE_OPTIONS: `--import=${preload}`,
         });
       } finally {

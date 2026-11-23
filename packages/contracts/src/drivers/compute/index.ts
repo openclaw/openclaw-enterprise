@@ -6,10 +6,14 @@ import type {
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
+import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
 } from "../credential-proxy/index.ts";
-import type { Driver, SelectedDriverRegistration } from "../index.ts";
+import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentRevision,
@@ -28,6 +32,7 @@ import type {
   ServiceAccountCredential,
 } from "../../index.ts";
 import type {
+  AdmittedRepositoryBinding,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryExecutionIdentity,
@@ -38,7 +43,12 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
+import type {
+  ProtectedRepositoryNetworkPolicyContext,
+  SandboxNamespaceContext,
+  SandboxHarnessObservation,
+} from "../sandbox/index.ts";
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface AgentChatCompletionsEndpoint {
@@ -53,6 +63,11 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** Worker configures the exact staged target without exposing source resolution to Compute. */
+  readonly configureCredentialDeployment?: (
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
   /** An active provider's maintenance pass may update its existing Harness only. */
   readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
@@ -121,6 +136,8 @@ export type ComputePendingReason =
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"
+  /** Staged credential activation is prepared, pending, or awaiting a confirmed startup outcome. */
+  | "CREDENTIAL_ACTIVATION_PENDING"
   /** The worker has not yet verified the Sandbox's prepared Git route (OpenShell). */
   | "REPOSITORY_GIT_ROUTE_PENDING";
 
@@ -129,7 +146,9 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
-  /** Only v6: select this execution for material while its launcher and user work remain held. */
+  /** Standalone v8 has staged credentials and verified launch inputs and the effective network policy. */
+  readonly preparedForCredentialActivation?: true;
+  /** Protected v6 and native Git v9 hold the launcher and user work until Git material is installed. */
   readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
   readonly runtimeFailure?: RuntimeFailureEvidence;
@@ -216,6 +235,28 @@ export interface ComputePreflightResult {
 export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
+/** Current desired topology and exact proposed policy, when saving. */
+export interface ProtectedRepositoryNetworkPolicySaveContext {
+  readonly nativeGit?: "v1";
+  /** Saved Agent placement and its authorized Configuration, for local topology checks. */
+  readonly placement?: Pick<
+    AgentRevision,
+    "agentId" | "namespaceId" | "gatewayManagedMode" | "configuration"
+  >;
+  readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
+  readonly sandboxDriverId: string;
+  /** The selected registration that owns both Sandbox and Credential Proxy. */
+  readonly protectedDriver: DriverRegistrationRef;
+  readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
+  /** The complete proposed policy, including an explicit empty list when applicable. */
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
+  readonly harnessCredentialSource: Readonly<{
+    type: string;
+    ownerCapability: "credential_gateway" | "credential_proxy";
+    driverId: string;
+  }>;
+}
+
 export interface ComputeDriver extends Driver {
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
@@ -234,10 +275,32 @@ export interface ComputeDriver extends Driver {
   ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan" | "credentialDeployment">,
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;
+  /**
+   * Optionally qualify the selected topology for editing when several policy lists are possible.
+   * Use only local Driver state. This hint is independent of any particular list.
+   */
+  supportsProtectedRepositoryNetworkPolicyPlacement?(
+    context: Omit<ProtectedRepositoryNetworkPolicySaveContext, "repositoryNetworkPolicy">,
+  ): true | false;
+  /**
+   * Admit the exact proposed policy using local Driver state. Only an affirmative result admits
+   * a save. Release still requires frozen revision admission.
+   */
+  admitsProtectedRepositoryNetworkPolicySave?(
+    context: ProtectedRepositoryNetworkPolicySaveContext,
+  ): true | false;
+  /**
+   * Side-effect-free placement check on a frozen revision, including protected runtime inputs.
+   * During deployment admission OCC also invokes the selected Sandbox's independent frozen
+   * policy validator. Throw or reject for an unsupported topology.
+   */
+  validateProtectedRepositoryNetworkPolicy?(
+    context: ProtectedRepositoryNetworkPolicyContext,
+  ): void | Promise<void>;
   /**
    * After release is refused, select a withdrawal only for a grant this Compute previously
    * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
@@ -251,7 +314,7 @@ export interface ComputeDriver extends Driver {
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;
   readonly capability: "compute";
-  /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
+  /** Deployment must observe and provision Agent-owned runtime credentials before saving a revision. */
   readonly requiresAgentRuntimeCredentials?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
@@ -400,11 +463,28 @@ export interface ComputeDriver extends Driver {
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
-   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
-   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
-   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
    */
-  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
   /** Resolve only the private HTTP completion route for this exact revision. */
   getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;

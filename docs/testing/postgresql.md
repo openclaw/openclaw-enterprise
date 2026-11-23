@@ -26,6 +26,12 @@ are preserved and reported as a cleanup failure. If directory or SQL creation wa
 not durably confirmed, cleanup preserves any unconfirmed contents and state.
 Inspect their ownership before manual removal; a competing process may own the directory.
 
+Install dependencies in the same checkout and with the same pnpm settings used
+to run preparation. This includes the `CI` environment setting. Before creating
+a disposable PostgreSQL server, preparation runs pnpm's dependency check in that
+checkout. If pnpm reports an incompatible install, run `pnpm install` with the
+settings for the intended test run.
+
 Use Docker Compose, or set `OCC_DOCKER_BIN` to the `podman` executable and
 configure its Compose provider. If you use standalone `podman-compose`, use a
 release that accepts `up --wait`, such as 1.6.0. Then run:
@@ -89,6 +95,8 @@ preexisting, replaced or symlinked journals are refused. Direct local runs use
 fresh private paths and an after-hook with the same Docker prerequisites.
 
 ## Subnet pool exhaustion
+
+Complete lifecycle results record `docker-subnet-exhausted` in `lifecycle.phases.prepare.error.reason`.
 
 If Compose reports `all predefined address pools have been fully subnetted`,
 Docker could not allocate a subnet for the project network. Stop the run if it
@@ -179,6 +187,12 @@ loopback database named `openclaw_failures_*` via
 `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`; their reset changes its tables. See
 [the test](../../tests/integration/postgres-bootstrap-failures.test.ts) for
 its optional migration URL. Do not share that database with another process.
+
+The [internal static TokenService lifecycle test](../../tests/integration/postgres-static-token-service-lifecycle.test.ts) also needs
+`OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL` for the migrator role on
+the same disposable database as `OCC_TEST_DATABASE_URL`. It uses that role to
+install temporary audit-rejection constraints; application operations use the
+limited application role.
 
 ## Canonical migration compatibility
 
