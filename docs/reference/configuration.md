@@ -19,13 +19,14 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. A reviewed Configuration Driver, bundled or installed, stores
-the native document in development and production. The bundled Kubernetes Driver
-uses one `openclaw.json` ConfigMap entry, so values must serialize to less than
-1 MiB; a save over that is refused with
-`400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
-bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
-envelope in six-byte JSON escapes; a caller without the create or update grant
-is refused before the body is read.
+the native document in development and production. The bundled Kubernetes Driver stores
+`values` in one `openclaw.json` ConfigMap entry. At 1 MiB or more of serialized
+UTF-8 JSON, saves return `400 INVALID_REQUEST` with the limit. Shorten the settings and retry.
+
+The default Configuration POST/PATCH limit is 6,488,064 bytes,
+6 × (1 MiB + 32 KiB), allowing six-byte JSON escapes throughout.
+Oversized bodies return `413 PAYLOAD_TOO_LARGE`. OCC checks the
+create or update grant before reading the body.
 
 Console presentation uses a separate API-only [theme bundle](console/theming.md),
 selected with `OCC_CONSOLE_THEME_DIR`. It does not change persisted Installation

@@ -71,9 +71,11 @@ interface has no startup or disposal method. Resource operations begin when OCC
 accepts a request; shutting down the process does not delete configurations.
 
 OCC starts new configurations at generation 1 and checks generation before
-accepting a replacement. It reads and retains the prior document during an
-update or deletion so it can attempt to restore it on transaction rollback; after
-a create it registers deletion for rollback. OCC refuses deletion while an Agent
+accepting a replacement. Before calling `create`, OCC registers a rollback action
+to delete the new document. Before updating or deleting an existing document,
+OCC keeps a copy so it can attempt to restore it on rollback. If the document
+is already missing, OCC can delete the remaining metadata only when the
+Driver's optional `inspectExact` confirms its absence. OCC refuses deletion while an Agent
 still references the Configuration. This is not permission for callers to roll
 back generations themselves. See the [persistence flow](../../flows/configuration-driver/persistence-and-revisions.md).
 
