@@ -7,9 +7,9 @@ last_verified: "2026-11-04"
 # Rehearse a populated controller return
 
 Use this local test to check whether the previous OpenClaw Control Plane (OCC)
-controller can serve a draft that the candidate saved after recovering an
-interrupted upgrade. The test creates a new
-installation and PostgreSQL instance, then uses the
+controller can serve a draft that the candidate saved after an ordinary upgrade
+or recovery of an interrupted upgrade. The test creates a new installation and
+PostgreSQL instance, then uses the
 [local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md)
 to change the controller image.
 
@@ -73,9 +73,14 @@ OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Require the rehearsal to pass without a skip. During the forward upgrade, the
-test suspends the exact Helm client after observing its attempt-bound initializer
-Job. Kubernetes finishes the real initialization while Helm remains pending.
+Require a pass without skips. For ordinary upgrade timing, set
+`OCC_TEST_PRODUCTION_TUI_REHEARSAL=ordinary`. After preflight, this mode requires
+one new deployed Helm revision and verifies the Installation. Compare modes on
+fresh clusters with the same image digests.
+
+With `OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`, the test suspends the exact Helm
+client after observing its attempt-bound initializer Job. Kubernetes finishes
+the real initialization while Helm remains pending.
 The test terminates and reaps that client, checks the committed PostgreSQL
 history with the candidate's migrator, and runs the supported
 `--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
@@ -153,9 +158,10 @@ the interval between starts. `maxStartGapMs` includes the boundary reads.
 All offsets use the same monotonic clock. Wall-clock timestamps support log
 correlation.
 
-In the forward receipt, `guardedResume.startOffsetMs` marks the start of the
-resume attempt after the migration history check. It includes the fixture's
-cluster, database and release checks before the command runs.
+In the interrupted rehearsal's forward receipt, `guardedResume.startOffsetMs`
+marks the start of the resume attempt after the migration history check. It
+includes the fixture's cluster, database and release checks before the command
+runs.
 `guardedResume.endOffsetMs` marks when the attempt finishes, even on failure.
 A checkpoint can omit the end offset or the whole interval. Missing timing cannot establish
 whether the command ran or succeeded. Compare this interval with probe times
