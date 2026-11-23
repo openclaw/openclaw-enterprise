@@ -200,6 +200,8 @@ Run prerequisite diagnosis after [creating the controller Namespace](#prepare-wo
 
 ## Configure the Installation
 
+If you use a Terraform-managed EKS cluster, complete [the EKS setup](#use-a-terraform-managed-eks-cluster) before configuring the Installation.
+
 This runbook uses Helm
 release `oce` in Namespace `openclaw-system`. Keep configuration and
 Installation YAML in the protected `OCC_INPUT_DIRECTORY`; Secret inputs stay
@@ -243,7 +245,6 @@ export OCC_PROFILE="${OCC_PROFILE:-codex}"
 export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-input.json}"
 (
   set -e
-  : "${CONTROLLER_IMAGE:?Set the controller digest reference}"
   : "${RUNTIME_IMAGE:?Set the runtime digest reference}"
   test -s "$OCC_PROFILE_INPUT"
   yq -e '.controlPlane.releaseName == "oce" and .controlPlane.namespace == "openclaw-system"' \
@@ -259,6 +260,8 @@ export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-inpu
 
 If rendering fails, stop, fix the input, and rerender; do not substitute example
 or manual YAML. Keep `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` paired.
+Fix failed checks. Rerender changed profile inputs. Rerun shared checks to
+restore exports.
 
 ### Advanced: copy manual YAML examples
 
@@ -287,6 +290,8 @@ the startup Secret alone grants none.
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
 [Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
+For changed registry digests, reverify and compare against independently checked
+references before shared checks.
 
 <a id="shared-bootstrap-pvc-and-configuration-checks"></a>
 
@@ -422,9 +427,9 @@ and outside the checkout; its default is `$HOME/.local/state`.
 
 ### Optional: supply bootstrap credentials
 
-Skip this section for automatic setup. For direct Helm installation or
-`--bootstrap-credentials=existing`, prepare the Secret yourself. Generate once
-with Node.js from the matching checkout; existing files are never overwritten:
+Automatic setup refuses a pre-existing bootstrap credential Secret. Skip this
+section for automatic setup. Reuse a deliberately provisioned Secret. Otherwise,
+generate once with Node.js from the matching checkout. Existing files stay intact.
 
 ```bash
 node --input-type=module <<'JS'
@@ -439,19 +444,7 @@ Retain these files outside the checkout. The password is for human sign-in; the
 service key authenticates automation and expires 30 days after registration.
 See the [input contract](../../reference/authentication.md#installation-and-account-ownership)
 for file validation and retention. An external secret manager can supply the same
-values. Create the configured Secret before installation, using the selected
-context and namespace and the keys resolved by validation:
-
-```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic "$BOOTSTRAP_SECRET" \
-  --from-file="$BOOTSTRAP_PASSWORD_KEY=/secure/occ/admin-password" \
-  --from-file="$BOOTSTRAP_SERVICE_KEY_KEY=/secure/occ/admin-service-key"
-```
-
-Select `--bootstrap-credentials=existing` when installing through the CLI.
-After a failed or uncertain create, preserve inputs and reconcile before retrying.
-Do not put plaintext credentials in Helm values or shell arguments.
+values. [Create the Secret after workspace setup](#prepare-workspace-access).
 
 ### Prepare other Secret inputs
 
@@ -495,7 +488,9 @@ history, and the repository.
 
 ## Prepare workspace access
 
-Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 characters):
+With the selected kubeconfig and context, confirm `openclaw-system` is the
+intended active Namespace. Create only on confirmed absence. Stop and reconcile
+lookup or creation errors. `--namespace` accepts a DNS-1123 label up to 63 characters.
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
@@ -519,6 +514,20 @@ chart's private Gateway. A mismatch reports
 `CHART_LISTENER_MISMATCH`. Correct the profile input and rerender, or align the
 manual Installation and Helm values, before retrying. Leave `hostname` unset in
 both files to use the generated Service DNS name.
+
+For direct Helm or `--bootstrap-credentials=existing`, create the Secret only if
+needed with validated keys.
+
+```bash
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic "$BOOTSTRAP_SECRET" \
+  --from-file="$BOOTSTRAP_PASSWORD_KEY=/secure/occ/admin-password" \
+  --from-file="$BOOTSTRAP_SERVICE_KEY_KEY=/secure/occ/admin-service-key"
+```
+
+With a supplied Secret, use `--bootstrap-credentials=existing` for the CLI install.
+After a failed or uncertain create, preserve inputs and reconcile before retrying.
+Do not put plaintext credentials in Helm values or shell arguments.
 
 After completing workspace access and validating any changed inputs, return to
 [Provision system Secrets and install](production-installation.md#provision-system-secrets-and-install)

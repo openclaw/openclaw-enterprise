@@ -9,6 +9,10 @@ edit. Scroll until **Save Configuration** is near the middle of the window and
 has focus in view and **Danger zone** stays below the window. The signed-in test
 in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
 
+Reopen **Edit Configuration**. In **Configuration JSON**, select a few characters
+with Shift+Left. Switch browser tabs and return. After the access check, press
+Shift+Left again. The selection should extend one more character to the left.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,
