@@ -490,6 +490,7 @@ export function registerKubernetesProcessorCases() {
       });
       const requestId = `req_${randomUUID()}`;
       const namespaceId = `ns_${randomUUID()}`;
+      const credentialSourceId = `cs_${randomUUID()}`;
       const agentId = `agt_${randomUUID()}`;
       const revisionId = `rev_${randomUUID()}`;
       await postLogs(receiverAddress, [
@@ -557,9 +558,33 @@ export function registerKubernetesProcessorCases() {
                   method: "POST",
                   route: `/api/${canary}`,
                   errorClass: "DependencyUnavailableError",
+                  credentialSourceId,
                   message: `The Kubernetes Secret create failed ${canary}.`,
                   causes: [{ errorClass: "ApiException", code: 500 }],
                 }),
+                // Credential failures retain their fixed code and valid Source/request scope.
+                ...(
+                  [
+                    ["credential.resolution_failed", "CREDENTIAL_RESOLUTION_FAILED"],
+                    ["credential.delivery_failed", "CREDENTIAL_DELIVERY_FAILED"],
+                  ] as const
+                ).map(([event, code]) =>
+                  line({
+                    severity: "WARN",
+                    event,
+                    code,
+                    requestId,
+                    namespaceId,
+                    credentialSourceId,
+                  }),
+                ),
+                line({
+                  severity: "WARN",
+                  event: "credential.delivery_failed",
+                  code: "CREDENTIAL_DELIVERY_FAILED",
+                  credentialSourceId: canary,
+                }),
+                line({ severity: "WARN", event: "credential.delivery_failed-unreviewed" }),
                 // A failed audit write keeps the Agent's IDs; the error stays local.
                 line({
                   severity: "WARN",
@@ -764,6 +789,24 @@ export function registerKubernetesProcessorCases() {
             "request.id": requestId,
           }),
           api("WARN", { "event.name": "http.dependency_unavailable", "request.id": requestId }),
+          ...(
+            [
+              ["credential.resolution_failed", "CREDENTIAL_RESOLUTION_FAILED"],
+              ["credential.delivery_failed", "CREDENTIAL_DELIVERY_FAILED"],
+            ] as const
+          ).map(([event, code]) =>
+            api("WARN", {
+              "event.name": event,
+              "occ.code": code,
+              "request.id": requestId,
+              "occ.namespace.id": namespaceId,
+              "occ.credential_source.id": credentialSourceId,
+            }),
+          ),
+          api("WARN", {
+            "event.name": "credential.delivery_failed",
+            "occ.code": "CREDENTIAL_DELIVERY_FAILED",
+          }),
           api("WARN", {
             "event.name": "native_admin.websocket_audit_failed",
             "occ.namespace.id": namespaceId,
