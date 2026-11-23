@@ -28,8 +28,8 @@ do not add an OCC job store, scheduler, or execution qualification system.
 ## Verification
 
 Extend the existing registered Agent/native-admin integration workflow. Exercise
-CRUD and run-history forwarding through the supported route, denied authority,
-revision conflict, and an uncertain sent mutation. Generate and check OpenAPI,
+CRUD and run-history forwarding through the supported route, denied callers,
+Origin/CSRF protection, a stale revision conflict, and audit evidence. Generate and check OpenAPI,
 then run the standard required PR checks. Do not run model or MCP qualification
 for this API-only change.
 

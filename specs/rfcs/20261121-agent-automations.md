@@ -67,7 +67,7 @@ uses native cron execution behavior under the Agent's existing configuration.
 The API makes no additional promise about scheduled tool permissions.
 
 Extend one existing Agent/native-admin integration workflow to exercise the six
-routes, a denied caller, a revision conflict, and an uncertain mutation. Run the
+routes, denied callers, Origin/CSRF protection, a stale revision conflict, and audit evidence. Run the
 required contract generation and standard PR checks. Model execution and MCP
 qualification are outside this API change.
 

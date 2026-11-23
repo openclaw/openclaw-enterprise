@@ -353,10 +353,11 @@ test(
               timeout: 60_000,
             },
           );
-          assert.deepEqual(JSON.parse(cron.stdout), {
-            nativeCronCrud: true,
-            deniedBeforeTransport: true,
-          });
+          const receipt = cron.stdout.trim().split("\n").at(-1);
+          assert.ok(
+            receipt === JSON.stringify({ nativeCronCrud: true, deniedBeforeTransport: true }),
+            "The cron probe did not emit its expected final receipt.",
+          );
         }
         const content = `Owned native workspace ${index}: exact text.\n`;
         const deniedWrites: WorkspaceNativeProbeInput["deniedWrite"][] = [
