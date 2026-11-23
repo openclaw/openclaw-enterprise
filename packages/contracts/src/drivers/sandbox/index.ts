@@ -1,6 +1,10 @@
 import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type {
+  CredentialDeploymentTarget,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
 import type { Driver } from "../index.ts";
 import type {
@@ -310,6 +314,17 @@ export interface SandboxDriver extends Driver {
     harness: Readonly<RevisionHarnessDescriptor>,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
+  /** Provision the revision's Sandbox without starting its credential-using Harness. */
+  provisionStagedHarness?(context: SandboxHarnessContext): Promise<CredentialDeploymentTarget>;
+  /** Prepare a fresh launch after the revision's network and credential route are ready. */
+  prepareStagedHarness?(
+    context: SandboxHarnessContext,
+    projections: readonly CredentialProjection[],
+  ): Promise<void>;
+  /** Start the prepared Harness during authorized revision activation. */
+  activateStagedHarness?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
   /** The launcher stays held while the Driver observes its request challenge.
    * A denial observed here can select material, never release work. */

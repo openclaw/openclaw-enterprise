@@ -1,8 +1,5 @@
-import {
-  CONTROLLER_WORK_AUDIT_ACTIONS,
-  type Agent,
-  type Namespace,
-} from "@openclaw-enterprise/contracts";
+import { lockNamespace } from "./resource-scope.ts";
+import { CONTROLLER_WORK_AUDIT_ACTIONS, type Agent } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import type { ControllerAuthority } from "./controller-authority.ts";
@@ -18,7 +15,7 @@ import type { PlatformOperation } from "./ports/platform-operations.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 interface TerminationDependencies {
-  readonly installationId: () => string;
+  readonly installationId: string;
   readonly requestAuditId: () => string | undefined;
   readonly timestamp: () => string;
   readonly record: (state: PlatformUnitOfWork, operation: PlatformOperation) => Promise<void>;
@@ -27,10 +24,6 @@ interface TerminationDependencies {
     ControllerAuthority,
     "authorize" | "authorizationDecision" | "holdAuthority"
   >;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
   readonly now: () => Date;
 }
 
@@ -53,7 +46,7 @@ export function createAgentTermination(dependencies: TerminationDependencies) {
         await dependencies.authority.holdAuthority(state);
       }
       await dependencies.authority.authorize(principalId, "operate", target);
-      await dependencies.lockNamespace(state, namespaceId);
+      await lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       if (expectedActiveRevisionId !== undefined) {
         await dependencies.authority.authorize(principalId, "operate", target);
@@ -194,7 +187,7 @@ export function createAgentTermination(dependencies: TerminationDependencies) {
     }
     await state.audit.append({
       id: `aud_${crypto.randomUUID()}`,
-      installationId: dependencies.installationId(),
+      installationId: dependencies.installationId,
       namespaceId: agent.namespaceId,
       occurredAt: dependencies.timestamp(),
       kind: "mutation",
@@ -254,7 +247,7 @@ export function createAgentTermination(dependencies: TerminationDependencies) {
     const requestId = dependencies.requestAuditId();
     await state.audit.append({
       id: `aud_${crypto.randomUUID()}`,
-      installationId: dependencies.installationId(),
+      installationId: dependencies.installationId,
       namespaceId,
       occurredAt: dependencies.timestamp(),
       kind: "mutation",

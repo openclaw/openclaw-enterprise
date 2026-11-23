@@ -83,13 +83,16 @@ export const SIGN_IN_UNAVAILABLE =
 export const signInRateLimited = (seconds) =>
   `Too many attempts. Wait ${seconds === 1 ? "1 second" : `${seconds} seconds`}, then try again.`;
 export const SIGN_IN_RATE_LIMITED_MINUTE = "Too many attempts. Wait a minute, then try again.";
-// The same places for an Installation administrator whom a deny Restriction keeps from creating
-// Agents in this Namespace (finding D759): administration cannot lift it.
-export const AGENT_CREATE_RESTRICTED =
-  "A Restriction in this Namespace denies Agent create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the Agent in another Namespace.";
-// Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
+export const AGENT_CREATE_ACCESS_CHECK =
+  "Creating an Agent requires Agent create in this Namespace. Check your access and whether an IAM Restriction applies.";
+// Other browser coverage uses this expectation after setting a Restriction in its fixture.
+export const AGENT_CREATE_RESTRICTED = AGENT_CREATE_ACCESS_CHECK;
+
+// Secret pickers can explain the required access without an Installation permission answer.
 export const SECRET_CREATE_DENIED =
-  "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
+  "Creating a Secret requires Secret create in this Namespace. Check your access and whether an IAM Restriction applies.";
+export const SECRET_CREATE_MEMBER_DENIED =
+  "Creating a Secret requires Secret create in this Namespace. Ask an Installation administrator to check your access.";
 
 // The console's reasons for a control disabled, or a request refused, for lack of a grant
 // (findings 2539, 2578): what the reader's access does not include, then the grant to ask an

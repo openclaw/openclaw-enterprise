@@ -454,13 +454,37 @@ type GitAclObservation =
   | { kind: "rest"; method: "GET" | "POST"; path: string; host: string };
 type GitAclCredentialFingerprint = readonly [length: number, sha256: string];
 
-export function createGitAclDenialCommand(fingerprints: readonly GitAclCredentialFingerprint[]) {
+function gitAclCredentialFingerprints(token: string): readonly GitAclCredentialFingerprint[] {
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  return [token, basic].map((value) => [
+    Buffer.byteLength(value),
+    createHash("sha256").update(value).digest("hex"),
+  ]);
+}
+
+function gitAclCheckCommand(fingerprints: readonly GitAclCredentialFingerprint[]): string[] {
   // Node's TypeScript loader erases types. The guest needs only Node builtins.
   const script = `(${checkGitAclDenial.toString()})().catch(() => {
     process.stderr.write("ACL_DENIAL_CAPTURE\\n");
     process.exitCode = 1;
   });`;
-  const prefix = ["node", "--eval", script, "--", JSON.stringify(fingerprints)];
+  return ["node", "--eval", script, "--", JSON.stringify(fingerprints)];
+}
+
+/** Check the alias and require the broad credential to be absent from every guest value. */
+export function createGitAclEnvironmentGuard(token: string): string {
+  return [...gitAclCheckCommand(gitAclCredentialFingerprints(token)), "environment"]
+    .map((argument) => "'" + argument.replaceAll("'", "'\\''") + "'")
+    .join(" ");
+}
+
+/** Carry fingerprints of the static control credential or the issuer's token history. */
+export function createGitAclDenialCommand(
+  credential: string | readonly GitAclCredentialFingerprint[],
+) {
+  const fingerprints =
+    typeof credential === "string" ? gitAclCredentialFingerprints(credential) : credential;
+  const prefix = gitAclCheckCommand(fingerprints);
   return (observation: GitAclObservation, [executable, ...args]: [string, ...string[]]) => [
     ...prefix,
     observation.kind,
@@ -482,9 +506,10 @@ async function checkGitAclDenial() {
     process.exitCode = 1;
   };
   const fingerprints: GitAclCredentialFingerprint[] = JSON.parse(encoded ?? "null");
+  const environmentOnly = kind === "environment" && method === undefined;
   const rest = kind === "rest" || kind === "variant";
   if (
-    (!rest && kind !== "git" && kind !== "success") ||
+    (!rest && kind !== "git" && kind !== "success" && !environmentOnly) ||
     !Array.isArray(fingerprints) ||
     fingerprints.length < 2 ||
     fingerprints.some(
@@ -509,17 +534,16 @@ async function checkGitAclDenial() {
     return false;
   };
 
-  {
-    if (
-      !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(process.env.GITHUB_TOKEN ?? "")
-    ) {
-      return fail("ACL_PLACEHOLDER_ENVIRONMENT");
+  if (!/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(process.env.GITHUB_TOKEN ?? "")) {
+    return fail(environmentOnly ? "ACL_GITHUB_PLACEHOLDER" : "ACL_PLACEHOLDER_ENVIRONMENT");
+  }
+  for (const value of Object.values(process.env)) {
+    if (value !== undefined && containsCredential(Buffer.from(value))) {
+      return fail("ACL_CREDENTIAL_IN_ENVIRONMENT");
     }
-    for (const value of Object.values(process.env)) {
-      if (value !== undefined && containsCredential(Buffer.from(value))) {
-        return fail("ACL_CREDENTIAL_IN_ENVIRONMENT");
-      }
-    }
+  }
+  if (environmentOnly) {
+    return;
   }
   if (!executable) {
     return fail("ACL_DENIAL_CAPTURE");

@@ -183,37 +183,9 @@ function commandStderr(error: unknown): string {
   return typeof stderr === "string" ? stderr : "";
 }
 
-function nodeCompileState(output: string) {
-  const instruction =
-    /^#([1-9]\d*) \[node-compiled [1-9]\d*\/[1-9]\d*\] RUN --network=none sh \/node-repair\/build\.sh$/;
-  let vertex: string | undefined;
-  let state = "completion unobserved";
-  for (const line of output.split(/\r?\n/)) {
-    const header = instruction.exec(line)?.[1];
-    if (header !== undefined && vertex !== undefined && header !== vertex) {
-      return "ambiguous";
-    }
-    vertex ??= header;
-    if (vertex === undefined || !line.startsWith(`#${vertex} `)) {
-      continue;
-    }
-    const event = line.slice(vertex.length + 2);
-    const done = /^DONE(?: (\d{1,9}(?:\.\d{1,3})?)s)?$/.exec(event);
-    if (done) {
-      state = done[1] === undefined ? "completed (duration unknown)" : `completed in ${done[1]}s`;
-    } else if (event === "CACHED") {
-      state = "cached";
-    } else if (event === "CANCELED" || event.startsWith("ERROR:")) {
-      return event === "CANCELED" ? "canceled" : "failed";
-    }
-  }
-  return vertex === undefined ? "unobserved" : state;
-}
-
-export function formatBaselineRuntimeBuildNotice(elapsedMs: number, output: string) {
+export function formatBaselineRuntimeBuildNotice(elapsedMs: number) {
   const seconds = (elapsedMs / 1000).toFixed(1);
-  const title = `Baseline runtime image build ${seconds}s (node-compiled ${nodeCompileState(output)})`;
-  return `::notice title=${title}::BuildKit progress for the pinned upgrade image.\n`;
+  return `::notice title=Baseline runtime image build ${seconds}s::Elapsed time for the pinned upgrade image.\n`;
 }
 
 // Runs a lane image build command within the lane's budget (unbounded without one).
@@ -230,16 +202,13 @@ export async function laneImageCommand(
     operation === "baseline-build" && role === "runtime" && process.env.GITHUB_ACTIONS === "true"
       ? performance.now()
       : undefined;
-  let stderr = "";
   try {
-    const result = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
       timeoutMs: budgetMs,
     });
-    stderr = result.stderr;
-    return result;
   } catch (error) {
-    stderr = commandStderr(error);
     if (budgetMs !== undefined && asRecord(error)?.timedOut === true) {
+      const stderr = commandStderr(error);
       // The build's progress names the step that was running (finding 2710: a cold
       // build stopped after 1305 s with no clue which step stalled).
       const tail = stderr.trimEnd().split("\n").slice(-imageBuildTailLines);
@@ -253,7 +222,7 @@ export async function laneImageCommand(
     throw error;
   } finally {
     if (started !== undefined) {
-      process.stdout.write(formatBaselineRuntimeBuildNotice(performance.now() - started, stderr));
+      process.stdout.write(formatBaselineRuntimeBuildNotice(performance.now() - started));
     }
   }
 }

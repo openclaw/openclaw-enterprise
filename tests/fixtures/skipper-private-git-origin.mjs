@@ -1239,43 +1239,131 @@ export function assertOnlyTokenRetirement(before, after) {
   );
 }
 
-export function withdrawDuringFetchCommand(dir, expectedStatus = 503) {
+// Keep each final response paired with its own request and Authorization header.
+// Git may retry a failed Basic request. An anonymous 401 challenge never counts.
+const withdrawalRequestTrace = [
+  "/=> Send header: (GET|POST|CONNECT) / {",
+  "  request=0; basic=0",
+  "  if ($0 ~ /=> Send header: GET .*\\/info\\/refs\\?service=git-upload-pack /) request=1",
+  "  if ($0 ~ /=> Send header: POST .*\\/git-upload-pack /) request=2",
+  "  if (request == target) attempts++",
+  "  next",
+  "}",
+  "tolower($0) ~ /=> send header: authorization: basic / {",
+  "  if (!basic && request == target) authenticated++",
+  "  basic=1",
+  "}",
+];
+
+export function withdrawDuringFetchCommand(dir, expectedStatus = 503, barrier) {
   if (![401, 503].includes(expectedStatus)) {
     throw new Error("expected an explicit refusal status");
   }
+  if (barrier !== undefined && !/^\.oce-git-withdrawal-[a-f0-9]{16}$/.test(barrier)) {
+    throw new Error("invalid Git withdrawal barrier name");
+  }
+  // Git stores the credential after authenticated discovery succeeds. This extra helper
+  // ignores get/erase and never reads or prints credentials.
+  const setup =
+    barrier === undefined
+      ? []
+      : [
+          "umask 077",
+          "OCE_FIXTURE_WORKTREE=$(pwd -P) || exit 52",
+          "export OCE_FIXTURE_WORKTREE",
+          "mkdir -- " + barrier + " || exit 53",
+          "owned_barrier=" + barrier,
+          "git_origin=$(git remote get-url origin) || exit 54",
+          "git_authority=${git_origin#https://}; git_authority=${git_authority%%/*}",
+          "cat > \"$owned_barrier/helper\" <<'OCE_GIT_BARRIER' || exit 55",
+          "#!/bin/sh",
+          "barrier=${0%/*}",
+          'if [ "$1" != store ]; then exit 0; fi',
+          'if ! mkdir "$barrier/ready" 2>/dev/null; then',
+          // Repeated stores can share our own directory. Every store waits for release.
+          '  if [ ! -d "$barrier/ready" ] || [ -L "$barrier/ready" ]; then',
+          "    printf '%s\\n' 'oce-fixture-git-ready-failed' >&2",
+          "    exit 57",
+          "  fi",
+          "fi",
+          "remaining=900",
+          'until [ -f "$barrier/release" ]; do',
+          '  if [ $remaining -eq 0 ]; then : > "$barrier/expired"; exit 1; fi',
+          "  remaining=$((remaining-1)); sleep 0.1",
+          "done",
+          "OCE_GIT_BARRIER",
+          'set -- -c "credential.https://$git_authority.helper=!sh \\"\\$OCE_FIXTURE_WORKTREE/' +
+            barrier +
+            '/helper\\""',
+        ];
   return [
-    "set -eu; cd " + dir,
-    // Curl trace is filtered inside the Agent; only the boolean outcome reaches the model.
-    "set +e; LC_ALL=C GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git -c protocol.version=2 ls-remote origin 2>&1 >withdraw.out | awk '",
-    "/=> Send header: GET .*info.refs/ {advert=1}",
-    "/<= Recv header: HTTP.* 200/ {if(advert) served=1}",
-    "/=> Send header: POST .*git-upload-pack/ {sent=served}",
-    "/=> Send header: Authorization: Basic/ {if(sent) authenticated=1}",
-    "/<= Recv header: HTTP.* " + expectedStatus + "/ {if(authenticated) denied=1}",
-    'END {exit !(sent && denied)}\'; result=$?; set -e; test "$result" = 0; test ! -s withdraw.out',
+    "set -eu; set +x",
+    "cd " + dir + " || exit 50",
+    "set --; output=$(mktemp -- ./.oce-git-withdrawal-output.XXXXXX) || exit 51; owned_barrier=",
+    "cleanup() {",
+    "  result=$1",
+    "  cleanup_failed=0",
+    '  if [ -f "$output" ]; then rm -- "$output" || cleanup_failed=1; fi',
+    '  if [ -n "$owned_barrier" ]; then',
+    "    for entry in helper release expired; do",
+    '      if [ -f "$owned_barrier/$entry" ]; then rm -- "$owned_barrier/$entry" || cleanup_failed=1; fi',
+    "    done",
+    '    if [ -d "$owned_barrier/ready" ]; then rmdir -- "$owned_barrier/ready" || cleanup_failed=1; fi',
+    '    rmdir -- "$owned_barrier" || cleanup_failed=1',
+    "  fi",
+    '  if [ "$result" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then exit 56; fi',
+    '  exit "$result"',
+    "}",
+    "trap 'cleanup \"$?\"' EXIT",
+    ...setup,
+    '(set +e; LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_TRACE_REDACT=1 GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git "$@" -c protocol.version=2 ls-remote origin 2>&1 >"$output";',
+    "printf '\\nheld-fetch-exit=%d\\n' \"$?\") | awk '",
+    "BEGIN { target=2 }",
+    "/^oce-fixture-git-ready-failed$/ { readyFailed=1 }",
+    ...withdrawalRequestTrace,
+    "/<= Recv header: HTTP\\/[0-9.]+ [2-5][0-9][0-9]/ {",
+    "  match($0, /HTTP\\/[0-9.]+ [2-5][0-9][0-9]/); status=substr($0, RSTART+RLENGTH-3, 3)+0",
+    "  if (request == 1 && basic && status == 200) advertised=1",
+    "  if (request == 2 && basic) {",
+    "    if (status == " + expectedStatus + ") denied++",
+    "    else if (status == 503) unavailable++",
+    "  }",
+    "  request=basic=0",
+    "}",
+    "/^held-fetch-exit=128$/ { failed++ }",
+    // These codes reach the failure receipt without forwarding the Git trace.
+    "END {",
+    "  if (readyFailed) exit 57",
+    "  if (!advertised) exit 41", // No completed authenticated discovery.
+    "  if (!attempts) exit 42", // No upload POST after discovery.
+    "  if (!authenticated) exit 47", // An upload POST was attempted without Basic.
+    "  if (unavailable && denied + unavailable == authenticated) exit 48", // At least one authenticated 503.
+    "  if (denied != authenticated) exit 43", // Other status, or no final response.
+    "  if (failed != 1) exit 44",
+    "}'",
+    'test ! -s "$output" || exit 45',
+    ...(barrier === undefined ? [] : ['test ! -e "$owned_barrier/expired" || exit 46']),
   ].join("\n");
 }
 
-// A new Git process, after the first operation has already observed withdrawal. Consume the
-// trace inside the Agent: return only success/failure, never a header or credential. A 401
-// challenge followed by an authenticated refusal is expected; anonymous refusal cannot pass.
+// A new Git process after disposal. Every authenticated discovery attempt
+// must see the expected final refusal, and Git must exit unsuccessfully.
 export function fetchAfterWithdrawalCommand(dir, expectedStatus = 503) {
   if (![401, 503].includes(expectedStatus)) {
     throw new Error("expected an explicit refusal status");
   }
   return [
-    "set -eu; cd " + dir,
+    "set -eu; set +x; cd " + dir,
     "(set +e; LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_TRACE_REDACT=1 GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git -c protocol.version=2 fetch --no-tags origin HEAD;",
     "printf '\\nfresh-fetch-exit=%d\\n' \"$?\") 2>&1 | awk '",
-    "/=> Send header: GET .*\\/info\\/refs\\?service=git-upload-pack / { discovery=1; basic=0 }",
-    "/=> Send header: Authorization: Basic / { basic=discovery }",
-    "/<= Recv header: HTTP\\/[0-9.]+ [1-5][0-9][0-9]/ {",
-    "  if (discovery && basic) { authenticated++; if ($0 ~ / " +
-      expectedStatus +
-      "( |$)/) denied++ }",
-    "  discovery=basic=0",
+    "BEGIN { target=1 }",
+    ...withdrawalRequestTrace,
+    "/<= Recv header: HTTP\\/[0-9.]+ [2-5][0-9][0-9]/ {",
+    "  match($0, /HTTP\\/[0-9.]+ [2-5][0-9][0-9]/); status=substr($0, RSTART+RLENGTH-3, 3)+0",
+    "  if (request == 1 && basic && status == " + expectedStatus + ") denied++",
+    "  request=basic=0",
     "}",
     "/^fresh-fetch-exit=128$/ { failed++ }",
-    "END { exit !(authenticated == 1 && denied == 1 && failed == 1) }'",
+    "END { if (!authenticated) exit 42; if (denied != authenticated) exit 43; if (failed != 1) exit 44 }'",
   ].join("\n");
 }

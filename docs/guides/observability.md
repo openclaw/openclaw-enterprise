@@ -30,10 +30,13 @@ ingress grant. Connect your collectors using this guide and the metrics guide.
 For disposable visualization, use the [demonstration stack](observability/demo.md),
 which is not recommended for production.
 
-The Collector exports predefined operational events and approved fields. It
-excludes arbitrary messages, prompts, responses, and Codex protocol output, even
-at `debug`. See the
-[security boundary](../reference/security.md#operational-log-collection-boundary).
+The Collector exports predefined operational events and approved fields.
+It drops prompt and response fields and Codex stdout protocol records even at
+`debug`. Some Codex operational messages and Gateway startup failures can reach
+the log backend with their original text. That text can still contain sensitive
+information. See the
+[operational log collection boundary](../reference/security.md#operational-log-collection-boundary)
+for the message filters.
 
 If your Compute Driver declares
 [deployment-managed runtime logging](../reference/drivers/compute.md#runtime-logging-ownership),
@@ -229,11 +232,14 @@ only to keep a reviewed custom configuration.
    app-server. Check the corresponding `openclaw-gateway` or `codex-app-server`
    records and `openclaw.agent.id` / `openclaw.revision.id` resource attributes.
 
-Retained record bodies hold the event name; `codex.turn` and `codex.tool_call`
-bodies are fixed text, and `codex.operational` keeps Codex's message when it is
-short plain text. Search for a request, Agent,
-or version by its attribute, not by body text; in Loki these are structured
-metadata, for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
+The Collector uses the event name as the record body by default. `codex.turn`
+and `codex.tool_call` use fixed text. For `codex.operational`, only messages from
+Codex app-server targets and two predefined retry messages can keep their
+original text. The Collector keeps the original text for these messages and
+`gateway.startup_failed` only if it passes the message filters. It drops
+`codex.operational` warnings whose body is the event name. Search by request,
+Agent, or Agent revision ID. In Loki, these attributes are structured metadata,
+for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
 
 A healthy Collector and local container output do not prove that the backend
 received the records. Only approved runtime events appear. Receiving API logs

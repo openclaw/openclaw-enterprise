@@ -22,6 +22,18 @@ function nativeResult(text) {
   };
 }
 
+// The pinned native tool reports this policy rejection before spawning a process.
+// Its message can echo the whole command. Match its boundaries and emit only a fixed status.
+function isForcedRemovalDenial(output) {
+  return (
+    typeof output === "string" &&
+    output.startsWith('exec_command failed: CreateProcess { message: "Rejected(') &&
+    output.endsWith(
+      ' rejected: rm -f style commands are not permitted. Use a safer approach\\")" }',
+    )
+  );
+}
+
 export function createSkipperPreparedComputeEvents(commandPath) {
   let active;
   return ({ model, request, answerEvents, emit }) => {
@@ -115,6 +127,8 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           status = "deadline";
         } else if (!active.invalid && completed) {
           status = "completed";
+        } else if (!active.invalid && isForcedRemovalDenial(results.at(-1)?.output)) {
+          status = "tool-denied";
         }
         emit({
           event: "skipper-native-result",

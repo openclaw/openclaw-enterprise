@@ -1,5 +1,6 @@
 import {
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
@@ -15,6 +16,9 @@ export async function driverOperation<T>(
   } catch (error) {
     if (capability === "TokenService") {
       // Driver errors can contain the material supplied to it. Retain only the error category.
+      if (error instanceof CredentialDeliveryFailedError) {
+        throw new CredentialDeliveryFailedError();
+      }
       if (error instanceof TokenServiceSourceInputError) {
         throw new TokenServiceSourceInputError("The TokenService rejected the source input.");
       }
