@@ -92,9 +92,11 @@ tenant-local RoleBindings must already be in place; see
 Docker and external Compute Drivers reject this option with
 `409`; ordinary creation without the option remains supported. Creating a
 Configuration in an explicitly selected external Namespace returns
-`409 NAMESPACE_NOT_READY` until worker provisioning completes. Deleting the
-OCC Namespace leaves its tenant markers on the Kubernetes namespace, so
-selecting that namespace again ends `failed` until an operator clears them; see
+`409 NAMESPACE_NOT_READY` until worker provisioning completes. After OCC deletes
+the Namespace, its tenant markers remain on the operator-owned Kubernetes
+namespace. Selecting it again ends in status `failed` while those markers remain. Before
+clearing them for reuse, verify that OCC finished deleting the Namespace
+they identify. If ownership is uncertain, leave the markers in place. See
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
 
 The API reports `failed` without a cause. Check the worker's `worker.completed`
@@ -221,13 +223,18 @@ workload is ready.
   `provisioning` or `deleting`. Infrastructure readiness is asynchronous.
 - Teardown that fails permanently, exhausts its retries, or misses the worker's
   convergence deadline leaves the Namespace `deleting`. Correct the cause, for
-  example a stuck Kubernetes finalizer, then have the caller who started
-  deletion repeat `DELETE`. That requeues the teardown and adds an audit event.
-  Another caller receives `403` while the initiator still holds delete
-  permission; once it lost permission (for example, it was offboarded), another
-  permitted caller takes over as the work's actor, audited as `takeover`. The
-  original deadline still applies, so the retried pass succeeds only once the
-  Compute namespace is gone.
+  example a stuck Kubernetes finalizer, then have the deletion work's current
+  actor repeat `DELETE`. This requeues permanently failed work and adds an
+  audit event. Another caller receives `403` while the current actor still
+  has delete permission. If that actor loses permission, another permitted
+  caller can take over by repeating `DELETE`. The audit records the
+  `takeover`.
+
+  Retrying does not reset the deadline. At or after the deadline, the worker
+  can still confirm completion. If it reports teardown pending, the work
+  fails permanently again. Successful teardown preserves an operator-owned
+  Kubernetes namespace. Do not delete it or clear tenant markers to force
+  teardown.
 
 ## Related
 
