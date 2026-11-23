@@ -144,7 +144,7 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-With **Set GitHub access per repository**, the form takes the draft path even
+With **GitHub network policy**, the form takes the draft path even
 on a provisionable runtime. It sends explicit finite bindings and the reviewed
 `repositoryNetworkPolicy` to `POST /agents`. The handler creates the Agent, enables
 policy editing, reads and saves the policy, restores editing to off, and audits in

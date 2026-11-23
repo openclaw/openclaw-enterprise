@@ -271,8 +271,8 @@ export function createRepositoryFields(
   const mode = element(
     "select",
     { id: "repository-mode" },
-    element("option", { value: "profiles" }, "Use access profiles"),
-    element("option", { value: "scoped" }, "Set GitHub access per repository"),
+    element("option", { value: "profiles" }, "Access profiles"),
+    element("option", { value: "scoped" }, "GitHub network policy"),
   );
   const scoped = () => mode.value !== "profiles";
   const grants = new Map(initial.scopedGrants);
@@ -280,7 +280,7 @@ export function createRepositoryFields(
   const scopeHint = element(
     "p",
     { className: "hint", id: "repository-mode-help" },
-    "Select at least one repository. Read allows fetching. Write also allows pushing. GitHub API actions depend on Namespace permissions. Save a draft, then review and deploy it.",
+    "Read allows clone and fetch. Write adds push. API access depends on Namespace permissions. Save the draft to review your choices before deployment.",
   );
   const modeField = element(
     "div",
@@ -863,32 +863,6 @@ export function createRepositoryFields(
       const grant = grants.get(ref);
       const label = (scoped() ? grant?.repository : undefined) ?? entry?.displayName ?? ref;
       const card = element("div", { className: "repository-card" });
-      const settings = element("div", {
-        role: "group",
-        "aria-label": `Access for ${label}`,
-        id: `repository-access-${ref}`,
-        className: "repository-card-settings",
-        hidden: !state.expanded.has(ref),
-      });
-      const expand = button(
-        "",
-        () => {
-          settings.hidden = !settings.hidden;
-          expand.setAttribute("aria-expanded", String(!settings.hidden));
-          if (settings.hidden) {
-            state.expanded.delete(ref);
-          } else {
-            state.expanded.add(ref);
-          }
-        },
-        {
-          className: "repository-card-toggle",
-          "aria-expanded": String(!settings.hidden),
-          "aria-describedby": `repository-summary-${ref}`,
-          "aria-controls": settings.id,
-          "aria-label": `Access for ${label}`,
-        },
-      );
       const remove = button(
         "Remove",
         () => {
@@ -922,13 +896,8 @@ export function createRepositoryFields(
         card.append(
           element(
             "div",
-            { className: "repository-card-settings" },
-            element(
-              "div",
-              { className: "repository-card-heading" },
-              element("strong", { className: "repository-identity" }, label),
-              remove,
-            ),
+            { className: "repository-grant" },
+            element("strong", { className: "repository-identity" }, label),
             invalid(ref)
               ? element(
                   "p",
@@ -937,12 +906,39 @@ export function createRepositoryFields(
                     ? "GitHub policy is unavailable or the repository changed. Remove this selection and choose a current GitHub repository."
                     : unlistedSelectionText(),
                 )
-              : level,
+              : element("div", { className: "field" }, level),
+            remove,
           ),
         );
         cards.append(card);
         return;
       }
+      const settings = element("div", {
+        role: "group",
+        "aria-label": `Access for ${label}`,
+        id: `repository-access-${ref}`,
+        className: "repository-card-settings",
+        hidden: !state.expanded.has(ref),
+      });
+      const expand = button(
+        "",
+        () => {
+          settings.hidden = !settings.hidden;
+          expand.setAttribute("aria-expanded", String(!settings.hidden));
+          if (settings.hidden) {
+            state.expanded.delete(ref);
+          } else {
+            state.expanded.add(ref);
+          }
+        },
+        {
+          className: "repository-card-toggle",
+          "aria-expanded": String(!settings.hidden),
+          "aria-describedby": `repository-summary-${ref}`,
+          "aria-controls": settings.id,
+          "aria-label": `Access for ${label}`,
+        },
+      );
       expand.append(
         element("span", { className: "repository-chevron", "aria-hidden": "true" }),
         element(

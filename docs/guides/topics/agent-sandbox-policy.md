@@ -147,7 +147,7 @@ for defaults and operator ceiling inputs.
 
 ## Set GitHub access before the first deployment
 
-In **Create Agent → Repository access**, choose **Set GitHub access per repository**.
+In **Create Agent → Repository access**, choose **GitHub network policy**.
 This option appears for administrators when the Namespace offers finite native GitHub
 repositories. Select the repositories, check each owner/name and keep **Read** for
 fetching or choose **Write** to allow pushes. GitHub API access also depends on
