@@ -409,14 +409,22 @@ type ApiActions = Readonly<{ allow: readonly ApiAction[] } | { deny: readonly Ap
 
 function parseApiActions(input: unknown): ApiActions | undefined {
   const filter = object(input, ["allow", "deny"]);
-  if (Object.keys(filter).length !== 1) return invalid();
+  if (Object.keys(filter).length !== 1) {
+    return invalid();
+  }
   const allow = Object.hasOwn(filter, "allow");
   const raw = allow ? filter.allow : filter.deny;
-  if (!Array.isArray(raw) || raw.length > apiActions.length) return invalid();
+  if (!Array.isArray(raw) || raw.length > apiActions.length) {
+    return invalid();
+  }
   // Filtering the literal list gives a stable order. Unknowns and duplicates shorten it.
   const actions = Object.freeze(apiActions.filter((action) => raw.includes(action)));
-  if (actions.length !== raw.length) return invalid();
-  if (allow) return Object.freeze({ allow: actions });
+  if (actions.length !== raw.length) {
+    return invalid();
+  }
+  if (allow) {
+    return Object.freeze({ allow: actions });
+  }
   return actions.length ? Object.freeze({ deny: actions }) : undefined;
 }
 
