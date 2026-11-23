@@ -103,7 +103,34 @@ test("OpenShell durable proof requires two ordered successful commands in one co
   );
 });
 
-test("OpenShell durable proof ignores corrupt siblings and rejects corrupt candidate files", () => {
+test("OpenShell durable proof requires exactly two distinct nonblank nonces", () => {
+  const [first, second] = gatewayCommandNonces;
+  const firstRecord = completedRolloutCommand(first);
+  const secondRecord = completedRolloutCommand(second);
+  assert.equal(hasOrderedDurableCommands("", []), false, "no nonces");
+  assert.equal(hasOrderedDurableCommands(firstRecord, [first]), false, "one nonce");
+  assert.equal(
+    hasOrderedDurableCommands(firstRecord + firstRecord, [first, first]),
+    false,
+    "duplicate nonces",
+  );
+  assert.equal(
+    hasOrderedDurableCommands(completedRolloutCommand("") + secondRecord, ["", second]),
+    false,
+    "empty nonce",
+  );
+  assert.equal(
+    hasOrderedDurableCommands(firstRecord + secondRecord + completedRolloutCommand("third"), [
+      first,
+      second,
+      "third",
+    ]),
+    false,
+    "three nonces",
+  );
+});
+
+test("OpenShell durable proof rejects corruption before proof and ignores later records", () => {
   const pair = gatewayCommandNonces.map((nonce) => completedRolloutCommand(nonce));
   const good = pair.join("");
   const provesCommands = (content: string) =>
@@ -115,8 +142,9 @@ test("OpenShell durable proof ignores corrupt siblings and rejects corrupt candi
   ]) {
     assert.equal([bad, good].some(provesCommands), true, "corrupt sibling first");
     assert.equal([good, bad].some(provesCommands), true, "corrupt sibling last");
+    assert.equal(provesCommands(bad + good), false, "corruption before commands");
     assert.equal(provesCommands(pair.join(bad)), false, "corruption between commands");
-    assert.equal(provesCommands(good + bad), false, "corruption after commands");
+    assert.equal(provesCommands(good + bad), true, "corruption after commands");
   }
 });
 

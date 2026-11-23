@@ -1,7 +1,19 @@
 import { isArray, isRecord, parseJson } from "./egress-observation-values.ts";
 
 export function hasOrderedDurableCommands(content: string, nonces: readonly string[]): boolean {
-  let next = 0;
+  const [first, second] = nonces;
+  if (
+    nonces.length !== 2 ||
+    typeof first !== "string" ||
+    first.trim() === "" ||
+    typeof second !== "string" ||
+    second.trim() === "" ||
+    first === second
+  ) {
+    return false;
+  }
+
+  let nonce = first;
   // The rollout writer may still be flushing its final record.
   for (const line of content.split("\n").slice(0, -1).filter(Boolean)) {
     let record: unknown;
@@ -42,15 +54,12 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     ) {
       return false;
     }
-    const nonce = nonces[next];
-    if (
-      nonce !== undefined &&
-      exitCode === 0 &&
-      output?.trim() === nonce &&
-      command.join(" ").includes(nonce)
-    ) {
-      next += 1;
+    if (exitCode === 0 && output?.trim() === nonce && command.join(" ").includes(nonce)) {
+      if (nonce === second) {
+        return true;
+      }
+      nonce = second;
     }
   }
-  return next === nonces.length;
+  return false;
 }
