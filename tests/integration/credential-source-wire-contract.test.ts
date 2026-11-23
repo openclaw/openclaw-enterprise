@@ -3,6 +3,7 @@ import test, { type TestContext } from "node:test";
 
 import {
   occApiRoutes,
+  PushAgentCredentialsResponse,
   type UpdateTokenServiceSourceBody,
 } from "../../packages/contracts/src/index.ts";
 
@@ -35,7 +36,7 @@ async function publishedCredentialComponents(t: TestContext) {
     assert.ok(schema, `Missing OpenAPI component ${name}`);
     return schema;
   }
-  return { route, validatorCompiler, serializerCompiler, published };
+  return { route, validatorCompiler, serializerCompiler, published, document };
 }
 
 test("published TokenService source request schemas validate managed static material and config", async (t) => {
@@ -227,8 +228,65 @@ test("existing Source responses serialize sanitized managed metadata for detail 
 });
 
 test("published manual delivery retry schemas require an explicit selection and return per-source outcomes", async (t) => {
-  const { route, validatorCompiler, serializerCompiler, published } =
+  const { route, validatorCompiler, serializerCompiler, published, document } =
     await publishedCredentialComponents(t);
+  const declared = occApiRoutes.find(
+    (candidate) => candidate.operationId === "pushAgentCredentials",
+  );
+  assert.ok(declared && "body" in declared.schema);
+  assert.deepEqual(
+    {
+      method: declared.method,
+      path: declared.path,
+      action: declared.action,
+      iamAction: declared.iamAction,
+      resourceKind: declared.resourceKind,
+      authorizationTarget: declared.authorizationTarget,
+    },
+    {
+      method: "POST",
+      path: "/namespaces/:namespaceId/agents/:agentId/credentials/push",
+      action: "openclaw.agents.credentials.push",
+      iamAction: "operate",
+      resourceKind: "agent",
+      authorizationTarget: "agent",
+    },
+  );
+  assert.equal(declared.schema.body.$ref, "PushAgentCredentialsBody");
+  assert.equal(declared.schema.response[200], PushAgentCredentialsResponse);
+
+  // The public operation must publish the same selection limits and outcomes as the
+  // independently validated D1 components, together with the exact caller permissions.
+  const operation =
+    document.paths?.["/namespaces/{namespaceId}/agents/{agentId}/credentials/push"]?.post;
+  assert.ok(operation);
+  const operationSchema = (name: string) =>
+    Object.fromEntries(Object.entries(published(name)).filter(([key]) => key !== "title"));
+  assert.partialDeepStrictEqual(operation, {
+    operationId: "pushAgentCredentials",
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": { schema: { $ref: "#/components/schemas/PushAgentCredentialsBody" } },
+      },
+    },
+    responses: {
+      200: {
+        content: {
+          "application/json": { schema: operationSchema("PushAgentCredentialsResponse") },
+        },
+      },
+    },
+  });
+  assert.deepEqual(Reflect.get(operation, "x-openclaw-permissions"), [
+    { action: "operate", resourceKind: "agent", scope: "requested" },
+    {
+      action: "update",
+      resourceKind: "credential_source",
+      scope: "requested",
+      condition: "bound_credential_source",
+    },
+  ]);
   const select = validatorCompiler({ ...route, schema: published("PushAgentCredentialsBody") });
   const secondId = "cs_0000000a-0000-4000-8000-00000000000c";
   assert.equal(select({ sources: "all" }), true);

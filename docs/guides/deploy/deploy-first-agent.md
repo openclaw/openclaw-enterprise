@@ -210,7 +210,7 @@ wait_deployment "$revision"
 </Accordion>
 <Accordion title="CLI">
 
-Use the API helper defined above:
+Run the [deployment helper](quickstart-session.md#files-and-helpers) loaded during installation setup.
 
 ```bash
 deploy_and_wait

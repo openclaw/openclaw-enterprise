@@ -43,67 +43,7 @@ async function readMeasurementResult(resultsPath: string) {
   return { artifact, summary, file, measurements, receipts };
 }
 
-export async function checkAllowlistedMeasurements(t: TestContext) {
-  const root = await createRunnerFixture(t);
-  const resultsPath = join(root, "results/measurements.json");
-  const measurement = (value: unknown) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
-  const measurements = (kind: string, samples: readonly Record<string, unknown>[]) =>
-    samples.map((sample) => measurement({ kind, ...sample }));
-  const gateway = {
-    kind: "openshell-gateway-turn-failure",
-    checkpoint: "http-status",
-    turn: 1,
-    status: 500,
-  };
-  const plain = { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" };
-  const json = { "content-type": "application/json; charset=utf-8" };
-  const internal = '{"error":{"message":"internal error","type":"api_error"}}';
-  const incomplete =
-    '{"error":{"message":"secretauthvalue-reply","type":"api_error","code":"incomplete_turn"}}';
-  function gatewayReply(headers: Record<string, string>, body: string) {
-    const response = new Response(body, { status: 500, headers });
-    return measurement({ ...gateway, replyForm: openShellGatewayErrorForm(response, body) });
-  }
-  const openshellPhase = {
-    kind: "openshell-sandbox-phase",
-    stage: "exposure-auth",
-    outcome: "passed",
-    elapsedMs: 39_000,
-  };
-  // These receipts travel through the real reporter and runner into the uploaded
-  // result, including after a later failure. Unknown text must never reach a tail.
-  const uuid = "12345678-1234-1234-1234-123456789abc";
-  const sha256 = "a".repeat(64);
-  const opaque = "supplier-instance-123";
-  const opaqueHash = createHash("sha256").update(opaque).digest("hex");
-  const time = "2026-11-05T12:00:00.123456789Z";
-  const forbidden = "unregistered-retention-private-text";
-  const runtimeReceipt = {
-    revisionId: opaque,
-    sandboxId: opaque,
-    sandboxUid: uuid,
-    podUid: uuid,
-    mainProcessInstanceId: opaque,
-    mainProcessStartedAt: time,
-    containers: [
-      {
-        name: opaque,
-        id: opaque,
-        imageId: `containerd://sha256:${sha256}`,
-        startedAt: time,
-        restartCount: 0,
-        output: forbidden,
-      },
-    ],
-    credential: forbidden,
-  };
-  const launchReceipt = {
-    workspace: opaque,
-    sandboxId: opaque,
-    requestId: uuid,
-    executionSeconds: 120,
-    observerMs: 180_000,
-  };
+async function checkGitExpiryObservations(uuid: string, opaque: string, forbidden: string) {
   const expiryObservation = {
     event: "worker.openshell-git-expiry",
     workerUid: uuid,
@@ -113,7 +53,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     check: "retained-provider-profiles",
     failure: "gateway_unavailable",
     rawLog: forbidden,
-  };
+  } as const;
   const expiryDiagnostic = {
     event: "git-expiry-unconfirmed",
     namespaceId: opaque,
@@ -178,9 +118,66 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
         cause: forbidden,
       },
     ],
-  };
-  // The live observer uses this same projection before retaining or emitting a
-  // record. Malicious fields must disappear there, not just in the reporter.
+  } as const;
+
+  const workerWithMatchingRepository = {
+    workerUid: uuid,
+    namespaceMatches: true,
+    repository: "match",
+  } as const;
+  const workerWithAbsentRepository = {
+    workerUid: uuid,
+    namespaceMatches: true,
+    repository: "absent",
+  } as const;
+
+  // Both the direct observer and the reporter must match these six records.
+  const expectedExpiryObservations = [
+    {
+      ...workerWithMatchingRepository,
+      event: "worker.openshell-git-expiry",
+      outcome: "pending",
+      check: "retained-provider-profiles",
+      failure: "gateway_unavailable",
+    },
+    {
+      event: "worker.openshell-git-expiry",
+      workerUid: uuid,
+      namespaceMatches: false,
+      repository: "mismatch",
+      outcome: "retire-runtime",
+      check: "retained-provider-profiles",
+      failure: "failed",
+      grpcStatus: 10,
+    },
+    {
+      ...workerWithMatchingRepository,
+      event: "worker.openshell-git-expiry",
+      outcome: "withdrawn",
+      check: "record-reduced-generation",
+      failure: "gateway_unavailable",
+    },
+    {
+      ...workerWithAbsentRepository,
+      event: "worker.completed",
+      outcome: "success",
+      code: "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+    },
+    {
+      ...workerWithAbsentRepository,
+      event: "worker.completed",
+      outcome: "pending",
+      code: "unrecognized",
+    },
+    {
+      ...workerWithAbsentRepository,
+      event: "worker.repository-cleanup-warning",
+      code: "REPOSITORY_CLEANUP_STALLED",
+      cause: "unrecognized",
+    },
+  ] as const;
+
+  // The live observer must strip private fields before retaining records.
   const { projectOpenShellGitExpiryObservation, projectOpenShellGitMaintenanceCompletion } =
     await import("../../scripts/ci/openshell-git-retention.mjs");
   assert.deepEqual(
@@ -194,12 +191,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   );
   const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
   assert.ok(!JSON.stringify(captured).includes(forbidden));
-  assert.ok(
-    captured[1] && "failure" in captured[1] && "grpcStatus" in captured[1],
-    "Expected a projected expiry failure",
-  );
-  assert.equal(captured[1].failure, "failed");
-  assert.equal(captured[1].grpcStatus, 10);
+  assert.deepEqual(captured, expectedExpiryObservations);
   for (const failure of [
     "launch_sandbox_missing",
     "launch_workload_unconfirmed",
@@ -221,10 +213,6 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       undefined,
     );
   }
-  assert.ok(captured[4] && "code" in captured[4], "Expected a projected expiry code");
-  assert.equal(captured[4].code, "unrecognized");
-  assert.ok(captured[5] && "cause" in captured[5], "Expected a projected expiry cause");
-  assert.equal(captured[5].cause, "unrecognized");
   for (const field of [
     "outcome",
     "check",
@@ -238,6 +226,72 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       undefined,
     );
   }
+  return { expiryObservation, expiryDiagnostic, expectedExpiryObservations };
+}
+
+export async function checkAllowlistedMeasurements(t: TestContext) {
+  const root = await createRunnerFixture(t);
+  const resultsPath = join(root, "results/measurements.json");
+  const measurement = (value: unknown) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
+  const measurements = (kind: string, samples: readonly Record<string, unknown>[]) =>
+    samples.map((sample) => measurement({ kind, ...sample }));
+  const gateway = {
+    kind: "openshell-gateway-turn-failure",
+    checkpoint: "http-status",
+    turn: 1,
+    status: 500,
+  };
+  const plain = { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" };
+  const json = { "content-type": "application/json; charset=utf-8" };
+  const internal = '{"error":{"message":"internal error","type":"api_error"}}';
+  const incomplete =
+    '{"error":{"message":"secretauthvalue-reply","type":"api_error","code":"incomplete_turn"}}';
+  function gatewayReply(headers: Record<string, string>, body: string) {
+    const response = new Response(body, { status: 500, headers });
+    return measurement({ ...gateway, replyForm: openShellGatewayErrorForm(response, body) });
+  }
+  const openshellPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "exposure-auth",
+    outcome: "passed",
+    elapsedMs: 39_000,
+  };
+  // These receipts travel through the real reporter and runner into the uploaded
+  // result, including after a later failure. Unknown text must never reach a tail.
+  const uuid = "12345678-1234-1234-1234-123456789abc";
+  const sha256 = "a".repeat(64);
+  const opaque = "supplier-instance-123";
+  const opaqueHash = createHash("sha256").update(opaque).digest("hex");
+  const time = "2026-11-05T12:00:00.123456789Z";
+  const forbidden = "unregistered-retention-private-text";
+  const runtimeReceipt = {
+    revisionId: opaque,
+    sandboxId: opaque,
+    sandboxUid: uuid,
+    podUid: uuid,
+    mainProcessInstanceId: opaque,
+    mainProcessStartedAt: time,
+    containers: [
+      {
+        name: opaque,
+        id: opaque,
+        imageId: `containerd://sha256:${sha256}`,
+        startedAt: time,
+        restartCount: 0,
+        output: forbidden,
+      },
+    ],
+    credential: forbidden,
+  };
+  const launchReceipt = {
+    workspace: opaque,
+    sandboxId: opaque,
+    requestId: uuid,
+    executionSeconds: 120,
+    observerMs: 180_000,
+  };
+  const { expiryObservation, expiryDiagnostic, expectedExpiryObservations } =
+    await checkGitExpiryObservations(uuid, opaque, forbidden);
   const retainedFailures = ["after-expiry", "after-worker-restart"].map((stage, index) => ({
     event: "retained-execution-failed",
     stage,
@@ -1257,7 +1311,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   );
   const unconfirmed = receipts.find(({ event }) => event === "git-expiry-unconfirmed");
   assert.ok(unconfirmed, "Expected an unconfirmed expiry receipt");
-  assert.deepEqual(unconfirmed.observations, captured);
+  assert.deepEqual(unconfirmed.observations, expectedExpiryObservations);
   assert.equal(unconfirmed.namespaceIdHash, opaqueHash);
   assert.equal(unconfirmed.agentIdHash, opaqueHash);
   assert.equal(unconfirmed.revisionIdHash, opaqueHash);

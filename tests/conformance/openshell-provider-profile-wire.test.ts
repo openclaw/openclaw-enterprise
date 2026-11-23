@@ -47,6 +47,17 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
     | "foreign-owner"
     | "different-command"
     | "ready" = "pending";
+  // One change to what the Gateway reports in the ready state. The supervisor's own
+  // Provider report stays READY, so only the policy readback can refuse it.
+  let departure: {
+    readonly authored?: Record<string, unknown>;
+    readonly effective?: Record<string, unknown>;
+    readonly config?: Record<string, unknown>;
+    readonly activeVersion?: number;
+    readonly sandboxId?: string;
+    readonly networkProcess?: string;
+    readonly admission?: Record<string, unknown>;
+  } = {};
   const generation = {
     attachment_epoch: "installed-attachment",
     provider_env_revision: "3",
@@ -72,7 +83,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
         version: 1,
         filesystem,
         process: { run_as_user: "1000", run_as_group: "1000" },
-        network_policies: { [rule.name]: rule },
+        network_policies: { [rule.name]: rule, ...departure.authored },
       },
     },
   });
@@ -136,7 +147,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
         };
       };
       methods.GetSandboxPolicyStatus = () => ({
-        active_version: 2,
+        active_version: departure.activeVersion ?? 2,
         revision: { version: 2, status: 2, policy: policy() },
       });
       methods.GetSandboxConfig = () => {
@@ -154,8 +165,10 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
           policy_hash: generation.policy_hash,
           policy: {
             ...policy(),
+            ...departure.effective,
             network_policies: {
               [layer]: { name: layer },
+              ...departure.authored,
               [rule.name]: {
                 ...rule,
                 endpoints: rule.endpoints.map((endpoint) => ({
@@ -166,12 +179,13 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
               },
             },
           },
+          ...departure.config,
         };
       };
       methods.GetSandbox = () => ({
         sandbox: {
           metadata: {
-            id: sandboxId,
+            id: departure.sandboxId ?? sandboxId,
             name: sandbox,
             workspace,
             labels:
@@ -187,7 +201,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
             ...(mode === "different-command" && { command: ["/bin/false"] }),
           },
           status: {
-            main_process_instance_id: "installed-network",
+            main_process_instance_id: departure.networkProcess ?? "installed-network",
             configuration_activated: mode !== "unactivated",
             configuration_admission: {
               state: 2,
@@ -196,6 +210,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
               policy_hash: generation.policy_hash,
               provider_env_revision: generation.provider_env_revision,
               config_revision: generation.config_revision,
+              ...departure.admission,
             },
           },
         },
@@ -269,6 +284,75 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
   const ready = trace.summary(binding, sandboxId, rule);
   assert.equal(ready.sandbox?.configurationMatches, true);
   assert.equal(ready.sandbox?.launchPolicyMatches, false);
+
+  const observeWith = (next: typeof departure) => {
+    departure = next;
+    // The launch verifier is bound to the launch that carries the authored rules.
+    return provider.observe(
+      binding,
+      sandboxId,
+      t.signal,
+      undefined,
+      directGitLaunchVerifier(launch()),
+    );
+  };
+  const inspected = {
+    host: "sibling.example.test",
+    port: 443,
+    protocol: "rest",
+    rules: [{ allow: { method: "GET", path: "/status" } }],
+  };
+  const { protocol: _protocol, ...uninspected } = inspected;
+  const sibling = { name: "sibling", binaries: [{ path: "/usr/bin/curl" }] };
+  const beside = (endpoint: Record<string, unknown>) => ({
+    authored: { sibling: { ...sibling, endpoints: [endpoint] } },
+  });
+  // An inspected literal destination beside the Git rule passes the readback. Each refusal
+  // below therefore follows from its one change, not from the presence of a sibling.
+  assert.equal((await observeWith(beside(inspected)))?.credentialState, "bootstrap");
+  for (const [label, next] of Object.entries({
+    // Stock can relay SQL without inspecting the stream, so the route could carry Git.
+    "an SQL relay beside the Git rule": beside({ ...inspected, protocol: "sql" }),
+    "a sibling without an inspected protocol": beside(uninspected),
+    "a sibling that skips TLS termination": beside({
+      ...inspected,
+      tls: "NETWORK_TLS_MODE_SKIP",
+    }),
+    "a wildcard sibling host": beside({ ...inspected, host: "*.example.test" }),
+    "a second GitHub host": beside({ ...inspected, host: "uploads.github.com" }),
+    "a sibling pinned to an address": beside({ ...inspected, allowed_ips: ["192.0.2.1"] }),
+    "a sibling that admits uninspected credentials": beside({
+      ...inspected,
+      allow_uninspected_credentials: true,
+    }),
+    "an authored rule under a Provider layer name": {
+      authored: {
+        _provider_authored: { ...sibling, name: "_provider_authored", endpoints: [inspected] },
+      },
+    },
+    "an effective process identity that differs from the source": {
+      effective: { process: { run_as_user: "0", run_as_group: "0" } },
+    },
+    "a Gateway-global policy source": { config: { policy_source: 2 } },
+    "a Gateway-global policy version": { config: { global_policy_version: 1 } },
+    "an effective config of another policy version": { config: { version: 3 } },
+    "a source revision that is not the active one": { activeVersion: 3 },
+    "another effective policy hash": { config: { policy_hash: "other-policy-hash" } },
+    "another Provider environment revision": { config: { provider_env_revision: "119" } },
+    "another Provider attachment": { config: { provider_attachment_epoch: "other" } },
+    "a validation mode that does not fail closed": {
+      config: { policy_validation_failure_mode: "fail_open" },
+    },
+    "a replacement Sandbox under the same name": { sandboxId: "replacement-sandbox-id" },
+    "another network supervisor process": { networkProcess: "other-network" },
+    "an admission of another policy hash": { admission: { policy_hash: "other-policy-hash" } },
+  } satisfies Record<string, typeof departure>)) {
+    await t.test(`policy readback refuses ${label}`, async () => {
+      assert.equal(await observeWith(next), undefined);
+    });
+  }
+  // No refusal is retained: the unchanged ready state passes again.
+  assert.equal((await observeWith({}))?.credentialState, "bootstrap");
 });
 
 test("the Sandbox wire policy binds exact Git routes to an endpointless Provider", async (t) => {
