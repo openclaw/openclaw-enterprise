@@ -595,8 +595,11 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (explicitList) {
         await authorizeEdit();
       }
+      const lockedAgent = await state.agents.lockAgent(namespaceId, agentId);
+      // A grant may have been withdrawn while either owner lock was pending.
+      await authorizeEdit();
       const { agent, previous } = editableSandboxPolicy(
-        await state.agents.lockAgent(namespaceId, agentId),
+        lockedAgent,
         await state.sandboxPolicies.find(namespaceId, agentId),
         expectedVersion,
       );

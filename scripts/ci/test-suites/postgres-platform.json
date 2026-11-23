@@ -46,6 +46,7 @@
     "tests/integration/postgres-repository-transactions.test.ts",
     "tests/integration/postgres-controller-work-targets.test.ts",
     "tests/integration/postgres-transaction-commit.test.ts",
+    "tests/integration/postgres-agent-sandbox-policy-authority.test.ts",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.ts",
     "tests/integration/postgres-static-retired-admission.test.ts",
@@ -638,6 +639,12 @@
       "path": "tests/integration/postgres-protected-credential-free.test.ts",
       "expectedTests": [
         "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-sandbox-policy-authority.test.ts",
+      "expectedTests": [
+        "Agent policy saves order exact grant withdrawal with the owning Namespace lock"
       ]
     },
     {

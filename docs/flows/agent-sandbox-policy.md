@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-22"
-last_updated_session: "authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa"
+updated: "2026-11-23"
+last_updated_session: "authoring-run/8d0e3f59-ed23-4137-bcfd-672049c297b5"
 ---
 
 # Agent sandbox policy flow
@@ -69,8 +69,10 @@ Validation names failed fields and checks. Stale or denied requests retain resou
 one grant against the approved inference host/port, checks the ceiling, and
 records separate network and method/path injection policies in the revision ([status](../reference/credential-sources.md#implementation-status)).
 
-`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
-`manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` first authorizes
+Agent `manage_policy` and SandboxPolicy `update`. After locking the Namespace and
+Agent, it repeats both decisions for the same actor and exact resources before
+admitting the save.
 Legacy protected execution rejects nonempty additions at save, deploy, and
 live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
 A repository-only Proxy permits a model exception with no repositories and one ready
@@ -257,6 +259,10 @@ counters, controls and empty rows.
   exercises HTTP/IAM/storage, application-role refusal of pending application
   removal, and worker settlement; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
+- [PostgreSQL policy authority integration](../../tests/integration/postgres-agent-sandbox-policy-authority.test.ts)
+  orders exact IAM grant withdrawal and policy save through their shared Namespace
+  lock. It checks both grants, persisted policy, success audits, and another editor’s
+  independent access.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
   rules, and ceiling rejection through real controller routes. They use in-memory
@@ -274,6 +280,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 07:14: Preserve current policy flow and repeat exact save authority after the owner locks. (authoring-run/8d0e3f59-ed23-4137-bcfd-672049c297b5 - 5a07cba75a417e8667985a58182fc254acf3aa6e)
 
 - 2026-11-22 13:25: Explain draft retention and recovery after a concurrent repository grant change. (authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa - 19ce90f1761a9da44d9a972c42d49686732a604a)
 
