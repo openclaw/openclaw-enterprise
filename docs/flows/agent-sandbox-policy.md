@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69"
+last_updated_session: "authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9"
 ---
 
 # Agent sandbox policy flow
@@ -84,15 +84,15 @@ Both protected Codex compilers validate the revision artifact map. `openshell-co
 excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
 immutable `SandboxResourceRef.proxyWiring`. The proxy checks the map, auxiliary rule and loaded
 policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
-requires Namespace opt-in and permissions. Admission passes saved or deployed
+uses selected Namespace permissions and saved grants. Admission passes saved or deployed
 `repositoryCredentials`. Binding, deploy and provisioning refuse additions or defaults targeting
 `github.com`, subdomains or IPs. Deploy and binding-preserving updates require SandboxPolicy
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
 binds rules to the credential-only Provider. OpenShell enforces Git and REST routes locally.
-Selected App `scopedRest: "v2"`, saved Agent Write and `issues: write` enable issue creation
-unless `createIssues: false`. PR grants remain independent. OCE skips body validation
+Namespace `issues: write` and Agent Write permit issue creation unless
+`deny: ["issues:create"]`. PR grants remain independent. OCE skips body validation
 ([limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
@@ -271,6 +271,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 18:58: Explain native REST grants. (authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9 - fc2ffba308)
 
 - 2026-11-23 17:24: Document scoped issue creation. (authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69 - c97a1ab0938f8aac3880ad68bc5feaccd118820a)
 

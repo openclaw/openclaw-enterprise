@@ -60,7 +60,8 @@ export async function startSkipperPrivateGitOrigin({
   seedRefs = 0,
   witnessIssuedGit = false,
   networkAcl = /** @type {boolean | "issued"} */ (false),
-  scopedRest = /** @type {boolean | "v1" | "v2"} */ (false),
+  scopedRest = false,
+  writeIssues = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -92,6 +93,7 @@ export async function startSkipperPrivateGitOrigin({
   await run("git", ["check-ref-format", approvalRef]);
   const issuedNetwork = networkAcl === "issued";
   assert.ok(!scopedRest || issuedNetwork, "Scoped REST requires the controlled App issuer");
+  assert.ok(!writeIssues || scopedRest, "Issue Write requires the REST fixture");
   const repositoryScopes = [{ repository, repositoryRef, repositoryId }];
   if (networkAcl) {
     repositoryScopes.push(
@@ -269,11 +271,7 @@ export async function startSkipperPrivateGitOrigin({
       additionalPermissions: [
         ...(teamReview ? [{ metadata: "read", contents: "write", pull_requests: "write" }] : []),
         ...(scopedRest
-          ? [
-              scopedRest === "v2"
-                ? scopedRestIssueWriteFixturePermissions
-                : scopedRestFixturePermissions,
-            ]
+          ? [writeIssues ? scopedRestIssueWriteFixturePermissions : scopedRestFixturePermissions]
           : []),
       ],
     });

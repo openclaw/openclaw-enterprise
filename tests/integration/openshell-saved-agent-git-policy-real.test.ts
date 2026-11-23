@@ -34,11 +34,16 @@ const emptyDeployRefusal = {
 };
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
-// The manual lane selects v2. The existing "reads" selector exercises v1.
+// The manual lane exercises issue creation. Other selectors use a different
+// Namespace permission or a repository-local deny on the same REST policy.
 const restSelection = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST;
-const issueWrites = restSelection === "issues";
-const issueReads = issueWrites || restSelection === "reads";
-const restVersion = issueWrites ? "v2" : "v1";
+const rest =
+  restSelection === "issues" || restSelection === "reads" || restSelection === "issue-controls"
+    ? restSelection
+    : undefined;
+const issueWrites = rest === "issues";
+const issueControls = rest === "issue-controls";
+const issueReads = rest !== undefined;
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
 
@@ -241,6 +246,26 @@ async function expectGhRefusal(
   );
 }
 
+function assertScopedRestCredential(origin: GitOrigin, deployed: IssuedDeployment) {
+  const { network } = origin;
+  assert.ok(network && network.token === undefined);
+  const token = origin
+    .snapshot()
+    .tokens.find(({ index }: { index: number }) => index === deployed.credentialIndex);
+  assert.ok(token && !token.revoked);
+  assert.deepEqual(
+    token.permissions,
+    issueWrites || issueControls
+      ? scopedRestIssueWriteFixturePermissions
+      : scopedRestFixturePermissions,
+  );
+  assert.ok(Array.isArray(token.repositoryIds));
+  assert.deepEqual(
+    [...token.repositoryIds].sort(),
+    network.scopes.map(({ repositoryId }: { repositoryId: string }) => repositoryId).sort(),
+  );
+}
+
 async function exerciseSavedIssueReads(
   fixture: GitInstallation,
   execute: GitExec,
@@ -249,20 +274,8 @@ async function exerciseSavedIssueReads(
 ) {
   const { origin, callbacks } = fixture;
   const { network } = origin;
-  assert.ok(network && network.token === undefined && callbacks);
-  const token = origin
-    .snapshot()
-    .tokens.find(({ index }: { index: number }) => index === deployed.credentialIndex);
-  assert.ok(token && !token.revoked);
-  assert.deepEqual(
-    token.permissions,
-    issueWrites ? scopedRestIssueWriteFixturePermissions : scopedRestFixturePermissions,
-  );
-  assert.ok(Array.isArray(token.repositoryIds));
-  assert.deepEqual(
-    [...token.repositoryIds].sort(),
-    network.scopes.map(({ repositoryId }: { repositoryId: string }) => repositoryId).sort(),
-  );
+  assert.ok(network && callbacks);
+  assertScopedRestCredential(origin, deployed);
   assert.deepEqual((await deployed.readExecution()).identity, deployed.original.identity);
   assert.equal(await callbacks.read(), callbackBaseline);
 
@@ -326,6 +339,63 @@ const issue = {
 const bPulls = "repos/fixture/b/pulls";
 const bIssues = "repos/fixture/b/issues";
 
+async function createSavedIssue(
+  fixture: GitInstallation,
+  execute: GitExec,
+  deployed: IssuedDeployment,
+  {
+    repository,
+    body,
+    number,
+  }: { repository: string; body: typeof issue & { parent_issue_id?: number }; number: number },
+) {
+  const { origin } = fixture;
+  const network = origin.network;
+  assert.ok(network);
+  const { guest } = savedGitProbeTools(fixture, execute);
+  const route = `repos/${repository}/issues`;
+  const previous = network.issues(repository);
+  const before = origin.snapshot();
+  const offset = network.requests().length;
+  const response = await guest(deployed.target, { kind: "success" }, ghApi(route, body));
+  const after = origin.snapshot();
+  assert.equal(after.requests, before.requests + 1);
+  assert.equal(after.endpoints["scoped-rest:201"], (before.endpoints["scoped-rest:201"] ?? 0) + 1);
+  const expected = {
+    number,
+    title: body.title,
+    body: body.body,
+    state: "open",
+    labels: [{ name: body.labels[0] }],
+  };
+  assert.deepEqual(JSON.parse(response.stdout.toString("utf8")), expected);
+  assert.deepEqual(network.issues(repository), [...previous, expected]);
+  assert.ok(
+    isDeepStrictEqual(network.issuePosts(repository).at(-1), body),
+    "The origin must receive the exact issue payload",
+  );
+
+  const detail = await guest(deployed.target, { kind: "success" }, ghApi(`${route}/${number}`));
+  assert.deepEqual(JSON.parse(detail.stdout.toString("utf8")), expected);
+  assert.equal(origin.snapshot().requests, after.requests + 1);
+  assert.deepEqual(network.requests().slice(offset), [
+    {
+      repository,
+      operation: "rest-issue-create",
+      method: "POST",
+      authenticated: true,
+      credentialIndex: deployed.credentialIndex,
+    },
+    {
+      repository,
+      operation: "rest-issue-read",
+      method: "GET",
+      authenticated: true,
+      credentialIndex: deployed.credentialIndex,
+    },
+  ]);
+}
+
 async function exerciseSavedIssueCreation(
   fixture: GitInstallation,
   execute: GitExec,
@@ -336,7 +406,6 @@ async function exerciseSavedIssueCreation(
   const network = origin.network;
   assert.ok(network && callbacks);
   assert.equal(await callbacks.read(), callbackBaseline);
-  const { guest } = savedGitProbeTools(fixture, execute);
   const targetIssues = network.issues("fixture/b");
   assert.equal(targetIssues.length, 1, "The target starts with only its seeded issue");
   assert.deepEqual(network.issuePosts("fixture/b"), []);
@@ -357,51 +426,10 @@ async function exerciseSavedIssueCreation(
       title: `${issue.title} with parent ${name}`,
       parent_issue_id: parentId,
     };
-    const before = origin.snapshot();
-    const offset = network.requests().length;
-    const response = await guest(deployed.target, { kind: "success" }, ghApi(bIssues, body));
-    const after = origin.snapshot();
-    assert.equal(after.requests, before.requests + 1);
-    assert.equal(
-      after.endpoints["scoped-rest:201"],
-      (before.endpoints["scoped-rest:201"] ?? 0) + 1,
-    );
-    const expected = {
-      number,
-      title: body.title,
-      body: body.body,
-      state: "open",
-      labels: [{ name: body.labels[0] }],
-    };
-    targetIssues.push(expected);
-    assert.deepEqual(JSON.parse(response.stdout.toString("utf8")), expected);
-    assert.deepEqual(network.issues("fixture/b"), targetIssues);
-    assert.ok(
-      isDeepStrictEqual(network.issuePosts("fixture/b").at(-1), body),
-      "The origin must receive the exact labeled issue and parent ID",
-    );
+    await createSavedIssue(fixture, execute, deployed, { repository: "fixture/b", body, number });
     assert.deepEqual(network.issues(repository), parentIssues);
     assert.deepEqual(network.issueChildren(parentId), [{ repository: "fixture/b", number }]);
 
-    const detail = await guest(deployed.target, { kind: "success" }, ghApi(`${bIssues}/${number}`));
-    assert.deepEqual(JSON.parse(detail.stdout.toString("utf8")), expected);
-    assert.equal(origin.snapshot().requests, after.requests + 1);
-    assert.deepEqual(network.requests().slice(offset), [
-      {
-        repository: "fixture/b",
-        operation: "rest-issue-create",
-        method: "POST",
-        authenticated: true,
-        credentialIndex: deployed.credentialIndex,
-      },
-      {
-        repository: "fixture/b",
-        operation: "rest-issue-read",
-        method: "GET",
-        authenticated: true,
-        credentialIndex: deployed.credentialIndex,
-      },
-    ]);
     await refuseSavedIssueCreation(fixture, execute, deployed, repository);
     assert.deepEqual(network.issueChildren(parentId), [{ repository: "fixture/b", number }]);
   }
@@ -1050,7 +1078,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
       );
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
-        ...(issueReads && { scopedRest: restVersion }),
+        ...(rest !== undefined && { rest }),
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
@@ -1286,12 +1314,16 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
           ? grants.map(({ repository, access }) => {
               const root = `/repos/${repository}`;
               const createPulls = access === "write" && everyBindingGranted;
-              const createIssues = access === "write" && issueWrites;
+              const canCreateIssues =
+                access === "write" &&
+                (issueWrites || (issueControls && repository !== "fixture/b"));
               return {
                 path: `${root}/**`,
                 rules: [
                   ...(createPulls ? [{ allow: { method: "POST", path: `${root}/pulls` } }] : []),
-                  ...(createIssues ? [{ allow: { method: "POST", path: `${root}/issues` } }] : []),
+                  ...(canCreateIssues
+                    ? [{ allow: { method: "POST", path: `${root}/issues` } }]
+                    : []),
                   ...["issues", "pulls"].flatMap((resource) => [
                     { allow: { method: "GET", path: `${root}/${resource}` } },
                     ...Array.from({ length: 19 }, (_, width) => ({
@@ -1586,8 +1618,22 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
             await exerciseSavedPullCreation(fixture, exec, deployed, nativeCallbackBaseline);
           },
         );
-        if (!issueWrites) {
-          // v1 keeps issue POST unavailable even while pull creation here is allowed.
+        if (issueControls) {
+          await t.test(
+            "Repository-local denial blocks B issue POST while A still creates issues",
+            async () => {
+              assertScopedRestCredential(origin, deployed);
+              await createSavedIssue(fixture, exec, deployed, {
+                repository: "fixture/a",
+                body: issue,
+                number: 43,
+              });
+              await refuseSavedIssueCreation(fixture, exec, deployed);
+              assert.equal(await callbacks.read(), nativeCallbackBaseline);
+            },
+          );
+        } else if (!issueWrites) {
+          // Issues Read keeps issue POST unavailable while pull creation is allowed.
           await refuseSavedIssueCreation(fixture, exec, deployed);
         }
       }
@@ -1847,6 +1893,15 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
         await t.test("Saved Agent creates issues only in its Write repository", async () => {
           await exerciseSavedIssueCreation(fixture, exec, original, nativeCallbackBaseline);
         });
+      }
+      if (issueControls) {
+        await t.test(
+          "Renewed credential keeps issue POST disabled in the Write repository",
+          async () => {
+            await refuseSavedIssueCreation(fixture, exec, original);
+            assert.equal(await callbacks.read(), nativeCallbackBaseline);
+          },
+        );
       }
       const peer = await startPeer();
       const finishPeer = async (stage: "after-expiry" | "after-stop") => {

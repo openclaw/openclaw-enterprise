@@ -30,6 +30,20 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
     --file tests/integration/openshell-saved-agent-git-policy-real.test.ts
   ```
 
+  The suite selects `issues` for native Issues write. For the deny control, run
+  the file directly with `issue-controls` (B denies `issues:create`, with Issues
+  write permission fixed). Replace it with `reads` for Issues read only.
+
+  ```bash
+  env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE="${QUALIFIED_CONTROLLER_IMAGE:?}" \
+    OCC_KUBERNETES_RUNTIME_IMAGE="${QUALIFIED_RUNTIME_IMAGE:?}" \
+    OCC_TEST_OPENSHELL_K3D_REAL=1 OCC_TEST_LOCAL_FIRST_AGENT_REAL=1 \
+    OCC_TEST_OPENSHELL_SAVED_AGENT_ACL=1 OCC_TEST_OPENSHELL_SAVED_AGENT_REST=issue-controls \
+    OPENAI_API_KEY=fixture-only-no-model-call OCC_TEST_OPENAI_MODEL=fixture-only-no-model-call \
+    node --test tests/integration/openshell-saved-agent-git-policy-real.test.ts
+  ```
+
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
 - [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
 - [`openshell-oauth`](../../scripts/ci/test-suites/openshell-oauth.json): requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).

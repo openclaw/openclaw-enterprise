@@ -27,7 +27,7 @@ interface NamespaceInput {
   draftPullLimit?: string | number | boolean | null;
   permissions?: Record<string, string>;
   nativeGit?: "v1";
-  scopedRest?: "v1";
+  deny?: readonly string[];
   allowStandingApproval?: true;
   token?: string;
 }
@@ -116,49 +116,47 @@ test("Git network grants require the canonical repository and exact Namespace co
   assert.equal(permits("namespace-a", "read", "Example/Application"), false);
 });
 
-test("scoped REST requires native Git on the same Namespace registration", () => {
+test("native operation denials are an exact set and change only the effective grant", () => {
   const input = registryInput();
-  const policy: NamespaceInput = {
-    namespaceId: "namespace-a",
-    profiles: ["github-repository"],
-    permissions: { metadata: "read", contents: "read", issues: "read" },
-    scopedRest: "v1",
-  };
-  input.repositories[0].namespaces[0] = policy;
-  assert.throws(() => validateGitHubRepositoryRegistry(input), /invalid-repository-registry/);
-
-  policy.nativeGit = "v1";
-  const scopedRest = validateGitHubRepositoryRegistry(input);
-  assert.equal(namespacePolicy(scopedRest).scopedRest, "v1");
-
-  const writePolicy = { ...policy, permissions: { ...policy.permissions, issues: "write" } };
   const bind = (options: Record<string, unknown>) => {
-    const candidate = structuredClone(input);
-    Object.assign(candidate.repositories[0].namespaces[0], writePolicy, options);
-    return resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(candidate), {
-      namespaceId: policy.namespaceId,
+    input.repositories[0].namespaces[0] = {
+      namespaceId: "namespace-a",
+      profiles: ["github-repository"],
+      nativeGit: "v1",
+      permissions: { metadata: "read", contents: "write", issues: "write" },
+      ...options,
+    };
+    return resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(input), {
+      namespaceId: "namespace-a",
       repositoryRef: "application",
     }).grant.grantId;
   };
-  const enabled = bind({ scopedRest: "v2" });
-  assert.notEqual(enabled, bind({ scopedRest: "v1" }));
-  assert.notEqual(enabled, bind({ scopedRest: "v2", createIssues: false }));
+  const enabled = bind({});
+  assert.equal(enabled, bind({ deny: [] }));
+  assert.notEqual(enabled, bind({ deny: ["issues:create"] }));
+  for (const deny of [
+    null,
+    "issues:create",
+    {},
+    [null],
+    [true],
+    ["*"],
+    ["issues:*"],
+    ["issues:edit"],
+    ["POST /issues"],
+    ["issues:create", "issues:create"],
+  ]) {
+    assert.throws(() => bind({ deny }), /invalid-repository-registry/);
+  }
   for (const invalid of [
-    { scopedRest: "v3" },
-    { scopedRest: "v2", nativeGit: undefined },
-    { scopedRest: "v1", createIssues: false },
-    { scopedRest: "v2", createIssues: "false" },
+    { scopedRest: "v1" },
+    { scopedRest: "v2" },
+    { scopedRest: true },
+    { createIssues: false },
+    { nativeGit: undefined, deny: ["issues:create"] },
   ]) {
     assert.throws(() => bind(invalid), /invalid-repository-registry/);
   }
-
-  delete policy.scopedRest;
-  const gitOnly = validateGitHubRepositoryRegistry(input);
-  const request = { namespaceId: policy.namespaceId, repositoryRef: "application" };
-  assert.notEqual(
-    resolveGitHubRepositoryBinding(scopedRest, request).grant.grantId,
-    resolveGitHubRepositoryBinding(gitOnly, request).grant.grantId,
-  );
 });
 
 test("canonical registry fingerprints bind exact authority and the selected Namespace policy", async (t) => {
@@ -606,7 +604,6 @@ test("selected repository standing approval binds permissions and rechecks deliv
   const enabledPolicy = enabled.repositories[0].namespaces[0];
   delete enabledPolicy.allowStandingApproval;
   enabledPolicy.nativeGit = "v1";
-  enabledPolicy.scopedRest = "v1";
   const optedIn = validateGitHubRepositoryRegistry(enabled);
   assert.equal(resolveGitHubStandingApprovalScope(optedIn, scopeInput), undefined);
   assert.throws(

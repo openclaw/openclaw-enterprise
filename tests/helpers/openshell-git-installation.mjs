@@ -251,7 +251,7 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, scopedRest?: "v1" | "v2" }} [options]
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, rest?: "reads" | "issues" | "issue-controls" }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -261,7 +261,7 @@ export function createOpenShellGitInstallation(
     allowStandingApprovals = false,
     nativeGit = false,
     networkAcl = false,
-    scopedRest,
+    rest,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -271,24 +271,21 @@ export function createOpenShellGitInstallation(
       allowStandingApprovals,
       nativeGit,
       networkAcl,
-      scopedRest,
+      rest,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, networkAcl, scopedRest },
+  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, networkAcl, rest },
 ) {
   assert.ok(!(nativeGit && networkAcl), "Select one Git ACL credential fixture");
   assert.ok(
     !nativeGit || !allowStandingApprovals,
     "Native Git requires the finite selected-repository fixture",
   );
-  assert.ok(
-    !scopedRest || nativeGit,
-    "Scoped REST requires the native selected-repository fixture",
-  );
+  assert.ok(!rest || nativeGit, "Scoped REST requires the native selected-repository fixture");
   if (nativeGit) {
     assert.equal(process.env.OPENAI_API_KEY, "fixture-only-no-model-call");
     assert.ok(process.env.OCC_TEST_OPENAI_MODEL, "Select the model used by the startup probe");
@@ -543,6 +540,7 @@ async function installOpenShellGit(
           },
           { initial: `${syntheticCredential}-v1`, rotated: `${syntheticCredential}-v2` },
         );
+  const writeIssues = rest === "issues" || rest === "issue-controls";
   const origin = await startSkipperPrivateGitOrigin({
     host: bridge,
     advertisedHost: originHost,
@@ -551,7 +549,8 @@ async function installOpenShellGit(
       networkAcl: nativeGit ? "issued" : true,
       repository: "fixture/a",
     }),
-    scopedRest: scopedRest ?? false,
+    scopedRest: rest !== undefined,
+    writeIssues,
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -633,8 +632,9 @@ async function installOpenShellGit(
   };
   const repositoryScopes = nativeGit ? origin.network?.scopes : [originScope];
   assert.ok(repositoryScopes?.length);
-  const restPermissions =
-    scopedRest === "v2" ? scopedRestIssueWriteFixturePermissions : scopedRestFixturePermissions;
+  const restPermissions = writeIssues
+    ? scopedRestIssueWriteFixturePermissions
+    : scopedRestFixturePermissions;
   const sessionDurationSeconds = 600;
   const registry = {
     version: 1,
@@ -647,13 +647,17 @@ async function installOpenShellGit(
     repositories: repositoryScopes.map((scope) => ({
       ...scope,
       namespaces: fixtureNamespaces.map((space) => {
-        const optedIn = scopedRest !== undefined && space.id === namespace.id;
+        const optedIn = rest !== undefined && space.id === namespace.id;
         return {
           namespaceId: space.id,
           profiles: ["github-repository"],
           permissions: optedIn ? restPermissions : { metadata: "read", contents: "write" },
           ...(nativeGit && { nativeGit: "v1" }),
-          ...(optedIn && { scopedRest }),
+          ...(optedIn &&
+            rest === "issue-controls" &&
+            scope.repository === "fixture/b" && {
+              deny: ["issues:create"],
+            }),
           ...(allowStandingApprovals && { allowStandingApproval: true }),
         };
       }),
