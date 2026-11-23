@@ -25,7 +25,7 @@ import {
   loadRuntimeArtifact,
   runtimeArtifactSelection,
 } from "./runtime-artifact.ts";
-import { cleanupResourceIds } from "./cleanup.ts";
+import { cleanupResourceIds, type RequireJournal } from "./cleanup.ts";
 import { withStateLock } from "./state-lock.ts";
 import { createPostgresPreparation } from "./prepare-postgres.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
@@ -899,7 +899,7 @@ const { ensurePostgresServer, createAndMigrateDatabase } = createPostgresPrepara
   repositoryRoot,
   preparationJournal,
 );
-const { ensureK3dCluster, k3dStage } = createK3dPreparation({
+const { ensureK3dCluster, k3dStage, prepareSlackHelmPluginStatusProxy } = createK3dPreparation({
   ...preparationJournal,
   progress,
   fixtureLanes,
@@ -1020,10 +1020,17 @@ async function retainRuntimeProvenance(
             "containerd",
           )
         ).stdout;
-      const selection = parseJson(
-        await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
-      );
-      const selected: unknown = Array.isArray(selection) ? selection[0] : undefined;
+      // Classic stores return the config ID directly. Docker 28.0.4 rejects
+      // --platform on image inspect, even for an immutable local image ID.
+      let selected: unknown = inspected;
+      if (inspected.Descriptor !== undefined) {
+        const selection = parseJson(
+          await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
+        );
+        selected = Array.isArray(selection) ? selection[0] : undefined;
+      } else if (inspected.Id !== image.hostImageId) {
+        return;
+      }
       if (!configInspection(selected)) {
         return;
       }
@@ -2157,7 +2164,8 @@ async function prepareFile({
   statePath,
   template,
   modelSelectors,
-}: PrepareFileOptions): Promise<PreparedFile> {
+  requireJournal,
+}: PrepareFileOptions & { requireJournal?: RequireJournal | undefined }): Promise<PreparedFile> {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
@@ -2168,7 +2176,7 @@ async function prepareFile({
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
   return withStateLock(resolvedStatePath, () =>
-    prepareFileWithState({ name, relativeFile, resolvedStatePath, template }),
+    prepareFileWithState({ name, relativeFile, resolvedStatePath, template, requireJournal }),
   );
 }
 
@@ -2262,13 +2270,17 @@ async function prepareFileWithState({
   relativeFile,
   resolvedStatePath,
   template,
+  requireJournal,
 }: {
   name: string;
   relativeFile: string;
   resolvedStatePath: string;
   template: string | undefined;
+  requireJournal: RequireJournal | undefined;
 }): Promise<PreparedFile> {
+  requireJournal?.(true);
   const state = await readState(resolvedStatePath);
+  requireJournal?.(state !== undefined);
   const prepare = lanePrepare(name);
   if (suiteView === "full-integration" && isOpenShellLane(name)) {
     if (
@@ -2292,6 +2304,13 @@ async function prepareFileWithState({
   const effectiveState = state ?? baseState(name, resolvedStatePath);
   const env = baseEnv(resolvedStatePath, effectiveState);
   const resourceIds: string[] = [];
+
+  if (name === "slack" && relativeFile === "tests/integration/channel-egress-helm-real.test.ts") {
+    env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = await prepareSlackHelmPluginStatusProxy(
+      effectiveState,
+      env,
+    );
+  }
 
   if (name === "production-tui" && state) {
     const inputs = effectiveLaneEnv(name);
@@ -2458,11 +2477,10 @@ async function prepareFileWithState({
           }
         }
       } finally {
-        await cleanupResourceIds(
-          resolvedStatePath,
-          resourceIds,
-          lockTimeoutMs === undefined ? {} : { lockTimeoutMs },
-        );
+        await cleanupResourceIds(resolvedStatePath, resourceIds, {
+          ...(lockTimeoutMs === undefined ? {} : { lockTimeoutMs }),
+          requireJournal,
+        });
       }
     },
   };

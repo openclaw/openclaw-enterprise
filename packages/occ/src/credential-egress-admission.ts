@@ -59,7 +59,7 @@ export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 
 interface CredentialEgressAdmissionDependencies {
-  readonly installationId: () => string;
+  readonly installationId: string;
   readonly authorize: (
     principalId: string,
     action: AuthorizationRequest["action"],
@@ -117,7 +117,7 @@ export function createCredentialEgressAdmission(
     return {
       source: immutableCopy({
         key: {
-          installationId: dependencies.installationId(),
+          installationId: dependencies.installationId,
           namespaceId,
           source: { id: sourceId, generation: 1 },
           provider: lifecycle.provider,
@@ -177,7 +177,7 @@ export function createCredentialEgressAdmission(
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     return immutableCopy({
       key: {
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId,
         source: { id: sourceId, generation: 1 },
         provider: credentialFreeProviderRef,
@@ -311,7 +311,7 @@ export function createCredentialEgressAdmission(
     }
     return immutableCopy({
       key: {
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId,
         source: { id: sourceId, generation },
         backend: control.backend,
@@ -337,6 +337,7 @@ export function createCredentialEgressAdmission(
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
+    nativeGit?: "v1",
   ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
@@ -351,6 +352,7 @@ export function createCredentialEgressAdmission(
         repositoryGit &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
+        harnessAuth.credentialGatewayId !== undefined &&
         source.id === harnessAuth.sourceId &&
         credentialSourceMatchesSnapshot(source, harnessAuth)
       ) {
@@ -416,6 +418,7 @@ export function createCredentialEgressAdmission(
       driver.sourceControl,
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       gitProfile,
+      nativeGit,
     );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
@@ -452,7 +455,7 @@ export function createCredentialEgressAdmission(
     }
     const modelId = typeof model === "string" ? model.slice(model.indexOf("/") + 1) : "";
     const execution = {
-      installationId: dependencies.installationId(),
+      installationId: dependencies.installationId,
       namespaceId: agent.namespaceId,
       agentId: agent.id,
       servicePrincipalId: agent.servicePrincipalId,
@@ -515,7 +518,9 @@ export function createCredentialEgressAdmission(
       ...(policyReductionVersion !== undefined && { policyReductionVersion }),
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
-        (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
+        (gitAuthorization === "online-request" ||
+          gitAuthorization === "request-hook-observed" ||
+          gitAuthorization === "network-policy") && {
           repositoryGitAuthorization: gitAuthorization,
         }),
       ...(harnessCredentialSource && { harnessCredentialSource }),

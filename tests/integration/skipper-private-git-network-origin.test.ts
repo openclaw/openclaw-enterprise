@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { request } from "node:https";
 import { join } from "node:path";
@@ -10,9 +11,11 @@ import {
 } from "../fixtures/skipper-private-git-origin.mjs";
 import {
   cleanEnvironment,
+  type FixtureCommandResult,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
+import { createGitAclDenialCommand } from "../helpers/openshell-git-denial.ts";
 
 const alias = `openshell:resolve:env:s${"0".repeat(64)}_GITHUB_TOKEN`;
 const repos = ["fixture/a", "fixture/b", "fixture/c"];
@@ -86,6 +89,14 @@ function send(
       req.end(body);
     },
   );
+}
+
+function issueCredential(origin: Origin, repository_ids: number[], permissions: object) {
+  return send(origin, `/app/installations/${origin.installationId}/access_tokens`, {
+    method: "POST",
+    authorization: `Bearer ${origin.createAppJwt()}`,
+    body: JSON.stringify({ repository_ids, permissions }),
+  });
 }
 
 const nextCommit = (directory: string) => [
@@ -174,12 +185,7 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
   assert.ok(network);
   assert.equal(network.token, undefined, "issued mode must use the App issuance path");
 
-  const issue = (repository_ids: number[], permissions: object) =>
-    send(origin, `/app/installations/${origin.installationId}/access_tokens`, {
-      method: "POST",
-      authorization: `Bearer ${origin.createAppJwt()}`,
-      body: JSON.stringify({ repository_ids, permissions }),
-    });
+  const issue = (ids: number[], permissions: object) => issueCredential(origin, ids, permissions);
   assert.equal((await issue([73, 74], scopedRestFixturePermissions)).status, 403);
   const issued = await issue([73, 74, 75], scopedRestFixturePermissions);
   assert.equal(issued.status, 201);
@@ -351,4 +357,289 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
     403,
   );
   assert.equal(origin.snapshot().tokens[0]?.revoked, true);
+});
+
+type DenialCommand = ReturnType<typeof createGitAclDenialCommand>;
+type CheckDenial = (...input: Parameters<DenialCommand>) => ReturnType<typeof run>;
+
+// Compare inside the predicate so an assertion failure never prints captured credentials.
+function accepted(result: FixtureCommandResult, marker: string) {
+  return result.code === 0 && result.stdout === `${marker}\n` && result.stderr === "";
+}
+
+function refused(result: FixtureCommandResult, marker: string) {
+  return result.code === 1 && result.stderr === `${marker}\n` && result.stdout === "";
+}
+
+async function assertRestDenialLayers(checkDenial: CheckDenial, capture: string) {
+  const target = {
+    method: "GET",
+    path: "/repos/fixture/c/issues/42",
+    host: "api.github.com",
+  } as const;
+  const { method, path } = target;
+  const replay = async (layer: string, ruleLayer: string) => {
+    const body = {
+      layer,
+      ...target,
+      port: 443,
+      error: "policy_denied",
+      protocol: "rest",
+      rule_missing: { type: "rest_allow", layer: ruleLayer, method, path },
+    };
+    await writeFile(capture, `${JSON.stringify(body)}\n403 application/json\n`, { mode: 0o600 });
+    return checkDenial({ kind: "rest", ...target }, ["/bin/sh", "-c", 'cat < "$1"', "--", capture]);
+  };
+
+  assert.ok(
+    accepted(await replay("l7", "l7"), "403 native-rest-policy"),
+    "a complete native L7 REST denial must pass",
+  );
+  assert.ok(
+    refused(await replay("l4", "l7"), "ACL_NATIVE_REST_DENIAL"),
+    "a non-L7 layer must fail REST denial classification",
+  );
+  assert.ok(
+    refused(await replay("l7", "l4"), "ACL_NATIVE_REST_DENIAL"),
+    "a non-L7 rule_missing.layer must fail REST denial classification",
+  );
+}
+
+test("private Git network origin tracks the rotated credential and retains redaction fingerprints", async (t) => {
+  const origin = await startSkipperPrivateGitOrigin({
+    networkAcl: "issued",
+    witnessIssuedGit: true,
+    repository: "fixture/a",
+  });
+  t.after(() => origin.close());
+  const network = origin.network;
+  assert.ok(network);
+  const permissions = { metadata: "read", contents: "write" };
+  const issue = async (lifetime: number) => {
+    const before = Date.now();
+    const response = await issueCredential(origin, [73, 74, 75], permissions);
+    assert.equal(response.status, 201);
+    const grant = JSON.parse(response.body) as { token: string; expires_at: string };
+    const expiry = Date.parse(grant.expires_at);
+    assert.ok(expiry >= before + lifetime && expiry <= Date.now() + lifetime, "issued lifetime");
+    return grant.token;
+  };
+  const advertise = (repo: string, token: string) =>
+    send(origin, `/${repo}.git/info/refs?service=git-receive-pack`, {
+      authorization: basic(token),
+    });
+
+  network.shortenNextTokenForRenewal();
+  assert.equal((await issueCredential(origin, [73, 74], permissions)).status, 403);
+  const previous = await issue(750_000);
+  const renewed = await issue(3_600_000);
+  assert.ok(previous !== renewed, "the new credential must be distinct");
+
+  // Independently establish broad write authority while both credentials are live.
+  for (const [token, credentialIndex] of [
+    [previous, 1],
+    [renewed, 2],
+  ] as const) {
+    for (const repository of repos) {
+      const reply = await advertise(repository, token);
+      assert.equal(reply.status, 200);
+      assert.equal(reply.type, "application/x-git-receive-pack-advertisement");
+      assert.deepEqual(network.requests().at(-1), {
+        repository,
+        operation: "receive-advertise",
+        method: "GET",
+        authenticated: true,
+        credentialIndex,
+      });
+    }
+  }
+
+  assert.equal(
+    (
+      await send(origin, "/installation/token", {
+        method: "DELETE",
+        authorization: `Bearer ${previous}`,
+      })
+    ).status,
+    204,
+  );
+  const repo = "fixture/c";
+  for (const rejected of [previous, alias]) {
+    assert.equal((await advertise(repo, rejected)).status, 401);
+    assert.deepEqual(network.requests().at(-1), {
+      repository: repo,
+      operation: "receive-advertise",
+      method: "GET",
+      authenticated: false,
+    });
+  }
+
+  const git = await gitClient(t, origin, renewed);
+  await git(["clone", "-q", `${origin.origin}/${repo}.git`, "peer"]);
+  await git(nextCommit("peer"));
+  const sha = (await git(["-C", "peer", "rev-parse", "HEAD"])).stdout.trim();
+  const beforePush = network.requests().length;
+  assert.equal(await network.ref(repo, origin.approvalRef), undefined);
+  await git(["-C", "peer", "push", "-q", "origin", `HEAD:${origin.approvalRef}`]);
+  assert.equal(await network.ref(repo, origin.approvalRef), sha);
+  assert.ok(
+    network
+      .requests()
+      .slice(beforePush)
+      .some(
+        (entry) =>
+          entry.repository === repo &&
+          entry.operation === "receive-pack" &&
+          entry.authenticated &&
+          entry.credentialIndex === 2,
+      ),
+    "observe the replacement credential on the write RPC",
+  );
+  assert.deepEqual(
+    origin.snapshot().tokens.map(({ index, revoked }) => ({ index, revoked })),
+    [
+      { index: 1, revoked: true },
+      { index: 2, revoked: false },
+    ],
+  );
+
+  // Exercise the origin and denial oracle locally. Only the installed caller
+  // can establish what OpenShell does with these literal targets.
+  const outcomes = await network.checkGitVariants(2, async (probe) => {
+    if (probe.expected === "read") {
+      const replay = probe.target.includes("%61")
+        ? { method: probe.method, service: probe.service }
+        : probe;
+      assert.equal((await network.probeIssued(2, probe.repository, replay)).status, 200);
+      return "200 upload-advertisement\n";
+    }
+    return probe.method === "HEAD" ? "403 head-http\n" : "403 native-rest-policy\n";
+  });
+  assert.equal(new Set(outcomes.map(({ method, target }) => `${method} ${target}`)).size, 15);
+  assert.deepEqual(
+    outcomes.filter((row) => row.exactLiteral === false).map((row) => row.wire),
+    [{ method: "literal", path: "canonical", query: "canonical" }],
+  );
+  // A canonical GET can return the right Git media type on the right repository.
+  // It cannot witness a different request target.
+  const normalized = {
+    ...network,
+    probeIssued: () =>
+      network.probeIssued(2, "fixture/a", { method: "GET", service: "git-receive-pack" }),
+  };
+  await assert.rejects(
+    normalized.checkGitVariants(2, async () => assert.fail("normalized calibration")),
+    /Git calibration recipient or target mismatch/,
+  );
+  await assert.rejects(
+    network.checkGitVariants(1, async () => assert.fail("revoked token")),
+    /Git variant calibration failed/,
+  );
+  await assert.rejects(
+    network.checkGitVariants(2, async (probe) => {
+      await network.probeIssued(2, probe.repository, probe);
+      return "403 native-rest-policy\n";
+    }),
+    /Forbidden Git variant reached the origin/,
+  );
+  await assert.rejects(
+    network.checkGitVariants(2, async () => "transport\n"),
+    /Missing Git variant refusal/,
+  );
+
+  const representations = [previous, renewed].flatMap((token) => [token, basic(token).slice(6)]);
+  const fingerprints = network.issuedCredentialFingerprints();
+  assert.deepEqual(
+    fingerprints,
+    representations.map((value) => [
+      Buffer.byteLength(value),
+      createHash("sha256").update(value).digest("hex"),
+    ]),
+  );
+  // A convincing denial cannot compensate for a truncated capture. Both streams fit alone.
+  const denial = createGitAclDenialCommand(fingerprints);
+  const fatal = "fatal: The requested URL returned error: 403\n".padEnd(4096);
+  for (const bytes of [4096, 4097]) {
+    const [, ...args] = denial({ kind: "git" }, [
+      "/bin/sh",
+      "-c",
+      'printf %s "$1"; printf %s "$2" >&2; exit 128',
+      "--",
+      "x".repeat(bytes),
+      fatal,
+    ]);
+    const { code, stdout, stderr } = await run(process.execPath, args, {
+      env: { GITHUB_TOKEN: alias },
+      signal: t.signal,
+      allowFailure: true,
+    });
+    assert.ok(
+      bytes === 4096
+        ? code === 0 && stdout === "403 native-git\n" && stderr === ""
+        : code === 1 && stdout === "" && stderr === "ACL_DENIAL_CAPTURE\n",
+      "Git denial requires complete output",
+    );
+  }
+
+  const commandOptions = {
+    env: cleanEnvironment({ GITHUB_TOKEN: alias }),
+    signal: t.signal,
+    allowFailure: true,
+  };
+  const checkDenial: CheckDenial = (...input) => {
+    const [, ...args] = denial(...input);
+    return run(process.execPath, args, commandOptions);
+  };
+
+  // Keep the request identical and change only the CA curl trusts for this invocation.
+  const directory = await temporaryDirectory(t, "git-network-origin-curl-");
+  const ca = join(directory, "ca.pem");
+  const authHeader = join(directory, "authorization");
+  await writeFile(ca, origin.tls.ca, { mode: 0o600 });
+  await writeFile(authHeader, `Authorization: ${basic(renewed)}\n`, { mode: 0o600 });
+  const target = new URL("/fixture/c.git/info/refs?service=git-upload-pack", origin.origin);
+  const curlFlags = ["--disable", "--silent", "--show-error", "--max-time", "5", "--noproxy", "*"];
+  const curlArgs = [...curlFlags, "--header", `@${authHeader}`, target.href];
+  const variant = {
+    kind: "variant",
+    method: "GET",
+    path: target.pathname,
+    host: target.hostname,
+  } as const;
+  const beforeTls = origin.snapshot().requests;
+  const beforeTlsGit = network.requests().length;
+  const untrusted = await run("curl", curlArgs, commandOptions);
+  assert.equal(untrusted.code, 60, "curl must reject the untrusted certificate");
+  assert.ok(
+    untrusted.stdout === "" && !representations.some((value) => untrusted.stderr.includes(value)),
+    "untrusted curl must emit neither an HTTP response nor credentials",
+  );
+  const rejectedTls = await checkDenial(variant, ["curl", ...curlArgs]);
+  assert.ok(
+    refused(rejectedTls, "ACL_DENIAL_CAPTURE"),
+    "the denial command must reject a certificate failure as a transport error",
+  );
+  assert.equal(origin.snapshot().requests, beforeTls, "untrusted curl must never send HTTP");
+
+  const trusted = await checkDenial(variant, ["curl", ...curlArgs, "--cacert", ca]);
+  assert.ok(
+    accepted(trusted, "200 upload-advertisement"),
+    "the fixture CA must allow the same Git discovery request",
+  );
+  assert.equal(origin.snapshot().requests, beforeTls + 1);
+  const [request] = network.requests().slice(beforeTlsGit);
+  assert.ok(
+    request?.repository === "fixture/c" &&
+      request.operation === "upload-advertise" &&
+      request.method === "GET" &&
+      request.authenticated &&
+      request.credentialIndex === 2,
+    "the origin must observe Git discovery with the renewed credential",
+  );
+
+  await assertRestDenialLayers(checkDenial, join(directory, "curl-response"));
+  const observations = JSON.stringify([origin.snapshot(), network.requests(), fingerprints]);
+  for (const credential of representations) {
+    assert.ok(!observations.includes(credential), "credential leaked into observations");
+  }
 });

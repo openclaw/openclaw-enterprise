@@ -261,10 +261,7 @@ function reachableChanges(
   return reached;
 }
 
-function runtimeConsumers(dependencies: Map<string, string[]>, changed: Set<string>) {
-  if (!changed.size) {
-    return changed;
-  }
+function reverseDependencies(dependencies: Map<string, string[]>) {
   const importers = new Map<string, string[]>();
   for (const [file, targets] of dependencies) {
     for (const target of targets) {
@@ -276,6 +273,10 @@ function runtimeConsumers(dependencies: Map<string, string[]>, changed: Set<stri
       }
     }
   }
+  return importers;
+}
+
+function reachableImporters(importers: Map<string, string[]>, changed: Set<string>) {
   const reached = new Set(changed);
   for (const file of reached) {
     for (const importer of importers.get(file) ?? []) {
@@ -349,10 +350,13 @@ function report(source: ReturnType<typeof sourceIdentity>) {
   if ([...eligible].some((file) => !owned.has(file))) {
     fallback.add("no_registered_owner");
   }
-  // Indexed runtime edges supplement the report while retaining broad fallback.
-  const consumers = runtimeConsumers(dependencies, runtime);
-  const consumesRuntime = (lane: string) =>
-    consumers.size > 0 && files.get(lane)?.some((file) => consumers.has(file));
+  // Share the reverse graph for indexed runtime and Full Integration-only hints.
+  const importers =
+    runtime.size || eligible.size ? reverseDependencies(dependencies) : new Map<string, string[]>();
+  const runtimeConsumers = reachableImporters(importers, runtime);
+  const compilerConsumers = reachableImporters(importers, eligible);
+  const consumes = (lane: string, consumers: Set<string>) =>
+    files.get(lane)?.some((file) => consumers.has(file));
   return {
     graph: {
       compiler,
@@ -366,9 +370,13 @@ function report(source: ReturnType<typeof sourceIdentity>) {
       direct: [...hints.direct].sort(),
       compiler: [...hints.compiler].sort(),
       staticFixture: [...hints.staticFixture].sort(),
-      runtimeCompiler: ordinary.filter(consumesRuntime).sort(),
+      runtimeCompiler: ordinary.filter((lane) => consumes(lane, runtimeConsumers)).sort(),
       fullOnlyCompiler: full
-        .filter((lane) => !ordinary.includes(lane) && consumesRuntime(lane))
+        .filter(
+          (lane) =>
+            !ordinary.includes(lane) &&
+            (consumes(lane, runtimeConsumers) || consumes(lane, compilerConsumers)),
+        )
         .sort(),
     },
     fallback: [...fallback].sort(),

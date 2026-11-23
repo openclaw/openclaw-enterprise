@@ -1,4 +1,8 @@
 import {
+  parseRepositoryNetworkPolicyCeiling,
+  type RepositoryNetworkPolicyCeiling,
+} from "@openclaw-enterprise/contracts";
+import {
   reconcileNamespaceLifecycle,
   type NamespaceLifecycleBinding,
   type NamespaceLifecycleEvidence,
@@ -12,7 +16,6 @@ import {
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import {
   createIAMPolicyOperations,
-  iamPolicyOperation,
   type IAMPolicyOperations,
   type InstallationIAMConfiguration,
 } from "./iam-policy-operations.ts";
@@ -23,10 +26,6 @@ import {
 } from "./repository-policy.ts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import { createEgressAuthority } from "./credential-egress-authority.ts";
-import {
-  credentialSourceMetadata,
-  isManagedTokenServiceSource,
-} from "./credential-source-metadata.ts";
 import {
   createCredentialSourceOperations,
   type CredentialSourceOperations,
@@ -72,6 +71,9 @@ import type {
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
+  CredentialProxyDriver,
+  CredentialSourceReference,
+  DeploymentPolicy,
   Installation,
   InstallationDeploymentInventory,
   Namespace,
@@ -91,16 +93,11 @@ import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createAgentQueries, type ActiveAgentRevisionSelection } from "./agent-queries.ts";
 import { createDeploymentChannelChecks } from "./deployment-channels.ts";
 import { createAgentDeploymentOperations } from "./agent-deployment-requests.ts";
+import type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { createAgentDraftOperations } from "./agent-drafts.ts";
-import {
-  createAgentPluginValidation,
-  normalizeAgentPluginApprovers,
-  pluginOwner,
-  validatePluginCredentialSources,
-} from "./agent-plugin-validation.ts";
+import { createAgentPluginValidation } from "./agent-plugin-validation.ts";
 import { DriverRegistry } from "./driver-registry.ts";
-import { driverOperation } from "./driver-operation.ts";
 import { readDeploymentInventory } from "./deployment-inventory.ts";
 import { SetupDiscovery } from "./setup-discovery.ts";
 import { createInstallationCapabilityQueries } from "./installation-capabilities.ts";
@@ -111,13 +108,12 @@ import {
   NotImplementedError,
   ResourceStateConflictError,
   ScopeViolationError,
-  PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
 import { createAgentCredentialWithdrawal } from "./agent-credential-withdrawal.ts";
+import { createAgentCredentialRetry } from "./agent-credential-retry.ts";
 import { createAgentTermination } from "./agent-termination.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import {
-  admitsOpenClawExecutionMode,
   agentRuntimeConfiguration,
   createModelPolicyAgent,
   createSavedAgentTopologyValidator,
@@ -153,19 +149,14 @@ import {
   createAgentCredentialAccess,
   type AgentCredentialAccess,
 } from "./agent-credential-access.ts";
-import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 import { InMemoryPlatformState } from "./state/platform-state.ts";
 import type { PlatformOperation } from "./ports/platform-operations.ts";
 import type { PlatformStateStore } from "./ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { createProvisioningRequests } from "./agent-provisioning-requests.ts";
 import { createProvisioningWorker } from "./agent-provisioning-worker.ts";
-import { createSecretOperations, sameSecretBackend, secretOperation } from "./secret-operations.ts";
-import {
-  createConfigurationOperations,
-  rejectCrossNamespaceSecretSources,
-  storedSecretBindings,
-} from "./configuration-operations.ts";
+import { createSecretOperations } from "./secret-operations.ts";
+import { createConfigurationOperations } from "./configuration-operations.ts";
 import { createServiceAccountOperations } from "./service-account-operations.ts";
 
 export interface ControllerOptions {
@@ -177,8 +168,29 @@ export interface ControllerOptions {
     readonly gateway: CredentialGatewayDriver;
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
+  /** Code-only binding for Source-scoped cleanup owned by the selected delivery Proxy. */
+  readonly credentialSourceDelivery?:
+    | ((
+        proxy: CredentialProxyDriver,
+        namespace: Readonly<Namespace>,
+        source: CredentialSourceReference,
+        signal: AbortSignal,
+      ) => Promise<void>)
+    | undefined;
   readonly preparedTokens?: TokenService | undefined;
+  readonly modelCredentialPreset?: (input: {
+    readonly presetId: string;
+    readonly configuration: Readonly<Record<string, unknown>>;
+    readonly harness: RevisionHarnessDescriptor;
+  }) => ModelCredentialPreset | undefined;
+  /** Composition reviews the selected implementations for this first managed-model policy. */
+  readonly supportsModelCredentialDeployment?: (input: {
+    readonly sandbox: SandboxDriver;
+    readonly proxy: CredentialProxyDriver;
+    readonly policy: DeploymentPolicy;
+  }) => boolean;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
@@ -374,7 +386,10 @@ function initializeInstallationDrivers(
   installation: Installation,
   options: Pick<
     ControllerOptions,
-    "namespaceLifecycleBindings" | "sandboxNetworkPolicyCeiling" | "driverConfigurations"
+    | "namespaceLifecycleBindings"
+    | "repositoryNetworkPolicyCeiling"
+    | "sandboxNetworkPolicyCeiling"
+    | "driverConfigurations"
   >,
   hasBuiltInRepositoryPolicy: () => boolean,
 ) {
@@ -451,23 +466,19 @@ function createAgentTeardownOperations(
   },
 ) {
   const agentCredentialWithdrawal = createAgentCredentialWithdrawal({
-    namespaceIdentity,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
     record: audit.record,
     transactions,
     authority,
-    lockNamespace,
-    exactNamespace,
   });
   const agentTermination = createAgentTermination({
-    installationId: () => installationId,
+    installationId,
     requestAuditId: audit.requestAuditId,
     timestamp: resourceValues.timestamp,
     record: audit.record,
     transactions,
     authority,
-    lockNamespace,
     now: resourceValues.now,
   });
 
@@ -481,6 +492,7 @@ function createCredentialServices({
   drivers,
   publicController,
   preparedTokens,
+  credentialSourceDelivery,
   deviceCipher,
   canUseNativeAuthorization,
 }: {
@@ -500,6 +512,7 @@ function createCredentialServices({
     | "finishConnectionRevocation"
   >;
   preparedTokens: TokenService | undefined;
+  credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
@@ -512,7 +525,7 @@ function createCredentialServices({
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
   });
   const egressAdmission = createCredentialEgressAdmission({
-    installationId: () => installationId,
+    installationId,
     authorize: authority.authorize,
     hasProxy: () => drivers.hasSelection("credential_proxy"),
     proxyDriver: () => publicController.selectedDriver("credential_proxy"),
@@ -529,10 +542,7 @@ function createCredentialServices({
     sourceDrivers: credentialSourceDrivers,
     egressAdmission,
     hasProxy: () => drivers.hasSelection("credential_proxy"),
-    assertCredentialSourceOwnerSelected:
-      credentialSourceDrivers.assertCredentialSourceOwnerSelected,
     secretDriver,
-    secretOperation,
     getNamespace: (principalId, namespaceId) =>
       publicController.getNamespace(principalId, namespaceId),
     bindCreator: iamPolicy.bindCreator,
@@ -551,7 +561,6 @@ function createCredentialServices({
   const deviceAuthorization = createDeviceAuthorizationFlow({
     installationId,
     cipher: deviceCipher,
-    gatewayTimeoutMs: CREDENTIAL_GATEWAY_TIMEOUT_MS,
     nextSessionId: () => resourceValues.nextIdentifier("secret"),
     timestamp: resourceValues.timestamp,
     transactions,
@@ -559,12 +568,10 @@ function createCredentialServices({
     hasDriver: (capability) => drivers.hasSelection(capability),
     credentialGatewayDriver: credentialSourceDrivers.credentialGatewayDriver,
     credentialRefreshDriver: credentialSourceDrivers.credentialRefreshDriver,
-    credentialGatewayOperation,
     credentialSourceContext: credentialSourceOperations.credentialSourceContext,
     authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
     createSource: (principalId, input, audit, registrationAudit) =>
       publicController.createCredentialSource(principalId, input, audit, registrationAudit),
-    credentialSourceMetadata,
   });
   const managedCredentialSources: ManagedCredentialSources<typeof PENDING_CONNECTION> =
     createManagedCredentialSources(
@@ -572,17 +579,27 @@ function createCredentialServices({
         transactions,
         authority,
         sourceDrivers: credentialSourceDrivers,
-        assertCredentialSourceOwnerSelected:
-          credentialSourceDrivers.assertCredentialSourceOwnerSelected,
-        bindCreator: iamPolicy.bindCreator,
-        lockNamespaceForPolicyDelete: iamPolicy.lockNamespaceForPolicyDelete,
+        iamPolicy,
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+        retireDelivery: async (namespace, source, signal) => {
+          if (!drivers.hasSelection("credential_proxy_delivery")) {
+            return;
+          }
+          if (!credentialSourceDelivery) {
+            throw new DependencyUnavailableError(
+              "The selected credential delivery Proxy cannot retire this Source.",
+            );
+          }
+          await credentialSourceDelivery(
+            publicController.selectedDriver("credential_proxy_delivery"),
+            namespace,
+            source,
+            signal,
+          );
+        },
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
-        nextSourceId,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
-        driverOperation: (operation) => driverOperation(operation, "TokenService"),
-        isCommitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
         connectionTokenIssuer,
         preparedIssuer,
       },
@@ -594,17 +611,12 @@ function createCredentialServices({
     drivers,
     installationId,
     timestamp: resourceValues.timestamp,
-    isManagedTokenServiceSource,
-    assertCredentialSourceOwnerSelected:
-      credentialSourceDrivers.assertCredentialSourceOwnerSelected,
     requireTokenServiceOwner: (instanceId) => {
       managedCredentialSources.ownedTokenServiceDriver(instanceId);
     },
-    credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
     offersProtectedType: (type) =>
       egressAdmission.protectedSourceTypes().some((offer) => offer.type.type === type),
-    credentialSourceType: credentialSourceDrivers.credentialSourceType,
-    validatePluginCredentialSources,
+    sourceDrivers: credentialSourceDrivers,
   });
   const connectionAdministration = createConnectionAdministration({
     installationId,
@@ -620,8 +632,7 @@ function createCredentialServices({
     authorize: authority.authorize,
     canRead: authority.canRead,
     holdAuthority: authority.holdAuthority,
-    iamPolicyDriver: (method) => iamPolicy.iamPolicyDriver(method),
-    iamPolicyOperation,
+    iamPolicyDriver: iamPolicy.iamPolicyDriver,
     connectionTokenIssuer,
     tokenService,
     secretDriver,
@@ -649,14 +660,12 @@ function createCredentialServices({
       inTransaction: transactions.hasContext,
       readSnapshot: (work) => platformState.read(work),
       transact: (work) => publicController.transact(work),
-      lockNamespace,
       proxyDriver: () => publicController.selectedDriver("credential_proxy"),
       selectedProxyOwner: () => drivers.selectedProxyOwner(),
       secretDriver,
       computeDriver: () => publicController.selectedDriver("compute"),
       credentialPlacement: credentialSourceDrivers.credentialPlacement,
       credentialNamespace: credentialSourceDrivers.credentialNamespace,
-      credentialGatewayOperation,
       authorizationAuthority: (principalId) => authority.authorizationAuthority(principalId),
       authorizationDecision: (principalId, resource, selectedIAM, authorize) =>
         authority.authorizationDecision(principalId, "operate", resource, selectedIAM, authorize),
@@ -724,9 +733,8 @@ export function createControllerComposition(
   const secretOperations = createSecretOperations(admittedInstallation.id, {
     transactions,
     authority,
-    bindCreator: iamPolicy.bindCreator,
+    iamPolicy,
     getNamespace,
-    lockNamespaceForPolicyDelete: iamPolicy.lockNamespaceForPolicyDelete,
     selectDriver: () => publicController.selectedDriver("secret"),
     nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
@@ -736,14 +744,13 @@ export function createControllerComposition(
     transactions,
     authority,
     registerRollback: (compensate) => publicController.registerRollback(compensate),
-    lockNamespaceForPolicyDelete: iamPolicy.lockNamespaceForPolicyDelete,
+    iamPolicy,
     guardProvisioningConfiguration: (state, namespaceId, id, readOnly) =>
       provisioningWorker.guardProvisioningConfiguration(state, namespaceId, id, readOnly),
     selectDriver: () => publicController.selectedDriver("configuration"),
     validateComputeConfiguration,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
-    bindCreator: iamPolicy.bindCreator,
     nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
   });
@@ -757,6 +764,7 @@ export function createControllerComposition(
     drivers,
     publicController,
     preparedTokens,
+    credentialSourceDelivery: options.credentialSourceDelivery,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
   });
@@ -767,6 +775,13 @@ export function createControllerComposition(
     egressAdmission,
     managedCredentialSources,
   } = credentials;
+  const agentCredentialRetry = createAgentCredentialRetry({
+    transactions,
+    authority,
+    proxy: () => publicController.selectedDriver("credential_proxy_delivery"),
+    tokenService: (instanceId) => managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    timeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+  });
   const readAgentAuditEvents = createAgentAuditReader({
     installationId: admittedInstallation.id,
     platformState,
@@ -786,6 +801,9 @@ export function createControllerComposition(
     { record: workRecorder.record, requestAuditId: currentRequestAuditId },
   );
   const sandboxPolicyOperations = createSandboxPolicyOperations({
+    qualifyRepositoryEdit: (...args) => repositoryPolicy.qualifyRepositoryEdit(...args),
+    repositoryCeiling: (namespaceId) =>
+      repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,
     ceiling: sandboxNetworkPolicyCeiling,
     authority,
@@ -822,7 +840,6 @@ export function createControllerComposition(
     validateConfigurationContent: configurationOperations.validateConfigurationContent,
     validateAgentBackend: (backendId) => resolveAgentBackendId(backendMap, backendId),
     drivers,
-    normalizeAgentPluginApprovers,
   });
   const namespaces: NamespaceOperations = createNamespaceOperations({
     installationId: admittedInstallation.id,
@@ -861,6 +878,12 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    configurationDriver: configurationOperations.selectedDriver,
+    selectedProxyOwner: () => drivers.selectedProxyOwner(),
+    credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
+    repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
+      options.repositoryNetworkPolicyCeiling ?? [],
+    ),
     drivers,
     selectedRepository: () => publicController.selectedDriver("repo"),
     selectedCompute,
@@ -886,21 +909,17 @@ export function createControllerComposition(
     transactions,
     authority,
     authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
-    credentialGatewayOperation,
     sourceReader: pluginSourceReader,
     secretDriver: secretOperations.secretDriver,
     readConfiguration: (metadata) => configurationOperations.savedConfigurationReader(metadata)(),
     modelPolicyAgent,
     pluginDriver: (harnessId) => drivers.pluginDriver(harnessId),
-    assertPluginOwner: pluginOwner,
-    validatePluginPlacement: (driver, plugins, harness) =>
-      agentPlugins.validatePluginPlacement(driver, plugins, harness),
+    validatePluginPlacement: agentPlugins.validatePluginPlacement,
   });
   const validateSavedAgentTopology = createSavedAgentTopologyValidator({
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
     selectedCompute: () => drivers.selection("compute")?.driver as ComputeDriver | undefined,
-    validatePluginPlacement: (driver, plugins, harness) =>
-      agentPlugins.validatePluginPlacement(driver, plugins, harness),
+    validatePluginPlacement: agentPlugins.validatePluginPlacement,
     validateRepositoryBrokerNetworkProxy,
     loggingLevel,
   });
@@ -917,7 +936,6 @@ export function createControllerComposition(
     authority,
     transactions,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
-    admitOpenClawExecutionMode: admitsOpenClawExecutionMode,
     readGatewaySourceTypes: () =>
       drivers.hasSelection("credential_gateway")
         ? credentialGatewayOperation(() =>
@@ -968,9 +986,8 @@ export function createControllerComposition(
   const serviceAccountOperations = createServiceAccountOperations({
     transactions,
     authority,
-    bindCreator: iamPolicy.bindCreator,
+    iamPolicy,
     getNamespace,
-    lockNamespaceForPolicyDelete: iamPolicy.lockNamespaceForPolicyDelete,
     hasSelection: () => drivers.hasSelection("service_account"),
     selectDriver: () => publicController.selectedDriver("service_account"),
     computeDriver: selectedCompute,
@@ -979,19 +996,14 @@ export function createControllerComposition(
   });
   const harnessAuthOperations = createHarnessAuthOperations({
     authority,
-    authorizeBoundCredentialSources: (principalId, namespaceId, sources) =>
-      agentCredentialAccess.authorizeBoundCredentialSources(principalId, namespaceId, sources),
+    authorizeBoundCredentialSources: agentCredentialAccess.authorizeBoundCredentialSources,
+    sourceDrivers: credentialSourceDrivers,
     backends: backendMap,
     secrets: secretOperations,
-    isManagedTokenServiceSource,
     hasCredentialGateway: () => drivers.hasSelection("credential_gateway"),
-    assertCredentialGatewaySelected: credentialSourceDrivers.assertCredentialGatewaySelected,
+    hasCredentialProxyDelivery: () => drivers.hasSelection("credential_proxy_delivery"),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
-    ownedCredentialGatewayDriver: (source) =>
-      credentialSourceDrivers.ownedCredentialGatewayDriver(source),
-    credentialGatewayDriver: (id) => credentialSourceDrivers.credentialGatewayDriver(id),
-    credentialSourceType: (driver, type) =>
-      credentialSourceDrivers.credentialSourceType(driver, type),
     serviceAccounts: serviceAccountOperations,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
     agentRuntimeConfiguration: (values, harness, compute, sandbox) =>
@@ -1010,10 +1022,7 @@ export function createControllerComposition(
       provisioningWorker.guardProvisioningConfiguration(state, namespaceId, id),
     backendId: (value, preserve) => resolveAgentBackendId(backendMap, value, preserve),
     credentialAccess: agentCredentialAccess,
-    isManagedTokenServiceSource,
-    bindings: storedSecretBindings,
     authorizeBindings: configurationOperations.authorizeBindings,
-    rejectCrossNamespaceSecretSources,
     configurationDriver: configurationOperations.selectedDriver,
     validateConfigurationContent: (values, bindings) =>
       configurationOperations.validateConfigurationContent(values, undefined, bindings),
@@ -1034,13 +1043,11 @@ export function createControllerComposition(
     drivers,
     selectedChannel: () => publicController.selectedDriver("channel"),
     configurationDriver: configurationOperations.selectedDriver,
-    driverOperation,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
-    sameSecretBackend,
   });
   const provisioningRequests = createProvisioningRequests({
-    installationId: () => admittedInstallation.id,
+    installationId: admittedInstallation.id,
     resourceValues,
     requestAuditId: currentRequestAuditId,
     backendId: (value) => resolveAgentBackendId(backendMap, value),
@@ -1059,7 +1066,7 @@ export function createControllerComposition(
     nativeWorkers,
   });
   const provisioningWorker = createProvisioningWorker({
-    installationId: () => admittedInstallation.id,
+    installationId: admittedInstallation.id,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
     nextId: resourceValues.nextIdentifier,
@@ -1076,6 +1083,7 @@ export function createControllerComposition(
       publicController.deployAgent(principalId, input, resolveHarness),
   });
   const deploymentRequests = createAgentDeploymentOperations(admittedInstallation.id, {
+    selection: (capability) => drivers.selection(capability),
     transactions,
     authority,
     channels: deploymentChannels,
@@ -1094,12 +1102,15 @@ export function createControllerComposition(
     backendId: (requested) => resolveAgentBackendId(backendMap, requested),
     configurationDriver: configurationOperations.selectedDriver,
     configuration: configurationOperations,
-    driverOperation,
     modelPolicyAgent,
+    modelCredentialPreset: options.modelCredentialPreset,
+    supportsModelCredentialDeployment: options.supportsModelCredentialDeployment,
+    sandboxNetworkPolicyCeiling,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
     validateComputeConfiguration,
-    validateRepositoryBrokerNetworkProxy,
     timestamp: resourceValues.timestamp,
     nextIdentifier: resourceValues.nextIdentifier,
     egress: egressAdmission,
@@ -1162,6 +1173,7 @@ export function createControllerComposition(
   }
   return {
     installation: admittedInstallation,
+    agentCredentialRetry,
     agentCredentialWithdrawal,
     agentDrafts,
     agentQueries,

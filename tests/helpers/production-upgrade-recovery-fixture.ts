@@ -85,6 +85,7 @@ export type RecoveryFixtureOptions = {
   agent?: boolean;
   release?: string;
   candidates?: boolean;
+  valuesExtension?: "json" | "yaml";
   controllerOnly?: boolean;
   channelTransition?: boolean;
   continuity?: { before: object; after: object } | null;
@@ -427,6 +428,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       agent = false,
       release = "oce",
       candidates = false,
+      valuesExtension = "json",
       controllerOnly = false,
       channelTransition = false,
       continuity = null,
@@ -465,6 +467,8 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     }: RecoveryFixtureOptions = {},
   ) {
     const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
+    const valuesFile = `values.${valuesExtension}`;
+    const candidateValuesFile = `candidate-${valuesFile}`;
     const bin = join(directory, "bin");
     await mkdir(bin);
     const commands: string[] = [];
@@ -817,7 +821,7 @@ ${skipEnvoyProbe}${failIntentRecord}exec ${bashString(tools.realPython)} "$@"
     for (const [name, content] of Object.entries({
       kubeconfig: "cluster-config",
       key: "key",
-      "values.json": values,
+      [valuesFile]: values,
       "installation.json": installation,
     })) {
       await writeFile(join(directory, name), content, { mode: 0o600 });
@@ -837,7 +841,7 @@ ${skipEnvoyProbe}${failIntentRecord}exec ${bashString(tools.realPython)} "$@"
           { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
         ];
       }
-      await writeFile(join(directory, "candidate-values.json"), JSON.stringify(candidateValues), {
+      await writeFile(join(directory, candidateValuesFile), JSON.stringify(candidateValues), {
         mode: 0o600,
       });
       await writeFile(
@@ -857,7 +861,7 @@ ${skipEnvoyProbe}${failIntentRecord}exec ${bashString(tools.realPython)} "$@"
       "--release",
       release,
       "--values",
-      join(directory, "values.json"),
+      join(directory, valuesFile),
       "--installation",
       join(directory, "installation.json"),
       ...(controllerOnly ? ["--controller-image", newController] : ["--runtime-image", runtime]),
@@ -866,7 +870,7 @@ ${skipEnvoyProbe}${failIntentRecord}exec ${bashString(tools.realPython)} "$@"
       ...(candidates
         ? [
             "--candidate-values",
-            join(directory, "candidate-values.json"),
+            join(directory, candidateValuesFile),
             "--candidate-installation",
             join(directory, "candidate-installation.json"),
           ]

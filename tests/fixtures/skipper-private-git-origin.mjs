@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
-import { createServer, get as httpsGet } from "node:https";
-import { checkServerIdentity } from "node:tls";
+import { createServer, get as httpsGet, request as httpsRequest } from "node:https";
+import { checkServerIdentity, createSecureContext } from "node:tls";
 import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +18,27 @@ export const scopedRestFixturePermissions = Object.freeze({
   issues: "read",
   pull_requests: "write",
 });
+
+// Compare raw bytes, before URL parsing. Only the encoded read of A has
+// an equivalent canonical spelling (unreserved ASCII in the path and query).
+function readVariantWire(probe, method, target) {
+  const parts = (value) => {
+    const q = value.indexOf("?");
+    return q < 0 ? [value, ""] : [value.slice(0, q), value.slice(q)];
+  };
+  const [path, query] = parts(target);
+  const [literalPath, literalQuery] = parts(probe.target);
+  const encodedRead =
+    probe.method === "GET" &&
+    probe.target === "/fixture/%61.git/info/refs?%73ervice=git-%75pload-pack";
+  const classify = (actual, literal, canonical) =>
+    actual === literal ? "literal" : encodedRead && actual === canonical ? "canonical" : "other";
+  return {
+    method: method === probe.method ? "literal" : "other",
+    path: classify(path, literalPath, "/fixture/a.git/info/refs"),
+    query: classify(query, literalQuery, "?service=git-upload-pack"),
+  };
+}
 
 // Test-only origin. Callers own close(); no environment credentials or user Git
 // configuration are inherited. Only snapshot() is intended for logged evidence.
@@ -89,8 +110,10 @@ export async function startSkipperPrivateGitOrigin({
   const broadAuthorization = broadToken
     ? `Basic ${Buffer.from(`x-access-token:${broadToken}`).toString("base64")}`
     : undefined;
-  /** @type {{ repository: string, operation: string, method: "GET" | "POST", authenticated: boolean, credentialIndex?: number }[]} */
+  /** @type {{ repository: string, operation: string, method: "GET" | "HEAD" | "POST", target?: string, wire?: ReturnType<typeof readVariantWire>, authenticated: boolean, credentialIndex?: number }[]} */
   const networkRequests = [];
+  /** @type {import("../helpers/openshell-git-denial.ts").GitAclVariant | undefined} */
+  let activeVariant;
   let unknownNetworkRequests = 0;
   const children = new Set();
   // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
@@ -113,6 +136,8 @@ export async function startSkipperPrivateGitOrigin({
     }
   };
   const issuedGit = witnessIssuedGit === true ? new Map() : undefined;
+  /** @type {(readonly [number, string])[]} */
+  const issuedFingerprints = [];
   let server;
   let closing;
   let heldDiscovery;
@@ -223,10 +248,15 @@ export async function startSkipperPrivateGitOrigin({
       };
     }
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    let shortenNextToken = false;
     const authority = createTokenAuthority({
       clock: { wallNow: Date.now },
       publicKey,
-      lifetimeMs: 3600000,
+      lifetimeMs() {
+        const lifetime = shortenNextToken ? 750_000 : 3_600_000;
+        shortenNextToken = false;
+        return lifetime;
+      },
       repositoryId,
       ...(issuedNetwork && {
         expectedRepositoryIds: repositoryScopes.map((scope) => scope.repositoryId),
@@ -241,8 +271,10 @@ export async function startSkipperPrivateGitOrigin({
     let pullRequest;
     let pullCreateRequests = 0;
     /** @typedef {{ ref: string, sha: string, repo: { id: number, full_name: string } }} ScopedPullSide */
-    /** @type {Map<string, { number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }>} */
+    /** @typedef {{ number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }} ScopedPull */
+    /** @type {Map<string, ScopedPull[]>} */
     const scopedPulls = new Map();
+    let redirectPullReadToC = false;
     const observePullRequest = async () => {
       if (!pullRequest) {
         return null;
@@ -318,11 +350,12 @@ export async function startSkipperPrivateGitOrigin({
       const name = scope.repository;
       const authorization = request.headers.authorization;
       const authenticated = authority.authorize(authorization);
-      const operation = {
-        issues: "rest-issue-list",
-        "issues/42": "rest-issue-read",
-        pulls: "rest-pull-create",
-      }[route];
+      const operation =
+        {
+          issues: request.method === "GET" ? "rest-issue-list" : "rest-issue-create",
+          "issues/42": "rest-issue-read",
+          pulls: request.method === "GET" ? "rest-pull-list" : "rest-pull-create",
+        }[route] ?? "rest-pull-read";
       networkRequests.push({
         repository: name,
         operation,
@@ -335,14 +368,40 @@ export async function startSkipperPrivateGitOrigin({
         return;
       }
       const permissions = authority.permissions(authorization);
-      if (route !== "pulls" && request.method === "GET" && permissions?.issues === "read") {
-        const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
-        reply(200, route === "issues" ? [issue] : issue);
+      if (route.startsWith("issues")) {
+        if (request.method === "GET" && permissions?.issues === "read") {
+          const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
+          reply(200, route === "issues" ? [issue] : issue);
+        } else {
+          reply(403);
+        }
+        return;
+      }
+      const created = scopedPulls.get(name) ?? [];
+      if (
+        request.method === "GET" &&
+        (permissions?.pull_requests === "read" || permissions?.pull_requests === "write")
+      ) {
+        if (redirectPullReadToC && name === "fixture/b" && route === "pulls/42") {
+          redirectPullReadToC = false;
+          reply(302, {}, { location: "/repos/fixture/c/pulls/42" });
+          return;
+        }
+        const seeded = { number: 42, title: `Fixture pull in ${name}`, state: "open" };
+        if (route === "pulls") {
+          reply(200, [seeded, ...created]);
+        } else {
+          const pull =
+            route === "pulls/42"
+              ? seeded
+              : created.find(({ number }) => route === `pulls/${number}`);
+          reply(pull ? 200 : 404, pull);
+        }
         return;
       }
       if (
-        route !== "pulls" ||
         request.method !== "POST" ||
+        route !== "pulls" ||
         permissions?.pull_requests !== "write"
       ) {
         reply(403);
@@ -358,11 +417,11 @@ export async function startSkipperPrivateGitOrigin({
         typeof title !== "string" ||
         !title ||
         typeof draft !== "boolean" ||
-        head !== reviewHead ||
+        typeof head !== "string" ||
         base !== "main" ||
-        !refs[approvalRef] ||
-        refs[approvalRef] === refs["refs/heads/main"] ||
-        scopedPulls.has(name)
+        !refs[`refs/heads/${head}`] ||
+        refs[`refs/heads/${head}`] === refs["refs/heads/main"] ||
+        created.some((pull) => pull.head.ref === head && pull.base.ref === base)
       ) {
         reply(422);
         return;
@@ -373,16 +432,17 @@ export async function startSkipperPrivateGitOrigin({
       }
       const repo = { id: Number(scope.repositoryId), full_name: name };
       const pull = {
-        number: 1,
+        number: created.length + 1,
         title,
         state: "open",
         draft,
-        head: { ref: head, sha: refs[approvalRef], repo },
+        head: { ref: head, sha: refs[`refs/heads/${head}`], repo },
         base: { ref: base, sha: refs["refs/heads/main"], repo },
       };
-      scopedPulls.set(name, pull);
+      scopedPulls.set(name, [...created, pull]);
       reply(201, pull);
     };
+    /** @type {Record<string, number>} */
     const counts = {};
     const count = (endpoint, status) => {
       const key = `${endpoint}:${status}`;
@@ -403,17 +463,23 @@ export async function startSkipperPrivateGitOrigin({
       if (networkAcl) {
         unknownNetworkRequests++;
       }
-      const reply = (status, body = {}) => {
+      const reply = (status, body = {}, headers = {}) => {
         count(endpoint, status);
         response.writeHead(status, {
           "content-type": "application/json",
           ...(status === 401 ? { "www-authenticate": 'Basic realm="private fixture"' } : {}),
+          ...headers,
         });
         response.end(status === 204 ? undefined : JSON.stringify(body));
       };
       try {
         const url = new URL(request.url, "https://fixture.invalid");
-        if (request.url !== `${url.pathname}${url.search}`) {
+        // Only the current literal Git probe may use a noncanonical target.
+        const variant =
+          activeVariant?.target === request.url && activeVariant?.method === request.method
+            ? activeVariant
+            : undefined;
+        if (!variant && request.url !== `${url.pathname}${url.search}`) {
           reply(404);
           return;
         }
@@ -441,6 +507,15 @@ export async function startSkipperPrivateGitOrigin({
           }
           if (issuedGit && !closing) {
             issuedGit.set(authority.tokenIndex(`Bearer ${issued.token}`), issued.token);
+          }
+          if (issuedNetwork) {
+            const basicPayload = Buffer.from(`x-access-token:${issued.token}`).toString("base64");
+            for (const value of [issued.token, basicPayload]) {
+              issuedFingerprints.push([
+                Buffer.byteLength(value),
+                createHash("sha256").update(value).digest("hex"),
+              ]);
+            }
           }
           reply(201, {
             token: issued.token,
@@ -487,7 +562,7 @@ export async function startSkipperPrivateGitOrigin({
         const rest =
           scopedRest &&
           !url.search &&
-          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
+          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls(?:\/[1-9][0-9]*)?)$/.exec(url.pathname);
         if (rest) {
           const scope = repositoryByName.get(rest[1]);
           if (!scope) {
@@ -499,22 +574,24 @@ export async function startSkipperPrivateGitOrigin({
           await serveScopedRest(request, scope, rest[2], reply);
           return;
         }
-        const gitPath = url.pathname;
+        const gitPath = variant ? decodeURIComponent(url.pathname) : url.pathname;
         const matchedRepository = networkRepositories.find((name) =>
           gitPath.startsWith(`/${name}.git/`),
         );
         const requestGitPrefix = `/${matchedRepository}.git`;
-        const service = url.searchParams.get("service");
+        const service = variant
+          ? url.searchParams.getAll("service").at(-1)
+          : url.searchParams.get("service");
         const gitServices = ["git-upload-pack", "git-receive-pack"];
         const discovery =
-          request.method === "GET" &&
+          (request.method === "GET" || (variant && request.method === "HEAD")) &&
           gitPath === `${requestGitPrefix}/info/refs` &&
           gitServices.includes(service) &&
-          [...url.searchParams].length === 1;
+          (variant || [...url.searchParams].length === 1);
         const rpc =
           request.method === "POST" &&
           gitServices.some((name) => gitPath === `${requestGitPrefix}/${name}`) &&
-          !url.search;
+          (variant || !url.search);
         if (!matchedRepository || (!discovery && !rpc)) {
           reply(404);
           return;
@@ -532,7 +609,11 @@ export async function startSkipperPrivateGitOrigin({
           networkRequests.push({
             repository: matchedRepository,
             operation: endpoint,
-            method: discovery ? "GET" : "POST",
+            method: request.method === "HEAD" ? "HEAD" : discovery ? "GET" : "POST",
+            ...(variant && { target: request.url }),
+            ...(activeVariant?.expected === "read" && {
+              wire: readVariantWire(activeVariant, request.method, request.url),
+            }),
             authenticated,
             ...(issuedNetwork &&
               authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
@@ -555,7 +636,9 @@ export async function startSkipperPrivateGitOrigin({
           return;
         }
         const permissions = broad ? { contents: "write" } : authority.permissions(authorization);
-        if (!permissions.contents || (receive && permissions.contents !== "write")) {
+        const needsWrite =
+          receive || (variant && url.searchParams.getAll("service").includes("git-receive-pack"));
+        if (!permissions.contents || (needsWrite && permissions.contents !== "write")) {
           reply(403);
           return;
         }
@@ -720,9 +803,193 @@ export async function startSkipperPrivateGitOrigin({
       ...(networkAcl && {
         network: {
           token: broadToken,
+          repositories: networkRepositories,
+          scopes: repositoryScopes.map((scope) => ({ ...scope })),
+          /**
+           * @param {number} index
+           * @param {(variant: import("../helpers/openshell-git-denial.ts").GitAclVariant) => Promise<string>} replay
+           */
+          async checkGitVariants(index, replay) {
+            const { gitAclVariants } = await import("../helpers/openshell-git-denial.ts");
+            assert.ok(issuedNetwork && issuedGit?.has(index) && repository === "fixture/a");
+            assert.equal(activeVariant, undefined);
+            try {
+              const outcomes = [];
+              for (const probe of gitAclVariants(initialSha)) {
+                activeVariant = probe;
+                const { method, target, repository, operation, service } = probe;
+                const before = requests;
+                const start = networkRequests.length;
+                const recipient = {
+                  method,
+                  repository,
+                  operation: `${operation}-${method === "POST" ? "pack" : "advertise"}`,
+                  credentialIndex: index,
+                  authenticated: true,
+                };
+                // A denial is meaningful only after the exact same wire target succeeds.
+                assert.deepEqual(
+                  await this.probeIssued(index, repository, probe),
+                  {
+                    status: 200,
+                    type: `application/x-${service}-${method === "POST" ? "result" : "advertisement"}`,
+                  },
+                  "Git variant calibration failed",
+                );
+                assert.equal(requests, before + 1);
+                const literal = { method: "literal", path: "literal", query: "literal" };
+                assert.deepEqual(
+                  networkRequests.slice(start),
+                  [{ ...recipient, target, ...(probe.expected === "read" && { wire: literal }) }],
+                  "Git calibration recipient or target mismatch",
+                );
+
+                const allowedBefore = counts["upload-advertise:200"] ?? 0;
+                const decision = await replay(probe);
+                if (probe.expected === "read" && decision === "200 upload-advertisement\n") {
+                  assert.equal(requests, before + 2);
+                  assert.equal(counts["upload-advertise:200"], allowedBefore + 1);
+                  const reads = networkRequests.slice(start + 1);
+                  const wire = reads[0]?.wire;
+                  assert.ok(
+                    wire?.method === "literal" &&
+                      (wire.path === "literal" || wire.path === "canonical") &&
+                      (wire.query === "literal" || wire.query === "canonical"),
+                    `Unexpected Git read shape: ${JSON.stringify(wire)}`,
+                  );
+                  const exactLiteral = wire.path === "literal" && wire.query === "literal";
+                  assert.deepEqual(
+                    reads,
+                    [{ ...recipient, ...(exactLiteral && { target }), wire }],
+                    "Git read recipient or target mismatch",
+                  );
+                  // Preserve the literal mismatch even if a later probe fails.
+                  if (!exactLiteral) {
+                    process.stdout.write(
+                      JSON.stringify({ event: "saved-git-acl-variant-mismatch", wire }) + "\n",
+                    );
+                  }
+                  outcomes.push({ method, target, decision: decision.trim(), wire, exactLiteral });
+                } else {
+                  assert.equal(requests, before + 1, "Forbidden Git variant reached the origin");
+                  assert.ok(
+                    decision ===
+                      (method === "HEAD" ? "403 head-http\n" : "403 native-rest-policy\n"),
+                    "Missing Git variant refusal",
+                  );
+                  outcomes.push({ method, target, decision: decision.trim() });
+                }
+              }
+              assert.equal(outcomes.length, 15);
+              return outcomes;
+            } finally {
+              activeVariant = undefined;
+            }
+          },
+          /**
+           * @param {number | undefined} index
+           * @param {string} repository
+           * @param {{ service: string, method: "GET" | "HEAD" | "POST", body?: string, target?: string }} options
+           * @returns {Promise<{ status?: number, type?: string }>}
+           */
+          async probeIssued(index, repository, { service, method, body, target }) {
+            assert.ok(
+              issuedNetwork && (index === undefined || issuedGit?.has(index)),
+              "missing controlled issuer credential",
+            );
+            assert.ok(networkRepositories.includes(repository));
+            assert.ok(["git-upload-pack", "git-receive-pack"].includes(service));
+            if (target === undefined) {
+              assert.ok(["GET", "POST"].includes(method));
+            } else {
+              assert.ok(
+                activeVariant &&
+                  target === activeVariant.target &&
+                  method === activeVariant.method &&
+                  repository === activeVariant.repository &&
+                  service === activeVariant.service &&
+                  body === activeVariant.body,
+                "Git target is not the active calibration",
+              );
+            }
+            assert.ok(method === "POST" ? typeof body === "string" : body === undefined);
+
+            const path = method === "POST" ? service : `info/refs?service=${service}`;
+            const secureContext = createSecureContext({ ca: tls.ca ?? tls.cert });
+            return new Promise((resolve, reject) => {
+              const request = httpsRequest(
+                {
+                  hostname: listener.address,
+                  port: listener.port,
+                  path: target ?? `/${repository}.git/${path}`,
+                  method,
+                  agent: false,
+                  secureContext,
+                  servername: isIP(advertisedHost) ? "" : advertisedHost,
+                  checkServerIdentity: (_host, cert) => checkServerIdentity(advertisedHost, cert),
+                  signal: AbortSignal.timeout(5000),
+                  ...(index === undefined
+                    ? {}
+                    : { auth: "x-access-token:" + issuedGit.get(index) }),
+                  headers: {
+                    host: new URL(origin).host,
+                    ...(body === undefined
+                      ? {}
+                      : {
+                          "content-type": `application/x-${service}-request`,
+                          "content-length": Buffer.byteLength(body),
+                        }),
+                  },
+                },
+                (response) => {
+                  response.resume();
+                  response.once("error", reject);
+                  response.once("end", () => {
+                    if (!response.complete) {
+                      reject(new Error("incomplete Git origin response"));
+                      return;
+                    }
+                    resolve({
+                      status: response.statusCode,
+                      type: response.headers["content-type"],
+                    });
+                  });
+                },
+              );
+              request.once("error", reject);
+              request.end(body);
+            });
+          },
+
+          /** @param {Buffer} output */
+          containsIssuedCredential(output) {
+            assert.ok(issuedNetwork);
+            return [...issuedGit.values()].some(
+              (token) =>
+                output.includes(token) ||
+                output.includes(Buffer.from(`x-access-token:${token}`).toString("base64")),
+            );
+          },
+
+          shortenNextTokenForRenewal() {
+            assert.ok(issuedNetwork && !shortenNextToken);
+            shortenNextToken = true;
+          },
+          issuedCredentialFingerprints() {
+            assert.ok(issuedNetwork);
+            return issuedFingerprints.map(
+              ([length, digest]) => /** @type {const} */ ([length, digest]),
+            );
+          },
           requests: () => networkRequests.map((entry) => ({ ...entry })),
           /** @param {string} name */
-          pullRequest: (name) => structuredClone(scopedPulls.get(name)),
+          pullRequest: (name) => structuredClone(scopedPulls.get(name)?.[0]),
+          /** @param {string} name */
+          pullRequests: (name) => structuredClone(scopedPulls.get(name) ?? []),
+          redirectNextPullReadToC() {
+            assert.ok(scopedRest && !redirectPullReadToC);
+            redirectPullReadToC = true;
+          },
           unknownRequests: () => unknownNetworkRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));
@@ -1008,43 +1275,131 @@ export function assertOnlyTokenRetirement(before, after) {
   );
 }
 
-export function withdrawDuringFetchCommand(dir, expectedStatus = 503) {
+// Keep each final response paired with its own request and Authorization header.
+// Git may retry a failed Basic request. An anonymous 401 challenge never counts.
+const withdrawalRequestTrace = [
+  "/=> Send header: (GET|POST|CONNECT) / {",
+  "  request=0; basic=0",
+  "  if ($0 ~ /=> Send header: GET .*\\/info\\/refs\\?service=git-upload-pack /) request=1",
+  "  if ($0 ~ /=> Send header: POST .*\\/git-upload-pack /) request=2",
+  "  if (request == target) attempts++",
+  "  next",
+  "}",
+  "tolower($0) ~ /=> send header: authorization: basic / {",
+  "  if (!basic && request == target) authenticated++",
+  "  basic=1",
+  "}",
+];
+
+export function withdrawDuringFetchCommand(dir, expectedStatus = 503, barrier) {
   if (![401, 503].includes(expectedStatus)) {
     throw new Error("expected an explicit refusal status");
   }
+  if (barrier !== undefined && !/^\.oce-git-withdrawal-[a-f0-9]{16}$/.test(barrier)) {
+    throw new Error("invalid Git withdrawal barrier name");
+  }
+  // Git stores the credential after authenticated discovery succeeds. This extra helper
+  // ignores get/erase and never reads or prints credentials.
+  const setup =
+    barrier === undefined
+      ? []
+      : [
+          "umask 077",
+          "OCE_FIXTURE_WORKTREE=$(pwd -P) || exit 52",
+          "export OCE_FIXTURE_WORKTREE",
+          "mkdir -- " + barrier + " || exit 53",
+          "owned_barrier=" + barrier,
+          "git_origin=$(git remote get-url origin) || exit 54",
+          "git_authority=${git_origin#https://}; git_authority=${git_authority%%/*}",
+          "cat > \"$owned_barrier/helper\" <<'OCE_GIT_BARRIER' || exit 55",
+          "#!/bin/sh",
+          "barrier=${0%/*}",
+          'if [ "$1" != store ]; then exit 0; fi',
+          'if ! mkdir "$barrier/ready" 2>/dev/null; then',
+          // Repeated stores can share our own directory. Every store waits for release.
+          '  if [ ! -d "$barrier/ready" ] || [ -L "$barrier/ready" ]; then',
+          "    printf '%s\\n' 'oce-fixture-git-ready-failed' >&2",
+          "    exit 57",
+          "  fi",
+          "fi",
+          "remaining=900",
+          'until [ -f "$barrier/release" ]; do',
+          '  if [ $remaining -eq 0 ]; then : > "$barrier/expired"; exit 1; fi',
+          "  remaining=$((remaining-1)); sleep 0.1",
+          "done",
+          "OCE_GIT_BARRIER",
+          'set -- -c "credential.https://$git_authority.helper=!sh \\"\\$OCE_FIXTURE_WORKTREE/' +
+            barrier +
+            '/helper\\""',
+        ];
   return [
-    "set -eu; cd " + dir,
-    // Curl trace is filtered inside the Agent; only the boolean outcome reaches the model.
-    "set +e; LC_ALL=C GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git -c protocol.version=2 ls-remote origin 2>&1 >withdraw.out | awk '",
-    "/=> Send header: GET .*info.refs/ {advert=1}",
-    "/<= Recv header: HTTP.* 200/ {if(advert) served=1}",
-    "/=> Send header: POST .*git-upload-pack/ {sent=served}",
-    "/=> Send header: Authorization: Basic/ {if(sent) authenticated=1}",
-    "/<= Recv header: HTTP.* " + expectedStatus + "/ {if(authenticated) denied=1}",
-    'END {exit !(sent && denied)}\'; result=$?; set -e; test "$result" = 0; test ! -s withdraw.out',
+    "set -eu; set +x",
+    "cd " + dir + " || exit 50",
+    "set --; output=$(mktemp -- ./.oce-git-withdrawal-output.XXXXXX) || exit 51; owned_barrier=",
+    "cleanup() {",
+    "  result=$1",
+    "  cleanup_failed=0",
+    '  if [ -f "$output" ]; then rm -- "$output" || cleanup_failed=1; fi',
+    '  if [ -n "$owned_barrier" ]; then',
+    "    for entry in helper release expired; do",
+    '      if [ -f "$owned_barrier/$entry" ]; then rm -- "$owned_barrier/$entry" || cleanup_failed=1; fi',
+    "    done",
+    '    if [ -d "$owned_barrier/ready" ]; then rmdir -- "$owned_barrier/ready" || cleanup_failed=1; fi',
+    '    rmdir -- "$owned_barrier" || cleanup_failed=1',
+    "  fi",
+    '  if [ "$result" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then exit 56; fi',
+    '  exit "$result"',
+    "}",
+    "trap 'cleanup \"$?\"' EXIT",
+    ...setup,
+    '(set +e; LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_TRACE_REDACT=1 GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git "$@" -c protocol.version=2 ls-remote origin 2>&1 >"$output";',
+    "printf '\\nheld-fetch-exit=%d\\n' \"$?\") | awk '",
+    "BEGIN { target=2 }",
+    "/^oce-fixture-git-ready-failed$/ { readyFailed=1 }",
+    ...withdrawalRequestTrace,
+    "/<= Recv header: HTTP\\/[0-9.]+ [2-5][0-9][0-9]/ {",
+    "  match($0, /HTTP\\/[0-9.]+ [2-5][0-9][0-9]/); status=substr($0, RSTART+RLENGTH-3, 3)+0",
+    "  if (request == 1 && basic && status == 200) advertised=1",
+    "  if (request == 2 && basic) {",
+    "    if (status == " + expectedStatus + ") denied++",
+    "    else if (status == 503) unavailable++",
+    "  }",
+    "  request=basic=0",
+    "}",
+    "/^held-fetch-exit=128$/ { failed++ }",
+    // These codes reach the failure receipt without forwarding the Git trace.
+    "END {",
+    "  if (readyFailed) exit 57",
+    "  if (!advertised) exit 41", // No completed authenticated discovery.
+    "  if (!attempts) exit 42", // No upload POST after discovery.
+    "  if (!authenticated) exit 47", // An upload POST was attempted without Basic.
+    "  if (unavailable && denied + unavailable == authenticated) exit 48", // At least one authenticated 503.
+    "  if (denied != authenticated) exit 43", // Other status, or no final response.
+    "  if (failed != 1) exit 44",
+    "}'",
+    'test ! -s "$output" || exit 45',
+    ...(barrier === undefined ? [] : ['test ! -e "$owned_barrier/expired" || exit 46']),
   ].join("\n");
 }
 
-// A new Git process, after the first operation has already observed withdrawal. Consume the
-// trace inside the Agent: return only success/failure, never a header or credential. A 401
-// challenge followed by an authenticated refusal is expected; anonymous refusal cannot pass.
+// A new Git process after disposal. Every authenticated discovery attempt
+// must see the expected final refusal, and Git must exit unsuccessfully.
 export function fetchAfterWithdrawalCommand(dir, expectedStatus = 503) {
   if (![401, 503].includes(expectedStatus)) {
     throw new Error("expected an explicit refusal status");
   }
   return [
-    "set -eu; cd " + dir,
+    "set -eu; set +x; cd " + dir,
     "(set +e; LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_TRACE_REDACT=1 GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git -c protocol.version=2 fetch --no-tags origin HEAD;",
     "printf '\\nfresh-fetch-exit=%d\\n' \"$?\") 2>&1 | awk '",
-    "/=> Send header: GET .*\\/info\\/refs\\?service=git-upload-pack / { discovery=1; basic=0 }",
-    "/=> Send header: Authorization: Basic / { basic=discovery }",
-    "/<= Recv header: HTTP\\/[0-9.]+ [1-5][0-9][0-9]/ {",
-    "  if (discovery && basic) { authenticated++; if ($0 ~ / " +
-      expectedStatus +
-      "( |$)/) denied++ }",
-    "  discovery=basic=0",
+    "BEGIN { target=1 }",
+    ...withdrawalRequestTrace,
+    "/<= Recv header: HTTP\\/[0-9.]+ [2-5][0-9][0-9]/ {",
+    "  match($0, /HTTP\\/[0-9.]+ [2-5][0-9][0-9]/); status=substr($0, RSTART+RLENGTH-3, 3)+0",
+    "  if (request == 1 && basic && status == " + expectedStatus + ") denied++",
+    "  request=basic=0",
     "}",
     "/^fresh-fetch-exit=128$/ { failed++ }",
-    "END { exit !(authenticated == 1 && denied == 1 && failed == 1) }'",
+    "END { if (!authenticated) exit 42; if (denied != authenticated) exit 43; if (failed != 1) exit 44 }'",
   ].join("\n");
 }

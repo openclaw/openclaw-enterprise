@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "./prepare-command.ts";
 
-// This is the fixed pre-feature main revision, not a previous published release.
+// The native-profile feature's first parent builds with upstream Node binaries.
 export const nativeProfileBaseline = Object.freeze({
-  revision: "535e08cae41dfd5bda0c072fcb37039e699203eb",
-  tree: "618072a31adcaafb75060fa49c2d4f2309c19c98",
-  nativeCommit: "b58996d69286d55d1bbbd9b5c03b4ad837baac45",
-  sourceArchiveSha256: "a53322b1af2a374970e381f5eea64292fe8deadfaa11e3802bd256044757d1f1",
-  migrations: "275f512c05f0773ce10fb5302a2f80aa0a123176",
-  runtimeTree: "321b4da892accee710bb260459de236d33d2a364",
-  controllerRecipe: "174d60747bcd89de181c69fac573abd4cc660477",
+  revision: "28593a5b76bbb2afaf86ae2972853fd5d734b0ff",
+  tree: "b5c3b6ef3a3641d57aae4116482a500b346c47a3",
+  nativeCommit: "82b682c627ba8bfc2c2bd51cf46ad8f51c583857",
+  sourceArchiveSha256: "f9f1c3b20a1f382783d6b0fafdcc10c5beb41079c216831258ae541217e85a20",
+  migrations: "1ada4ee887ea812aac1cda2f07f2062a2c5d4658",
+  runtimeTree: "95f793d9ae0dbe76ed82b718a03a2fc898f1fce4",
+  controllerRecipe: "d539b81bf22959a45e71378b0a42f602138c6af5",
 });
 export const nativeProfileUpgradeFile = "tests/integration/native-profile-upgrade-k3d-real.test.ts";
 
@@ -90,8 +90,8 @@ export async function verifyNativeProfileBaseline(
   });
 }
 
-// The candidate is the actual tested checkout, not an assumed copy of the old
-// nine-bridge runtime. A merge may add bridges, migrations or another native pin.
+// Record the tested candidate independently because its bridges, migrations and
+// native pin can differ from the baseline.
 export async function nativeProfileCandidateSource(repository: string) {
   const git = async (...args: string[]) =>
     (await execFile("git", args, { cwd: repository })).stdout.trim();
@@ -139,9 +139,12 @@ export async function withNativeProfileBaseline<Result>(
   } catch {
     // Public, fixed source; never select credentials or a moving branch. CI's
     // checkout uses persist-credentials:false. Reuse its existing object store.
+    const { stdout } = await run(["rev-parse", "--is-shallow-repository"]);
+    const depth = stdout.trim() === "true" ? ["--depth=1"] : [];
     await run([
       "fetch",
       "--no-tags",
+      ...depth,
       "https://github.com/openclaw/openclaw-enterprise.git",
       nativeProfileBaseline.revision,
     ]);

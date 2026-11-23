@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import { execFile } from "../../scripts/ci/prepare-command.ts";
 import { assertDockerImageId } from "../../scripts/ci/k3d-image-admission.ts";
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
-import { privateBootstrapDirectory } from "./bootstrap-installation.mjs";
+import { credentialInputs, privateBootstrapDirectory } from "./bootstrap-installation.mjs";
 
 // Run the image's real production entrypoints, never the host checkout's
 // bootstrap implementation. Only this short-lived initializer gets the
@@ -13,10 +12,21 @@ import { privateBootstrapDirectory } from "./bootstrap-installation.mjs";
 export async function initializeNativeUpgradeInstallation(context, options) {
   const { image, migrationUrl, databaseUrl, expectedInstallationId } = options;
   assertDockerImageId(image, "native upgrade initializer image");
-  const directory = await privateBootstrapDirectory(context, "oce-native-upgrade-bootstrap-");
-  // Frozen535 generates recovery credentials as protected output files. Current
-  // verification accepts no removed output settings and needs no credential input.
-  // Do not call the current fresh-bootstrap fixture to initialize the old image.
+  const initialCredentials =
+    expectedInstallationId === undefined
+      ? { email: options.email, password: randomBytes(32).toString("base64url") }
+      : undefined;
+  const directory = initialCredentials
+    ? await privateBootstrapDirectory(context, "oce-native-upgrade-bootstrap-")
+    : undefined;
+  // Only the fresh baseline bootstrap receives credential inputs. Its real
+  // image entrypoint consumes protected files without a writable mount.
+  const bootstrapInputs =
+    directory && initialCredentials
+      ? Object.entries(credentialInputs(directory, initialCredentials.password)).map(
+          ([key, path]) => [key, "/bootstrap/" + basename(path)],
+        )
+      : [];
   const environment = {
     NODE_ENV: "production",
     OCC_DATABASE_URL: databaseUrl,
@@ -25,40 +35,22 @@ export async function initializeNativeUpgradeInstallation(context, options) {
     OCC_AGENT_NATIVE_ADMIN_DOMAIN: options.agentDomain ?? "agents.oce.localhost",
     OCC_BOOTSTRAP_ADMIN_EMAIL: options.email,
     OCC_BOOTSTRAP_INSTALLATION_NAME: options.installationName,
-    ...(expectedInstallationId === undefined
-      ? {
-          OCC_BOOTSTRAP_PASSWORD_FILE: "/bootstrap/initial-admin-password",
-          OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/initial-admin-service-key.json",
-        }
-      : {}),
   };
   // The existing production launcher reads the selected image's declared
-  // command: fixed535 runs its MJS migrator, current images their typed migrator.
+  // migration command.
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   const run = async (entry, database, args = []) => {
     const stage = entry === selectedImageMigrationEntry ? "migration" : "bootstrap";
     const name = "oce-native-upgrade-init-" + randomUUID();
+    const inputs = stage === "bootstrap" ? bootstrapInputs : [];
     const values = {
       ...environment,
-      OCC_DATABASE_URL: databaseUrl,
       OCC_MIGRATION_DATABASE_URL: database,
+      ...Object.fromEntries(inputs),
     };
-    // Names only enter argv; URLs, auth secrets and generated credentials never
-    // enter command diagnostics. Do not forward unrelated host/model variables.
-    const names = Object.keys(values).filter((key) => key === "NODE_ENV" || key.startsWith("OCC_"));
-    const allowed = names.filter((key) =>
-      [
-        "NODE_ENV",
-        "OCC_DATABASE_URL",
-        "OCC_MIGRATION_DATABASE_URL",
-        "OCC_AUTH_SECRET",
-        "OCC_AUTH_BASE_URL",
-        "OCC_AGENT_NATIVE_ADMIN_DOMAIN",
-        "OCC_BOOTSTRAP_ADMIN_EMAIL",
-        "OCC_BOOTSTRAP_PASSWORD_FILE",
-        "OCC_BOOTSTRAP_SERVICE_KEY_FILE",
-        "OCC_BOOTSTRAP_INSTALLATION_NAME",
-      ].includes(key),
+    // Pass only the explicitly selected environment names to the container.
+    const environmentArgs = Object.entries(values).flatMap(([key, value]) =>
+      value === undefined ? [] : ["--env", key],
     );
     let failed = false;
     let cleanupFailed = false;
@@ -76,9 +68,10 @@ export async function initializeNativeUpgradeInstallation(context, options) {
           "--security-opt=no-new-privileges",
           "--user",
           String(process.getuid()) + ":" + String(process.getgid()),
-          "--mount",
-          "type=bind,src=" + directory + ",dst=/bootstrap",
-          ...allowed.flatMap((key) => ["--env", key]),
+          ...(inputs.length
+            ? ["--mount", "type=bind,src=" + directory + ",dst=/bootstrap,readonly"]
+            : []),
+          ...environmentArgs,
           image,
           ...entry,
           ...args,
@@ -144,10 +137,5 @@ export async function initializeNativeUpgradeInstallation(context, options) {
     },
     bootstrap: { event: bootstrapEvent },
   };
-  if (expectedInstallationId !== undefined) {
-    return { receipt };
-  }
-  const password = (await readFile(join(directory, "initial-admin-password"), "utf8")).trim();
-  assert.ok(password.length >= 32, "old image must generate the initial recovery password");
-  return { credentials: { email: options.email, password }, receipt };
+  return initialCredentials ? { credentials: initialCredentials, receipt } : { receipt };
 }

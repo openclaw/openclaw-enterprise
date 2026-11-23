@@ -704,9 +704,191 @@ test("migration apply requires approval of the original run before native dispat
   assert.equal(await readFile(handoff, "utf8"), handoffBytes);
 });
 
+function postgresCompatibilityReport(
+  releasedController: string,
+  candidateController: string,
+  historyStatus: "current" | "unsupported",
+) {
+  const compatibilityFile = "tests/integration/postgres-migration-compatibility.test.mjs";
+  const counts = { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 };
+  const compatibilityResult = {
+    path: compatibilityFile,
+    status: "passed",
+    nodeExitCode: 0,
+    signal: null,
+    counts,
+    tests: [
+      "Released controller remains usable across candidate database writes",
+      "Released controller remains usable after configured IAM activation",
+    ].map((name) => ({ name, status: "passed", file: compatibilityFile })),
+    issues: [],
+    cleanup: { status: "passed" },
+    imageDigests: { releasedController, candidateController },
+    measurements: [{ kind: "released-controller-history", status: historyStatus }],
+  };
+  return {
+    version: 1,
+    command: "run",
+    sourceSha: "1".repeat(40),
+    lane: "postgres",
+    scope: "focused",
+    status: "passed",
+    exitCode: 0,
+    counts,
+    issues: [],
+    files: [compatibilityResult] as const,
+  };
+}
+
+test("recovery history requires the exact pair, a completed runner, and one current measurement", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-recovery-history-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const receipt = join(directory, "compatibility.json");
+  const recoveryDigest = `sha256:${"b".repeat(64)}`;
+  const candidateDigest = `sha256:${"a".repeat(64)}`;
+  const compatibility = postgresCompatibilityReport(recoveryDigest, candidateDigest, "current");
+  const [file] = compatibility.files;
+  const passed = { status: "passed", exitCode: 0, signal: null, terminal: true };
+  const phases = { prepare: passed, run: passed, cleanup: passed };
+  const lifecycle = { status: "passed", interrupted: null, phases };
+  const [history] = file.measurements;
+  assert.ok(history);
+  const report = {
+    ...compatibility,
+    lifecycle,
+    files: [
+      {
+        ...file,
+        measurements: [
+          { kind: "keycloak-enrollment-interrupted", row: 0, operation: "sign-in" },
+          history,
+        ],
+      },
+    ],
+  };
+  const runHistory = (...inputs: string[]) =>
+    spawnSync(
+      "python3",
+      [join(repository, "scripts/upgrade-evidence.py"), "recovery-history", ...inputs],
+      {
+        encoding: "utf8",
+        timeout: 5_000,
+      },
+    );
+  const inputs = [receipt, recoveryDigest, candidateDigest, report.sourceSha] as const;
+  const assertRefused = (message: string, ...args: string[]) => {
+    const result = runHistory(...args);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, message + "\n");
+  };
+  const valid = JSON.stringify(report);
+  await writeFile(receipt, valid, { mode: 0o600 });
+  const accepted = runHistory(...inputs);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(accepted.stderr, "");
+  assert.equal(
+    accepted.stdout,
+    "Reported recovery controller history is current for the selected compatibility pair.\n",
+  );
+  assert.equal(await readFile(receipt, "utf8"), valid);
+  assert.deepEqual(await readdir(directory), ["compatibility.json"]);
+
+  const identityError =
+    "Supply two distinct lowercase sha256 digests and the full lowercase runner SHA.";
+  const compatibilityError =
+    "Supply a passing PostgreSQL compatibility report for the selected digests and runner SHA.";
+  const lifecycleError =
+    "Use a completed PostgreSQL runner report with successful prepare, run, and cleanup phases.";
+  const historyError =
+    "Rerun compatibility with a runner that records exactly one current migration history measurement.";
+  const fileError = "Supply a readable regular PostgreSQL report with valid, unambiguous JSON.";
+
+  assertRefused(
+    "Usage: python3 scripts/upgrade-evidence.py recovery-history REPORT RECOVERY_DIGEST CANDIDATE_DIGEST RUNNER_SHA",
+    receipt,
+  );
+  for (const selection of [
+    [recoveryDigest, recoveryDigest, report.sourceSha],
+    [recoveryDigest, candidateDigest.toUpperCase(), report.sourceSha],
+    ["registry.example/image@" + recoveryDigest, candidateDigest, report.sourceSha],
+    [recoveryDigest, candidateDigest, report.sourceSha.slice(0, 12)],
+  ]) {
+    assertRefused(identityError, receipt, ...selection);
+  }
+  assertRefused(compatibilityError, receipt, candidateDigest, recoveryDigest, report.sourceSha);
+  assertRefused(compatibilityError, receipt, recoveryDigest, candidateDigest, "2".repeat(40));
+
+  // A passing summary cannot substitute for the selected cases or terminal lifecycle evidence.
+  await writeFile(receipt, JSON.stringify({ ...report, files: [{ ...file, tests: [] }] }));
+  assertRefused(compatibilityError, ...inputs);
+  for (const state of [
+    undefined,
+    { ...lifecycle, status: "failed" },
+    { ...lifecycle, interrupted: undefined },
+    { ...lifecycle, interrupted: "SIGTERM" },
+    ...(["prepare", "run", "cleanup"] as const).map((phase) => ({
+      ...lifecycle,
+      phases: { ...phases, [phase]: undefined },
+    })),
+    ...[
+      { status: "failed" },
+      { exitCode: false },
+      { exitCode: 1 },
+      { signal: undefined },
+      { signal: "SIGTERM" },
+      { terminal: 1 },
+      { error: "private phase diagnostic" },
+      { reason: "spawn-failed" },
+    ].map((cleanup) => ({
+      ...lifecycle,
+      phases: { ...phases, cleanup: { ...passed, ...cleanup } },
+    })),
+  ]) {
+    await writeFile(receipt, JSON.stringify({ ...report, lifecycle: state }));
+    assertRefused(lifecycleError, ...inputs);
+  }
+
+  for (const measurements of [
+    undefined,
+    [history, history],
+    [history, { ...history, status: "unsupported" }],
+    [{ ...history, status: "unconfirmed" }],
+  ]) {
+    await writeFile(receipt, JSON.stringify({ ...report, files: [{ ...file, measurements }] }));
+    assertRefused(historyError, ...inputs);
+  }
+  await writeFile(
+    receipt,
+    JSON.stringify({
+      ...report,
+      ...postgresCompatibilityReport(recoveryDigest, candidateDigest, "unsupported"),
+    }),
+  );
+  assertRefused(
+    "The recovery controller migrator refused the upgraded history. Qualify a different recovery controller.",
+    ...inputs,
+  );
+
+  // An ambiguous report must fail even when the last value would pass.
+  for (const content of [
+    valid.replace('"interrupted":null', '"interrupted":"private value","interrupted":null'),
+    valid.slice(0, -1),
+    `{"private":NaN,${valid.slice(1)}`,
+  ]) {
+    await writeFile(receipt, content);
+    assertRefused(fileError, ...inputs);
+  }
+  await writeFile(receipt, valid);
+  const alias = join(directory, "receipt-link");
+  await symlink(receipt, alias);
+  assertRefused(fileError, alias, ...inputs.slice(1));
+  assertRefused(fileError, directory, ...inputs.slice(1));
+});
+
 test("the same local candidate is explained by plan and apply without printing its contents", async (t) => {
   const f = await fixture(t);
-  await selectCheckout(f);
+  const selectedProfile = await selectCheckout(f);
   const values = join(f.rendered, "candidate-values.yaml");
   const installation = join(f.rendered, "candidate-installation.yaml");
   const receipt = join(f.rendered, "compatibility.json");
@@ -728,7 +910,15 @@ test("the same local candidate is explained by plan and apply without printing i
     { mode: 0o600 },
   );
   const receiptCanary = randomBytes(24).toString("hex");
-  await writeFile(receipt, JSON.stringify({ privateReceipt: receiptCanary }), { mode: 0o600 });
+  const releasedController = `sha256:${"b".repeat(64)}`;
+  const candidateController = f.input.images.controller.split("@")[1];
+  assert.ok(candidateController);
+  // The existing preview accepts the pair and does not promote the advisory to live proof.
+  const compatibilityReceipt = {
+    ...postgresCompatibilityReport(releasedController, candidateController, "unsupported"),
+    privateReceipt: receiptCanary,
+  };
+  await writeFile(receipt, JSON.stringify(compatibilityReceipt), { mode: 0o600 });
   const options = [
     "--",
     "--candidate-values",
@@ -755,9 +945,12 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.match(plan.stdout, /overwrite the local installation.yaml/);
   assert.match(plan.stdout, /live mutable Installation Secret remains selected.*replace its data/);
   assert.match(plan.stdout, /select a staged immutable Installation Secret/);
+  assert.match(plan.stdout, /compatibility receipt matches the selected controller/);
+  assert.match(plan.stdout, /installed controller digest requires live preflight/);
   assert.ok(plan.stdout.includes(f.input.images.controller));
   const output = plan.stdout + plan.stderr + apply.stdout + apply.stderr;
-  for (const withheld of [password, proxy, receiptCanary]) {
+  assert.doesNotMatch(output, /rejected the candidate migration history/);
+  for (const withheld of [password, proxy, receiptCanary, receipt, releasedController]) {
     assert.ok(!output.includes(withheld));
   }
   for (const file of [
@@ -782,6 +975,46 @@ test("the same local candidate is explained by plan and apply without printing i
     "operator.json",
     "rendered",
   ]);
+
+  const valid = JSON.stringify(compatibilityReceipt);
+  for (const invalid of [
+    valid.replace(candidateController, releasedController),
+    valid.replace(releasedController, receiptCanary),
+    JSON.stringify({ ...compatibilityReceipt, status: "failed" }),
+    valid.slice(0, -1),
+  ]) {
+    await writeFile(receipt, invalid);
+    for (const action of ["plan", "apply"]) {
+      const result = run(action, f, options, { automaticEvidence: true });
+      assert.equal(result.status, 2);
+      assert.ok(result.stdout === "");
+      assert.ok(
+        result.stderr.includes(
+          "Supply a passing PostgreSQL compatibility report for the selected controller and retry.",
+        ),
+      );
+      assert.ok(!result.stderr.includes(receiptCanary) && !result.stderr.includes(receipt));
+      assert.deepEqual((await readdir(f.directory)).sort(), [
+        "kubeconfig",
+        "operator.json",
+        "rendered",
+      ]);
+    }
+  }
+  await writeFile(receipt, valid);
+  await writeFile(
+    f.profile,
+    JSON.stringify({ ...selectedProfile, images: { broker: f.input.images.controller } }),
+  );
+  const noController = run("plan", f, options);
+  assert.equal(noController.status, 2);
+  assert.equal(noController.stdout, "");
+  assert.match(
+    noController.stderr,
+    /--controller-compatibility-results requires a selected controller image/,
+  );
+  assert.ok(!noController.stderr.includes(receipt));
+  await writeFile(f.profile, JSON.stringify(selectedProfile));
 
   const privateValue = randomBytes(32).toString("hex");
   for (const [file, invalid, description] of [
