@@ -21,9 +21,12 @@ import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/p
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
 import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
+  createRepositorySourceMaterialReader,
+  type RepositorySourceCustody,
+} from "../../drivers/repo/github/access/source-loan.ts";
+import {
   validateGitHubRepositoryRegistry,
   resolveCurrentGitHubRepositoryBinding,
-  requireGitHubApp,
   resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
@@ -60,7 +63,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
       | "PREPARED_GITHUB_MAINTENANCE_FAILED"
       | "PREPARED_GITHUB_APP_KEY_INVALID"
       | "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC"
-      | "PREPARED_GITHUB_RETIRED_UNREVOKED",
+      | "PREPARED_GITHUB_RETIRED_UNREVOKED"
+      | "REPOSITORY_SOURCE_LOAN_REFUSED",
     context?: Readonly<Record<string, string | number | boolean | undefined>>,
     severity?: "info" | "error",
   ) => void;
@@ -68,6 +72,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   /** Private host selection; never derived from issuer configuration or a request. */
   repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
+  /** TokenService custody, IAM and the row lock for registrations that name a Source. */
+  repositorySourceCustody?: RepositorySourceCustody;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -221,10 +227,28 @@ export async function startPreparedGitHubGitOwner(
   const authority = preparationIssuerAuthority(apiOrigin, ca);
   // Refuse a key that cannot sign before the worker reports ready, not at the first
   // preparation (finding 2217). Maintenance reads it again, so a rotated Secret applies.
-  // TODO(repository token Source delivery, part B): start without the App key when the registry
-  // has no App. Until then a registry without the App refuses here, before the Worker is ready.
-  const app = requireGitHubApp(registry);
-  (await appSigningKey(options.privateKeyPath, app.appId, clock)).owner.close();
+  // A registry without the App holds only Source-backed registrations: no key to check or sign with.
+  const app =
+    registry.appId === undefined || registry.githubInstallationId === undefined
+      ? undefined
+      : { appId: registry.appId, installationId: registry.githubInstallationId };
+  if (app) {
+    (await appSigningKey(options.privateKeyPath, app.appId, clock)).owner.close();
+  }
+  // Each loan rechecks the Source and reads its current custody version, so a replaced value
+  // reaches the next loan without a redeploy. A refusal names the Source and a fixed reason.
+  const lent =
+    options.repositorySourceCustody &&
+    createRepositorySourceMaterialReader(options.repositorySourceCustody, {
+      clock: { now: () => clock.wallNow() },
+      refused: (refusal) =>
+        options.report?.(refusal.code, {
+          reason: refusal.reason,
+          credentialSourceId: refusal.sourceId,
+          ...(refusal.sourceVersion && { credentialSourceVersion: refusal.sourceVersion }),
+          ...(refusal.tokenClass && { tokenClass: refusal.tokenClass }),
+        }),
+    });
   const custody = await privateInput(options.custodyKeyPath);
   if (custody.length !== 32) {
     custody.fill(0);
@@ -294,7 +318,7 @@ export async function startPreparedGitHubGitOwner(
         return;
       }
       const admitted = resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding);
-      if (!admitted) {
+      if (!admitted || !app) {
         return;
       }
       const common = { key: { source: { id: "repository-git:" + session.admissionId } }, session };
@@ -325,6 +349,7 @@ export async function startPreparedGitHubGitOwner(
       };
     },
     custodySelection,
+    lent,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
@@ -356,7 +381,8 @@ export async function startPreparedGitHubGitOwner(
     },
     retire: (signal) => retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock),
     async prepare(_signal, run) {
-      if (!sources.length) {
+      if (!sources.length || !app) {
+        // A lent Source has no family to prepare or renew.
         return;
       }
       const { keyObject, owner: key } = await appSigningKey(

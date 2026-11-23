@@ -1,6 +1,7 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
+import { createRepositorySourceCustody } from "./backends/repository-credentials/source-custody.ts";
 import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
@@ -108,6 +109,7 @@ let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
 let protectedDriver;
+let sourceLockPool;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -206,12 +208,32 @@ try {
   }
   if (repositoryOwner && drivers.preparedRepositoryGit) {
     const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+    // Registrations that name a TokenService Source are lent from its custody. The row hold
+    // spans a Provider write, so it has its own small pool beside the store's.
+    const tokenService = drivers.installation.drivers.token_service;
+    const secrets = drivers.secretDriver.installationSecrets;
+    if (tokenService && secrets) {
+      sourceLockPool = await createPostgresPool(databaseUrl, {
+        ...databasePoolOptions,
+        max: 4,
+      });
+    }
+    const platformState = sourceLockPool && new PostgresPlatformState(pool);
     preparedRepositoryGit = await startPreparedGitHubGitOwner({
       ...repositoryOwner,
       ...owner,
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
       registry: drivers.repositoryRegistry,
+      ...(platformState && {
+        repositorySourceCustody: createRepositorySourceCustody({
+          lockPool: sourceLockPool,
+          state: platformState,
+          secrets,
+          tokenServiceDriverId: tokenService.id,
+          iam: drivers.createIAMDriver(platformState),
+        }),
+      }),
       ...repositoryGitAuthority(drivers),
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
@@ -286,6 +308,7 @@ try {
         readinessPath,
         repositoryGitTransport,
         preparedRepositoryGit,
+        sourceLockPool,
         receiptServer,
         closeMetrics,
         preparedGitHub,
@@ -303,6 +326,7 @@ try {
   await preparedGitHub?.close().catch(() => {});
   await repositoryGitTransport?.close().catch(() => {});
   await preparedRepositoryGit?.close().catch(() => {});
+  await sourceLockPool?.end().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});
   if (readinessPath !== undefined) {

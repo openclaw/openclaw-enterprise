@@ -30,6 +30,7 @@ import type { EgressAuthorityConfiguration } from "../../composition/egress-auth
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
 import { openShellGitOriginRefusal } from "../sandbox/openshell-git-network-policy.ts";
+import { writeHoldOf } from "../repo/access/material-hold.ts";
 import type {
   RepositoryGitDeliveryResolver,
   RepositoryGitDeliveryBinding,
@@ -2051,6 +2052,8 @@ export class OpenShellGitRuntime {
         return;
       }
       const material = await read(readMaterial, signal);
+      // This read only decides whether to rotate; the write below reads and holds again.
+      await writeHoldOf(material)?.release();
       if (!material || "absent" in material) {
         entry.absent = material?.absent;
         if (entry.material) {
@@ -2086,6 +2089,11 @@ export class OpenShellGitRuntime {
         ("scope" in material
           ? material.scope !== scopeName ||
             material.installationId !== entry.authorization.delivery.installationId ||
+            // A Source is lent only for the delivery that names it, never for the App's.
+            ("credentialSource" in material ? material.credentialSource : undefined) !==
+              ("credentialSource" in entry.authorization.delivery
+                ? entry.authorization.delivery.credentialSource
+                : undefined) ||
             (material.scope === "github-repository" &&
               (!("repositories" in entry.authorization.delivery) ||
                 !isDeepStrictEqual(
@@ -2151,11 +2159,15 @@ export class OpenShellGitRuntime {
                 return;
               }
               const current = await read(() => readMaterial(reservedInstall), signal);
+              // A lent Source's row stays held until the write returns (the Provider settles it),
+              // so its replacement or retirement waits; once released, nothing is dispatched.
+              const hold = writeHoldOf(current);
+              const held = () => isCurrent() && (hold === undefined || hold.held());
               if (
                 current &&
                 !("absent" in current) &&
                 isDeepStrictEqual(material, current) &&
-                isCurrent()
+                held()
               ) {
                 if (entry.authorization.repositoryNetworkPolicy !== undefined) {
                   if (
@@ -2171,7 +2183,8 @@ export class OpenShellGitRuntime {
                   }
                   // The material snapshot can arrive after a different worker withdraws it.
                   await this.fenced(entry, signal);
-                  if (!isCurrent()) {
+                  if (!held()) {
+                    await hold?.release();
                     return;
                   }
                 }
@@ -2185,9 +2198,13 @@ export class OpenShellGitRuntime {
                         ),
                       ).toISOString()
                     : current.expiresAt,
-                  ...(entry.authorization.repositoryNetworkPolicy !== undefined && { isCurrent }),
+                  ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
+                    isCurrent: held,
+                  }),
+                  ...(hold && { settle: () => hold.release() }),
                 };
               }
+              await hold?.release();
               entry.absent = current && "absent" in current ? current.absent : undefined;
             },
             signal,
@@ -2235,6 +2252,19 @@ export class OpenShellGitRuntime {
         ) {
           // The supervisor activated this material: its connection reset has happened by now.
           entry.materialInstalled = { materialVersion, preparationAttemptId, at: Date.now() };
+          const lent = entry.material as {
+            credentialSource?: string;
+            credentialSourceVersion?: string;
+          };
+          if (lent.credentialSource !== undefined) {
+            // Replacement was committed when the PATCH returned; this is the revision's delivery.
+            this.emit?.({
+              event: "worker.openshell-git-delivery-confirmed",
+              credentialSourceId: lent.credentialSource,
+              credentialSourceVersion: lent.credentialSourceVersion,
+              ...this.identity(entry),
+            });
+          }
         }
       } else {
         this.pending(entry, "unverified");
@@ -2417,6 +2447,11 @@ export class OpenShellGitRuntime {
           reason = "material_expired";
           break;
         }
+        if ("credentialSource" in material && material.credentialSource !== undefined) {
+          // A lent Source reaches Git only through the network policy's Provider.
+          reason = "no_binding";
+          break;
+        }
         return {
           sandboxId: identity.sandboxId,
 
@@ -2428,7 +2463,8 @@ export class OpenShellGitRuntime {
           grantId: material.grantId,
           ...("scope" in material
             ? {
-                installationId: material.installationId,
+                // Source material returned above: this route always has an App installation.
+                installationId: material.installationId!,
                 ...(material.scope === "github-repository"
                   ? { scope: material.scope, repositories: material.repositories }
                   : { scope: material.scope }),

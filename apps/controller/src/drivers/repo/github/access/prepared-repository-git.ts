@@ -34,6 +34,9 @@ import {
   preparedAttemptSettlesAfter,
 } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
+import type { GitHubRepositorySourceGrant } from "./repository-grant.ts";
+import type { TokenMaterialReader } from "../../../../backends/token-service/material.ts";
+import { withWriteHold, writeHoldOf } from "../../access/material-hold.ts";
 import {
   legacyAdoption,
   protectedGitAdoption,
@@ -354,16 +357,29 @@ export interface PreparedRepositoryGitSource {
     | typeof selectedGitAdoption;
   readonly key: { source: { id: string } };
   readonly session: PreparedRepositorySession;
-  readonly grant: GitHubPreparationAdmission["grant"] &
-    (
-      | { profile: "git-ref-write" | "git-ref-draft-pr"; pushRef: string }
-      | { profile: "github-installation" }
-      | { profile: "github-repository" }
-    );
+  readonly grant:
+    | (GitHubPreparationAdmission["grant"] &
+        (
+          | { profile: "git-ref-write" | "git-ref-draft-pr"; pushRef: string }
+          | { profile: "github-installation" }
+          | { profile: "github-repository" }
+        ))
+    | GitHubRepositorySourceGrant;
   /** The registry's opt-out of the one-draft limit; honored by the protected sender only. */
   readonly draftPullLimit?: "none";
 }
 type Policy = (session: PreparedRepositorySession) => PreparedRepositoryGitSource | undefined;
+type AppSource = PreparedRepositoryGitSource & {
+  readonly grant: Exclude<PreparedRepositoryGitSource["grant"], GitHubRepositorySourceGrant>;
+};
+/** App material has a family row; a Source is lent at each read and has none. */
+const appSource = (source: PreparedRepositoryGitSource): source is AppSource =>
+  !("credentialSource" in source.grant);
+/** The rowless reader of TokenService Source loans (source-loan.ts). */
+export type PreparedRepositorySourceMaterial = TokenMaterialReader<
+  PostgresClient,
+  PreparedRepositoryGitSource & { readonly grant: GitHubRepositorySourceGrant }
+>;
 
 /** A native revision's token state; `quarantined` is terminal for that revision. */
 export type PreparedRepositoryGitMaterialState = "ready" | "pending" | "quarantined";
@@ -394,6 +410,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly policy: Policy;
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
+  private readonly lent: PreparedRepositorySourceMaterial | undefined;
 
   constructor(
     pool: PostgresPool,
@@ -401,6 +418,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     authority: string,
     policy: Policy,
     custody: RepositoryGitCustody,
+    /** Lends Source-backed grants; without it the policy's Source grants get no material. */
+    lent?: PreparedRepositorySourceMaterial,
   ) {
     if (custody === undefined) {
       throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
@@ -430,6 +449,32 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     this.adoption = adoption;
     this.authority = authority;
     this.policy = policy;
+    this.lent = lent;
+  }
+
+  /** The caller's transaction holds the live session lock. App material is also locked in its
+   * family row; a Source's catalog row is held by the reader until the Provider write returns. */
+  private readWarm(c: PostgresClient, source: PreparedRepositoryGitSource) {
+    return appSource(source)
+      ? this.tokens.readWarm(c, source)
+      : this.lent?.readWarm(
+          c,
+          source as Parameters<PreparedRepositorySourceMaterial["readWarm"]>[1],
+        );
+  }
+
+  private currentMaterial(
+    c: PostgresClient,
+    source: PreparedRepositoryGitSource,
+    installed: Parameters<PreparedRepositorySourceMaterial["current"]>[2],
+  ) {
+    return appSource(source)
+      ? this.tokens.current(c, source, installed)
+      : this.lent?.current(
+          c,
+          source as Parameters<PreparedRepositorySourceMaterial["current"]>[1],
+          installed,
+        );
   }
 
   /** Background discovery only. Admission and key lookup are not reachable from use().
@@ -483,6 +528,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     source: PreparedRepositoryGitSource,
     version: string,
   ): Promise<GitHubPreparationAdmission | undefined> {
+    if (!appSource(source)) {
+      // A Source is lent, never issued: it has no family to claim.
+      return;
+    }
     const sessions = sessionQuery(this.proxy);
     const live = active(sessions);
     const familyId = source.key.source.id;
@@ -821,7 +870,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
         const source = current && this.policy(current.session);
         const version = { preparationAttemptId, materialVersion };
-        if (!source || !(await this.tokens.current(c, source, version))) {
+        if (!source || !(await this.currentMaterial(c, source, version))) {
           return;
         }
         const key = await this.deliveryKey(c, revisionId, observed);
@@ -902,6 +951,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     | undefined
   > {
     let bytes: Buffer | undefined;
+    // A lent Source's row hold passes to the caller's Provider write; every other exit ends it.
+    let hold: ReturnType<typeof writeHoldOf>;
+    let held = false;
     const withdrawn: RepositoryGitMaterialAbsence = Object.freeze({ absent: "withdrawn" });
     const unprepared: RepositoryGitMaterialAbsence = Object.freeze({ absent: "unprepared" });
     try {
@@ -946,10 +998,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ) {
           return unprepared;
         }
-        const material = await this.tokens.readWarm(c, source);
+        const material = await this.readWarm(c, source);
         if (!material) {
           return unprepared;
         }
+        hold = writeHoldOf(material);
         const { preparationAttemptId, materialVersion } = material;
         const until = Math.min(Number(current.end_ms), material.usableUntil);
         if (signal.aborted || !(Date.now() < until)) {
@@ -962,21 +1015,31 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           materialVersion,
           sessionId: current.session.sessionId,
           apiOrigin: this.authority.split("#")[0]!,
-          ...(grant.profile === "github-installation" || grant.profile === "github-repository"
+          ...("credentialSource" in grant
             ? {
-                ...(grant.profile === "github-repository"
-                  ? { scope: grant.profile, repositories: grant.repositories }
-                  : { scope: grant.profile }),
+                // A Source's material names the Source and its custody version, never the value.
+                scope: grant.profile,
+                repositories: grant.repositories,
                 grantId: grant.id,
-                installationId: grant.installationId,
+                credentialSource: grant.credentialSource.sourceId,
+                credentialSourceVersion: (material as { sourceVersion?: string }).sourceVersion!,
                 providerInstanceId: current.session.binding.grant.providerInstanceId,
               }
-            : {
-                ...current.session.binding.grant,
-                repository: grant.repository,
-                pushRef: grant.pushRef,
-                ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
-              }),
+            : grant.profile === "github-installation" || grant.profile === "github-repository"
+              ? {
+                  ...(grant.profile === "github-repository"
+                    ? { scope: grant.profile, repositories: grant.repositories }
+                    : { scope: grant.profile }),
+                  grantId: grant.id,
+                  installationId: grant.installationId,
+                  providerInstanceId: current.session.binding.grant.providerInstanceId,
+                }
+              : {
+                  ...current.session.binding.grant,
+                  repository: grant.repository,
+                  pushRef: grant.pushRef,
+                  ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
+                }),
         };
       });
       signal.throwIfAborted();
@@ -986,12 +1049,14 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!bytes || Date.now() >= Date.parse(result.expiresAt)) {
         return unprepared;
       }
-      return Object.freeze({
-        ...result,
-        value: bytes.toString("utf8"),
-      });
+      const material = { ...result, value: bytes.toString("utf8") };
+      held = hold !== undefined;
+      return Object.freeze(hold ? withWriteHold(material, hold) : material);
     } finally {
       bytes?.fill(0);
+      if (!held) {
+        await hold?.release();
+      }
     }
   }
 
@@ -1120,6 +1185,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return fail();
     }
     const { grant } = source;
+    if (!appSource(source) || "credentialSource" in grant) {
+      // A lent Source has no use receipts: OpenShell's network policy is its only route.
+      return fail();
+    }
     const installation = "installationId" in q;
     let repositoryId;
     if (installation) {
