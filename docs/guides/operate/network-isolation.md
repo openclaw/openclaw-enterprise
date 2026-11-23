@@ -327,13 +327,25 @@ check or after an interruption, promptly remove remaining acknowledged Pods.
 Delete the recorded control Namespace last, using `/api/v1/namespaces/${CONTROL_NS:?}`
 and its recorded `${CONTROL_NS_UID:?}` in the same UID precondition. Deleting the
 Namespace deletes everything in it. Confirm every create has a known outcome.
-Verify that the Namespace contains only acknowledged probe objects and verified
-Kubernetes-created Namespace defaults, such as the `default` ServiceAccount and
-`kube-root-ca.crt` ConfigMap. A familiar name alone does not establish origin.
-Keep the Namespace exclusive to this check through deletion. If any object's
-origin is uncertain or you cannot ensure exclusive use, delete only acknowledged
-Pods by UID and leave the Namespace for the cluster owner to reconcile. Stop on
-a conflict, uncertain ownership, or an ambiguous create or deletion response.
+Before DELETE, inventory all Namespace contents. Verify that they include only
+acknowledged probe objects, verified Kubernetes-created Namespace defaults such
+as the `default` ServiceAccount and `kube-root-ca.crt` ConfigMap, and independently
+verified Kubernetes-generated Events referencing `CONTROL_POD_UID`. Scheduling
+Events can remain after Pod removal. A familiar name or matching UID reference
+alone does not prove origin. Keep the Namespace exclusive through deletion.
+For unverified or incomplete inventory, unexpected objects, or uncertain
+exclusivity, delete only acknowledged Pods by UID and leave the Namespace for
+the cluster owner to reconcile. Stop on conflicts, uncertain ownership or
+ambiguous create or deletion responses.
+
+After acknowledged Namespace DELETE, make read-only checks by recorded name with
+the original kubeconfig and context for at most 2 minutes, limiting each request
+to 10 seconds. Only Kubernetes NotFound confirms removal. The same
+`CONTROL_NS_UID`, including Terminating, means deletion is pending. For a
+different UID, leave the replacement untouched and stop for reconciliation. On
+timeout or denied, failed, inconclusive or unexpected responses, retain the
+original identity and hand it to the cluster owner. Do not repeat DELETE or
+force finalizers.
 Follow the
 [manual reconciliation guidance](../deploy/production-preflight-cleanup.md#reconcile-unsupported-or-uncertain-evidence)
 without repeating an uncertain request.
