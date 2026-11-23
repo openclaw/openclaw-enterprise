@@ -265,14 +265,12 @@ test("Agent and CredentialSource operations document the permissions they check"
       (permission) => record(permission, "permission").resourceKind === "credential_source",
     ),
   );
-  // Registration and update read each referenced Secret's value for the gateway.
+  // Source registration and update deliver write-only material directly to TokenService.
   assert.deepEqual(permissions("createCredentialSource"), [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },
-    { action: "operate", resourceKind: "secret", scope: "request_body", condition: "bound_secret" },
   ]);
   assert.deepEqual(permissions("updateCredentialSource"), [
     { action: "update", resourceKind: "credential_source", scope: "requested" },
-    { action: "operate", resourceKind: "secret", scope: "requested", condition: "bound_secret" },
   ]);
 
   const page = generateApiReferenceOutputs(document)[0].content;

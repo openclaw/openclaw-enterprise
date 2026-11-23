@@ -43,6 +43,7 @@ import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.m
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
@@ -912,12 +913,19 @@ test(
     assert.deepEqual(enrollmentDenial.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
     const deniedMaterial = randomUUID();
     material.push(deniedMaterial);
-    const deniedUpdate = remember(
-      await memberRequest("PATCH", sourcePath, {
-        secret: { opaque: deniedMaterial },
-      }),
+    // Source update authorization must conceal whether the requested Source exists.
+    await assertSameAnswer(
+      async (id) => {
+        const response = remember(
+          await memberRequest("PATCH", `${base}/credential-sources/${id}`, {
+            secret: { opaque: deniedMaterial },
+          }),
+        );
+        return { status: response.statusCode, body: response.json() };
+      },
+      [sourceId, `cs_${randomUUID()}`],
+      { label: "unauthorized Source update" },
     );
-    assert.equal(deniedUpdate.statusCode, 403, deniedUpdate.body);
     assert.equal(await resolve(), enrollmentMaterial);
     const denialAudit = await pool.query(
       `SELECT kind,outcome FROM occ.audit_events

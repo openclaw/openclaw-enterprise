@@ -7,6 +7,7 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import {
@@ -26,8 +27,6 @@ import {
   SecretResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type {
-  CredentialGatewayDriver,
-  CredentialSourceInput,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
   Permission,
@@ -145,6 +144,7 @@ async function createFixture(options: FixtureOptions = {}) {
     { id: "iam-secret-api" },
   );
   const auditSink = new InMemoryAuditSink();
+  const platformState = new InMemoryPlatformState({ auditSink });
   const secretDriver = options.secretDriver ?? createTestSecretDriver({ id: "secret-api-test" });
   let controller: OpenClawController | undefined;
   const sessionsByPrincipalId = new Map<string, Session>();
@@ -156,7 +156,7 @@ async function createFixture(options: FixtureOptions = {}) {
         : {
             createController(installation) {
               controller = new OpenClawController(installation, {
-                state: new InMemoryPlatformState({ auditSink }),
+                state: platformState,
                 recordOperations: options.recordOperations ?? false,
                 ...(options.now === undefined ? {} : { now: options.now }),
               });
@@ -206,6 +206,7 @@ async function createFixture(options: FixtureOptions = {}) {
     createPrincipal,
     principal,
     secretDriver,
+    platformState,
     state,
   };
 }
@@ -1208,108 +1209,70 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
   }
 });
 
-/** Records gateway copies; OCC admission, IAM and the audit rows under test stay real. */
-function createRecordingCredentialGateway() {
-  const stored = new Map<string, CredentialSourceInput["secrets"]>();
-  return {
-    id: "credential-gateway-secret-api",
-    capability: "credential_gateway",
-    implementation: "test-recording-gateway",
-    stored,
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "openai",
-          config: [],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-      ];
-    },
-    async registerSource(context, input) {
-      stored.set(context.source.id, input.secrets);
-      return { state: "ready" };
-    },
-    async updateSource(context, input) {
-      stored.set(context.source.id, input.secrets);
-      return { state: "ready" };
-    },
-    async sourceStatus(context) {
-      return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
-    },
-    async removeSource(context) {
-      stored.delete(context.source.id);
-    },
-    async attachForRevision() {
-      throw new Error("not exercised");
-    },
-    async attachmentStatus() {
-      throw new Error("not exercised");
-    },
-    async withdraw() {
-      throw new Error("not exercised");
-    },
-  } satisfies CredentialGatewayDriver & { stored: typeof stored };
-}
-
-test("credential source writes commit one value-free audit row each", async () => {
-  let now = Date.now();
-  const fixture = await createFixture({
-    now: () => new Date(now),
-    computeDriver: {
-      ...createReadyComputeDriver("compute-secret-api"),
-      async resolveSandboxNamespace(namespace) {
-        return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
-      },
-    },
-  });
+test("credential source writes commit one value-free audit row each", async (t) => {
+  const fixture = await createFixture();
   const namespace = await bootstrapNamespace(fixture);
-  const gateway = createRecordingCredentialGateway();
-  fixture.controller().registerDriver(gateway);
-  fixture.controller().selectDriver("credential_gateway", gateway.id);
+  const controller = fixture.controller();
+  const store = fixture.secretDriver.installationSecrets;
+  const instanceId = await controller.activateTokenServiceInstance("audit-owner", randomUUID());
+  const owner = new OCCTokenServiceDriver(
+    "audit-owner",
+    controller.installation.id,
+    store,
+    instanceId,
+    fixture.platformState,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  // Observe the real private store reference so deletion proves custody is removed, not merely
+  // that the public Source record has disappeared.
+  const storeCreate = t.mock.method(store, "create");
   const value = `credential-source-value-${randomUUID()}`;
   const rotated = `credential-source-rotated-${randomUUID()}`;
-  const secret = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
-    schema: SecretResponse,
-    body: { name: "Source key", value },
-  });
-  assert.equal(secret.status, 201);
   const sources = `/namespaces/${namespace.id}/credential-sources`;
-
   const created = await request(fixture.app, "POST", sources, {
     schema: CredentialSourceResponse,
-    body: { name: "openai", type: "openai", secrets: { api_key: secret.data.ref } },
+    body: { name: "audit source", type: "static", secret: { opaque: value } },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: value });
-  const updatedSecret = await request(
-    fixture.app,
-    "PATCH",
-    `/namespaces/${namespace.id}/secrets/${secret.data.id}`,
-    { body: { value: rotated } },
-  );
-  assert.equal(updatedSecret.status, 200);
+  assert.equal(storeCreate.mock.calls.length, 1);
+  const custodyRef = storeCreate.mock.calls[0]!.arguments[0];
+  const source = {
+    sourceRef: created.data.ref,
+    tokenServiceInstanceId: instanceId,
+  };
+  const resolve = async () =>
+    (await owner.resolveCredential(source, AbortSignal.timeout(5_000))).credential;
+  assert.equal(await resolve(), value);
+
   const updated = await request(fixture.app, "PATCH", `${sources}/${created.data.id}`, {
-    body: {},
+    body: { secret: { opaque: rotated } },
   });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: rotated });
-  // Past the registration fence: no timed-out registration could still create a gateway copy.
-  now += 71_000;
+  assert.equal(await resolve(), rotated);
   const deleted = await request(fixture.app, "DELETE", `${sources}/${created.data.id}`);
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
-  assert.equal(gateway.stored.has(created.data.id), false);
+  await assert.rejects(
+    store.withValue(custodyRef, async () => undefined),
+    /does not exist/,
+  );
 
   const mutations = fixture.auditSink.events.filter(
-    (event) => event.kind === "mutation" && event.resource.kind === "credential_source",
+    (event) =>
+      event.kind === "mutation" &&
+      event.outcome === "success" &&
+      event.resource.kind === "credential_source" &&
+      !event.action.endsWith(".started"),
   );
   assert.deepEqual(
     mutations.map((event) => [event.action, event.resource]),
     ["create", "update", "delete"].map((verb) => [
       `openclaw.credential_sources.${verb}`,
-      { kind: "credential_source", id: created.data.id, namespaceId: namespace.id },
+      {
+        kind: "credential_source",
+        id: created.data.id,
+        namespaceId: namespace.id,
+      },
     ]),
   );
   const audit = JSON.stringify(fixture.auditSink.events);

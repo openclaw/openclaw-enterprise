@@ -574,7 +574,7 @@
       "path": "tests/integration/occ-api-mutation-refusals.test.ts",
       "expectedTests": [
         "credential withdrawal routes authorize the Agent, not the credential source",
-        "credential source registration names the missing Credential Gateway",
+        "credential source registration checks Namespace readiness before TokenService availability",
         "a duplicate Secret name answers 409 naming the taken Secret name",
         "Secret values with an unpaired surrogate are refused as an invalid value",
         "a state conflict names what blocks the request, after authorization only",

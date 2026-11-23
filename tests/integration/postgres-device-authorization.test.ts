@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
@@ -41,7 +43,35 @@ test(
     const first = await createPostgresAgentApp(t, options);
     const second = await createPostgresAgentApp(t, options);
     await first.controller.applyIAMConfiguration();
-    for (const { controller } of [first, second]) {
+    // Browser consent preflights the selected TokenService on each API replica.
+    const storeIdentity = randomUUID();
+    await secretDriver.installationSecrets.create(
+      {
+        installationId: first.controller.installation.id,
+        id: `token-service-store-identity:${secretDriver.id}`,
+      },
+      storeIdentity,
+    );
+    for (const { controller, state } of [first, second]) {
+      const instanceId = await controller.activateTokenServiceInstance(
+        "device-consent-owner",
+        storeIdentity,
+      );
+      const tokenService = new OCCTokenServiceDriver(
+        "device-consent-owner",
+        controller.installation.id,
+        secretDriver.installationSecrets,
+        instanceId,
+        state,
+        undefined,
+        new OAuthAccountTokens(
+          state,
+          secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
+      controller.registerDriver(tokenService);
+      controller.selectDriver("token_service", tokenService.id);
       controller.registerDriver(gateway);
       controller.selectDriver("credential_gateway", gateway.id);
       controller.registerDriver(refresh);
