@@ -639,8 +639,8 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
-      // The credential covers every bound repository. A pull request can name any repository
-      // in the target's fork network as its head, so creation needs a saved grant on each.
+      // The credential covers every bound repository, and a pull request can name any of them
+      // in the target's fork network as its head. Creation therefore needs a saved grant on each.
       const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
       const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
         ? scope.scopedRest
