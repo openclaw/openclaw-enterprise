@@ -93,7 +93,7 @@ binding-preserving updates check SandboxPolicy `read` before naming saved additi
 binds repository rules to the credential-only Provider. OpenShell alone enforces
 Git, issue and PR reads and [PR creation](../reference/repository-credentials/access-levels.md#pull-request-creation).
 The Git middleware selects no admitted host, so no OCE service is in the request
-path. Deny rules refuse the create fields in a query string. Request bodies are
+path. Request bodies are
 not inspected ([known limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions

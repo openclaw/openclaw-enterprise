@@ -4047,8 +4047,8 @@ test("a Worker upgrade keeps saved bindings current and releases nothing to a Sa
   const held = await heldGit(t, true, undefined, {
     permissions: { issues: "write", pull_requests: "write" },
   });
-  // Captured before pull request routes existed, with these repositories and permissions.
-  // Deriving the routes must not change the identity of a binding that was saved then.
+  // Pinned identities for these repositories and permissions. The routes derived for a
+  // binding are not part of its identity, so a change in them leaves saved bindings current.
   assert.deepEqual(
     held.revision.repositoryCredentials!.bindings.map((b) => b.grant.grantId),
     [

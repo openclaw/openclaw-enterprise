@@ -88,10 +88,12 @@ gh api --method GET repos/OWNER/REPO/pulls/NUMBER
 
 `NUMBER` must be a positive decimal number of at most 19 digits. OpenShell
 injects the real credential outside the Agent and enforces these routes locally.
-No OCE service is in the request path, so API access continues when the Worker
-is unavailable. Omitting `scopedRest` keeps native delivery Git-only. These
+No OCE service is in the request path, so API access continues while the current
+credential is valid (at most one hour) when the Worker is unavailable; the Worker
+renews the credential. Omitting `scopedRest` keeps native delivery Git-only. These
 settings do not permit comments, reviews, PR updates or merges, issue writes,
-GraphQL, or access to repositories without a saved grant.
+GraphQL, or direct access to repositories without a saved grant. Pull request
+creation has the exceptions under [Known limits](#known-limits).
 
 #### Pull request creation
 
@@ -106,9 +108,7 @@ send it as the JSON body:
 gh api --method POST repos/OWNER/REPO/pulls --input pull.json
 ```
 
-OpenShell refuses a POST that carries `title`, `head`, `head_repo`, `base`,
-`body`, `draft`, `maintainer_can_modify` or `issue` in the query string. If a
-creation result is uncertain, inspect the repository before submitting again.
+If a creation result is uncertain, inspect the repository before submitting again.
 To withdraw creation, save Read for the repository and redeploy. Verify that the
 old Sandbox retires.
 
@@ -119,7 +119,13 @@ the body, and OCE does not check it. An Agent that can create pull requests in a
 repository can also do the following in that repository:
 
 - Name a branch of a fork as the head, with `head: "OWNER:BRANCH"` or `head_repo`.
-- Convert an existing issue into a pull request, with `issue: NUMBER`.
+  If the token also covers a repository of the same fork network for which the
+  Agent has no saved grant, such a pull request makes that repository's commits
+  readable through the target repository's pull request ref and diff.
+- Convert an existing issue into a pull request, with `issue: NUMBER`, which
+  changes that issue.
+
+A query string can carry the same fields.
 
 Two things bound both cases. GitHub applies the permissions and repositories of
 the installation token. The target is always a repository for which the Agent
