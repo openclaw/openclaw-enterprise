@@ -6,12 +6,11 @@ last_verified: "2026-11-04"
 
 # Rehearse a populated controller return
 
-Use this local test to check whether the previous OpenClaw Control Plane (OCC)
-controller can serve a draft that the candidate saved after an ordinary upgrade
-or recovery of an interrupted upgrade. The test creates a new installation and
-PostgreSQL instance, then uses the
-[local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md)
-to change the controller image.
+Check whether the previous OpenClaw Control Plane (OCC) controller can serve a
+candidate-saved draft after an ordinary or interrupted upgrade. The test creates
+an installation and PostgreSQL instance, then changes the controller image with the
+[local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md).
+For a return on the same database, use the [in-place rehearsal](postgresql.md#rehearse-an-in-place-controller-switch).
 
 ## Prepare the cluster and images
 
@@ -95,7 +94,7 @@ Recovery must advance exactly one revision and preserve the completed initialize
 Job, Pod, and committed migration history. The test leaves Helm storage and hooks
 intact. It fails if Helm finishes before interruption.
 
-Both return modes use chart resource defaults. Compare timings on fresh clusters
+Both archive return modes use chart resource defaults. Compare timings on fresh clusters
 with matching image digests and resource limits. Earlier fixture limits were
 1 CPU and 1 GiB. `proof.json` records CPU and memory limits from Kubernetes for
 the previous, candidate, and returned API and worker containers, with `null`

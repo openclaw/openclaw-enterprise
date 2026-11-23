@@ -326,6 +326,39 @@ This check reads a local report. Before rollout, check the recovery image agains
 the Installation's upgraded history and [verify that an acknowledged write
 survives controller return](populated-controller-return.md).
 
+### Rehearse an in-place controller switch
+
+Use the [populated controller return setup](populated-controller-return.md#prepare-the-cluster-and-images)
+with a fresh, exclusive k3d cluster. Stage all fixture and controller images,
+including the recovery image, in Docker and k3d. The recovery image must meet the
+same digest and source checks as the other controllers. Its digest and source
+commit must differ from the upgraded candidate's. Keep the release checkouts
+clean and use absolute paths.
+
+Keep the ordinary rehearsal environment file free of recovery variables. Supply
+them only for this opt-in trial.
+
+```sh
+OCC_TEST_PRODUCTION_TUI_REHEARSAL=in-place \
+OCC_TEST_REHEARSAL_RECOVERY_IMAGE="$RECOVERY_IMAGE" \
+OCC_TEST_REHEARSAL_RECOVERY_SOURCE="$RECOVERY_SOURCE" \
+  node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
+```
+
+Require a pass without skips. The test performs an ordinary controller-only
+forward upgrade. After the candidate acknowledges an Agent draft save, it checks
+the recovery migrator against the upgraded history and uses the same candidate
+tooling and chart to switch to the recovery controller. It verifies the exact
+draft readback on the same upgraded database without restoring an archive or
+running Helm rollback. The interrupted and ordinary archive modes remain unchanged.
+This trial does not qualify model execution or a production rollout.
+
+For recovery-history screening, use recovery as the released controller and the
+upgraded image as candidate. A separate optional production return compatibility
+report reverses that pair. The upgraded controller is now installed and the
+recovery image is the candidate. Supply that report to the return command's
+`--controller-compatibility-results` option.
+
 ## Azure workload-identity connections
 
 The `postgres-azure-workload-identity` lane reads an existing authorized Azure

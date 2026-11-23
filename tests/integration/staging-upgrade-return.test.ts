@@ -80,6 +80,33 @@ test("return rehearsal refuses image selection in the credentialed TUI lane", as
   );
 });
 
+test("return rehearsal requires explicit in-place selection and a complete recovery pair", async () => {
+  const noCommand = () => Promise.reject(new Error("unexpected command"));
+  const recovery = {
+    OCC_TEST_REHEARSAL_RECOVERY_IMAGE: controller("7", "8", "9").reference,
+    OCC_TEST_REHEARSAL_RECOVERY_SOURCE: "/absolute/fixture",
+  };
+  for (const mode of ["1", "ordinary"]) {
+    await assert.rejects(
+      selectRehearsalControllers(noCommand, {
+        ...recovery,
+        OCC_TEST_PRODUCTION_TUI_REHEARSAL: mode,
+      }),
+      /recovery image and source require/u,
+    );
+  }
+  const mode = { OCC_TEST_PRODUCTION_TUI_REHEARSAL: "in-place" };
+  await assert.rejects(selectRehearsalControllers(noCommand, mode), /immutable controller image/u);
+  await assert.rejects(
+    selectRehearsalControllers(noCommand, {
+      ...mode,
+      ...recovery,
+      OCC_TEST_REHEARSAL_RECOVERY_SOURCE: "relative",
+    }),
+    /absolute recovery source checkout/u,
+  );
+});
+
 test("return readback rejects a stale restore and a recreated Agent with the same name", () => {
   const baseline = returnedAgentSnapshot({
     executionMode: "embedded",
@@ -299,6 +326,8 @@ import("./" + entry);
   assert.deepEqual(args, [...selectedImageMigrationEntry, "--check"]);
   assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty"]), args);
   assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--require-current"]), args);
+  const requireCurrent = rehearsalMigrationProbeArgs(legacyArgs, "--require-current");
+  assert.deepEqual(requireCurrent, [...selectedImageMigrationEntry, "--require-current"]);
   assert.deepEqual(rehearsalMigrationProbeArgs(["scripts/migrate-production.mjs"]), args);
   assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram + "\n", "--"]), undefined);
   assert.equal(
@@ -329,6 +358,9 @@ import("./" + entry);
   await declareMigration(`NODE_ENV=production ${command}`);
   await runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 });
   assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--check"]);
+  assert.ok(requireCurrent);
+  await runFixtureCommand(process.execPath, requireCurrent, { cwd: directory, timeout: 10_000 });
+  assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--require-current"]);
 });
 
 test("release checkout admission rejects hidden edits and ignored execution inputs before Docker", async (t) => {
@@ -383,6 +415,24 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
       OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: `localhost/oce-rehearsal/candidate@sha256:${"1".repeat(64)}`,
     }),
     /manifest digests must differ/u,
+  );
+  assert.equal(dockerCalls, 0);
+  const inPlace = {
+    ...env,
+    OCC_TEST_PRODUCTION_TUI_REHEARSAL: "in-place",
+    OCC_TEST_REHEARSAL_RECOVERY_SOURCE: candidate,
+    OCC_TEST_REHEARSAL_RECOVERY_IMAGE: env.OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE,
+  };
+  await assert.rejects(
+    selectRehearsalControllers(run, inPlace),
+    /recovery and candidate controller manifest digests must differ/u,
+  );
+  await assert.rejects(
+    selectRehearsalControllers(run, {
+      ...inPlace,
+      OCC_TEST_REHEARSAL_RECOVERY_IMAGE: controller("7", "8", "9").reference,
+    }),
+    /recovery and candidate controller source commits must differ/u,
   );
   assert.equal(dockerCalls, 0);
   // These real Git index flags hide worktree edits from porcelain status.
