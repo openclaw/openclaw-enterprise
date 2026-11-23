@@ -53,7 +53,9 @@ Treat `deny: []` as omission. Every allow list (even `allow: []`) and every none
 
 Start with four actions. `issues:read` and `pull_requests:read` each cover list and numbered detail GETs. `issues:create` and `pull_requests:create` each cover one collection POST. Creation does not enable a separate GET. Give new operations distinct names. A new GitHub endpoint stays closed until OCE deliberately supports it and specifies its permissions.
 
-**Operator UX.** In the setup guide, check the actions to keep on B. With **Include new eligible actions automatically** on, generate `deny` from unchecked actions. With it off, generate `allow` from checked actions. Show the configuration to copy into the Namespace registration. Label the preview as an example and explain which grants or permissions limit access. The checklist cannot change a running Agent. Live policy reporting is separate work.
+**Default setup.** Recommend **Full access** for a selected repository. Omit `apiActions`, save Agent Write where permitted and deploy. Full access means all supported actions within the approved permissions and grants. It grants nothing on other repositories.
+
+**Customize access.** Keep the [setup guide’s controls](https://github.com/openclaw/openclaw-enterprise/pull/7165) collapsed under **Advanced**. Show a short summary when customized. Check the actions to keep. With **Include new eligible actions automatically** on, generate `deny` from unchecked actions. With it off, generate `allow` from checked actions. Copy the filter into the Namespace registration. The guide previews an example and cannot read or change a running Agent.
 
 **Before deploying**, remove `scopedRest` and check the approved permissions. To keep Git-only access, set `apiActions: { allow: [] }`. To keep issue creation off, use `apiActions: { deny: ["issues:create"] }`. An unchanged Write grant can otherwise gain issue or PR creation at the next deployment. A running Sandbox retains its loaded policy and may lose credential renewal after a change. Retire it to complete withdrawal.
 
@@ -93,4 +95,4 @@ One policy applies at every deployment. No compatibility mode, per-Agent upgrade
 
 ## Delivery and verification
 
-[#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) passed six installed tests at `69a61a83`. A controlled origin recorded both parent links despite direct denials. Live private GitHub effects remain unverified. The later draft at `d9b229e2` removed REST versions and supported denying issue creation only. Qualify the complete filter before release.
+[#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) reports 18 passing installed checks across three stock OpenShell 0.1.9 runs at `0a01f129` and `aeb2a54e`. An explicit allow could not override Issues read, even after renewal. The controlled origin recorded both cross-repository parent links despite direct denials. Live private GitHub effects remain unverified.
