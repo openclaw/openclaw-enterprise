@@ -271,8 +271,10 @@ export async function startSkipperPrivateGitOrigin({
     let pullRequest;
     let pullCreateRequests = 0;
     /** @typedef {{ ref: string, sha: string, repo: { id: number, full_name: string } }} ScopedPullSide */
-    /** @type {Map<string, { number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }>} */
+    /** @typedef {{ number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }} ScopedPull */
+    /** @type {Map<string, ScopedPull[]>} */
     const scopedPulls = new Map();
+    let redirectPullReadToC = false;
     const observePullRequest = async () => {
       if (!pullRequest) {
         return null;
@@ -348,11 +350,12 @@ export async function startSkipperPrivateGitOrigin({
       const name = scope.repository;
       const authorization = request.headers.authorization;
       const authenticated = authority.authorize(authorization);
-      const operation = {
-        issues: "rest-issue-list",
-        "issues/42": "rest-issue-read",
-        pulls: "rest-pull-create",
-      }[route];
+      const operation =
+        {
+          issues: request.method === "GET" ? "rest-issue-list" : "rest-issue-create",
+          "issues/42": "rest-issue-read",
+          pulls: request.method === "GET" ? "rest-pull-list" : "rest-pull-create",
+        }[route] ?? "rest-pull-read";
       networkRequests.push({
         repository: name,
         operation,
@@ -365,14 +368,40 @@ export async function startSkipperPrivateGitOrigin({
         return;
       }
       const permissions = authority.permissions(authorization);
-      if (route !== "pulls" && request.method === "GET" && permissions?.issues === "read") {
-        const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
-        reply(200, route === "issues" ? [issue] : issue);
+      if (route.startsWith("issues")) {
+        if (request.method === "GET" && permissions?.issues === "read") {
+          const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
+          reply(200, route === "issues" ? [issue] : issue);
+        } else {
+          reply(403);
+        }
+        return;
+      }
+      const created = scopedPulls.get(name) ?? [];
+      if (
+        request.method === "GET" &&
+        (permissions?.pull_requests === "read" || permissions?.pull_requests === "write")
+      ) {
+        if (redirectPullReadToC && name === "fixture/b" && route === "pulls/42") {
+          redirectPullReadToC = false;
+          reply(302, {}, { location: "/repos/fixture/c/pulls/42" });
+          return;
+        }
+        const seeded = { number: 42, title: `Fixture pull in ${name}`, state: "open" };
+        if (route === "pulls") {
+          reply(200, [seeded, ...created]);
+        } else {
+          const pull =
+            route === "pulls/42"
+              ? seeded
+              : created.find(({ number }) => route === `pulls/${number}`);
+          reply(pull ? 200 : 404, pull);
+        }
         return;
       }
       if (
-        route !== "pulls" ||
         request.method !== "POST" ||
+        route !== "pulls" ||
         permissions?.pull_requests !== "write"
       ) {
         reply(403);
@@ -388,11 +417,11 @@ export async function startSkipperPrivateGitOrigin({
         typeof title !== "string" ||
         !title ||
         typeof draft !== "boolean" ||
-        head !== reviewHead ||
+        typeof head !== "string" ||
         base !== "main" ||
-        !refs[approvalRef] ||
-        refs[approvalRef] === refs["refs/heads/main"] ||
-        scopedPulls.has(name)
+        !refs[`refs/heads/${head}`] ||
+        refs[`refs/heads/${head}`] === refs["refs/heads/main"] ||
+        created.some((pull) => pull.head.ref === head && pull.base.ref === base)
       ) {
         reply(422);
         return;
@@ -403,14 +432,14 @@ export async function startSkipperPrivateGitOrigin({
       }
       const repo = { id: Number(scope.repositoryId), full_name: name };
       const pull = {
-        number: 1,
+        number: created.length + 1,
         title,
         state: "open",
         draft,
-        head: { ref: head, sha: refs[approvalRef], repo },
+        head: { ref: head, sha: refs[`refs/heads/${head}`], repo },
         base: { ref: base, sha: refs["refs/heads/main"], repo },
       };
-      scopedPulls.set(name, pull);
+      scopedPulls.set(name, [...created, pull]);
       reply(201, pull);
     };
     /** @type {Record<string, number>} */
@@ -434,11 +463,12 @@ export async function startSkipperPrivateGitOrigin({
       if (networkAcl) {
         unknownNetworkRequests++;
       }
-      const reply = (status, body = {}) => {
+      const reply = (status, body = {}, headers = {}) => {
         count(endpoint, status);
         response.writeHead(status, {
           "content-type": "application/json",
           ...(status === 401 ? { "www-authenticate": 'Basic realm="private fixture"' } : {}),
+          ...headers,
         });
         response.end(status === 204 ? undefined : JSON.stringify(body));
       };
@@ -532,7 +562,7 @@ export async function startSkipperPrivateGitOrigin({
         const rest =
           scopedRest &&
           !url.search &&
-          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
+          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls(?:\/[1-9][0-9]*)?)$/.exec(url.pathname);
         if (rest) {
           const scope = repositoryByName.get(rest[1]);
           if (!scope) {
@@ -953,7 +983,13 @@ export async function startSkipperPrivateGitOrigin({
           },
           requests: () => networkRequests.map((entry) => ({ ...entry })),
           /** @param {string} name */
-          pullRequest: (name) => structuredClone(scopedPulls.get(name)),
+          pullRequest: (name) => structuredClone(scopedPulls.get(name)?.[0]),
+          /** @param {string} name */
+          pullRequests: (name) => structuredClone(scopedPulls.get(name) ?? []),
+          redirectNextPullReadToC() {
+            assert.ok(scopedRest && !redirectPullReadToC);
+            redirectPullReadToC = true;
+          },
           unknownRequests: () => unknownNetworkRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));

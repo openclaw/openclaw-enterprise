@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -481,6 +481,137 @@ export function registerCompleteLifecycleCases() {
             await assert.rejects(readFile(fixture.state), { code: "ENOENT" });
           },
         );
+      }
+      for (const mode of [
+        "intact",
+        "replaced after file cleanup observes loss",
+        "missing before final cleanup",
+        "no resources",
+      ] as const) {
+        await t.test(`cleanup journal: ${mode}`, async (t) => {
+          const root = await createRunnerFixture(t);
+          const { attempt, results, state } = fixturePaths(root);
+          const lane = "checks-baseline-2";
+          const file = "tests/integration/ci-runner.test.ts";
+          const name = "verify the prepared journal";
+          const replacement = mode === "replaced after file cleanup observes loss";
+          const lostAfterFile = mode === "missing before final cleanup";
+          const lost = replacement || lostAfterFile;
+          const ownsChild = mode !== "no resources";
+          const nextFile = "tests/integration/after-journal-loss.test.ts";
+          const nextPreparation = join(root, "later-preparation");
+          const files = [{ path: file, expectedTests: [name] }];
+          if (replacement) {
+            files.push({ path: nextFile, expectedTests: ["later file"] });
+            await writeFile(
+              join(root, nextFile),
+              'import test from "node:test"; test("later file", () => {});',
+            );
+          }
+          await writeRunnerManifest(
+            root,
+            { lanes: { [lane]: { files } } },
+            "scripts/ci/test-suites.json",
+          );
+
+          // A child journal gives stock cleanup an obligation without a running service.
+          const prep = JSON.stringify(join(repositoryRoot, "scripts/ci/prepare.ts"));
+          const clean = JSON.stringify(join(repositoryRoot, "scripts/ci/cleanup.ts"));
+          await writeFile(
+            join(root, "scripts/ci/prepare.ts"),
+            `
+import { readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { prepareFile as stockFile, prepareLane as stockLane } from ${prep};
+
+async function addChild(path: string, journal: { prefix: string }, prefix?: string) {
+  const suffix = prefix ? "fedcba654321" : "123456789abc";
+  const owner = prefix ?? journal.prefix;
+  const id = "child-state-" + suffix;
+  const name = owner + "-child-" + suffix;
+  const child = join(dirname(path), name + ".json");
+  await writeFile(child, JSON.stringify({
+    ...journal, prefix: owner, lane: "postgres-auth", statePath: child, cleanupOwner: id, resources: [],
+  }));
+  await writeFile(path, JSON.stringify({
+    ...journal, prefix: owner, resources: [{ kind: "child-state", id, name, owner }],
+  }), { flag: prefix ? "wx" : "w" });
+}
+export async function prepareLane(options: Parameters<typeof stockLane>[0]) {
+  const prepared = await stockLane(options);
+  const path = options.statePath!;
+  if (${ownsChild}) await addChild(path, JSON.parse(await readFile(path, "utf8")));
+  return prepared;
+}
+export async function prepareFile(options: Parameters<typeof stockFile>[0]) {
+  if (options.file.path === ${JSON.stringify(nextFile)}) await writeFile(${JSON.stringify(nextPreparation)}, "called");
+  const prepared = await stockFile(options);
+  return { ...prepared, async cleanup(limits: Parameters<typeof prepared.cleanup>[0]) {
+    const path = options.statePath!;
+    if (${replacement}) {
+      const journal = JSON.parse(await readFile(path, "utf8"));
+      await unlink(path);
+      try { await prepared.cleanup(limits); }
+      finally { await addChild(path, journal, "openclaw-ci-replacement"); }
+    } else {
+      await prepared.cleanup(limits);
+      if (${lostAfterFile}) await rm(path, { force: true });
+    }
+  } };
+}
+`,
+          );
+          await writeFile(
+            join(root, "scripts/ci/cleanup.ts"),
+            `export { cleanupState } from ${clean};\n`,
+          );
+          await writeFile(
+            join(root, file),
+            `
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+test(${JSON.stringify(name)}, async () => {
+  const journal = JSON.parse(await readFile(${JSON.stringify(state)}, "utf8"));
+  assert.equal(journal.resources.length, ${ownsChild ? 1 : 0});
+});
+`,
+          );
+          const result = await runRunnerAsync(
+            ["run", lane, "--root", root, "--lifecycle", "complete", "--attempt", attempt],
+            {},
+            { timeout: 30_000 },
+          );
+          const summary = completeResult(await readFile(results, "utf8"));
+          assert.equal(result.error, undefined, result.stderr);
+          assert.equal(result.status, lost ? 1 : 0, result.stderr);
+          assert.equal(summary.counts.passed, 1);
+          assert.equal(summary.lifecycle.status, lost ? "reconciliation-required" : "passed");
+          const { phases } = summary.lifecycle;
+          assert.equal(phases.prepare.status, "passed");
+          assert.equal(phases.run.status, replacement ? "failed" : "passed");
+          assert.equal(
+            phases.cleanup.status,
+            replacement ? "not-run" : lostAfterFile ? "failed" : "passed",
+          );
+          if (lost) {
+            assert.deepEqual((replacement ? phases.run : phases.cleanup).error, {
+              code: "cleanup-state-missing",
+            });
+            assert.match(result.stderr, /Expected cleanup journal is missing.*reconcil/iu);
+          }
+          assert.equal(
+            (await readdir(attempt)).some((name) => name.endsWith("-child-123456789abc.json")),
+            lost,
+          );
+          if (replacement) {
+            assert.match(await readFile(state, "utf8"), /openclaw-ci-replacement/);
+            await stat(join(attempt, "openclaw-ci-replacement-child-fedcba654321.json"));
+            await assert.rejects(stat(nextPreparation), { code: "ENOENT" });
+          } else {
+            await assert.rejects(stat(state), { code: "ENOENT" });
+          }
+        });
       }
       await t.test("phase child keeps selection receipts and path refusal timing", async (t) => {
         const root = await createRunnerFixture(t);

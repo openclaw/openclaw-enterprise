@@ -56,7 +56,8 @@ const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
 const returnMode = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL;
-const ordinaryUpgrade = returnMode === "ordinary";
+const inPlaceReturn = returnMode === "in-place";
+const ordinaryUpgrade = returnMode === "ordinary" || inPlaceReturn;
 const returnSelected = returnMode === "1" || ordinaryUpgrade;
 const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
 const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
@@ -81,6 +82,9 @@ function selectedTestTitle() {
   }
   if (onlineSelected) {
     return "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL";
+  }
+  if (inPlaceReturn) {
+    return "A populated production Helm Installation keeps the acknowledged write after switching controllers on the live database";
   }
   if (ordinaryUpgrade) {
     return "A populated production Helm Installation retains the acknowledged write after an ordinary upgrade and controller return";

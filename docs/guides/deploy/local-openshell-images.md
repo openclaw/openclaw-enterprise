@@ -50,7 +50,9 @@ charts; use the [paired chart overrides](local-kubernetes-development.md#start-t
 when the reviewed candidate needs matching charts. A chart override alone does
 not select candidate images.
 
-## Select the protected profile
+<a id="select-the-protected-profile"></a>
+
+## Retired protected profile and optional database name
 
 New local launches of protected static inference are retired.
 `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` is rejected before engine, host or bootstrap
@@ -188,7 +190,7 @@ upstream TLS before relaying HTTP to request middleware, so missing upstream
 trust can also stop the held denial check before token issuance. Preserve the
 failed revision's closed route; use a new revision after correcting trust.
 
-Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. Use the supervisor and chart from the selected release checkout. Run from its repository root:
+Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. Use this procedure only if you launched with the released OpenShell images and default charts from this checkout. The upgrade replaces the installed supervisor with an image built from the release pin. Run from its repository root:
 
 ```bash
 set -euo pipefail

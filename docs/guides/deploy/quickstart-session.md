@@ -13,7 +13,7 @@ The operator needs Pod read and `pods/exec` access in `PLATFORM_NS` for the API 
 | `KUBECONFIG`, `CONTEXT`                 | Private kubeconfig file and exact context for this installation. Commands do not change the default kubeconfig.                                              |
 | `PLATFORM_NS`                           | Kubernetes namespace containing OCC, distinct from the OCE Namespace ID.                                                                                     |
 | `RELEASE`, `OCE_CHART`                  | Existing OCE Helm release and matching chart directory or archive.                                                                                           |
-| `INSTALLATION_FILE`, `VALUES_FILE`      | Current Installation configuration (`RUN_DIR/installation.yaml`) and current OCE Helm values (`RUN_DIR/values.json`). Update these files when enrolling Git. |
+| `INSTALLATION_FILE`, `VALUES_FILE`      | Proposed Installation configuration (`RUN_DIR/installation.yaml`) and proposed OCE Helm values (`RUN_DIR/values.json`). Edit these files when enrolling Git. |
 | `OCC_SERVICE_KEY_FILE`                  | Protected JSON service-key file at `RUN_DIR/service-key.json`. Never store the raw key in shell variables or command arguments.                              |
 | `CONSOLE_ORIGIN`, `NATIVE_ADMIN_DOMAIN` | HTTPS Console origin and the configured Agent browser domain.                                                                                                |
 | `namespace`, `base`                     | OCE Namespace ID and relative REST path `/namespaces/<id>`.                                                                                                  |
