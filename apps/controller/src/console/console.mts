@@ -7,6 +7,8 @@ import type {
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
+import { renderConnectedAccounts } from "./connected-accounts.mjs";
+import { publishConnectionCallback } from "./connection-consent.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -46,6 +48,7 @@ import {
 import { createViewLifetime } from "./view-lifetime.mjs";
 import {
   connectionTemplatesPage,
+  connectedAccountsPage,
   oauthClientsPage,
   createNavigation,
   pages,
@@ -2071,7 +2074,7 @@ async function loadPage({
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
-      ["agents", "secrets"].includes(current.feature) &&
+      ["agents", "secrets", connectedAccountsPage].includes(current.feature) &&
       (namespacePath === null || !namespaces.some((item) => item.id === selectedNamespace));
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
@@ -2604,6 +2607,12 @@ async function loadPage({
     } else if (permissionsRead) {
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
+    }
+    if (current.feature === connectedAccountsPage && selectedNamespace !== null) {
+      viewState.reusable = false;
+      renderConnectedAccounts(agentContext);
+      markMountedRoute(current);
+      return;
     }
     if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
       // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
@@ -3940,4 +3949,16 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-void loadPage();
+if (publishConnectionCallback(new URL(location.href))) {
+  app.replaceChildren(
+    element(
+      "main",
+      { className: "content" },
+      element("h1", {}, "Authorization returned"),
+      element("p", {}, "Return to the original Console tab to check the saved account."),
+    ),
+  );
+  window.setTimeout(() => window.close(), 100);
+} else {
+  void loadPage();
+}

@@ -15,6 +15,12 @@ To change where the account can send requests, open **Connection templates → E
 
 When you edit a saved manual template, add only hosts you trust to receive existing accounts’ access tokens.
 
+## Connect an account
+
+Open **Credentials → Connected accounts**, select the Namespace, and choose **Connect account**. Select an OAuth connection template with a registered client, review the requested scopes, then choose **Continue to consent**. Approve the request in the separate consent tab. The original Console page confirms the saved account after it reads the new Credential Source.
+
+If consent fails or the browser blocks the tab, choose **Try again**. If Console reports that the tab closed or disconnected, the provider tab may still be open. Finish consent there, or close it before retrying or canceling to avoid creating another account. Connecting requires permission to create a Credential Source in the Namespace. An Installation administrator must configure a template and client before it can be used. See [Connect an account](../../reference/connection-templates.md#connect-an-account) for the API and permission details.
+
 ## Create and use a Secret
 
 1. Select **Create Secret** and enter a unique name and value. Names cannot be

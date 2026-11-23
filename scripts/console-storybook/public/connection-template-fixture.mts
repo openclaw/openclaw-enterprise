@@ -9,6 +9,7 @@ export function createConnectionTemplateFixture(
   createdAt: string,
   namespaceId: string,
   nextId: (prefix: string) => string,
+  connectedAccounts = false,
 ) {
   const issuer = "https://identity.example.com";
   const templateId = "ctp_00000000-0000-4000-8000-000000000004";
@@ -64,6 +65,28 @@ export function createConnectionTemplateFixture(
           },
         ]
       : [];
+  if (connectedAccounts && mode === "ready") {
+    const directoryId = "ctp_00000000-0000-4000-8000-000000000008";
+    templates.push({
+      id: directoryId,
+      displayName: "Directory OAuth",
+      namespaceId,
+      createdAt,
+      current: {
+        templateId: directoryId,
+        version: 1,
+        mode: "manual",
+        issuer,
+        authorizationUrl: issuer + "/authorize",
+        tokenUrl: issuer + "/token",
+        scopes: ["directory.read"],
+        authorizationParameters: {},
+        destinations: [{ host: "directory.example.com", port: 443, path: "/v1/**" }],
+        oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+        createdAt,
+      },
+    });
+  }
   const googleTemplateId = "ctp_00000000-0000-4000-8000-000000000003";
   templates.unshift({
     id: googleTemplateId,
@@ -113,6 +136,18 @@ export function createConnectionTemplateFixture(
       : [];
   const previousVersions: Record<string, unknown>[] = [];
   return (path: string, method: string, body: unknown): Response | undefined => {
+    if (/^\/namespaces\/[^/]+\/connection-templates$/.test(path) && method === "GET") {
+      const selectedNamespace = path.split("/")[2];
+      return response(
+        templates.filter((template) => {
+          const current = template.current as Record<string, unknown>;
+          return (
+            (!template.namespaceId || template.namespaceId === selectedNamespace) &&
+            (current.mode === "static_bearer" || typeof current.oauthClientId === "string")
+          );
+        }),
+      );
+    }
     if (path === "/connection-templates" && method === "GET") {
       return response(templates);
     }

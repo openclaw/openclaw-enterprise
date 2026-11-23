@@ -81,7 +81,7 @@ On callback, OCC consumes the matching attempt once, checks the person's session
 
 After exchange, OCC calls the selected TokenService's typed Source registration operation with the OAuth grant, Template ID, original consent version, selected client, and requested and granted scopes. TokenService allocates the Source ID, creates the ready OAuth Source, and stores the access token and refresh grant privately. OCC then grants the creator access and records the completion audit against the Source and the authorized Namespace create operation. When the provider omits scopes after a provider-default request, the Source records an empty granted-scope list.
 
-The callback redirects to the same-origin Console with the Namespace and newly created nonsecret Source ID. The redirect contains no authorization code, state, or token. Console can use the ID to read the exact Source.
+The callback redirects to the same-origin Console with the Namespace and newly created nonsecret Source ID. The redirect contains no authorization code, state, or token. The consent tab publishes that ID on its attempt channel; the original Console confirms success only after an authorized read matches the Namespace, Template and consent version. A provider can sever the tab's opener relationship while it remains open. Console keeps the attempt active until callback, expiry or cancellation and offers a retry. Canceling stops Console from accepting the old callback; it does not invalidate the provider's pending consent. `apps/controller/src/console/connection-consent.mts`
 
 ### 5. Renew the grant
 
@@ -109,6 +109,7 @@ The worker renews due OAuth Sources. A trusted consumer obtains a usable credent
 
 ## Changelog
 
+- 2026-11-23 10:33: Trace Console consent isolation, callback verification and retry behavior. (authoring-run/59e60d97-c02d-4f52-b09a-338ab74cebac - c99f355f2)
 - 2026-11-23 10:15: Describe the callback's Source handoff to Console. (authoring-run/f79523c1-41c8-4d45-8e08-14669a2afd29 - 223d6347d)
 - 2026-11-23 13:30: Replace provisional and saved connections with consent state followed by TokenService-owned OAuth Source registration. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
 

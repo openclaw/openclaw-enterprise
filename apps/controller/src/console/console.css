@@ -3097,9 +3097,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-bottom: var(--space-5);
 }
 .credential-tabs a {
+  flex: 0 0 auto;
   padding: var(--space-2) var(--space-3);
   color: var(--color-text);
   text-decoration: none;
+  white-space: nowrap;
 }
 .credential-tabs a:hover {
   text-decoration: underline;
@@ -3527,6 +3529,14 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-inline-start: auto;
   align-items: center;
 }
+.connected-account-catalog > .hint {
+  margin: 0 var(--space-4) var(--space-3);
+}
+.connected-account-catalog .oauth-catalog-table :is(th, td):last-child {
+  width: auto;
+  text-align: start;
+  white-space: normal;
+}
 
 @container oauth-catalog (max-width: 46rem) {
   .oauth-catalog-table,
@@ -3557,6 +3567,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .oauth-catalog-table td:last-child {
     grid-area: 1 / 2;
     width: auto;
+  }
+  .connected-account-catalog .oauth-catalog-table td:last-child {
+    grid-area: auto;
   }
   .oauth-catalog-table td[data-label] {
     grid-column: 1 / -1;

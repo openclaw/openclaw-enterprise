@@ -3,6 +3,17 @@ import { story } from "./story.ts";
 export default { title: "Pages/Credentials" };
 
 export const ConnectionTemplates = story("credentialsTemplateCatalog");
+export const ConnectedAccounts = story("credentialsConnectedAccounts");
+export const ConnectedAccountsEmpty = story("credentialsConnectedAccountsEmpty");
+export const FixedManualOAuthScopes = story("credentialsFixedConsentScopes");
+export const ConnectAccountDenied = story("credentialsConnectedAccountsDenied");
+export const ConsentStartUnavailable = story("credentialsConnectedAccountError");
+export const ConsentTabDisconnected = story("credentialsConsentDisconnected");
+export const ConnectedAccountsMobile = story("credentialsConnectedAccounts", {
+  name: "Connected accounts on mobile",
+  frameWidth: "390px",
+  frameHeight: "844px",
+});
 export const ConnectionTemplatesMobile = story("credentialsTemplateCatalog", {
   name: "Connection templates on mobile",
   frameWidth: "390px",

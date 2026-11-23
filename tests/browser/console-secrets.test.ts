@@ -9,6 +9,10 @@ import {
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
+  ConnectionTemplate,
+  CredentialSourceMetadata,
+} from "../../packages/contracts/src/index.ts";
+import type {
   CreateIAMAccessBindingBody,
   CreateIAMRoleBody,
   ErrorResponse,
@@ -50,6 +54,7 @@ import {
   hasFocus,
   holdRequests,
   login,
+  loginThroughForm,
   newPage,
   pathRequests,
   settledView,
@@ -92,6 +97,24 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   assert.equal(await page.getByRole("button", { name: "Create connection template" }).count(), 0);
   await page.getByRole("link", { name: "Credentials", exact: true }).click();
   const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections
+    .getByRole("link", { name: "Secrets", exact: true })
+    .and(page.locator('[aria-current="page"]'))
+    .waitFor();
+  const usable = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/connection-templates`,
+  );
+  await sections.getByRole("link", { name: "Connected accounts", exact: true }).click();
+  assert.equal((await usable).status(), 200);
+  await page.getByRole("heading", { name: "Connected accounts" }).waitFor();
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Connect account", exact: true }),
+    "No OAuth template with a registered client is available. Ask an Installation administrator to configure one.",
+  );
+  await page.goBack();
   await sections
     .getByRole("link", { name: "Secrets", exact: true })
     .and(page.locator('[aria-current="page"]'))
@@ -166,6 +189,145 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   );
   await page.getByRole("button", { name: "Create connection template" }).click();
   assert.equal(await editor.getByLabel("Template availability").inputValue(), "");
+});
+
+test("Connected accounts keeps a COOP-isolated consent tab verifiable and can retry it", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Consent tab isolation");
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  const templateId = "ctp_00000000-0000-4000-8000-000000000004";
+  const firstSourceId = "cs_00000000-0000-4000-8000-000000000021";
+  const sourceId = "cs_00000000-0000-4000-8000-000000000022";
+  const base = `/namespaces/${namespace.id}`;
+  const createdAt = "2026-11-23T00:00:00.000Z";
+  const issuer = "https://provider.example.test";
+  const clientId = "ccr_00000000-0000-4000-8000-000000000006";
+  const destinations = [{ host: "api.example.test", port: 443, path: "/v1/**" }];
+  const template: ConnectionTemplate = {
+    id: templateId,
+    namespaceId: namespace.id,
+    displayName: "Support OAuth",
+    createdAt,
+    current: {
+      templateId,
+      mode: "manual",
+      version: 1,
+      createdAt,
+      issuer,
+      authorizationUrl: `${issuer}/authorize`,
+      tokenUrl: `${issuer}/token`,
+      scopes: [],
+      authorizationParameters: {},
+      destinations,
+      oauthClientId: clientId,
+    },
+  };
+  const source: CredentialSourceMetadata = {
+    id: sourceId,
+    namespaceId: namespace.id,
+    name: "Support account",
+    state: "ready",
+    type: "oauth2-refresh-token",
+    createdAt,
+    ref: { kind: "credential_source", namespaceId: namespace.id, id: sourceId },
+    connectionTemplateId: templateId,
+    consent: {
+      kind: "connection_template",
+      version: 1,
+      oauthClientId: clientId,
+      ownerPrincipalId: "pr_00000000-0000-4000-8000-000000000001",
+      requestedScopes: [],
+      grantedScopes: [],
+      issuer,
+      tokenUrl: `${issuer}/token`,
+      clientId: "support-client",
+      destinations,
+    },
+  };
+  let starts = 0;
+  const exactReads: string[] = [];
+  let connected = false;
+  const respond = (route: Route, data: unknown, status = 200) =>
+    route.fulfill({ status, json: { data, meta: { requestId: "req_consent_browser" } } });
+
+  // Exercise the actual Console and callback landing in Chromium. The producer and API
+  // boundary are controlled here; this is browser isolation proof, not an OAuth exchange.
+  await page.context().route("https://provider.example.test/**", (route) => {
+    const attemptId = new URL(route.request().url()).searchParams.get("attempt");
+    const callbackSourceId = attemptId === "1" ? firstSourceId : sourceId;
+    return route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "text/html",
+        "cross-origin-opener-policy": "same-origin",
+      },
+      body: `<button onclick="location.href='${fixture.origin}/console/?namespace=${namespace.id}&connection=connected&sourceId=${callbackSourceId}'">Complete consent</button>`,
+    });
+  });
+  await page.route(`**${base}/connection-templates`, (route) => respond(route, [template]));
+  await page.route(`**${base}/credential-sources`, (route) =>
+    respond(route, connected ? [source] : []),
+  );
+  await page.route(`**${base}/credential-sources/*`, (route) => {
+    const requestedId = new URL(route.request().url()).pathname.split("/").at(-1)!;
+    exactReads.push(requestedId);
+    connected = requestedId === sourceId;
+    return respond(
+      route,
+      requestedId === sourceId
+        ? source
+        : {
+            ...source,
+            id: firstSourceId,
+            name: "Old account",
+            ref: { kind: "credential_source", namespaceId: namespace.id, id: firstSourceId },
+          },
+    );
+  });
+  await page.route(`**${base}/connections`, (route) => {
+    starts += 1;
+    assert.deepEqual(route.request().postDataJSON(), { connectionTemplateId: templateId });
+    return respond(
+      route,
+      {
+        authorizationUrl: `https://provider.example.test/authorize?attempt=${starts}`,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      },
+      201,
+    );
+  });
+  await loginThroughForm(page, fixture, `/console/secrets?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Connected accounts", exact: true }).click();
+  await page.getByRole("button", { name: "Connect account", exact: true }).click();
+  const editor = dialog(page, "Connect account");
+  await editor.getByLabel("Connection template").selectOption(templateId);
+  const [first] = await Promise.all([
+    page.context().waitForEvent("page"),
+    editor.getByRole("button", { name: "Continue to consent" }).click(),
+  ]);
+  await first.getByRole("button", { name: "Complete consent" }).waitFor();
+  assert.equal(await first.evaluate(() => window.opener), null);
+  await editor.getByText(/consent tab was closed or disconnected/i).waitFor();
+  assert.equal(first.isClosed(), false, "COOP severed the WindowProxy, not the actual tab");
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/connected-accounts-disconnected.png` });
+  }
+
+  const [second] = await Promise.all([
+    page.context().waitForEvent("page"),
+    editor.getByRole("button", { name: "Try again" }).click(),
+  ]);
+  await second.getByRole("button", { name: "Complete consent" }).waitFor();
+  await editor.getByText(/consent tab was closed or disconnected/i).waitFor();
+  assert.equal(starts, 2);
+  await Promise.all([
+    first.waitForEvent("close"),
+    first.getByRole("button", { name: "Complete consent" }).click(),
+  ]);
+  assert.deepEqual(exactReads, [], "the canceled attempt cannot confirm any Source");
+  assert.equal(await editor.isVisible(), true);
+  await second.getByRole("button", { name: "Complete consent" }).click();
+  await page.getByText("Connected Support account. You can now grant an Agent access.").waitFor();
+  assert.deepEqual(exactReads, [sourceId], "only the active callback reads its exact Source");
 });
 
 test("an administrator manages static Bearer templates without OAuth client registration", async (t) => {

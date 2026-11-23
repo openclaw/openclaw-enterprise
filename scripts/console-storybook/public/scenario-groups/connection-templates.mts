@@ -10,6 +10,77 @@ const discoverMcp = [
   click("Discover OAuth settings"),
 ];
 export const connectionTemplateScenarios = {
+  credentialsConnectedAccounts: {
+    group: "Pages/Credentials",
+    name: "Connected accounts",
+    path: "/console/credentials/connected-accounts",
+    oauthCatalog: "ready",
+    connectedAccounts: "ready",
+    description:
+      "A Namespace member can see caller-readable OAuth accounts and connect another account using a configured template. The consent redirect and saved Source are simulated.",
+    steps: [
+      "Choose Connect account, select Support MCP, and continue to consent. The isolated tab closes, and the original page confirms New support account through its exact Source read.",
+      "Switch Namespace in the header. Connect accounts only from templates available in that Namespace.",
+    ],
+  },
+  credentialsConnectedAccountsEmpty: {
+    group: "Pages/Credentials",
+    name: "Connected accounts empty",
+    path: "/console/credentials/connected-accounts",
+    oauthCatalog: "ready",
+    connectedAccounts: "empty",
+    description:
+      "No accounts have been connected yet. A configured template is available to start consent.",
+  },
+  credentialsFixedConsentScopes: {
+    group: "Pages/Credentials",
+    name: "Fixed manual OAuth scopes",
+    path: "/console/credentials/connected-accounts",
+    oauthCatalog: "ready",
+    connectedAccounts: "empty",
+    actions: [
+      click("Connect account"),
+      { selector: "#connect-account-template", value: "ctp_00000000-0000-4000-8000-000000000008" },
+    ],
+    description:
+      "Directory OAuth fixes directory.read in the manual template. The scope field is read-only, and consent omits selectedScopes as required by the real API.",
+  },
+  credentialsConnectedAccountsDenied: {
+    group: "Pages/Credentials",
+    name: "Connect account permission denied",
+    path: "/console/credentials/connected-accounts",
+    oauthCatalog: "ready",
+    connectedAccounts: "denied",
+    readOnlyPermissionSummary: true,
+    description:
+      "The caller can view readable accounts but cannot create a Credential Source in this Namespace.",
+  },
+  credentialsConnectedAccountError: {
+    group: "Pages/Credentials",
+    name: "Consent start unavailable",
+    path: "/console/credentials/connected-accounts",
+    oauthCatalog: "ready",
+    connectedAccounts: "error",
+    actions: [
+      click("Connect account"),
+      { selector: "#connect-account-template", value: "ctp_00000000-0000-4000-8000-000000000004" },
+    ],
+    description:
+      "Continue to consent to simulate a refused start. The dialog keeps the selection and scopes so the caller can retry or cancel.",
+  },
+  credentialsConsentDisconnected: {
+    group: "Pages/Credentials",
+    name: "Consent tab closed or disconnected",
+    path: "/console/credentials/connected-accounts",
+    oauthCatalog: "ready",
+    connectedAccounts: "disconnected",
+    actions: [
+      click("Connect account"),
+      { selector: "#connect-account-template", value: "ctp_00000000-0000-4000-8000-000000000004" },
+    ],
+    description:
+      "Continue to consent, then close the simulated tab. The original dialog keeps waiting for a valid callback and offers a retry. This fixture does not simulate a real provider or COOP header.",
+  },
   credentialsTemplateCatalog: {
     group: "Pages/Credentials",
     name: "Connection templates",
@@ -123,7 +194,7 @@ export const connectionTemplateScenarios = {
     path: "/console/secrets",
     readOnlyPermissionSummary: true,
     description:
-      "A Namespace member can open Secrets. Only Installation administrators see Connection templates and OAuth clients.",
+      "A Namespace member can open Secrets and Connected accounts. Only Installation administrators see Connection templates and OAuth clients.",
   },
   credentialsGoogleTemplate: {
     group: "Pages/Credentials",
@@ -202,10 +273,12 @@ export const connectionTemplateScenarios = {
     path:
       | "/console/secrets"
       | "/console/credentials/connection-templates"
-      | "/console/credentials/oauth-clients";
+      | "/console/credentials/oauth-clients"
+      | "/console/credentials/connected-accounts";
     actions?: StoryAction[];
     emptyNamespaces?: true;
     oauthCatalog?: "ready" | "error" | "unconfirmed-save";
+    connectedAccounts?: "ready" | "empty" | "denied" | "error" | "disconnected";
     readOnlyPermissionSummary?: true;
     description: string;
     steps?: readonly string[];

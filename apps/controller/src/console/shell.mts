@@ -3,6 +3,7 @@ import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
+  connectedAccountsPage,
   oauthClientsPage,
   type createNavigation,
   type pages,
@@ -543,7 +544,7 @@ export function createShell({
       return;
     }
     const scope = app.querySelector(".content .scope");
-    if (scope && ["agents", "secrets"].includes(route().feature)) {
+    if (scope && ["agents", "secrets", connectedAccountsPage].includes(route().feature)) {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
     }
   }
@@ -613,6 +614,7 @@ export function createShell({
     }
     const credentialAdministration =
       feature === connectionTemplatesPage || feature === oauthClientsPage;
+    const credentialPage = credentialAdministration || feature === connectedAccountsPage;
     const icons = {
       agents:
         "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
@@ -625,7 +627,7 @@ export function createShell({
         {
           href: pageUrl(name),
           "data-nav": name,
-          ...(feature === name || (credentialAdministration && name === "secrets")
+          ...(feature === name || (credentialPage && name === "secrets")
             ? { "aria-current": "page" }
             : {}),
         },
@@ -694,7 +696,7 @@ export function createShell({
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
-      credentialAdministration || ["agents", "secrets"].includes(feature)
+      credentialPage || ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
@@ -756,17 +758,18 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (feature === "secrets" || credentialAdministration) {
+    if (feature === "secrets" || credentialPage) {
       const sections = element("nav", {
         className: "credential-tabs",
         "aria-label": "Credential sections",
       });
       for (const [name, label] of [
         ["secrets", "Secrets"],
+        [connectedAccountsPage, "Connected accounts"],
         [connectionTemplatesPage, "Connection templates"],
         [oauthClientsPage, "OAuth clients"],
       ] as const) {
-        if (name !== "secrets" && !state.installationAdmin) {
+        if (name !== "secrets" && name !== connectedAccountsPage && !state.installationAdmin) {
           continue;
         }
         const link = element(
@@ -786,7 +789,7 @@ export function createShell({
     if (
       recovery &&
       session &&
-      !["agents", "secrets"].includes(feature) &&
+      !["agents", "secrets", connectedAccountsPage].includes(feature) &&
       namespaceId !== null &&
       !selected
     ) {

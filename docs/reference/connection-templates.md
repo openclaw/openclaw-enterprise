@@ -48,6 +48,8 @@ See the [API reference](api.md#connections) for request and response fields.
 
 OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Agent attachment and delivery of OAuth Sources remain pending.
 
+In Console, open **Credentials → Connected accounts**, choose a Namespace, and select **Connect account**. Consent opens in a separate tab. The original page reports success only after it reads the exact Source created by the callback. A denied or interrupted attempt leaves the dialog available for retry.
+
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
    `credential_source:create` for that Namespace. The list can include static
@@ -58,8 +60,7 @@ OCC handles browser consent and the callback. After the code exchange, the selec
    `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
    `authorizationUrl` in the same browser and approve the request. The response does not contain a Source ID: no Source exists until the callback completes.
    Register the public OCC callback URL ending in `/oauth/callback` with the provider.
-3. After the redirect, find the OAuth Source with
-   `GET /namespaces/{namespaceId}/credential-sources`. The list requires Namespace read and includes only Sources the caller can read. Use its ID with `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to inspect all nonsecret OAuth metadata with exact Source read. The Source records the original consent version, client, principal, and requested and granted scopes. TokenService keeps the tokens private and uses the original consent settings for renewal.
+3. The successful callback redirects to Console with the Namespace and new Source ID. Read that exact Source with `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`. To find existing accounts, use `GET /namespaces/{namespaceId}/credential-sources`; the list requires Namespace read and includes only Sources the caller can read. The Source records the original consent version, client, principal, and requested and granted scopes. TokenService keeps the tokens private and uses the original consent settings for renewal.
 
 The native Namespace role API currently rejects `create` permissions. Installation
 administrators can connect with the built-in administrator role. See

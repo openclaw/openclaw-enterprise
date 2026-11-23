@@ -41,6 +41,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
     oauthCatalog?: string;
+    connectedAccounts?: "ready" | "empty" | "denied" | "error" | "disconnected";
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     navigationAgentHistory?: true;
@@ -210,6 +211,32 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const { configs } = configurationStore;
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
   const credentialSources = new Map<string, StoredCredentialSource>();
+  const pendingConsents = new Map<string, StoredCredentialSource>();
+  if (scenario.connectedAccounts === "ready") {
+    const id = "cs_00000000-0000-4000-8000-000000000021";
+    credentialSources.set(id, {
+      id,
+      namespaceId,
+      name: "Support account",
+      type: "oauth2-refresh-token",
+      state: "ready",
+      createdAt,
+      ref: { kind: "credential_source", namespaceId, id },
+      connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000004",
+      consent: {
+        kind: "connection_template",
+        version: 1,
+        oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+        ownerPrincipalId: "pr_00000000-0000-4000-8000-000000000001",
+        requestedScopes: ["messages.read"],
+        grantedScopes: ["messages.read"],
+        issuer: "https://identity.example.com",
+        tokenUrl: "https://identity.example.com/token",
+        clientId: "support-demo",
+        destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
+      },
+    });
+  }
   const deviceLogins = new Map<string, DeviceLogin>();
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
   const roles: StoredIdentity[] = [];
@@ -414,6 +441,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     createdAt,
     namespaceId,
     nextId,
+    Boolean(scenario.connectedAccounts),
   );
   const presets = createPresetFixtures(scenario, namespaceId, auth);
   const networkPolicy = createNetworkPolicyFixture(scenario, {
@@ -464,6 +492,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    if (
+      scenario.connectedAccounts === "denied" &&
+      /^\/namespaces\/[^/]+\/connection-templates$/.test(path)
+    ) {
+      return error(403, "FORBIDDEN");
     }
     const templateResponse = templates(path, method, body);
     if (templateResponse) {
@@ -775,6 +809,95 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           credentialSources.set(saved.id, saved);
           return response(saved, 201);
         }
+      }
+      if (resource === "connections" && method === "POST" && scenario.connectedAccounts) {
+        if (scenario.connectedAccounts === "error") {
+          return error(
+            503,
+            "DEPENDENCY_UNAVAILABLE",
+            "The simulated authorization service is unavailable.",
+          );
+        }
+        const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+        const support = input.connectionTemplateId === "ctp_00000000-0000-4000-8000-000000000004";
+        const directory = input.connectionTemplateId === "ctp_00000000-0000-4000-8000-000000000008";
+        if (
+          Object.keys(input).some(
+            (key) => !["connectionTemplateId", "selectedScopes"].includes(key),
+          ) ||
+          (!support && !directory) ||
+          (directory && input.selectedScopes !== undefined)
+        ) {
+          return error(400, "INVALID_REQUEST");
+        }
+        if (scenario.connectedAccounts === "disconnected") {
+          return response(
+            {
+              authorizationUrl: `${location.origin}/console/?namespace=${encodeURIComponent(namespaceId)}`,
+              expiresAt: new Date(Date.now() + 600_000).toISOString(),
+            },
+            201,
+          );
+        }
+        const id = nextId("cs");
+        let scopes: string[] = [];
+        if (directory) {
+          scopes = ["directory.read"];
+        } else if (Array.isArray(input.selectedScopes)) {
+          scopes = input.selectedScopes as string[];
+        }
+        pendingConsents.set(id, {
+          id,
+          namespaceId,
+          name: directory ? "New directory account" : "New support account",
+          type: "oauth2-refresh-token",
+          state: "ready",
+          createdAt,
+          ref: { kind: "credential_source", namespaceId, id },
+          connectionTemplateId: input.connectionTemplateId as string,
+          consent: {
+            kind: "connection_template",
+            version: 1,
+            oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+            ownerPrincipalId: "pr_00000000-0000-4000-8000-000000000001",
+            requestedScopes: scopes,
+            grantedScopes: scopes,
+            issuer: "https://identity.example.com",
+            tokenUrl: "https://identity.example.com/token",
+            clientId: "support-demo",
+            destinations: directory
+              ? [{ host: "directory.example.com", port: 443, path: "/v1/**" }]
+              : [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
+          },
+        });
+        const channel = new BroadcastChannel(`oce.storybook.connection.${id}`);
+        const expiry = window.setTimeout(() => {
+          pendingConsents.delete(id);
+          channel.close();
+        }, 600_000);
+        channel.onmessage = (event: MessageEvent<unknown>) => {
+          if (event.data !== "complete") {
+            return;
+          }
+          const source = pendingConsents.get(id);
+          if (!source) {
+            return;
+          }
+          // Only the isolated simulated callback can publish the ready Source. The real
+          // OAuth exchange and custody are deliberately outside this presentation fixture.
+          pendingConsents.delete(id);
+          credentialSources.set(id, source);
+          channel.postMessage("stored");
+          channel.close();
+          clearTimeout(expiry);
+        };
+        return response(
+          {
+            authorizationUrl: `${location.origin}/storybook-fixtures/connection-completion.html?namespace=${encodeURIComponent(namespaceId)}&sourceId=${encodeURIComponent(id)}`,
+            expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          },
+          201,
+        );
       }
       if (resource.startsWith("credential-sources/")) {
         const id = resource.split("/")[1] ?? "";
