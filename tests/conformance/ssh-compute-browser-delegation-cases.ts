@@ -52,8 +52,8 @@ test("browser requests require a matching private listener; no shared endpoint f
   assert.equal(request?.headers["x-openclaw-scopes"], "operator.sessions.write");
 });
 
-test("the SSH forward binds only locally and selects a distinct Unix socket per revision", async () => {
-  const { browserForwardArgs, browserSocketPath } =
+test("the SSH forward connects only the configured loopback TLS ports", async () => {
+  const { browserForwardArgs } =
     await import("../../apps/controller/src/drivers/compute/ssh/browser-forward.ts");
   const host = {
     address: "127.0.0.1",
@@ -63,13 +63,11 @@ test("the SSH forward binds only locally and selects a distinct Unix socket per 
     identityFile: "/etc/key",
     connectTimeoutSeconds: 5,
   };
-  const args = browserForwardArgs(host, target, 19000);
-  assert.ok(args.includes("127.0.0.1:19000:" + browserSocketPath(target)));
-  for (const field of Object.keys(target))
-    assert.notEqual(
-      browserSocketPath(target),
-      browserSocketPath({ ...target, [field]: "different" }),
-    );
+  const args = browserForwardArgs(host, 24443, 19000);
+  assert.ok(args.includes("127.0.0.1:19000:127.0.0.1:24443"));
   assert.ok(args.includes("StrictHostKeyChecking=yes"));
-  assert.throws(() => browserForwardArgs(host, target, 65536));
+  for (const port of [0, 443, 65536, NaN, 24443.1]) {
+    assert.throws(() => browserForwardArgs(host, port, 19000));
+    assert.throws(() => browserForwardArgs(host, 24443, port));
+  }
 });

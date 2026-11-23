@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { SshCommand } from "./executor.ts";
 
@@ -6,20 +5,13 @@ type Host = Pick<
   SshCommand,
   "address" | "port" | "user" | "identityFile" | "knownHostsFile" | "connectTimeoutSeconds"
 >;
-type Target = { installationId: string; namespaceId: string; agentId: string; revisionId: string };
-
-// The remote listener must live in a host-owned directory, terminate TLS and
-// authenticate the revision. Never forward to the recyclable gateway TCP port.
-export function browserSocketPath(target: Target) {
-  const fields = [target.installationId, target.namespaceId, target.agentId, target.revisionId];
-  if (!fields.every((field) => typeof field === "string" && field.trim()))
-    throw new Error("Missing SSH browser target.");
-  const hash = createHash("sha256").update(JSON.stringify(fields)).digest("hex");
-  return `/run/occ-browser/${hash}.sock`;
-}
-
-export function browserForwardArgs(host: Host, target: Target, localPort: number): string[] {
+// Controller-supplied port of the TLS terminator, never the plaintext Agent port.
+// sshd's PermitOpen can limit the key to this exact loopback destination.
+export function browserForwardArgs(host: Host, remoteTlsPort: number, localPort: number): string[] {
   if (
+    !Number.isSafeInteger(remoteTlsPort) ||
+    remoteTlsPort < 1024 ||
+    remoteTlsPort > 65535 ||
     !Number.isSafeInteger(localPort) ||
     localPort < 1024 ||
     localPort > 65535 ||
@@ -63,7 +55,7 @@ export function browserForwardArgs(host: Host, target: Target, localPort: number
     "-l",
     host.user,
     "-L",
-    `127.0.0.1:${localPort}:${browserSocketPath(target)}`,
+    `127.0.0.1:${localPort}:127.0.0.1:${remoteTlsPort}`,
     "--",
     host.address,
   ];
