@@ -148,6 +148,8 @@ export {
   ComputeProvisioningRefusedError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
+  NetworkProxyValidationError,
+  NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
