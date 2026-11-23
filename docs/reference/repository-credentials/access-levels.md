@@ -172,6 +172,9 @@ Registry validation refuses:
 - without the App's `appId` and `githubInstallationId`: a registration without
   `credentialSource`, standing approvals, and `installationAccess`.
 
+An Installation without a GitHub App must still supply the App key fields of
+the Worker's `repository.preparedGitHub` configuration, such as `privateKeyPath`.
+
 An Agent's bindings must resolve to one credential: the App, or one Source.
 Naming another Source changes the grant, so earlier revisions go stale.
 
