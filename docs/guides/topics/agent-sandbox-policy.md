@@ -86,23 +86,61 @@ request; do not assume the provider rejected the change.
 
 ## CLI
 
-Use the same Namespace and authenticated OCC context as other Agent commands:
+Use the same Namespace and authenticated OCC context as other Agent commands.
+Get the current saved policy version and the ID of the active revision before
+preparing a change. The active revision is `activeRevisionId` in the Agent's
+JSON output, which needs only Agent read.
 
 ```sh
 occ agent policy get AGENT_ID --facet networking -o json
-occ agent policy editing AGENT_ID --enabled=true
-occ agent policy update AGENT_ID --facet networking --file additions.json
-occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version 2
-occ agent policy get AGENT_ID --facet networking -o json
+occ agent get AGENT_ID -o json
 ```
 
-The `occ agent policy` commands print JSON by default. Use `-o yaml` for YAML.
-Policy reads show saved Agent rules and admitted or Driver defaults, not the complete
-effective provider policy; empty arrays do not mean generated model and Git rules
-are absent.
+To save a replacement and queue its application in one request, create
+`apply.json` as the [HTTP request body](../../reference/api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply).
+Set `revisionId` to the active running revision ID and `expectedVersion` to
+the current saved policy version. Include the complete desired `additions`
+array. An empty array clears Agent-specific grants. Omit `additions` to apply
+the saved version. This example clears the existing Agent-specific grants.
 
-`additions.json` contains `expectedVersion` and the complete desired `additions`
-array. Get the current version first; an empty array removes Agent-specific
-grants. The apply command returns an acknowledgement; poll `get` to observe
-confirmation. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
+```json
+{
+  "revisionId": "rev_33333333-3333-4333-8333-333333333333",
+  "expectedVersion": 2,
+  "additions": []
+}
+```
+
+```sh
+occ agent policy apply AGENT_ID --file apply.json
+```
+
+To save a replacement for later, use `update` with `additions.json`
+containing the current `expectedVersion` and the complete `additions` array.
+
+```sh
+occ agent policy update AGENT_ID --file additions.json
+```
+
+To apply a saved policy, read the current saved version again with
+`occ agent policy get AGENT_ID` and confirm the active revision. Pass that
+version and revision ID together without `--file`.
+
+```sh
+occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version VERSION
+```
+
+OCC returns HTTP 202 when it queues the application. The CLI prints the policy
+record with `application.state` set to `pending`. Keep the application ID,
+revision ID and policy version from that response. Run
+`occ agent policy get AGENT_ID` and match all three fields in
+`policy.application`. Wait for that application’s state to become `applied`.
+If you lose the response or see a different application, reconcile the original
+request before submitting another change.
+
+An authorized administrator can enable editing with
+`occ agent policy editing AGENT_ID --enabled=true`. Policy commands print
+JSON by default. Use `-o yaml` for YAML. Policy reads show saved Agent rules
+and admitted or Driver defaults. Generated model and Git rules can still apply
+when the arrays are empty. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
 for defaults and operator ceiling inputs.

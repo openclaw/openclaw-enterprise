@@ -41,7 +41,7 @@ graph TD
 ```
 
 Arrows show implementation. Verify provider enforcement separately. OCC rejects apply for repository lists in
-saved policy or active Agent revision, even `[]`. Save and apply can share a transaction.
+saved policy or active Agent revision, even `[]`.
 Other admission checks apply.
 
 ## Execution Trace
@@ -81,7 +81,7 @@ version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
 Both protected Codex compilers validate the revision artifact map. `openshell-codex-artifacts.ts`
-excludes ambient defaults. The Sandbox checks Agent-owned workspace enrollment and returns
+excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
 immutable `SandboxResourceRef.proxyWiring`. The proxy checks the map, auxiliary rule and loaded
 policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
 requires Namespace opt-in and permissions. Admission passes saved or deployed
@@ -90,10 +90,10 @@ requires Namespace opt-in and permissions. Admission passes saved or deployed
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds repository rules to the credential-only Provider. OpenShell locally enforces Git and
-authorized REST routes. Selected App `scopedRest: "v2"`, saved Write and `issues: write` admit
-the direct issue POST unless `createIssues: false`. PR grants remain independent. No OCE
-request callback inspects bodies ([limits](../reference/repository-credentials/access-levels.md#known-limits)).
+binds rules to the credential-only Provider. OpenShell enforces Git and REST routes locally.
+Selected App `scopedRest: "v2"`, saved Agent Write and `issues: write` enable issue creation
+unless `createIssues: false`. PR grants remain independent. OCE skips body validation
+([limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -153,6 +153,7 @@ Authorization denials still return `403 FORBIDDEN`.
 active revision and a supporting Driver. One transaction saves supplied
 changes, records the pending application and queues work. Omitting additions
 keeps the saved policy version. Provider readback confirms enforcement.
+CLI `--file` sends checked JSON.
 
 ### 3. Reconcile provider effects
 
@@ -272,6 +273,8 @@ counters, controls and empty rows.
 ## Changelog
 
 - 2026-11-23 17:24: Document scoped issue creation. (authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69 - c97a1ab0938f8aac3880ad68bc5feaccd118820a)
+
+- 2026-11-23: CLI file apply.
 
 - 2026-11-23 11:47: Clarify policy flow. (authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80 - 226621cc08c630e3e966896ef04a7290d87d713a)
 
