@@ -1,4 +1,5 @@
 import { pluginOwner } from "./agent-plugin-validation.ts";
+import { credentialSourceRef, isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import { credentialGatewayOperation } from "./credential-source-drivers.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -6,7 +7,7 @@ import {
   type Agent,
   type Configuration,
   type CredentialGatewayDriver,
-  type CredentialSource,
+  type StoredCredentialSource,
   type CredentialSourceContext,
   type CredentialSourceReference,
   type HarnessExecutionMode,
@@ -22,7 +23,6 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
-import { credentialSourceMetadata } from "./credential-source-metadata.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -64,7 +64,7 @@ type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
 
 interface PluginDiscoveryDependencies {
   readonly transactions: Pick<ControllerTransactions, "read">;
-  readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "canRead">;
   readonly authorizedCredentialSource: (
     principalId: string,
     namespaceId: string,
@@ -180,7 +180,7 @@ async function invokePluginDiscovery<T>(
 
 export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies) {
   const { read } = dependencies.transactions;
-  const { authorize, authorizationDecision, canRead } = dependencies.authority;
+  const { authorize, canRead } = dependencies.authority;
 
   async function discoverAgentPlugins(
     principalId: string,
@@ -402,24 +402,15 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       namespaceId,
       agentId,
       async ({ state, agent, driver }) => {
-        // TODO: Plugin Source selection must use authorized Namespace candidates and their exact Template pins instead of Agent attachments.
-        const sources: CredentialSource[] = [];
+        const sources: StoredCredentialSource[] = [];
         if (driver.credentials && agent.executionMode === "dedicated") {
-          for (const { sourceId } of agent.credentialSources ?? []) {
-            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
+          for (const source of await state.credentialSources.listCredentialSources(namespaceId)) {
             if (
-              (await canRead(principalId, ref)) &&
-              (await authorizationDecision(principalId, "operate", ref)).decision.allowed &&
-              (await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-                .allowed
+              isManagedTokenServiceSource(source) &&
+              source.state === "ready" &&
+              (await canRead(principalId, credentialSourceRef(source)))
             ) {
-              const source = await state.credentialSources.findCredentialSource(
-                namespaceId,
-                sourceId,
-              );
-              if (source?.state === "ready") {
-                sources.push(source);
-              }
+              sources.push(source);
             }
           }
         }
@@ -427,11 +418,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
           ...(driver.credentials && agent.executionMode === "dedicated"
-            ? {
-                credentialSlots: driver.credentials.choices(
-                  sources.map((source) => credentialSourceMetadata(source)),
-                ),
-              }
+            ? { credentialSlots: driver.credentials.choices(sources) }
             : {}),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });
@@ -636,7 +623,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
               ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
               : undefined;
-          const secretRef = source?.secrets.token;
+          const secretRef =
+            source?.ownerCapability === "token_service" ? undefined : source?.secrets.token;
           if (!target || !secretRef) {
             throw new ResourceStateConflictError(
               "Choose a ready, compatible credential source from this Agent's saved credentials.",

@@ -736,12 +736,16 @@ async function openDeploymentNotice(t: TestContext) {
   const configuration = detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration");
   const banner = page.locator(".agent-deployment-attention");
   const link = banner.getByRole("link", { name: "View deployment", exact: true });
+  const latestDeployment = page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .locator(".stat")
+    .filter({ hasText: "Latest visible deployment" });
   const configurationTab = page.getByRole("tab", { name: "Configuration", selected: true });
 
   async function readRecord(
     pending: ReturnType<typeof responseTo>,
     deploymentId: string,
-    status: "queued" | "failed",
+    status: "queued" | "running" | "failed",
     cleanup: "queued" | null = null,
   ) {
     const response = await pending;
@@ -762,14 +766,14 @@ async function openDeploymentNotice(t: TestContext) {
   await waitForIdleFetches(page);
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
 
-  async function focusLink() {
-    const mounted = await link.elementHandle();
+  async function focusLink(destination = link) {
+    const mounted = await destination.elementHandle();
     assert.ok(mounted);
     // Traverse the native Tab order so Enter uses the browser's current focus.
     for (let step = 0; step < 60 && !(await hasFocus(mounted)); step++) {
       await page.keyboard.press("Tab");
     }
-    assert.equal(await hasFocus(mounted), true, "Tab reaches View deployment");
+    assert.equal(await hasFocus(mounted), true, "Tab reaches the deployment link");
     return mounted;
   }
 
@@ -792,6 +796,7 @@ async function openDeploymentNotice(t: TestContext) {
     control,
     banner,
     link,
+    latestDeployment,
     configurationTab,
     focusLink,
     readRecord,
@@ -799,6 +804,55 @@ async function openDeploymentNotice(t: TestContext) {
     pollMs: DEPLOYMENT_POLL_MS,
   };
 }
+
+test("Latest visible deployment keeps keyboard focus during status updates", async (t) => {
+  const {
+    page,
+    revisionId,
+    url,
+    control,
+    latestDeployment,
+    focusLink,
+    readRecord,
+    assertDeploymentOpened,
+    pollMs,
+  } = await openDeploymentNotice(t);
+  const link = latestDeployment.getByRole("link", { name: "v1", exact: true });
+  const original = await focusLink(link);
+  const queued = latestDeployment.getByText("Queued", { exact: true });
+  await queued.waitFor();
+  assert.equal(await queued.getAttribute("data-tone"), "info");
+
+  // Worker progress changes the summary badge while the reader is on the version link.
+  control.claimed = true;
+  const running = responseTo(page, "GET", url);
+  await page.clock.runFor(pollMs);
+  await readRecord(running, revisionId, "running");
+  const inProgress = latestDeployment.getByText("In progress", { exact: true });
+  await inProgress.waitFor();
+  assert.equal(await inProgress.getAttribute("data-tone"), "info");
+  assert.equal(
+    await hasFocus(original),
+    true,
+    "the original version link keeps focus after progress",
+  );
+
+  await waitForIdleFetches(page);
+  control.failed = true;
+  const failed = responseTo(page, "GET", url);
+  await page.clock.runFor(pollMs);
+  await readRecord(failed, revisionId, "failed");
+  const failedBadge = latestDeployment.getByText("Failed", { exact: true });
+  await failedBadge.waitFor();
+  assert.equal(await failedBadge.getAttribute("data-tone"), "danger");
+  assert.equal(
+    await hasFocus(original),
+    true,
+    "the original version link keeps focus after failure",
+  );
+  await page.keyboard.press("Enter");
+  await assertDeploymentOpened(revisionId);
+});
 
 test("View deployment keeps keyboard focus when the same deployment starts cleanup", async (t) => {
   const {
@@ -847,6 +901,7 @@ test("View deployment opens the new latest revision without taking focus", async
     control,
     banner,
     link,
+    latestDeployment,
     configurationTab,
     focusLink,
     readRecord,
@@ -854,6 +909,10 @@ test("View deployment opens the new latest revision without taking focus", async
     pollMs,
   } = await openDeploymentNotice(t);
   const route = page.url();
+  const original = await latestDeployment
+    .getByRole("link", { name: "v1", exact: true })
+    .elementHandle();
+  assert.ok(original);
   await configurationTab.focus();
   assert.equal(await hasFocus(configurationTab), true);
 
@@ -867,11 +926,15 @@ test("View deployment opens the new latest revision without taking focus", async
   await readRecord(terminal, revisionId, "failed");
   await readRecord(latest, next.id, "queued");
   await banner.getByText(pendingDeploymentNotice, { exact: true }).waitFor();
+  const summaryLink = latestDeployment.getByRole("link", { name: "v2", exact: true });
+  await summaryLink.waitFor();
   assert.equal(page.url(), route);
   assert.equal(await hasFocus(configurationTab), true, "the reader's focus stays on Configuration");
+  assert.equal(await original.evaluate((node) => node.isConnected), false);
   const href = await link.getAttribute("href");
   assert.ok(href);
   assert.equal(new URL(href, page.url()).searchParams.get("revision"), next.id);
+  assert.equal(await summaryLink.getAttribute("href"), href);
   await focusLink();
   await page.keyboard.press("Enter");
   await assertDeploymentOpened(next.id);

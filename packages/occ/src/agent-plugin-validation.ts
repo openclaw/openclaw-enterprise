@@ -3,7 +3,7 @@ import {
   normalizePluginApprovers,
   normalizePluginDesiredState,
   pluginRuntimeHarnessRequirement,
-  type CredentialSourceMetadata,
+  type StoredCredentialSource,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
   type PluginApprovers,
@@ -92,7 +92,7 @@ export function validatePluginSettings(
 export async function validatePluginCredentialSources(
   driver: PluginDriver | undefined,
   plugins: PluginDesiredState | undefined,
-  sources: readonly CredentialSourceMetadata[],
+  sources: readonly StoredCredentialSource[],
   harnessAuth?: HarnessAuthBinding | null,
 ): Promise<void> {
   if (plugins && Object.keys(plugins).length) {

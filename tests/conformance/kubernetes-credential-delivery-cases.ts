@@ -2,7 +2,7 @@ import type {
   AgentRevision,
   ComputeRevisionContext,
   CredentialGatewayDriver,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
   CredentialWithdrawalContext,
@@ -136,7 +136,7 @@ export async function checkExactSandboxCredentialWithdrawal() {
     },
   } satisfies Pick<CoreApi, "listNamespace" | "readNamespace">;
   Object.assign(driver, { apiClients: Promise.resolve({ core }) });
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: "cs_00000000-0000-4000-8000-000000000002",
     namespaceId: tenant.id,
     name: "Withdrawn source",
@@ -294,7 +294,7 @@ export function checkPairedCredentialSourceAuthentication() {
   };
   driver.validateHarnessAuth(revision.harness, snapshot, revision.configuration, {}, sourceType);
 
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: snapshot.sourceId,
     namespaceId: tenant.id,
     name: "openai",
@@ -307,7 +307,7 @@ export function checkPairedCredentialSourceAuthentication() {
     createdAt: "2026-09-26T00:00:00.000Z",
   };
   const prepared: {
-    credentialSource?: Readonly<CredentialSource>;
+    credentialSource?: Readonly<LegacyCredentialSource>;
     loginMode: string;
     environment: readonly EnvironmentEntry[];
   } = driver["harnessAuthForRevision"](
@@ -380,7 +380,7 @@ export function checkPairedCredentialSourceAuthentication() {
     { ...source, state: "deleting" },
     { ...source, driverId: "other-gateway" },
     { ...source, type: "anthropic" },
-  ] satisfies CredentialSource[]) {
+  ] satisfies LegacyCredentialSource[]) {
     assert.throws(
       () =>
         driver["harnessAuthForRevision"](
@@ -595,7 +595,7 @@ export async function checkExternalChatgptCredentialDelivery(t: TestContext) {
     sourceType: "external-chatgpt",
     loginMode: "chatgptAuthTokens",
   } satisfies HarnessAuthSnapshot;
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: snapshot.sourceId,
     namespaceId: tenant.id,
     name: "ChatGPT connection",

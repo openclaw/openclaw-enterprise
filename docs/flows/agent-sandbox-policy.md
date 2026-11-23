@@ -81,14 +81,14 @@ edits and live apply. Protected dedicated Codex admits the Sandbox-approved
 version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
-For saved or deployed repository bindings, admission passes `repositoryCredentials`.
+Both protected Codex compilers validate the complete revision artifact map.
+`openshell-codex-artifacts.ts` excludes ambient defaults. The Sandbox checks
+workspace enrollment against the validated Agent-owned setup binding and returns
+the immutable policy in `SandboxResourceRef.proxyWiring`. The proxy checks
+the artifact map, bounded auxiliary rule and complete loaded policy.
+[Issue reads](../reference/repository-credentials/access-levels.md#native-git-delivery)
+require a separate grant.
+Admission passes saved or deployed `repositoryCredentials`.
 OpenShell Git refuses additions and defaults targeting `github.com`, its
 subdomains, or IP addresses. Binding, deploy, and provisioning repeat that
 check. Deploy and binding-preserving updates authorize SandboxPolicy `read`
@@ -288,6 +288,8 @@ counters, controls and empty rows.
 - 2026-11-22 09:55: Document transaction isolation for explicit repository policy saves. (authoring-run/0eda0b23-705a-489b-833d-3cde8916b691 - 42f0df7230de059d4a96da27298c911e22993cab)
 
 - 2026-11-22 09:28: Document the read check for explicit empty repository lists and omission from save responses. (authoring-run/df899b2b-1188-46fb-a341-5c7068e9208a - 8d738163780171c639367dbbccd9d9bb3a0ee63c)
+
+- 2026-11-21 11:25: Issue reads. (authoring-run/0bcc1e9a-07b4-4e62-84f3-5c8d8204522e - 64c5b34ff03f7b17aaa69af21aa75af0a91b1d56)
 
 - 2026-11-21 08:16: Document Console repository choices, first-deployment eligibility and active revision recovery. (authoring-run/6ef4f22d-ce36-4d4c-941f-cb7a21afbb49 - 9cd9c344f9c57cd158dd74b87029a8266ca7cac2)
 

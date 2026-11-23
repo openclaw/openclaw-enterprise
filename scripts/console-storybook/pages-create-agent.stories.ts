@@ -135,9 +135,8 @@ export const CreatePresetMultilineApplied = story("createPresetMultilineApplied"
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
 export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
-export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
-export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
-export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
+export const CreateCredentialSourceDenied = story("createCredentialSourceDenied");
+export const CreateCredentialSourcePending = story("createCredentialSourcePending");
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
 export const CreateOpenclawWithoutNativeWorkers = {
   ...story("createOpenclawWithoutNativeWorkers"),
@@ -237,9 +236,9 @@ export const CreateMemberGrantRefused = {
   ...story("createMemberGrantRefused"),
   name: "Member Agent created, opens its draft",
 };
-export const CreateMemberCredentialGateway = {
-  ...story("createMemberCredentialGateway"),
-  name: "Member on a Credential Gateway Installation",
+export const CreateMemberCredentialSource = {
+  ...story("createMemberCredentialSource"),
+  name: "Member creates a Credential Source",
 };
 export const CreateRestricted = {
   ...story("createRestricted"),
@@ -405,13 +404,3 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
-
-export const SharedModelDestination = {
-  ...story("createSharedModelProviderSource"),
-  name: "Authorize shared model destination",
-};
-
-export const SharedModelDestinationRefusal = {
-  ...story("createSharedModelProviderRefusal"),
-  name: "Destination authorization refusal",
-};

@@ -6,7 +6,7 @@ import {
   type ComputeDriver,
   type CredentialGatewayDriver,
   type CredentialRefreshDriver,
-  type CredentialSource,
+  type LegacyCredentialSource,
   type CredentialSourceType,
   type DriverByCapability,
   type Namespace,
@@ -79,7 +79,7 @@ export function createCredentialSourceDrivers(dependencies: CredentialSourceDriv
    * the fix. Call it only after the grant and the lookup, so it is no existence oracle. No usable
    * selected driver is an outage, not an ownership problem: it keeps the generic 503.
    */
-  function ownedCredentialGatewayDriver(source: CredentialSource): CredentialGatewayDriver {
+  function ownedCredentialGatewayDriver(source: LegacyCredentialSource): CredentialGatewayDriver {
     const driver = credentialGatewayDriver();
     if (source.ownerCapability !== "credential_gateway" || driver.id !== source.driverId) {
       throw new CredentialSourceDriverError();
@@ -154,7 +154,7 @@ export function createCredentialSourceDrivers(dependencies: CredentialSourceDriv
   }
 
   /** Resolve exactly the recorded capability, then check its Driver and protected backend. */
-  function credentialSourceOwner(source: CredentialSource) {
+  function credentialSourceOwner(source: LegacyCredentialSource) {
     if (source.ownerCapability === "credential_proxy") {
       const driver = dependencies.selectedProxyOwner().require("credential_proxy");
       if (
@@ -173,7 +173,7 @@ export function createCredentialSourceDrivers(dependencies: CredentialSourceDriv
 
   /** Recheck the immutable admission and its selected owner in the use or observation transaction. */
   function currentCredentialSourceOwner(
-    source: CredentialSource,
+    source: LegacyCredentialSource,
     revision: AgentRevision,
   ): boolean {
     if (

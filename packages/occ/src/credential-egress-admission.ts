@@ -13,7 +13,7 @@ import {
   type AuthorizationRequest,
   type CredentialFreeEgressSource,
   type CredentialProviderDefinition,
-  type CredentialSource,
+  type LegacyCredentialSource,
   type CredentialSourceType,
   type DriverByCapability,
   type EgressRef,
@@ -337,15 +337,16 @@ export function createCredentialEgressAdmission(
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
+    nativeGit?: "v1",
   ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
-    const sources: CredentialSource[] = [];
+    const sources: LegacyCredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of agent.credentialSources ?? []) {
       const source = await state.credentialSources.findCredentialSource(
         agent.namespaceId,
         binding.sourceId,
       );
-      if (source?.egress !== undefined) {
+      if (source?.ownerCapability !== "token_service" && source?.egress !== undefined) {
         sources.push(source);
       } else if (
         repositoryGit &&
@@ -417,6 +418,7 @@ export function createCredentialEgressAdmission(
       driver.sourceControl,
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       gitProfile,
+      nativeGit,
     );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
@@ -461,7 +463,10 @@ export function createCredentialEgressAdmission(
       executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
     const control = driver.sourceControl;
-    const requireProvider = (source: CredentialSource, expected?: CredentialProviderDefinition) => {
+    const requireProvider = (
+      source: LegacyCredentialSource,
+      expected?: CredentialProviderDefinition,
+    ) => {
       const admitted = source.egress!;
       const provider = registeredCredentialProvider(control.providers, admitted.key.provider);
       if (
@@ -516,7 +521,9 @@ export function createCredentialEgressAdmission(
       ...(policyReductionVersion !== undefined && { policyReductionVersion }),
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
-        (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
+        (gitAuthorization === "online-request" ||
+          gitAuthorization === "request-hook-observed" ||
+          gitAuthorization === "network-policy") && {
           repositoryGitAuthorization: gitAuthorization,
         }),
       ...(harnessCredentialSource && { harnessCredentialSource }),
@@ -570,8 +577,8 @@ export function createCredentialEgressAdmission(
     const gateway = dependencies.sourceDrivers.credentialGatewayDriver();
     if (
       source?.state !== "ready" ||
-      source.egress !== undefined ||
       source.ownerCapability !== "credential_gateway" ||
+      source.egress !== undefined ||
       source.driverId !== gateway.id
     ) {
       return false;

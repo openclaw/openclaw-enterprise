@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-22
-last_updated_session: 01a1f7eb-2091-7c21-9b03-27f01f958b69
+updated: 2026-11-23
+last_updated_session: authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536
 ---
 
 # Credential source lifecycle flow
@@ -22,10 +22,10 @@ An operator registers a credential with TokenService and selects its Source for 
 
 ```mermaid
 graph TD
-  Select["<b>OCC</b><br/>Authorize create and validate optional Template version"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
-  Register --> Associate["<b>OCC</b><br/>Save immutable association, creator grant, and audit"]
+  Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
+  Register --> Associate["<b>OCC</b><br/>Grant creator access and audit"]
   Associate --> Kind{"Template-associated Source?"}
-  Kind -->|Yes| Discover["<b>OCC</b><br/>Expose pinned Source metadata; Plugin admission remains pending"]
+  Kind -->|Yes| Discover["<b>OCC</b><br/>Resolve current Template for a selected Plugin Source"]
   Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize model Source and save policies"]
   Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
   Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
@@ -42,9 +42,9 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, non-static, or non-current version, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC then saves the immutable static Template association, grants the creator access, and records completion in one transaction. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
+OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the canonical Source, saves its optional Template ID, and stores the write-only credential in its private custody. OCC then grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
 
-Source GET and authorized list return the saved static association. For an active OAuth Source, OCC derives the exact pair from `SavedConnection`, which records the completed consent version. A later Template update changes neither pair; pending and revoking OAuth connections omit it.
+Template OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the authorization code, and calls the selected TokenService registration boundary with the grant and `connection_template` consent. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. The Source retains its Template ID, original consent version, and selected client. The same Source schema also permits trusted `builtin_codex` authorization without a Template; moving device-login completion to that path is a separate cutover. When a Plugin selects this Source, OCC resolves its current Template and checks the original consent. See [Plugin admission and delivery limits](agent-plugins.md#2-admit-an-immutable-plugin-deployment).
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -92,7 +92,7 @@ If delivery fails, the replacement remains in TokenService custody. OCC audits t
 
 #### Retire the Source
 
-DELETE refuses blocking references and records retirement intent. OCC asks the selected Proxy to retire its delivery copy before TokenService removes the Source and credential from custody. Proxy retirement failure returns `503` and retains the Source and credential for retry. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for ordering and failure handling.
+Static Source DELETE refuses blocking references and records retirement intent. OCC asks the selected Proxy to retire its delivery copy before TokenService removes the Source and credential from custody. Proxy retirement failure returns `503` and retains the Source and credential for retry. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for ordering and failure handling. OAuth disconnect instead retires the private grant through TokenService; the current pushed delivery path supports static credentials only.
 
 ## Debugging and Verification
 
@@ -109,6 +109,13 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 08:44: Trace Plugin selection of a Template-associated Source. (authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536 - 5dcfdf664)
+
+- 2026-11-23 08:04: Distinguish Template consent from the fixed built-in Codex OAuth preset. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
+- 2026-11-23 13:30: Trace canonical static and OAuth Source creation through the selected TokenService and remove the separate association and saved connection. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
+
+- 2026-11-23 01:53: Change Source associations and metadata to use a Template ID while preserving the OAuth consent version. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - cd806684a)
 
 - 2026-11-22 15:16: Trace static Source Template validation and immutable association, and OAuth consent projection. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - e302d9e90)
 

@@ -2,15 +2,14 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
-  type CredentialSource,
-  type CredentialSourceMetadata,
+  type StoredCredentialSource as CredentialSource,
   type PluginCatalogEntry,
   type PluginDesiredState,
   type PluginDeploymentContract,
   type PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { exactDnsName } from "../credential-source-endpoint.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
@@ -442,7 +441,7 @@ export function managedMcpCredentialBindings(
 }
 
 export function managedMcpInstallForSourceConfig(
-  config: CredentialSource["config"],
+  config: Readonly<Record<string, string>>,
 ): ManagedMcpInstall | undefined {
   if (config.protocol !== "mcp") {
     return undefined;
@@ -458,14 +457,11 @@ export function managedMcpInstallForSourceConfig(
 
 export function managedMcpSlotAcceptsSource(
   install: ManagedMcpInstall,
-  source: Pick<
-    CredentialSourceMetadata,
-    "state" | "ownerCapability" | "egress" | "type" | "secrets" | "namespaceId" | "config"
-  >,
+  source: CredentialSource,
 ): boolean {
   return (
-    source.state === "ready" &&
     source.ownerCapability === "credential_gateway" &&
+    source.state === "ready" &&
     source.egress === undefined &&
     source.type === "bearer-token" &&
     source.secrets.token?.namespaceId === source.namespaceId &&
@@ -473,27 +469,11 @@ export function managedMcpSlotAcceptsSource(
   );
 }
 
-function isPinnedStaticPluginSource(source: CredentialSourceMetadata): boolean {
-  return (
-    source.state === "ready" &&
-    source.ownerCapability === "token_service" &&
-    source.type === "static" &&
-    isNonEmptyString(source.connectionTemplateId) &&
-    isPositiveSafeInteger(source.connectionTemplateVersion) &&
-    source.ref.kind === "credential_source" &&
-    source.ref.id === source.id &&
-    source.ref.namespaceId === source.namespaceId
-  );
-}
-
 function acceptsManagedSource(
   install: ManagedCliInstall | ManagedMcpInstall,
   requirement: string,
-  source: CredentialSourceMetadata,
+  source: CredentialSource,
 ): boolean {
-  if (source.type === "static") {
-    return Object.hasOwn(install.credentials, requirement) && isPinnedStaticPluginSource(source);
-  }
   if (install.kind === "mcp") {
     return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source);
   }
@@ -534,7 +514,7 @@ export function managedPluginCredentials(
       }
       return { endpoint: install.url };
     },
-    choices(sources: readonly CredentialSourceMetadata[]) {
+    choices(sources: readonly CredentialSource[]) {
       return managedInstalls.flatMap((install) =>
         Object.entries(install.credentials).map(([id, slot]) => ({
           pluginId: install.id,
@@ -565,7 +545,16 @@ export function managedPluginCredentials(
               if (!source) {
                 throw unavailable();
               }
-              return [requirement, { default: source.ref }];
+              return [
+                requirement,
+                {
+                  default: {
+                    kind: "credential_source" as const,
+                    namespaceId: source.namespaceId,
+                    id: source.id,
+                  },
+                },
+              ];
             },
           ),
         );

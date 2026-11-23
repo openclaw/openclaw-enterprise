@@ -18,7 +18,6 @@ import type {
 } from "../ports/agents.ts";
 import type {
   CredentialSourceRepository,
-  StaticCredentialSourceTemplate,
   StoredCredentialWithdrawal,
 } from "../ports/credential-sources.ts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
@@ -38,7 +37,7 @@ import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
-import { postgresSavedConnections } from "./postgres-saved-connections.ts";
+import { postgresOAuthCredentials } from "./postgres-oauth-credentials.ts";
 import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
@@ -61,7 +60,7 @@ import type {
   WorkspaceSetup,
   AgentRevision,
   AuditEvent,
-  CredentialSource,
+  StoredCredentialSource as CredentialSource,
   Group,
   GroupMembership,
   Identity,
@@ -643,7 +642,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id,
+  cs.token_service_instance_id, cs.connection_template_id, cs.oauth_provenance, cs.oauth_account, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -684,45 +683,121 @@ function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentia
   });
 }
 
-function staticCredentialSourceTemplateFromRow(
-  row: PostgresRow,
-): Readonly<StaticCredentialSourceTemplate> {
-  const version = row.connection_template_version;
-  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
-    throw new PersistedStateInvalidError("Persisted static Source Template version is invalid.");
-  }
-  return {
-    namespaceId: text(row, "namespace_id"),
-    credentialSourceId: text(row, "credential_source_id"),
-    connectionTemplateId: text(row, "connection_template_id"),
-    connectionTemplateVersion: version,
-  };
-}
-
 function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const namespaceId = text(row, "namespace_id");
   const state = text(row, "state");
-  if (state !== "registering" && state !== "ready" && state !== "deleting") {
-    throw new PersistedStateInvalidError("Persisted credential source state is invalid.");
-  }
+  const type = text(row, "type");
+  const ownerCapability = text(row, "owner_capability");
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
-  const ownerCapability = text(row, "owner_capability");
   if (
-    (ownerCapability !== "credential_gateway" &&
-      ownerCapability !== "token_service" &&
-      (ownerCapability !== "credential_proxy" || row.egress == null)) ||
+    (state !== "registering" && state !== "ready" && state !== "deleting") ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
   ) {
     throw new PersistedStateInvalidError("Persisted credential source metadata is invalid.");
   }
-  return immutableCopy({
+  const common = {
     id: text(row, "id"),
     namespaceId,
     name: text(row, "name"),
-    type: text(row, "type"),
+    createdAt: timestamp(row, "created_at"),
+  };
+  if (ownerCapability === "token_service") {
+    if ((state !== "ready" && state !== "deleting") || Object.keys(secretIds).length !== 0) {
+      throw new PersistedStateInvalidError("Persisted TokenService Source is invalid.");
+    }
+    const owned = {
+      ...common,
+      ownerCapability,
+      tokenServiceInstanceId: text(row, "token_service_instance_id"),
+      state,
+    } as const;
+    if (type === "static") {
+      return immutableCopy({
+        ...owned,
+        type,
+        config: config as Record<string, string>,
+        ...(row.connection_template_id == null
+          ? {}
+          : { connectionTemplateId: text(row, "connection_template_id") }),
+      });
+    }
+    if (
+      type !== "oauth2-refresh-token" ||
+      !Array.isArray(row.oauth_requested_scopes) ||
+      !Array.isArray(row.oauth_granted_scopes)
+    ) {
+      throw new PersistedStateInvalidError("Persisted OAuth Source consent is invalid.");
+    }
+    const consent = {
+      ownerPrincipalId: text(row, "oauth_owner_principal_id"),
+      requestedScopes: row.oauth_requested_scopes as string[],
+      grantedScopes: row.oauth_granted_scopes as string[],
+      ...(row.oauth_revocation_requested_by == null
+        ? {}
+        : { revocationRequestedBy: text(row, "oauth_revocation_requested_by") }),
+      ...(row.oauth_revoked_at == null ? {} : { revokedAt: timestamp(row, "oauth_revoked_at") }),
+    };
+    if (
+      row.oauth_provenance === "connection_template" &&
+      Number.isSafeInteger(row.oauth_consent_version)
+    ) {
+      return immutableCopy({
+        ...owned,
+        type,
+        connectionTemplateId: text(row, "connection_template_id"),
+        consent: {
+          ...consent,
+          kind: "connection_template",
+          version: row.oauth_consent_version as number,
+          oauthClientId: text(row, "oauth_client_id"),
+        },
+      });
+    }
+    if (row.oauth_provenance === "builtin_codex") {
+      const account = jsonObject(row.oauth_account);
+      if (
+        typeof account.accountId !== "string" ||
+        typeof account.planType !== "string" ||
+        typeof account.isFedramp !== "boolean" ||
+        [account.userId, account.email, account.accountUserId].some(
+          (value) => value !== undefined && typeof value !== "string",
+        )
+      ) {
+        throw new PersistedStateInvalidError("Persisted Codex OAuth account is invalid.");
+      }
+      return immutableCopy({
+        ...owned,
+        type,
+        consent: {
+          ...consent,
+          kind: "builtin_codex",
+          account: {
+            accountId: account.accountId,
+            planType: account.planType,
+            isFedramp: account.isFedramp,
+            ...(account.userId === undefined ? {} : { userId: account.userId as string }),
+            ...(account.email === undefined ? {} : { email: account.email as string }),
+            ...(account.accountUserId === undefined
+              ? {}
+              : { accountUserId: account.accountUserId as string }),
+          },
+        },
+      });
+    }
+    throw new PersistedStateInvalidError("Persisted OAuth Source provenance is invalid.");
+  }
+  if (ownerCapability !== "credential_gateway" && ownerCapability !== "credential_proxy") {
+    throw new PersistedStateInvalidError("Persisted credential source owner is invalid.");
+  }
+  return immutableCopy({
+    ...common,
     config: config as Record<string, string>,
+    type,
+    ownerCapability,
+    driverId: text(row, "driver_id"),
+    state,
     ...(row.egress == null
       ? {}
       : { egress: jsonObject(row.egress) as unknown as ProtectedEgressSource }),
@@ -732,16 +807,6 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
         { kind: "secret" as const, namespaceId, id },
       ]),
     ),
-    ...(ownerCapability === "token_service"
-      ? {
-          ownerCapability,
-          ...(row.token_service_instance_id == null
-            ? {}
-            : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
-        }
-      : { ownerCapability, driverId: text(row, "driver_id") }),
-    state,
-    createdAt: timestamp(row, "created_at"),
   });
 }
 
@@ -3060,31 +3125,16 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const credentialSources: CredentialSourceRepository = {
-      findStaticConnectionTemplate: async (namespaceId, credentialSourceId) => {
-        const rows = decodeQueryRows(
-          await client.query(
-            `SELECT namespace_id, credential_source_id, connection_template_id, connection_template_version FROM occ.static_credential_source_templates WHERE namespace_id=$1 AND credential_source_id=$2`,
-            [namespaceId, credentialSourceId],
-          ),
-        );
-        return rows[0] === undefined ? undefined : staticCredentialSourceTemplateFromRow(rows[0]);
-      },
-      listStaticConnectionTemplates: async (namespaceId) =>
-        decodeQueryRows(
-          await client.query(
-            `SELECT namespace_id, credential_source_id, connection_template_id, connection_template_version FROM occ.static_credential_source_templates WHERE namespace_id=$1 ORDER BY credential_source_id`,
-            [namespaceId],
-          ),
-        ).map(staticCredentialSourceTemplateFromRow),
-      associateStaticConnectionTemplate: async (association) => {
+      requestOAuthRevocation: async (namespaceId, sourceId, principalId) => {
         await client.query(
-          `INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id,connection_template_version) VALUES ($1,$2,$3,$4)`,
-          [
-            association.namespaceId,
-            association.credentialSourceId,
-            association.connectionTemplateId,
-            association.connectionTemplateVersion,
-          ],
+          "UPDATE occ.credential_sources SET oauth_revocation_requested_by=$3 WHERE namespace_id=$1 AND id=$2 AND oauth_revocation_requested_by IS NULL",
+          [namespaceId, sourceId, principalId],
+        );
+      },
+      confirmOAuthRevocation: async (namespaceId, sourceId, at) => {
+        await client.query(
+          "UPDATE occ.credential_sources SET oauth_revoked_at=$3 WHERE namespace_id=$1 AND id=$2 AND oauth_revocation_requested_by IS NOT NULL AND oauth_revoked_at IS NULL",
+          [namespaceId, sourceId, at],
         );
       },
       isEgressMaterialRejected: async (evidence) => {
@@ -3303,7 +3353,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The credential source belongs to an unavailable Namespace.",
           );
         }
-        const secretInputs = Object.entries(source.secrets);
+        const secretInputs =
+          source.ownerCapability === "token_service" ? [] : Object.entries(source.secrets);
         // Only the Secret ID is stored; the row's Namespace makes every input same-Namespace.
         if (
           secretInputs.some(
@@ -3318,22 +3369,49 @@ export class PostgresPlatformState implements PlatformStateStore {
         try {
           await client.query(
             `INSERT INTO occ.credential_sources
-             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11)`,
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, connection_template_id, oauth_provenance, oauth_account, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21)`,
             [
               source.id,
               source.namespaceId,
               source.name,
               source.type,
-              JSON.stringify(source.config),
-              source.driverId ?? null,
+              JSON.stringify(
+                source.ownerCapability === "token_service" && source.type === "oauth2-refresh-token"
+                  ? {}
+                  : source.config,
+              ),
+              source.ownerCapability === "token_service" ? null : source.driverId,
               source.state,
               source.createdAt,
-              source.egress === undefined ? null : JSON.stringify(source.egress),
+              source.ownerCapability === "token_service" || source.egress === undefined
+                ? null
+                : JSON.stringify(source.egress),
               source.ownerCapability,
               source.ownerCapability === "token_service"
                 ? (source.tokenServiceInstanceId ?? null)
                 : null,
+              source.ownerCapability === "token_service"
+                ? (source.connectionTemplateId ?? null)
+                : null,
+              ...(source.ownerCapability === "token_service" &&
+              source.type === "oauth2-refresh-token"
+                ? [
+                    source.consent.kind,
+                    source.consent.kind === "builtin_codex"
+                      ? JSON.stringify(source.consent.account)
+                      : null,
+                    source.consent.kind === "connection_template" ? source.consent.version : null,
+                    source.consent.kind === "connection_template"
+                      ? source.consent.oauthClientId
+                      : null,
+                    source.consent.ownerPrincipalId,
+                    source.consent.requestedScopes,
+                    source.consent.grantedScopes,
+                    source.consent.revocationRequestedBy ?? null,
+                    source.consent.revokedAt ?? null,
+                  ]
+                : [null, null, null, null, null, null, null, null, null]),
             ],
           );
         } catch (error) {
@@ -3357,7 +3435,11 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       replaceCredentialSourceSecrets: async (namespaceId, credentialSourceId, secrets) => {
         const current = await findCredentialSource(namespaceId, credentialSourceId);
-        if (current === undefined || current.state !== "ready") {
+        if (
+          current === undefined ||
+          current.ownerCapability === "token_service" ||
+          current.state !== "ready"
+        ) {
           return undefined;
         }
         assertSameCredentialSourceFields(current.secrets, secrets);
@@ -3393,7 +3475,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
         const result = await client.query(
-          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND token_service_instance_id IS NOT NULL",
+          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND type='static' AND token_service_instance_id IS NOT NULL",
           [namespaceId, credentialSourceId, JSON.stringify(config)],
         );
         return result.rowCount === 1
@@ -4280,7 +4362,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             decodeQueryRows(
               await client.query(
                 `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability,
-                        cs.driver_id, cs.token_service_instance_id
+                        cs.driver_id, cs.token_service_instance_id, cs.connection_template_id
                    FROM occ.credential_sources AS cs
                    JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                    WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
@@ -4293,6 +4375,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
+              ...(row.connection_template_id == null
+                ? {}
+                : { connectionTemplateId: text(row, "connection_template_id") }),
               ...(row.driver_id == null ? {} : { driverId: text(row, "driver_id") }),
               ...(row.token_service_instance_id == null
                 ? {}
@@ -4861,7 +4946,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
-      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      oauthCredentials: postgresOAuthCredentials(client),
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),

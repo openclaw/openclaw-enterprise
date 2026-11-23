@@ -5,7 +5,7 @@ import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/dr
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import type {
   CredentialRevisionContext,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceInput,
 } from "../../packages/contracts/src/index.ts";
 import { ScopeViolationError } from "../../packages/occ/src/index.ts";
@@ -164,7 +164,7 @@ export function registerSandboxDriverNamespaceProviderCases({
     for (const { list, binary, acceptable } of scenarios) {
       const f = credentialGatewayOverProviders({ toolBinaries: list, refresh: true });
       const context = f.context(sourceId);
-      const source: CredentialSource = {
+      const source: LegacyCredentialSource = {
         ...context.source,
         type: "oauth2-refresh-token",
         config: { ...config, ...(binary && { binary }) },
@@ -243,7 +243,7 @@ export function registerSandboxDriverNamespaceProviderCases({
       env_var: "SLACK_MCP_TOKEN",
     };
     const config = { protocol: "mcp", ...endpoint };
-    const source: CredentialSource = {
+    const source: LegacyCredentialSource = {
       ...context.source,
       type: "bearer-token",
       config,

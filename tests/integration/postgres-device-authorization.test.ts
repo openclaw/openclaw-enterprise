@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
@@ -28,7 +26,6 @@ test(
     });
     const authSecret = "postgres-device-login-test-signing-secret";
     const secretDriver = createTestSecretDriver();
-    const preparedTokens = new TokenService();
     const options = {
       label: "device-login",
       sandboxDriver: deviceTestSandbox(),
@@ -37,20 +34,12 @@ test(
       controllerOptions: {
         now: () => new Date(clock.wallNow()),
         authenticationStateEncryptionSecret: authSecret,
-        preparedTokens,
         iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
       },
       appOptions: { publicOrigin: "https://console.oce.localhost" },
     };
     const first = await createPostgresAgentApp(t, options);
     const second = await createPostgresAgentApp(t, options);
-    preparedTokens.registerIssuer(
-      new OAuthAccountTokens(
-        first.state,
-        secretDriver,
-        first.controller.resolveConnectionClient.bind(first.controller),
-      ),
-    );
     await first.controller.applyIAMConfiguration();
     for (const { controller } of [first, second]) {
       controller.registerDriver(gateway);
@@ -116,8 +105,9 @@ test(
       const data = response.json().data;
       const state = new URL(data.authorizationUrl).searchParams.get("state");
       assert.ok(state);
+      assert.equal(Object.hasOwn(data, "credentialSourceId"), false);
       return {
-        sourceId: data.credentialSourceId as string,
+        id: createHash("sha256").update(state).digest("hex"),
         callback: `/oauth/callback?${new URLSearchParams({ state, error: "access_denied" })}`,
       };
     }
@@ -144,17 +134,16 @@ test(
     const consent = await startOAuth();
     // Both supported entry points write to the same physical store without sharing private fields.
     const coexisting = await first.pool.query(
-      `SELECT kind, credential_source_id, binding->>'sourceId' AS device_source_id FROM occ.authentication_states
-       WHERE namespace_id = $1 AND (id = $2 OR credential_source_id = $3) ORDER BY kind`,
-      [namespaceId, id, consent.sourceId],
+      `SELECT kind, binding->>'sourceId' AS device_source_id FROM occ.authentication_states
+       WHERE namespace_id = $1 AND id IN ($2,$3) ORDER BY kind`,
+      [namespaceId, id, consent.id],
     );
     assert.deepEqual(coexisting.rows, [
       {
         kind: "device_authorization",
-        credential_source_id: null,
         device_source_id: pending.device_source_id,
       },
-      { kind: "oauth_connection", credential_source_id: consent.sourceId, device_source_id: null },
+      { kind: "oauth_connection", device_source_id: null },
     ]);
     // The application role can update device progress but cannot rewrite an immutable binding,
     // alter an OAuth attempt, or introduce fields belonging to another workflow.
@@ -166,8 +155,8 @@ test(
     );
     await assert.rejects(
       first.pool.query(
-        "UPDATE occ.authentication_states SET expires_at = expires_at WHERE credential_source_id = $1",
-        [consent.sourceId],
+        "UPDATE occ.authentication_states SET expires_at = expires_at WHERE id = $1",
+        [consent.id],
       ),
       { code: "55000" },
     );
@@ -202,12 +191,13 @@ test(
     );
     assert.equal(
       (
-        await first.inject(
-          "GET",
-          `/namespaces/${namespaceId}/credential-sources/${consent.sourceId}`,
+        await first.pool.query(
+          "SELECT 1 FROM occ.credential_sources WHERE namespace_id=$1 AND type='oauth2-refresh-token'",
+          [namespaceId],
         )
-      ).statusCode,
-      404,
+      ).rowCount,
+      0,
+      "denied consent creates no OAuth Source",
     );
     assert.equal(
       (await row(id)).phase,
@@ -301,19 +291,9 @@ test(
     await clock.advance(15 * 60 * 1000);
     // Abandon the challenge: the periodic expiry operation must clear private state without a poll.
     await second.controller.expireAuthenticationStates(32);
-    assert.equal(
-      (
-        await first.inject(
-          "GET",
-          `/namespaces/${namespaceId}/credential-sources/${abandonedConsent.sourceId}`,
-        )
-      ).statusCode,
-      404,
-      "expiry removes the unfinished OAuth credential source",
-    );
     const expiredConsent = await first.pool.query(
-      "SELECT id FROM occ.authentication_states WHERE kind = 'oauth_connection' AND credential_source_id = $1",
-      [abandonedConsent.sourceId],
+      "SELECT id FROM occ.authentication_states WHERE kind = 'oauth_connection' AND id = $1",
+      [abandonedConsent.id],
     );
     assert.equal(expiredConsent.rowCount, 0);
     const abandonedRow = await row(abandoned);

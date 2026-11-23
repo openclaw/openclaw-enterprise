@@ -2,8 +2,6 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { Check } from "typebox/value";
-import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 
 import {
   createOpenShellBackend,
@@ -33,30 +31,6 @@ const OAUTH2_TYPES = TOOL_TYPES.filter((type) => type !== "bearer-token");
 const TOOL = { host: "tools.example.test", env_var: "TOOL_TOKEN" };
 const ISSUER = { ...TOOL, token_url: "https://issuer.example.test/token", client_id: "occ" };
 const toolConfig = (type, config) => ({ ...(type === "bearer-token" ? TOOL : ISSUER), ...config });
-/**
- * A save refused for one config field: HTTP 400 naming only that field, and its message.
- * @param {{status: number, body: unknown}} response
- * @param {string} field
- * @param {string | RegExp} [message]
- * @param {string} [label]
- */
-function assertRefused(response, field, message, label = field) {
-  assert.equal(response.status, 400, label + " " + JSON.stringify(response.body));
-  const body = response.body;
-  assert.ok(Check(ErrorResponse, body), label + " invalid error response");
-  assert.equal(body.error.code, "INVALID_REQUEST", label);
-  assert.deepEqual(
-    body.error.details,
-    [{ path: "/config/" + field, code: "INVALID_VALUE" }],
-    label,
-  );
-  if (typeof message === "string") {
-    assert.equal(body.error.message, message, label);
-  } else if (message !== undefined) {
-    assert.match(body.error.message, message, label);
-  }
-}
-
 // Gateway storage and Compute placement are test doubles. Requests use the real
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
 /**
@@ -146,7 +120,7 @@ async function fixture(
       backend,
     },
   );
-  let now = Date.parse("2026-10-05T12:00:00Z");
+  const now = Date.parse("2026-10-05T12:00:00Z");
   const computeDriver = {
     ...createDevelopmentComputeDriver({ id: "credential-source-compute" }),
     async resolveSandboxNamespace(namespace) {
@@ -174,10 +148,6 @@ async function fixture(
   const toolSecret = toolSources
     ? await app.createSecret(namespace.id, "tool-material", "synthetic-tool-material")
     : undefined;
-  const create = (name, config = {}) =>
-    app.request("POST", path, {
-      body: { name, type: "openai", config, secrets: { api_key: secret.ref } },
-    });
   return {
     ...app,
     driver,
@@ -188,46 +158,11 @@ async function fixture(
     secretDriver,
     namespace,
     path,
-    create,
-    passRegistrationFence() {
-      now += 71_000;
-    },
-    async seedInvalid(type = "openai", baseUrl = "http://") {
-      // Reproduce invalid persisted configuration beyond the registration fence.
-      // Each case decides whether the remote provider is absent or still present.
-      const source = {
-        id: "cs_" + randomUUID(),
-        namespaceId: namespace.id,
-        name: "invalid-" + randomUUID(),
-        type,
-        config: { authorized_base_url: baseUrl },
-        secrets: { api_key: secret.ref },
-        ownerCapability: "credential_gateway",
-        driverId: driver.id,
-        state: "registering",
-        createdAt: new Date(now - 71_000).toISOString(),
-      };
-      await app.controller.transact(async (unit) => {
-        await unit.credentialSources.createCredentialSource(source);
-        await unit.credentialSources.markCredentialSourceDeleting(namespace.id, source.id);
-      });
-      return source;
-    },
-    /** A tool source create body, with `config` over the type's valid config. */
-    toolBody(type, config, name = "tool") {
-      return {
-        name,
-        type,
-        config: toolConfig(type, config),
-        secrets: { [SECRET_FIELD[type]]: toolSecret.ref },
-      };
-    },
-    /** Saves a tool source through the API, with `config` over the type's valid config. */
-    saveTool(type, config, name = "tool") {
-      return app.request("POST", path, { body: this.toolBody(type, config, name) });
-    },
     validate(type, config) {
-      return driver.validateSourceConfig({ type, config: toolConfig(type, config) });
+      return driver.validateSourceConfig({
+        type,
+        config: type === "openai" ? config : toolConfig(type, config),
+      });
     },
     /** No source listed, no Secret value read, nothing written to the gateway. */
     async assertNothingSaved() {
@@ -282,10 +217,6 @@ async function fixture(
       });
       return seeded;
     },
-    /** Replaces a stored source's Secret through the API, as a caller rotating its value does. */
-    replaceSecret(stored) {
-      return app.request("PATCH", path + "/" + stored.id, { body: { secrets: stored.secrets } });
-    },
     /** Attaches stored sources to a new dedicated Codex revision. */
     attach(...sources) {
       return driver.attachForRevision({
@@ -312,30 +243,7 @@ async function fixture(
   };
 }
 
-test("source API rejects routing inputs and registers independently authorized destinations", async (t) => {
-  const endpoint = "https://models.example.test/v1";
-  const f = await fixture(t, {
-    modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
-  });
-  // Neither an old routing field nor permission to use a default-provider key selects a route.
-  assertRefused(await f.create("routing", { base_url: endpoint }), "base_url", /has no field/);
-  await f.assertNothingSaved();
-  assert.equal((await f.create("default")).status, 201);
-  assert.equal(
-    (await f.create("other", { authorized_base_url: "https://other.example.test/v1" })).status,
-    201,
-  );
-  const created = await f.create("authorized", { authorized_base_url: endpoint });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const profile = [...f.profiles.values()].find(
-    (profile) => profile.id === openShellProviderName(created.data.id),
-  );
-  assert.deepEqual(profile.endpoints, [
-    { host: "models.example.test", port: 443, protocol: "rest", path: "/v1/**" },
-  ]);
-});
-
-test("managed Source requests fail closed without an owner and preserve Gateway routing", async (t) => {
+test("canonical Source registration fails closed without a selected TokenService", async (t) => {
   const f = await fixture(t);
   const material = "synthetic-managed-material";
   const refused = await f.request("POST", f.path, {
@@ -346,37 +254,16 @@ test("managed Source requests fail closed without an owner and preserve Gateway 
   assert.equal(JSON.stringify(refused.body).includes(material), false);
   await f.assertNothingSaved();
 
-  // The Gateway may offer its own type named static; without raw secret this must reach its catalog.
-  const gatewayStatic = await f.request("POST", f.path, {
-    body: { name: "Gateway static", type: "static" },
-  });
-  assert.equal(gatewayStatic.status, 409);
-
-  const legacy = await f.create("Legacy");
-  assert.equal(legacy.status, 201);
-  const mutationsBefore = f.mutations.length;
-  for (const body of [
-    { secret: { opaque: material } },
-    { config: { provider_preset: "openai" } },
-  ]) {
-    const updated = await f.request("PATCH", `${f.path}/${legacy.data.id}`, { body });
-    assert.equal(updated.status, 409);
-    assert.equal(JSON.stringify(updated.body).includes(material), false);
-  }
-  assert.equal(f.mutations.length, mutationsBefore);
-
-  // Each request still requires the exact Source operation and attributable denial evidence.
   const member = await f.createNamespaceMember("source-reader", f.namespace.id, [
     ["read", "namespace"],
   ]);
   const session = await f.signIn(member.credentials);
   const before = f.auditSink.events.length;
-  for (const [method, path, body] of [
-    ["POST", f.path, { name: "Denied", type: "static", secret: { opaque: material } }],
-    ["PATCH", `${f.path}/${legacy.data.id}`, { config: { provider_preset: "openai" } }],
-  ]) {
-    assert.equal((await f.request(method, path, { session, body })).status, 403);
-  }
+  const denied = await f.request("POST", f.path, {
+    session,
+    body: { name: "Denied", type: "static", secret: { opaque: material } },
+  });
+  assert.equal(denied.status, 403);
   const denials = f.auditSink.events
     .slice(before)
     .filter((event) => event.kind === "authorization_denial");
@@ -388,47 +275,11 @@ test("managed Source requests fail closed without an owner and preserve Gateway 
         action: "create",
         resource: { kind: "credential_source", id: f.namespace.id, namespaceId: f.namespace.id },
       },
-      {
-        principalId: member.principal.id,
-        action: "update",
-        resource: { kind: "credential_source", id: legacy.data.id, namespaceId: f.namespace.id },
-      },
     ],
   );
 });
 
-test("credential source deletion identifies its registration fence without parsing the message", async (t) => {
-  const f = await fixture(t);
-  const created = await f.create("recent source");
-  assert.equal(created.status, 201);
-  const path = f.path + "/" + created.data.id;
-
-  // Retry guidance is returned only after the source's authorization and lookup.
-  const denied = await f.request("DELETE", path, { session: null });
-  assert.equal(denied.status, 401);
-  assert.equal(denied.body.error.reason, undefined);
-  assert.equal(denied.headers.get("retry-after"), null);
-
-  // Removal cannot discard the record while a late Gateway registration could still complete.
-  const pending = await f.request("DELETE", path);
-  assert.equal(pending.status, 503);
-  assert.equal(pending.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(pending.body.error.reason, "credential_registration_pending");
-  assert.equal(pending.headers.get("retry-after"), "70");
-  assert.equal((await f.request("GET", path)).data.state, "deleting");
-
-  // This is the same source and supported retry, after its real controller fence expires.
-  f.passRegistrationFence();
-  const deleted = await f.request("DELETE", path);
-  assert.equal(deleted.status, 204);
-  assert.equal(deleted.headers.get("retry-after"), null);
-  const absent = await f.request("GET", path);
-  assert.equal(absent.status, 404);
-  assert.equal(absent.body.error.reason, undefined);
-  assert.equal(absent.headers.get("retry-after"), null);
-});
-
-test("old source routing records cannot deliver credentials and remain readable and removable", async (t) => {
+test("historical Source routing records cannot deliver credentials without exact authorization", async (t) => {
   const endpoint = "https://models.example.test/v1";
   const f = await fixture(t, {
     modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
@@ -437,12 +288,7 @@ test("old source routing records cannot deliver credentials and remain readable 
   const { stored } = await f.seedStoredRecord("openai", { base_url: endpoint });
   const before = [...f.mutations];
   await assert.rejects(f.attach(stored), { name: "StoredCredentialSourceConfigError" });
-  const replacement = await f.replaceSecret(stored);
-  assert.equal(replacement.status, 409);
   assert.deepEqual(f.mutations, before);
-  assert.equal((await f.request("GET", f.path + "/" + stored.id)).status, 200);
-  f.passRegistrationFence();
-  assert.equal((await f.request("DELETE", f.path + "/" + stored.id)).status, 204);
 });
 
 test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {
@@ -594,321 +440,8 @@ test("Installation discovery serializes OpenShell model authentication and refre
   assert.deepEqual(f.mutations, []);
 });
 
-test("credential source HTTP admission rejects invalid endpoints without retaining records", async (t) => {
-  const f = await fixture(t);
-  for (const authorized_base_url of [
-    "http://",
-    "https://models.example.test",
-    "http://models.example.test/v1",
-    "https://models.example.test/*/v1",
-    "https://**/v1",
-    "https://*.example.test/v1",
-    "https://ex*ample.test/v1",
-    "https://%2a%2A/v1",
-    "https://%2A.example.test/v1",
-    "https://ex%2aample.test/v1",
-    "https://＊.example.test/v1",
-    // OpenShell's hostname matcher rejects empty labels and brace patterns.
-    "https://models.example.test./v1",
-    "https://models..example.test/v1",
-    "https://{a,b}.example.test/v1",
-    "https://{models}.example.test/v1",
-    "https://%7Bmodels%7D.example.test/v1",
-    "https://models.example.test:0/v1",
-    "https://models.example.test:000/v1",
-    // URI-valid IPv6 brackets would be character classes in OpenShell host patterns.
-    "https://[2001:db8::1]/v1",
-    "https://[::1]/v1",
-    "https://models.example.test/v1?option=value",
-    "https://models.example.test/v1#fragment",
-  ]) {
-    const response = await f.create("invalid", { authorized_base_url });
-    // Assert absence independently of the status: the original bug left a deleting row.
-    assert.deepEqual((await f.request("GET", f.path)).data, [], authorized_base_url);
-    assertRefused(response, "authorized_base_url", /HTTPS.*\/v1/, authorized_base_url);
-    if (authorized_base_url.startsWith("https://[")) {
-      assert.match(response.body.error.message, /bracketed IPv6 hosts.*unsupported/);
-    }
-  }
-  await f.assertNothingSaved();
-});
-
-test("credential source HTTP deletion uses source ownership even with an invalid stored endpoint", async (t) => {
-  const f = await fixture(t);
-  const healthy = await f.create("healthy");
-  assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
-  const profilesBefore = structuredClone([...f.profiles]);
-  for (const baseUrl of ["http://", "https://**/v1", "https://[2001:db8::1]/v1"]) {
-    const source = await f.seedInvalid("openai", baseUrl);
-    const path = f.path + "/" + source.id;
-    const read = await f.request("GET", path);
-    assert.equal(read.status, 200);
-    assert.equal(read.data.status.state, "absent");
-    assert.equal((await f.request("DELETE", path)).status, 204);
-    assert.equal((await f.request("GET", path)).status, 404);
-    assert.deepEqual([...f.profiles], profilesBefore);
-  }
-  assert.equal((await f.request("GET", f.path + "/" + healthy.data.id)).data.status.state, "ready");
-
-  // Labels alone do not prove ownership if the provider points to another source's profile.
-  for (const baseUrl of ["https://**/v1", "https://[2001:db8::1]/v1"]) {
-    const collision = await f.seedInvalid("openai", baseUrl);
-    const existing = [...f.providers.values()][0];
-    const foreign = {
-      ...existing,
-      name: openShellProviderName(collision.id),
-      labels: { ...existing.labels, "openclaw.dev/credential-source-id": collision.id },
-    };
-    f.providers.set(foreign.workspace + "/" + foreign.name, foreign);
-    const collisionPath = f.path + "/" + collision.id;
-    assert.equal((await f.request("GET", collisionPath)).data.status.state, "failed");
-    assert.notEqual((await f.request("DELETE", collisionPath)).status, 204);
-    assert.equal((await f.request("GET", collisionPath)).data.state, "deleting");
-    assert.ok([...f.providers.values()].includes(foreign));
-    assert.deepEqual([...f.profiles], profilesBefore);
-  }
-
-  const unknown = await f.seedInvalid("unknown");
-  assert.notEqual((await f.request("DELETE", f.path + "/" + unknown.id)).status, 204);
-  assert.equal((await f.request("GET", f.path + "/" + unknown.id)).data.state, "deleting");
-});
-
-test("OpenShell credentials authorized for one provider keep independent ownership and lifecycle", async (t) => {
-  const endpoint = "https://models.example.test:8443/api/v1";
-  let placementCalls = 0;
-  const f = await fixture(t, {
-    modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
-    placement() {
-      placementCalls += 1;
-      throw new Error("Model profiles must not resolve gateway placement.");
-    },
-  });
-  const standard = await f.create("first", { authorized_base_url: endpoint });
-  const custom = await f.create("custom", {
-    authorized_base_url: "https://MODELS.example.test:8443/api/v1/",
-  });
-  const shared = await f.create("shared", {
-    authorized_base_url: "https://models.example.test:8443/api/v1",
-  });
-  assert.equal(placementCalls, 0, "static registration must not resolve Gateway placement");
-  for (const result of [standard, custom, shared]) {
-    assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.equal(result.data.status.state, "ready");
-    assert.equal(
-      (await f.request("GET", f.path + "/" + result.data.id)).data.status.state,
-      "ready",
-    );
-  }
-  const customProfile = [...f.profiles.values()].find(
-    (profile) => profile.id === openShellProviderName(custom.data.id),
-  );
-  assert.equal(f.profiles.size, 3);
-  assert.notEqual(customProfile.id, openShellProviderName(shared.data.id));
-  assert.deepEqual(customProfile.endpoints, [
-    { host: "models.example.test", port: 8443, protocol: "rest", path: "/api/v1/**" },
-  ]);
-  assert.deepEqual(customProfile.binaries, ["/app/bin/codex"]);
-  const provider = [...f.providers.values()].find(
-    (row) => row.name === openShellProviderName(custom.data.id),
-  );
-  const source = await f.controller.transact((unit) =>
-    unit.credentialSources.findCredentialSource(f.namespace.id, custom.data.id),
-  );
-  assert.deepEqual(provider.credentials, { OPENAI_API_KEY: "synthetic-model-key" });
-  const replacement = await f.createSecret(
-    f.namespace.id,
-    "replacement-model-key",
-    "synthetic-replacement-model-key",
-  );
-  const updated = await f.replaceSecret({
-    ...source,
-    secrets: { api_key: replacement.ref },
-  });
-  assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  assert.equal(updated.data.status.state, "ready");
-  assert.ok(f.mutations.includes("updateProvider"));
-  assert.deepEqual(provider.credentials, { OPENAI_API_KEY: "synthetic-replacement-model-key" });
-  assert.equal((await f.request("GET", f.path + "/" + source.id)).data.status.state, "ready");
-  assert.equal(placementCalls, 0);
-  const context = {
-    namespace: { ...f.namespace, name: provider.workspace },
-    source,
-    signal: AbortSignal.timeout(5000),
-  };
-  // Native inference uses the source's exact endpoint, including a custom prefix.
-  const nativeRevision = {
-    harness: {
-      id: "openclaw",
-      mode: "dedicated",
-      overrides: {},
-      configuration: {
-        modelProvider: {
-          protocol: "openai-responses",
-          baseUrl: endpoint,
-          supportsStandaloneWebSearch: false,
-        },
-      },
-    },
-    configuration: {
-      agents: { defaults: { model: "openai/model" } },
-      models: {
-        providers: {
-          openai: { baseUrl: custom.data.config.authorized_base_url, models: [{ id: "model" }] },
-        },
-      },
-    },
-  };
-  const attachNative = (change) => {
-    const revision = structuredClone(nativeRevision);
-    change(revision.configuration);
-    return f.driver.attachForRevision({ ...context, sources: [source], revision });
-  };
-  assert.deepEqual(await attachNative(() => {}), [
-    { sourceId: custom.data.id, ref: provider.name },
-  ]);
-  // The written endpoint is compared after normalization, as Compute renders it.
-  assert.deepEqual(
-    await attachNative((configuration) => {
-      configuration.models.providers.openai.baseUrl = "https://MODELS.example.test:8443/api/v1/";
-    }),
-    [{ sourceId: custom.data.id, ref: provider.name }],
-  );
-  // Compute renders only the selected models into the native worker's catalog, so an
-  // unselected entry for another endpoint gets no traffic and does not block the deployment
-  // (finding 1686).
-  assert.deepEqual(
-    await attachNative((configuration) => {
-      configuration.models.providers.openai.models.push({
-        id: "unselected",
-        baseUrl: "https://other.example.test/v1",
-      });
-    }),
-    [{ sourceId: custom.data.id, ref: provider.name }],
-  );
-  // Default provider metadata is translated, including model-level default URLs.
-  assert.deepEqual(
-    await attachNative((configuration) => {
-      configuration.models.providers.openai.baseUrl = "https://api.openai.com/v1";
-      configuration.models.providers.openai.models[0].baseUrl = "https://api.openai.com/v1";
-    }),
-    [{ sourceId: custom.data.id, ref: provider.name }],
-  );
-  // Selected model, provider, fallback and roster destinations cannot override the shared route.
-  for (const change of [
-    (configuration) => {
-      configuration.models.providers.openai.models[0].baseUrl = "https://other.example.test/v1";
-    },
-    (configuration) => {
-      configuration.models.providers.openai.baseUrl = "https://models.example.test:8443/v1";
-    },
-    (configuration) => {
-      configuration.models.providers.openai.baseUrl = "https://models.example.test/api/v1";
-    },
-    (configuration) => {
-      configuration.agents.defaults.model = {
-        primary: "openai/model",
-        fallbacks: ["openai/fallback"],
-      };
-      configuration.models.providers.openai.models.push({
-        id: "fallback",
-        baseUrl: "https://other.example.test/v1",
-      });
-    },
-    (configuration) => {
-      configuration.agents.entries = { helper: { model: "openai/helper" } };
-      configuration.models.providers.openai.models.push({
-        id: "helper",
-        baseUrl: "https://other.example.test/v1",
-      });
-    },
-  ]) {
-    await assert.rejects(
-      attachNative(change),
-      /OpenAI model baseUrl must match the resolved Harness/,
-    );
-  }
-  // A shape Compute refuses before deployment stays refused here, without naming a setting.
-  for (const change of [
-    (configuration) => {
-      delete configuration.agents;
-    },
-    (configuration) => {
-      configuration.models.providers.openai.models = [{ id: "another" }];
-    },
-    // OpenClaw merges rows whose ids match after trimming, so this unselected row would give
-    // the selected model its endpoint.
-    (configuration) => {
-      configuration.models.providers.openai.models.push({
-        id: " model",
-        baseUrl: "https://other.example.test/v1",
-      });
-    },
-  ]) {
-    await assert.rejects(attachNative(change), {
-      message:
-        "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
-    });
-  }
-  assert.deepEqual(
-    await f.driver.attachForRevision({
-      ...context,
-      sources: [source],
-      revision: {
-        harness: {
-          id: "codex",
-          mode: "dedicated",
-          overrides: {},
-          configuration: {
-            modelProvider: {
-              protocol: "openai-responses",
-              baseUrl: endpoint,
-              supportsStandaloneWebSearch: false,
-            },
-          },
-        },
-      },
-    }),
-    [{ sourceId: custom.data.id, ref: provider.name }],
-  );
-  assert.equal(placementCalls, 0);
-  provider.type = "oce-openai";
-  assert.equal((await f.request("GET", f.path + "/" + custom.data.id)).data.status.state, "failed");
-  await assert.rejects(
-    f.driver.registerSource(context, {
-      type: "openai",
-      config: custom.data.config,
-      secrets: { api_key: "synthetic-model-key" },
-    }),
-    /not owned/,
-  );
-  await assert.rejects(f.driver.removeSource(context), /not owned/);
-  provider.type = customProfile.id;
-  assert.equal((await f.request("PATCH", f.path + "/" + custom.data.id, { body: {} })).status, 200);
-  f.passRegistrationFence();
-  assert.equal((await f.request("DELETE", f.path + "/" + custom.data.id)).status, 204);
-  assert.equal(f.profiles.size, 2);
-  assert.ok(
-    [...f.profiles.values()].some(
-      (profile) => profile.id === openShellProviderName(shared.data.id),
-    ),
-  );
-  assert.equal((await f.request("DELETE", f.path + "/" + shared.data.id)).status, 204);
-  assert.deepEqual(
-    [...f.profiles.values()].map((profile) => profile.id),
-    [openShellProviderName(standard.data.id)],
-  );
-  assert.equal(
-    (await f.request("GET", f.path + "/" + standard.data.id)).data.status.state,
-    "ready",
-  );
-  assert.equal((await f.request("DELETE", f.path + "/" + standard.data.id)).status, 204);
-  assert.equal(f.profiles.size, 0);
-  assert.equal(f.providers.size, 0);
-});
-
 registerCredentialSourceEndpointCases({
   fixture,
-  assertRefused,
   toolTypes: TOOL_TYPES,
   oauth2Types: OAUTH2_TYPES,
 });
@@ -928,32 +461,4 @@ test("OAuth2 token_url is stored as parsed", async (t) => {
       written,
     );
   }
-});
-
-test("offered OpenShell source values return field-specific HTTP 400 before effects", async (t) => {
-  const f = await fixture(t, { toolSources: true });
-  // Use each offered type through real API/OCC/Driver admission. Only the value is
-  // invalid: catalog fields and Secret references are valid, so this must not be a 404.
-  for (const [type, field, value] of [
-    ["bearer-token", "host", "*.example.test"],
-    ["bearer-token", "port", "0"],
-    ["bearer-token", "path", "relative"],
-    ["bearer-token", "env_var", "PATH"],
-    ["oauth2-client-credentials", "token_url", "http://issuer.example.test/token"],
-    ["oauth2-client-credentials", "client_id", "not visible"],
-    ["oauth2-client-credentials", "scope", "read\twrite"],
-    ["oauth2-refresh-token", "env_var", "OPENAI_API_KEY"],
-  ]) {
-    await t.test(type + ": " + field, async () => {
-      assert.ok(field, "Each refusal case must name the invalid config field.");
-      const response = await f.saveTool(type, { [field]: value }, "invalid-" + field);
-      assert.deepEqual((await f.request("GET", f.path)).data, []);
-      assertRefused(response, field);
-    });
-  }
-  const unavailable = await f.request("POST", f.path, {
-    body: { name: "unoffered", type: "not-offered", config: {}, secrets: {} },
-  });
-  assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
-  await f.assertNothingSaved();
 });

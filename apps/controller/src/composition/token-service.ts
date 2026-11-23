@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { InstallationSecretStore } from "@openclaw-enterprise/contracts";
 import type { OpenClawController, PlatformStateStore } from "@openclaw-enterprise/occ";
 
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
 
@@ -62,6 +63,11 @@ export async function installTokenServiceDriver(
     instanceId,
     state,
     delivery,
+    new OAuthAccountTokens(
+      state,
+      drivers.secretDriver,
+      controller.resolveConnectionClient.bind(controller),
+    ),
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);

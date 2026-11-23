@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isOAuthScopeToken } from "@openclaw-enterprise/contracts";
 import type {
+  OAuthCredentialSource,
   OAuthConnectionAccessToken,
   OAuthConnectionGrant,
   OAuthConnectionRegistration,
-  OAuthRefreshTokenRegistration,
-  OAuthRefreshTokenIssuer,
   OAuthConnectionClient,
   OAuthAccountRef,
   TokenResolveOptions,
@@ -17,22 +16,24 @@ import {
   ResourceStateConflictError,
   refreshPinnedOAuthGrant,
   type PlatformStateStore,
-  type ConnectionTokenCustody,
+  type OAuthTokenCustody,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "./codex-oauth-preset.ts";
 
-type OAuthConnectionCustody = Pick<ConnectionTokenCustody, "sourceId" | "secret">;
+type OAuthConnectionCustody = Pick<OAuthTokenCustody, "sourceId" | "secret">;
 
 const PENDING_OAUTH_CONNECTION = "pending";
 
-type ClientRetry = "client_refused" | "client_unavailable" | "client_registration_mismatch";
+type ClientRetry = "client_refused" | "client_unavailable";
 
-type ApprovedGrant = OAuthConnectionGrant & OAuthConnectionRegistration;
+type ApprovedGrant = Pick<
+  OAuthConnectionGrant,
+  "accessToken" | "refreshToken" | "expiresAt" | "grantedScopes"
+>;
 
 type OAuthMaterial = ApprovedGrant & {
-  readonly sourceId: string;
-  readonly namespaceId: string;
   readonly version: string;
   readonly renewAt: string;
 } & (
@@ -43,8 +44,6 @@ type OAuthMaterial = ApprovedGrant & {
 
 interface FailedRefresh {
   readonly phase: "failed";
-  readonly namespaceId: string;
-  readonly sourceId: string;
   readonly failureCode: string;
 }
 
@@ -54,7 +53,7 @@ const RENEWAL_BUDGET_MS = 5 * 60_000;
 
 type StoredConnection = OAuthMaterial | FailedRefresh | undefined;
 
-function material(value: string, custody: OAuthConnectionCustody): StoredConnection {
+function material(value: string): StoredConnection {
   if (value === PENDING_OAUTH_CONNECTION) {
     return undefined;
   }
@@ -65,39 +64,19 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
     // A JSON parser error can quote private bytes.
     throw new Error("Invalid OAuth token custody.");
   }
-  if (data?.sourceId !== custody.sourceId || data.namespaceId !== custody.secret.namespaceId) {
-    throw new Error("OAuth token custody belongs to another source.");
+  if (!data) {
+    throw new Error("Invalid OAuth token custody.");
   }
   if (data.phase === "failed" && isNonEmptyString(data.failureCode)) {
     return data as unknown as FailedRefresh;
   }
   if (
-    ![
-      "ready",
-      "renewing",
-      "client_refused",
-      "client_unavailable",
-      "client_registration_mismatch",
-    ].includes(String(data.phase)) ||
-    ![
-      "version",
-      "issuer",
-      "oauthClientId",
-      "clientId",
-      "tokenEndpointAuthMethod",
-      "tokenUrl",
-      "accessToken",
-      "refreshToken",
-      "expiresAt",
-      "renewAt",
-    ].every((key) => isNonEmptyString(data[key])) ||
+    !["ready", "renewing", "client_refused", "client_unavailable"].includes(String(data.phase)) ||
+    !["version", "accessToken", "refreshToken", "expiresAt", "renewAt"].every((key) =>
+      isNonEmptyString(data[key]),
+    ) ||
     !Array.isArray(data.grantedScopes) ||
     !data.grantedScopes.every(isOAuthScopeToken) ||
-    !Array.isArray(data.requestedScopes) ||
-    !data.requestedScopes.every(isOAuthScopeToken) ||
-    !["none", "client_secret_post", "client_secret_basic"].includes(
-      String(data.tokenEndpointAuthMethod),
-    ) ||
     Object.hasOwn(data, "clientSecret") ||
     !Number.isFinite(Date.parse(data.expiresAt as string)) ||
     !Number.isFinite(Date.parse(data.renewAt as string)) ||
@@ -110,11 +89,7 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
   return data as unknown as OAuthMaterial;
 }
 
-function ready(
-  custody: OAuthConnectionCustody,
-  grant: ApprovedGrant,
-  now = Date.now(),
-): OAuthMaterial {
+function ready(grant: ApprovedGrant, now = Date.now()): OAuthMaterial {
   const expires = Date.parse(grant.expiresAt);
   if (!Number.isFinite(expires) || expires <= now) {
     throw new BrowserAuthorizationError("access_token_expired", "retry");
@@ -122,20 +97,11 @@ function ready(
   // Begin renewal a minute before expiry, or halfway through a shorter token's lifetime.
   const renewAt = expires - Math.min(60_000, Math.ceil((expires - now) / 2));
   return {
-    issuer: grant.issuer,
-    oauthClientId: grant.oauthClientId,
-    clientId: grant.clientId,
-    tokenUrl: grant.tokenUrl,
-    tokenEndpointAuthMethod: grant.tokenEndpointAuthMethod,
-    ...(grant.resource === undefined ? {} : { resource: grant.resource }),
-    requestedScopes: grant.requestedScopes,
     grantedScopes: grant.grantedScopes,
     accessToken: grant.accessToken,
     refreshToken: grant.refreshToken,
     expiresAt: grant.expiresAt,
     phase: "ready",
-    sourceId: custody.sourceId,
-    namespaceId: custody.secret.namespaceId,
     version: randomUUID(),
     renewAt: new Date(renewAt).toISOString(),
   };
@@ -186,11 +152,9 @@ function retryClient(current: OAuthMaterial, phase: ClientRetry): OAuthMaterial 
   };
 }
 
-function failure(custody: OAuthConnectionCustody, failureCode: string): FailedRefresh {
+function failure(failureCode: string): FailedRefresh {
   return {
     phase: "failed",
-    namespaceId: custody.secret.namespaceId,
-    sourceId: custody.sourceId,
     failureCode,
   };
 }
@@ -248,7 +212,7 @@ export class OAuthGrantStore {
       !(await driver.compareAndSwap!(
         custody.secret,
         PENDING_OAUTH_CONNECTION,
-        JSON.stringify(ready(custody, grant)),
+        JSON.stringify(ready(grant)),
       ))
     ) {
       throw new Error("The pending OAuth custody changed before the grant was committed.");
@@ -258,7 +222,7 @@ export class OAuthGrantStore {
   observe(custody: OAuthConnectionCustody, signal: AbortSignal, minimumValidityMs?: number) {
     return this.driver(custody, signal).withValue!(custody.secret, async (value) => {
       signal.throwIfAborted();
-      const stored = material(value, custody);
+      const stored = material(value);
       return {
         status: status(stored),
         token:
@@ -280,7 +244,7 @@ export class OAuthGrantStore {
   ): Promise<OAuthConnectionStatus> {
     const driver = this.driver(custody, signal);
     const previous = await driver.withValue!(custody.secret, async (value) => value);
-    const current = material(previous, custody);
+    const current = material(previous);
     const observed = status(current);
     if (!current || current.phase === "failed") {
       return observed;
@@ -291,7 +255,7 @@ export class OAuthGrantStore {
       }
       // A lost issuer response may have rotated the grant. A final CAS fences the owner and
       // never replays its request. If its result already won, use that result for scheduling.
-      const unknown = failure(custody, "refresh_outcome_unknown");
+      const unknown = failure("refresh_outcome_unknown");
       const fenced = await driver.compareAndSwap!(
         custody.secret,
         previous,
@@ -310,31 +274,20 @@ export class OAuthGrantStore {
     // Authenticate the pinned registration before claiming the grant. A store failure here
     // is safe to retry because the issuer has received nothing.
     let clientSecret: string | undefined;
+    let registration: OAuthConnectionRegistration;
     try {
-      const { registration, readSecret } = await resolveClient();
-      if (
-        current.oauthClientId !== registration.oauthClientId ||
-        current.issuer !== registration.issuer ||
-        current.clientId !== registration.clientId ||
-        current.tokenUrl !== registration.tokenUrl ||
-        current.tokenEndpointAuthMethod !== registration.tokenEndpointAuthMethod ||
-        current.resource !== registration.resource
-      ) {
-        throw new BrowserAuthorizationError("client_registration_mismatch", "fix_configuration");
-      }
+      const client = await resolveClient();
+      registration = client.registration;
+      const { readSecret } = client;
       clientSecret =
         registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);
       if (registration.tokenEndpointAuthMethod !== "none" && !isNonEmptyString(clientSecret)) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
-    } catch (error) {
+    } catch {
       // No request reached the issuer. Preserve this grant and schedule a bounded retry,
       // including when a downstream credential store or the registration itself is unavailable.
-      const phase =
-        error instanceof BrowserAuthorizationError && error.code === "client_registration_mismatch"
-          ? "client_registration_mismatch"
-          : "client_unavailable";
-      const next = retryClient(current, phase);
+      const next = retryClient(current, "client_unavailable");
       return (await driver.compareAndSwap!(custody.secret, previous, JSON.stringify(next)))
         ? status(next)
         : (await this.observe(custody, signal)).status;
@@ -360,11 +313,15 @@ export class OAuthGrantStore {
     let next: OAuthMaterial | FailedRefresh;
     try {
       const issued = await this.refreshGrant(
-        current,
+        {
+          ...registration!,
+          refreshToken: current.refreshToken,
+          grantedScopes: current.grantedScopes,
+        },
         AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
         clientSecret,
       );
-      next = ready(custody, {
+      next = ready({
         ...current,
         ...issued,
         refreshToken: issued.refreshToken ?? current.refreshToken,
@@ -376,12 +333,11 @@ export class OAuthGrantStore {
         error instanceof BrowserAuthorizationError && error.code === "client_refused"
           ? retryClient(current, "client_refused")
           : failure(
-              custody,
               error instanceof BrowserAuthorizationError ? error.code : "refresh_outcome_unknown",
             );
     }
     if (Date.now() >= deadline) {
-      next = failure(custody, "refresh_outcome_unknown");
+      next = failure("refresh_outcome_unknown");
     }
     // Publish the access token and any rotated refresh token together. Retirement or a new
     // owner winning this CAS prevents a late issuer response from reinstating its grant.
@@ -419,14 +375,12 @@ function eligibleToken(
 }
 
 /** Resolves a saved account through its OCC record. Only this owner opens the private grant. */
-export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
-  readonly tokenKind = "oauth_refresh_token";
-
+export class OAuthAccountTokens {
   private readonly grants: OAuthGrantStore;
   private readonly state: PlatformStateStore;
   private readonly client: (
     ref: OAuthAccountRef,
-    approval?: OAuthRefreshTokenRegistration["approval"],
+    registrationSource?: Readonly<OAuthCredentialSource>,
   ) => Promise<OAuthConnectionClient>;
   private readonly renewing = new Map<string, Promise<OAuthConnectionStatus>>();
 
@@ -435,7 +389,7 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
     secrets: SecretDriver,
     resolveClient: (
       ref: OAuthAccountRef,
-      approval?: OAuthRefreshTokenRegistration["approval"],
+      registrationSource?: Readonly<OAuthCredentialSource>,
     ) => Promise<OAuthConnectionClient>,
   ) {
     this.state = state;
@@ -445,72 +399,91 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
 
   private custody(ref: OAuthAccountRef) {
     return this.state.read((view) =>
-      view.savedConnections.findTokenCustody(ref.namespaceId, ref.sourceId),
+      view.oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId),
     );
   }
 
-  async register(input: OAuthRefreshTokenRegistration, signal: AbortSignal) {
-    const { namespaceId, sourceId, approval, grant } = input;
-    const ref: OAuthAccountRef = { kind: "oauth_refresh_token", namespaceId, sourceId };
-    const { registration } = await this.client(ref, approval);
-    let reserved: OAuthConnectionCustody | undefined;
-    let custody: OAuthConnectionCustody;
+  private async resolveClient(
+    ref: OAuthAccountRef,
+    registrationSource?: Readonly<OAuthCredentialSource>,
+  ): Promise<OAuthConnectionClient> {
+    const source =
+      registrationSource ??
+      (await this.state.read((view) =>
+        view.credentialSources.findCredentialSource(ref.namespaceId, ref.sourceId),
+      ));
+    if (
+      source?.ownerCapability !== "token_service" ||
+      source.type !== "oauth2-refresh-token" ||
+      source.id !== ref.sourceId ||
+      source.namespaceId !== ref.namespaceId ||
+      source.consent.revocationRequestedBy !== undefined
+    ) {
+      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+    }
+    if (source.consent.kind === "builtin_codex") {
+      return {
+        registration: { ...BUILTIN_CODEX_OAUTH_PRESET, tokenEndpointAuthMethod: "none" },
+      };
+    }
+    return this.client(ref, source);
+  }
+
+  /** Publish the ready Source and its usable private grant as one database mutation. */
+  async registerSource(
+    source: OAuthCredentialSource,
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<OAuthCredentialSource> {
+    const ref: OAuthAccountRef = {
+      kind: "oauth_refresh_token",
+      namespaceId: source.namespaceId,
+      sourceId: source.id,
+    };
+    await this.resolveClient(ref, source);
+    const custody = await this.grants.reserve(ref);
     try {
-      custody = await this.state.transact(async (unit) => {
-        const source = await unit.credentialSources.lockCredentialSource(
-          ref.namespaceId,
-          ref.sourceId,
-        );
-        if (
-          source?.ownerCapability !== "token_service" ||
-          source.state !== "registering" ||
-          (await unit.savedConnections.findTokenCustody(ref.namespaceId, ref.sourceId))
-        ) {
-          throw new ResourceStateConflictError(
-            "A new pending account is required for token registration.",
-          );
+      await this.grants.storeInitialGrant(custody, grant, signal);
+      const status = (await this.grants.observe(custody, signal)).status;
+      if (!status.schedule) {
+        throw new ResourceStateConflictError("No eligible OAuth access token was prepared.");
+      }
+      const schedule = status.schedule;
+      return await this.state.transact(async (unit) => {
+        const namespace = await unit.namespaces.lockNamespace(source.namespaceId);
+        if (namespace?.status !== "ready") {
+          throw new ResourceStateConflictError("The credential source Namespace is not ready.");
         }
-        signal.throwIfAborted();
-        reserved = await this.grants.reserve(ref);
-        await unit.savedConnections.createTokenCustody({
-          ...reserved,
-          namespaceId: ref.namespaceId,
+        const created = await unit.credentialSources.createCredentialSource(source);
+        if (
+          created.ownerCapability !== "token_service" ||
+          created.type !== "oauth2-refresh-token"
+        ) {
+          throw new ResourceStateConflictError("The persisted OAuth Source is invalid.");
+        }
+        await unit.oauthCredentials.createTokenCustody({
+          ...custody,
+          namespaceId: source.namespaceId,
         });
-        return reserved;
+        await unit.oauthCredentials.recordTokenSchedule(source.namespaceId, source.id, {
+          scheduledVersion: schedule.version,
+          nextRefreshAt: schedule.nextRefreshAt,
+          grantedScopes: schedule.grantedScopes,
+        });
+        signal.throwIfAborted();
+        return created;
       });
     } catch (error) {
-      // A lost COMMIT acknowledgement is ambiguous. Delete only a reservation we prove is unreferenced.
-      if (reserved) {
-        const candidate = reserved;
-        await this.state
-          .transact(async (unit) => {
-            await unit.credentialSources.lockCredentialSource(ref.namespaceId, ref.sourceId);
-            return unit.savedConnections.findTokenCustody(ref.namespaceId, ref.sourceId);
-          })
-          .then(async (published) => {
-            if (published?.secret.id !== candidate.secret.id) {
-              await this.grants.delete(candidate, AbortSignal.timeout(RENEWAL_BUDGET_MS));
-            }
-          })
-          .catch(() => undefined);
-      }
+      // A lost commit acknowledgement cannot justify deleting custody that the database owns.
+      await this.custody(ref)
+        .then(async (published) => {
+          if (published?.secret.id !== custody.secret.id) {
+            await this.grants.delete(custody, AbortSignal.timeout(RENEWAL_BUDGET_MS));
+          }
+        })
+        .catch(() => undefined);
       throw error;
     }
-    // The grant can only replace the durable reservation. If disconnect deleted it during
-    // handoff, the Secret Driver's conditional write cannot recreate it.
-    await this.grants.storeInitialGrant(
-      custody,
-      {
-        ...registration,
-        accessToken: grant.accessToken,
-        refreshToken: grant.refreshToken,
-        expiresAt: grant.expiresAt,
-        requestedScopes: grant.requestedScopes,
-        grantedScopes: grant.grantedScopes,
-      },
-      signal,
-    );
-    return ref;
   }
 
   async status(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus> {
@@ -534,11 +507,13 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
       if (source?.ownerCapability !== "token_service" || source.state !== "ready") {
         return undefined;
       }
-      const saved = await view.savedConnections.findSavedConnection(ref.namespaceId, ref.sourceId);
-      if (!saved || saved.revocationRequestedBy !== undefined) {
+      if (
+        source.type !== "oauth2-refresh-token" ||
+        source.consent.revocationRequestedBy !== undefined
+      ) {
         return undefined;
       }
-      return view.savedConnections.findTokenCustody(ref.namespaceId, ref.sourceId);
+      return view.oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId);
     });
   }
 
@@ -551,7 +526,7 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
     // After sending a rotating grant, this owner must finish publishing even if one waiter leaves.
     const signal = AbortSignal.timeout(RENEWAL_BUDGET_MS);
     const attempt = this.grants
-      .renew(custody, signal, () => this.client(ref), expectedVersion)
+      .renew(custody, signal, () => this.resolveClient(ref), expectedVersion)
       .then(async (outcome) => {
         if (outcome.state === "pending") {
           return outcome;
@@ -567,7 +542,7 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
           // Another replica may have advanced custody between the exchange and this schedule write.
           const actual = (await this.grants.observe(custody, signal)).status;
           if (actual.schedule || actual.state === "failed") {
-            await unit.savedConnections.recordTokenSchedule(
+            await unit.oauthCredentials.recordTokenSchedule(
               ref.namespaceId,
               ref.sourceId,
               actual.schedule

@@ -225,6 +225,9 @@ export function createBackendWorkerDrivers(
   if (options.secretDriver !== undefined) {
     installation.drivers.secret.id = options.secretDriver.id;
   }
+  if (options.tokenServiceDriverId !== undefined) {
+    installation.drivers.token_service = { id: options.tokenServiceDriverId };
+  }
   if (backends.length > 0) {
     installation.drivers.service_account = {
       id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,

@@ -34,7 +34,7 @@ as the reason Dedicated OpenClaw is disabled.
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
-   Review defaults and choose a model Secret.
+   Review defaults and choose the model credential.
    **Start with default Preset** loads `default-codex`. **Start without Preset** skips Presets.
 3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
@@ -45,7 +45,10 @@ as the reason Dedicated OpenClaw is disabled.
    OpenClaw uses provider API keys. Get an
    [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
-   Unless a Preset binds one or you use ChatGPT OAuth, choose or create a Secret.
+   For a Dedicated OpenAI API key, **Credential storage** defaults to **Credential Source**.
+   Enter the key to create a TokenService-owned Source and save the Agent as a draft.
+   Deploy from the saved Agent page. Select **Namespace Secret** to use the separate
+   Secret-backed path; Preset bindings and Service Accounts also use Secrets.
    Wait for the access check. Changing provider or method clears your choice.
    No model is preselected. Choose a starter model or **Enter model ID manually**.
    **Choose a model from the list** keeps listed models and other settings.
@@ -107,14 +110,14 @@ selections JSON** preserves selections separately from Configuration. Check perm
 or outbound access on failure, then retry. Editing follows installation capabilities
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
-Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. Binding a Secret needs Secret `operate` on it, so each Secret
-menu lists a readable Secret without it disabled, with the reason. A new Secret has no `operate`
-grant, so where a readable Secret is denied, a Preset's **Create new Secret** is disabled too. With a selected Credential Gateway, supported
-Dedicated creation registers the selected Secret as a model
-[Credential Source](../credential-sources.md), then provisions with that source.
-The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.
-Authentication methods outside the selected gateway catalog remain unavailable.
+The Console submits a new static [Credential Source](../credential-sources.md) directly
+to the selected TokenService through OCC. Creating it requires CredentialSource `create`;
+binding it requires `operate`. Source reads return metadata, not the credential value.
+Guided provisioning does not yet accept managed Sources, so this choice saves a draft.
+For Secret-backed authentication, each Secret menu disables a readable Secret if the caller
+lacks Secret `operate`. A new Secret has no `operate` grant, so a Preset's **Create new Secret**
+is disabled when that access is denied. Credential values stay out of Configuration JSON,
+Agent responses, and browser storage.
 
 Presets preselect their authentication method or retain saved bindings.
 Method-only Presets require a model Secret. Bound API-key and Service Accounts
@@ -180,13 +183,10 @@ resends the original request. A refused retry of a confirmed failure names the
 reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-**Check credential registration** looks up the source without retrying writes.
-An empty result preserves any known refusal and the saved Secret. Resolve the refusal,
-then select **Create Agent** to retry the same name/references; uniqueness fences late commits.
-Give your operator the request ID if the outcome is unclear.
-**Remove failed credential registration** deletes a source left
-`registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
-registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+If Source creation has an unknown outcome, check Credential Sources before starting again.
+The Console clears the entered key and does not repeat the write automatically. If a later
+Agent save fails after Source creation succeeds, retry in the same form to reuse that Source.
+See the [provisioning flow](../../flows/agent-provisioning.md) for Secret-backed provisioning.
 
 If the first deployment fails with valid Agent and version IDs, follow the linked
 version's recovery guidance even without an error message. A stopped or superseded

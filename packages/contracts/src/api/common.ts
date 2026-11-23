@@ -440,39 +440,6 @@ export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, Se
     "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
 });
 
-export const CreateCredentialSourceBody = Type.Object(
-  {
-    name: Name,
-    type: CredentialSourceType,
-    config: Type.Optional(CredentialSourceConfig),
-    secrets: Type.Optional(CredentialSourceSecrets),
-  },
-  { additionalProperties: false },
-);
-
-export const UpdateCredentialSourceBody = Type.Object(
-  {
-    adoption: Type.Optional(
-      Type.Literal("live", {
-        description:
-          "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-      }),
-    ),
-    authorityScope: Type.Optional(
-      Type.Literal("execution", {
-        description:
-          "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-      }),
-    ),
-    secrets: Type.Optional(CredentialSourceSecrets),
-  },
-  {
-    additionalProperties: false,
-    description:
-      "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
-  },
-);
-
 export const SecretDelivery = Type.Object(
   { type: Type.Literal("env") },
   {
@@ -1282,7 +1249,6 @@ export type ProvisionAgentBody = Type.Static<typeof ProvisionAgentBody>;
 export type UpdateAgentBody = Type.Static<typeof UpdateAgentBody>;
 export type ChannelDirectoryLookupBody = Type.Static<typeof ChannelDirectoryLookupBody>;
 export type UpdateWorkspaceFileBody = Type.Static<typeof UpdateWorkspaceFileBody>;
-export type UpdateCredentialSourceBody = Type.Static<typeof UpdateCredentialSourceBody>;
 export type AgentCredentialSourceParams = Type.Static<typeof AgentCredentialSourceParams>;
 export type ErrorDetail = Type.Static<typeof ErrorDetail>;
 export type ErrorResponse = Type.Static<typeof ErrorResponse>;

@@ -139,6 +139,7 @@ export const CredentialsSlackPartial = {
   name: "One Slack token missing",
 };
 export const AuthMissing = { ...story("authMissing"), name: "No authentication source" };
+export const ExistingCredentialSource = story("credentialsExistingSource");
 export const AuthApiKeySwitch = {
   ...story("authApiKeySwitch"),
   name: "API key Secret switch",

@@ -207,9 +207,11 @@ A prepared repository App key that cannot sign stops the worker with
   the worker and inspect the per-Namespace Docker network labels. Docker Agent
   container tooling is for contributor verification; it cannot deploy through
   the public API. Use [Docker Compute Driver troubleshooting](drivers/docker-compute.md#troubleshooting).
-- **Configuration creation returns `503`:** Confirm the API, not the worker,
-  has `OCC_DEVELOPMENT_CONFIGURATION_ROOT` set and can write the
-  `/app/.development/configurations` mount backed by `occ_configuration_data`.
+- **Configuration creation returns `503`:** For the Kubernetes Configuration Driver, check the
+  [tenant namespace and API RoleBinding](#startup-and-readiness-contract). For the filesystem
+  Driver in Compose development, confirm the API has `OCC_DEVELOPMENT_CONFIGURATION_ROOT` set
+  and can write to the `/app/.development/configurations` mount backed by
+  `occ_configuration_data`.
 - **AgentRevision does not activate:** Confirm its Namespace is `ready`, the
   original actor retains exact-Agent `deploy` permission and `read` on any
   account in its immutable version, and its pinned Harness descriptor and
@@ -264,8 +266,9 @@ A prepared repository App key that cannot sign stops the worker with
 - **`AUTHORIZATION_DENIED` or `ACTOR_REVOKED`:** Inspect the initiating actor's
   current role, binding, exact-Namespace Restrictions, and `read` permission on
   any service account captured in the immutable version; see [IAM](authorization.md).
-- **`CLAIM_LOST`:** Another valid claim recovered the operation. The stale
-  attempt cannot publish lifecycle state; inspect subsequent worker events.
+- **`CLAIM_LOST`:** The worker lost its claim or could not confirm renewal in time. The stale
+  attempt cannot publish lifecycle state. Check subsequent worker events for recovery. Verify
+  the outcome of any external operation already in progress.
 
 ## Related
 

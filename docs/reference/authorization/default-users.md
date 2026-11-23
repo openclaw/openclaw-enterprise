@@ -229,7 +229,7 @@ grants in the deploy request. OCC checks each source that the Agent references:
 - Secrets in the Configuration's `secretBindings`.
 - The Secret or credential source in the Agent's `harnessAuth`.
 - Each entry in the Agent's `credentialSources`.
-- Each Source selected at a Plugin connection. Saving that selection grants only the Agent's ServicePrincipal exact Source `operate` access.
+- Each Source selected at a Plugin connection, even when it has no entry in `credentialSources`.
 
 For each source that the caller can `operate`, through any Role, and on which
 the Agent's ServicePrincipal does not have `operate`, OCC binds the

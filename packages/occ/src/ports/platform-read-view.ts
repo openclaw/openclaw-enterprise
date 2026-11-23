@@ -10,7 +10,7 @@ import type { NamespaceReadRepository } from "./namespaces.ts";
 import type { PlatformOperationReadRepository } from "./platform-operations.ts";
 import type { PresetReadRepository } from "./presets.ts";
 import type { RepositorySessionReadRepository } from "./repository-sessions.ts";
-import type { SavedConnectionReadRepository } from "./saved-connections.ts";
+import type { OAuthCredentialReadRepository } from "./oauth-credentials.ts";
 import type { SecretReadRepository } from "./secrets.ts";
 import type { ServiceAccountReadRepository } from "./service-accounts.ts";
 import type { IAMPolicyReadRepository } from "@openclaw-enterprise/contracts";
@@ -24,7 +24,7 @@ export interface PlatformReadView {
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
   readonly connectionTemplates: ConnectionTemplateReadRepository;
-  readonly savedConnections: SavedConnectionReadRepository;
+  readonly oauthCredentials: OAuthCredentialReadRepository;
   readonly presets: PresetReadRepository;
   readonly authenticationStates: AuthenticationStateReadRepository;
   readonly secrets: SecretReadRepository;
@@ -58,25 +58,16 @@ export const platformReadMethods = deepFreeze({
     "listConnectionTemplates",
     "hasOtherConnectionIssuer",
     "countNamespaceConnectionTemplates",
-    "findStaticConnectionTemplateVersion",
     "findOAuthConnectionTemplateVersion",
     "listOAuthClientCleanups",
     "listOAuthClients",
     "countNamespaceOAuthClients",
     "findOAuthClient",
   ],
-  savedConnections: [
-    "findTokenCustody",
-    "listDueConnectionTokens",
-    "findSavedConnection",
-    "listNamespaceConnections",
-    "listRevokingConnections",
-  ],
+  oauthCredentials: ["findTokenCustody", "listDueOAuthSources", "listRevokingOAuthSources"],
   authenticationStates: ["findDevice"],
   secrets: ["findSecret", "listSecrets", "listReferences"],
   credentialSources: [
-    "findStaticConnectionTemplate",
-    "listStaticConnectionTemplates",
     "findEgressInstallation",
     "findRevisionEgressInstallation",
     "listCredentialPolicyReductions",
@@ -165,7 +156,7 @@ export function createPlatformReadView(
     configurations: bind(repositories.configurations, methods.configurations),
     presets: bind(repositories.presets, methods.presets),
     connectionTemplates: bind(repositories.connectionTemplates, methods.connectionTemplates),
-    savedConnections: bind(repositories.savedConnections, methods.savedConnections),
+    oauthCredentials: bind(repositories.oauthCredentials, methods.oauthCredentials),
     authenticationStates: bind(repositories.authenticationStates, methods.authenticationStates),
     secrets: bind(repositories.secrets, methods.secrets),
     credentialSources: bind(repositories.credentialSources, methods.credentialSources),

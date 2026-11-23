@@ -1,75 +1,41 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 
-import {
-  createOpenShellBackend,
-  openShellProviderName,
-} from "../../apps/controller/src/backends/openshell.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import type { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellProviderProfile } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
-import {
-  CredentialSourceListResponse,
-  CredentialSourceResponse,
-} from "../../packages/contracts/src/api/resources.ts";
 import type {
-  CredentialSource,
+  LegacyCredentialSource,
   Namespace,
   OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
-import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import type { createFixtureResponse } from "../helpers/console-fixture-response.ts";
-import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { storedCredentialSourceConfig } from "../helpers/refusal-text.mjs";
 
-type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type SourceConfig = CredentialSource["config"];
+type SourceConfig = LegacyCredentialSource["config"];
 type RefusalField = "authorized_base_url" | "host" | "token_url";
-type RulePoint = "save" | "validate" | "attach";
+type RulePoint = "validate" | "attach";
 type RuleRow = readonly [value: string, ...points: [RulePoint, ...RulePoint[]]];
 
-interface HttpResponse {
-  readonly status: number;
-  readonly body: unknown;
-}
-
 interface StoredSource {
-  readonly stored: CredentialSource;
+  readonly stored: LegacyCredentialSource;
   readonly name: string;
   readonly profileKey: string;
 }
 
-interface EndpointFixture extends Pick<ConsoleFixture, "createNamespaceMember" | "signIn"> {
+interface EndpointFixture {
   readonly namespace: Pick<Namespace, "id" | "name">;
-  readonly path: string;
   readonly profiles: Map<string, OpenShellProviderProfile>;
   readonly providers: { readonly size: number };
   readonly mutations: string[];
-  readonly fixtureResponse: ReturnType<typeof createFixtureResponse>;
-  request(
-    method: "GET" | "POST" | "PATCH" | "DELETE",
-    path: string,
-    options?: Parameters<ConsoleFixture["request"]>[2],
-  ): Promise<HttpResponse>;
-  create(name: string, config: SourceConfig): Promise<HttpResponse>;
-  saveTool(type: string, config: SourceConfig, name?: string): Promise<HttpResponse>;
-  toolBody(
-    type: string,
-    config: SourceConfig,
-    name: string,
-  ): Pick<CredentialSource, "name" | "type" | "config" | "secrets">;
   validate(
     type: string,
     config: SourceConfig,
   ): ReturnType<OpenShellCredentialGatewayDriver["validateSourceConfig"]>;
   assertNothingSaved(): Promise<void>;
-  passRegistrationFence(): void;
   seedStored(type: string, config: SourceConfig): StoredSource;
   seedStoredRecord(type: string, config: SourceConfig): Promise<StoredSource>;
-  replaceSecret(stored: CredentialSource): Promise<HttpResponse>;
   attach(
-    stored: CredentialSource,
+    stored: LegacyCredentialSource,
   ): ReturnType<OpenShellCredentialGatewayDriver["attachForRevision"]>;
 }
 
@@ -82,12 +48,6 @@ interface EndpointSuite {
       modelProvider?: { protocol: "openai-responses"; baseUrl: string };
     },
   ): Promise<EndpointFixture>;
-  assertRefused(
-    response: HttpResponse,
-    field: RefusalField,
-    message: string | RegExp,
-    label: string,
-  ): void;
   toolTypes: readonly string[];
   oauth2Types: readonly string[];
 }
@@ -114,24 +74,8 @@ function storedConfigRefusal(field: RefusalField, label: string = field) {
   };
 }
 
-async function assertReplacementConflict(
-  fixture: EndpointFixture,
-  stored: CredentialSource,
-  field: RefusalField,
-): Promise<void> {
-  const { error } = fixture.fixtureResponse(
-    await fixture.replaceSecret(stored),
-    409,
-    ErrorResponse,
-    "replace the Secret of an invalid stored source",
-  );
-  assert.equal(error.code, "RESOURCE_CONFLICT");
-  assert.equal(error.message, storedCredentialSourceConfig(field));
-}
-
 export function registerCredentialSourceEndpointCases({
   fixture,
-  assertRefused,
   toolTypes,
   oauth2Types,
 }: EndpointSuite): void {
@@ -153,42 +97,15 @@ export function registerCredentialSourceEndpointCases({
       ["https:\\\\models.example.test/v1", "models.example.test", 443, "/v1/**"],
     ];
     for (const [authorized_base_url, host, port, path] of cases) {
+      const normalized = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
       const f = await fixture(t, {
-        modelProvider: { protocol: "openai-responses", baseUrl: authorized_base_url },
+        modelProvider: { protocol: "openai-responses", baseUrl: normalized },
       });
-      const created = f.fixtureResponse(
-        await f.create("concrete endpoint", { authorized_base_url }),
-        201,
-        CredentialSourceResponse,
-        "create concrete endpoint",
-      ).data;
-      // The stored endpoint is the one the profile uses, not the written spelling (finding 1292).
-      const stored = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
-      assert.deepEqual(created.config, { authorized_base_url: stored }, authorized_base_url);
-      const item = f.path + "/" + created.id;
-      const read = f.fixtureResponse(
-        await f.request("GET", item),
-        200,
-        CredentialSourceResponse,
-        "read concrete endpoint",
-      ).data;
-      assert.deepEqual(read.config, { authorized_base_url: stored }, authorized_base_url);
-      // Assert the profile produced through HTTP/OCC, not a copied normalizer.
-      const profile = [...f.profiles.values()][0];
-      assert.ok(profile, "the API must write a provider profile");
+      const { stored, profileKey } = f.seedStored("openai", { authorized_base_url });
+      await f.attach(stored);
+      const profile = f.profiles.get(profileKey);
+      assert.ok(profile, "a retained Source must attach its exact profile");
       assert.deepEqual(profile.endpoints, [{ host, port, protocol: "rest", path }]);
-      assert.equal(profile.id, openShellProviderName(created.id));
-      const observed = f.fixtureResponse(
-        await f.request("GET", item),
-        200,
-        CredentialSourceResponse,
-        "observe credential source status",
-      ).data;
-      assert.equal(observed.status?.state, "ready");
-      f.passRegistrationFence();
-      assert.equal((await f.request("DELETE", item)).status, 204);
-      assert.equal(f.profiles.size, 0);
-      assert.equal(f.providers.size, 0);
     }
   });
 
@@ -207,16 +124,9 @@ export function registerCredentialSourceEndpointCases({
       ["https://models.exam\nple.test/v1", /must not contain spaces or control characters/],
       // The API schema already refuses a NUL in any string (INVALID_FORMAT).
     ] as const) {
-      const response = await f.create("rewritten", { authorized_base_url });
-      assertRefused(response, "authorized_base_url", message, JSON.stringify(authorized_base_url));
-      assert.deepEqual(
-        f.fixtureResponse(
-          await f.request("GET", f.path),
-          200,
-          CredentialSourceListResponse,
-          "list credential sources after refusal",
-        ).data,
-        [],
+      assert.throws(
+        () => f.validate("openai", { authorized_base_url }),
+        { name: "CredentialSourceConfigError", message },
         JSON.stringify(authorized_base_url),
       );
     }
@@ -239,11 +149,12 @@ export function registerCredentialSourceEndpointCases({
       "-models.example.test",
       "models-.example.test",
     ]) {
-      const response = await f.create("ip", { authorized_base_url: `https://${host}/v1` });
-      assertRefused(
-        response,
-        "authorized_base_url",
-        "The openai authorized_base_url host must be an exact DNS name.",
+      assert.throws(
+        () => f.validate("openai", { authorized_base_url: `https://${host}/v1` }),
+        {
+          name: "CredentialSourceConfigError",
+          message: "The openai authorized_base_url host must be an exact DNS name.",
+        },
         host,
       );
     }
@@ -254,20 +165,6 @@ export function registerCredentialSourceEndpointCases({
       authorized_base_url: "https://169.254.169.254/v1",
     });
     await assert.rejects(f.attach(stored), storedConfigRefusal("authorized_base_url"));
-    await assertReplacementConflict(f, stored, "authorized_base_url");
-    // Only a caller who may update the source meets that 409. One who may read it but not update
-    // it gets the same denial for it and for an ID that names no source (finding 2624).
-    const reader = await f.createNamespaceMember("stored-source-reader", f.namespace.id, [
-      ["read", "namespace"],
-      ["read", "credential_source"],
-      ["read", "secret"],
-      ["operate", "secret"],
-    ]);
-    const session = await f.signIn(reader.credentials);
-    await assertSameAnswer(
-      (id) => f.request("PATCH", `${f.path}/${id}`, { session, body: { secrets: stored.secrets } }),
-      [stored.id, `cs_${randomUUID()}`],
-    );
     assert.equal(f.profiles.size, 0);
     assert.ok(!f.mutations.includes("updateProvider"));
   });
@@ -278,15 +175,15 @@ export function registerCredentialSourceEndpointCases({
     // last label is a decimal or 0x number as an IPv4 address (finding 1360). Stored sources are
     // checked at attach too, and a stored DNS host still attaches (finding 1363).
     const refused: readonly RuleRow[] = [
-      ["0xa000005", "save", "attach"],
-      ["0xa.0.0.5", "save"],
-      ["10.0x0.0.5", "save"],
-      ["0x7f.0x1", "save", "attach"],
-      ["0xa9.0xfe.0xa9.0xfe", "save"],
-      ["example.123", "save", "attach"],
+      ["0xa000005", "validate", "attach"],
+      ["0xa.0.0.5", "validate"],
+      ["10.0x0.0.5", "validate"],
+      ["0x7f.0x1", "validate", "attach"],
+      ["0xa9.0xfe.0xa9.0xfe", "validate"],
+      ["example.123", "validate", "attach"],
       ["example.123.", "attach"],
-      ["example.0x", "save", "attach"],
-      ["api.example.0x10", "save"],
+      ["example.0x", "validate", "attach"],
+      ["api.example.0x10", "validate"],
       ["10.0.0.5", "attach"],
       ["169.254.169.254", "attach"],
     ];
@@ -300,8 +197,12 @@ export function registerCredentialSourceEndpointCases({
     ];
     const message = (type: string) => `The ${type} host must be an exact DNS name.`;
     for (const type of toolTypes) {
-      for (const host of checkedAt(refused, "save")) {
-        assertRefused(await f.saveTool(type, { host }), "host", message(type), host);
+      for (const host of checkedAt(refused, "validate")) {
+        assert.throws(
+          () => f.validate(type, { host }),
+          { name: "CredentialSourceConfigError", message: message(type) },
+          host,
+        );
       }
       for (const host of checkedAt(accepted, "validate")) {
         assert.doesNotThrow(() => f.validate(type, { host }), host);
@@ -317,13 +218,7 @@ export function registerCredentialSourceEndpointCases({
           storedConfigRefusal("host", host),
         );
       }
-      if (type === "bearer-token") {
-        // Replacing the value of such a source through the API fails the same way: a 409 that
-        // names the replacement, where it was a 404 (finding 2536).
-        const { stored } = await f.seedStoredRecord(type, { host: "0x7f.0x1" });
-        await assertReplacementConflict(f, stored, "host");
-      } else {
-        // As at save, the host is checked before token_url.
+      if (type !== "bearer-token") {
         const { stored } = f.seedStored(type, {
           host: "0x7f.0x1",
           token_url: "https://169.254.169.254/token",
@@ -353,37 +248,37 @@ export function registerCredentialSourceEndpointCases({
     // The OpenShell gateway, not the Sandbox, posts the issuer material to token_url, so the
     // protected host's rule applies to its parsed hostname, plus localhost (finding 1348).
     const refused: readonly RuleRow[] = [
-      ["https://10.0.0.5/token", "save"],
-      ["https://127.0.0.1:8443/token", "save"],
-      ["https://169.254.169.254/latest", "save"],
+      ["https://10.0.0.5/token", "validate"],
+      ["https://127.0.0.1:8443/token", "validate"],
+      ["https://169.254.169.254/latest", "validate"],
       ["https://169.254.169.254/token", "attach"],
-      ["https://0x7f000001/token", "save"],
-      ["https://2130706433/token", "save"],
-      ["https://127.1/token", "save"],
-      ["https://0177.0.0.1/token", "save"],
-      ["https://[::1]:8443/token", "save"],
-      ["https://[::ffff:127.0.0.1]/token", "save"],
-      ["https://localhost/token", "save"],
-      ["https://LOCALHOST:8443/token", "save"],
-      ["https://issuer.localhost/token", "save"],
+      ["https://0x7f000001/token", "validate"],
+      ["https://2130706433/token", "validate"],
+      ["https://127.1/token", "validate"],
+      ["https://0177.0.0.1/token", "validate"],
+      ["https://[::1]:8443/token", "validate"],
+      ["https://[::ffff:127.0.0.1]/token", "validate"],
+      ["https://localhost/token", "validate"],
+      ["https://LOCALHOST:8443/token", "validate"],
+      ["https://issuer.localhost/token", "validate"],
       // The gateway resolves names through its Pod's /etc/hosts, where the kubelet and
       // container runtimes map these to loopback, link-local or multicast addresses, and the
       // Pod's own single-label hostname to the Pod itself (finding 1354).
-      ["https://ip6-localhost/token", "save", "attach"],
-      ["https://ip6-loopback:8443/token", "save"],
-      ["https://IP6-LOOPBACK/token", "save"],
-      ["https://ip6-localnet/token", "save"],
-      ["https://ip6-allnodes/token", "save"],
-      ["https://localhost4/token", "save"],
-      ["https://localhost6/token", "save"],
-      ["https://localhost.localdomain/token", "save", "attach"],
-      ["https://LOCALHOST.LOCALDOMAIN:8443/token", "save"],
-      ["https://localhost4.localdomain4/token", "save"],
-      ["https://localhost6.localdomain6/token", "save"],
-      ["https://keycloak/token", "save"],
-      ["https://openshell-gateway-0:8443/token", "save"],
+      ["https://ip6-localhost/token", "validate", "attach"],
+      ["https://ip6-loopback:8443/token", "validate"],
+      ["https://IP6-LOOPBACK/token", "validate"],
+      ["https://ip6-localnet/token", "validate"],
+      ["https://ip6-allnodes/token", "validate"],
+      ["https://localhost4/token", "validate"],
+      ["https://localhost6/token", "validate"],
+      ["https://localhost.localdomain/token", "validate", "attach"],
+      ["https://LOCALHOST.LOCALDOMAIN:8443/token", "validate"],
+      ["https://localhost4.localdomain4/token", "validate"],
+      ["https://localhost6.localdomain6/token", "validate"],
+      ["https://keycloak/token", "validate"],
+      ["https://openshell-gateway-0:8443/token", "validate"],
       // An SRV-style `_port._protocol` name is not a host name (finding 1366).
-      ["https://_grpc._tcp.openshell-gateway/token", "save"],
+      ["https://_grpc._tcp.openshell-gateway/token", "validate"],
       // A stored token_url that does not parse (save never accepts one) is refused the same way,
       // not with a parser error.
       ["https://login example.test/token", "attach"],
@@ -399,12 +294,18 @@ export function registerCredentialSourceEndpointCases({
       "https://keycloak.idp.svc.cluster.local:8443/realms/occ/protocol/openid-connect/token",
     ];
     for (const type of oauth2Types) {
-      for (const token_url of checkedAt(refused, "save")) {
-        const response = await f.saveTool(type, { token_url });
-        assertRefused(response, "token_url", TOKEN_URL_MESSAGE.host(type), token_url);
+      for (const token_url of checkedAt(refused, "validate")) {
+        assert.throws(
+          () => f.validate(type, { token_url }),
+          { name: "CredentialSourceConfigError", message: TOKEN_URL_MESSAGE.host(type) },
+          token_url,
+        );
       }
-      const response = await f.saveTool(type, { token_url: port });
-      assertRefused(response, "token_url", TOKEN_URL_MESSAGE.port(type), port);
+      assert.throws(
+        () => f.validate(type, { token_url: port }),
+        { name: "CredentialSourceConfigError", message: TOKEN_URL_MESSAGE.port(type) },
+        port,
+      );
       for (const token_url of accepted) {
         assert.doesNotThrow(() => f.validate(type, { token_url }), token_url);
       }
@@ -561,10 +462,9 @@ export function registerCredentialSourceEndpointCases({
       const f = await fixture(t, { toolSources: true, gateway });
       for (const type of oauth2Types) {
         for (const token_url of [...gatewayOwn, ...podNames]) {
-          assertRefused(
-            await f.saveTool(type, { token_url }),
-            "token_url",
-            message(type),
+          assert.throws(
+            () => f.validate(type, { token_url }),
+            { name: "CredentialSourceConfigError", message: message(type) },
             token_url,
           );
         }
@@ -598,47 +498,9 @@ export function registerCredentialSourceEndpointCases({
       "https://grpc.tcp.openshell-gateway/token",
       "https://GRPC.TCP.openshell-gateway-peer/token",
     ] as const;
-    for (const [index, token_url] of tenantOwn.entries()) {
+    for (const token_url of tenantOwn) {
       assert.doesNotThrow(() => f.validate("oauth2-client-credentials", { token_url }));
-      // A refused registration leaves its record deleting, so each attempt takes a new name.
-      const response = await f.saveTool(
-        "oauth2-client-credentials",
-        { token_url },
-        `issuer-${index}`,
-      );
-      // Registration refuses the request's own value by field, as save does for a gateway the
-      // Backend names, where it was a 404 (finding 2536).
-      assertRefused(response, "token_url", message("oauth2-client-credentials"), token_url);
     }
-    // Registration refuses only after the create grant: a caller without it gets the same denial
-    // for this Namespace and for one that does not exist (finding 2624).
-    const member = await f.createNamespaceMember("issuer-reader", f.namespace.id, [
-      ["read", "namespace"],
-      ["read", "credential_source"],
-    ]);
-    const session = await f.signIn(member.credentials);
-    const refusedBody = f.toolBody(
-      "oauth2-client-credentials",
-      { token_url: tenantOwn[0] },
-      "denied",
-    );
-    await assertSameAnswer(
-      (namespaceId) =>
-        f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-          session,
-          body: refusedBody,
-        }),
-      [f.namespace.id, `ns_${randomUUID()}`],
-    );
-    // Refused before the profile or provider is written, so no refresh is configured either.
-    assert.deepEqual(
-      f.mutations.filter(
-        (mutation) => mutation === "importProfile" || mutation === "createProvider",
-      ),
-      [],
-    );
-    assert.equal(f.profiles.size, 0);
-    assert.equal(f.providers.size, 0);
     // A source stored before the rule, with its provider, cannot be attached to a new revision.
     for (const token_url of [...tenantOwn, ...podNames]) {
       await assert.rejects(

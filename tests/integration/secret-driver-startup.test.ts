@@ -144,6 +144,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const owner = initial.selectedDriver("token_service");
   const source = await owner.createSource(
     {
+      kind: "static",
       namespaceId,
       name: "Active source",
       lifecycleConfig: { type: "static", settings: {} },

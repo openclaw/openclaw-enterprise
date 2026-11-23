@@ -18,6 +18,7 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 const digest = (grant: unknown) => createHash("sha256").update(JSON.stringify(grant)).digest("hex");
 type FixtureApp = {
   controller: OpenClawController;
+  principal: { id: string };
   request: (
     method: string,
     path: string,
@@ -46,14 +47,12 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
       app,
       agent,
       namespace,
-      path,
       origin,
       countSecretReads: readCount,
     }: {
       app: FixtureApp;
       agent: Agent;
       namespace: Namespace;
-      path: string;
       origin: string;
       countSecretReads: () => number;
     }) {
@@ -75,21 +74,19 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
       restoreProvider = () => {
         providers[index] = provider;
       };
-      const created = await app.request("POST", path, {
-        body: {
-          name: "metadata-order",
-          type: "credential-free-repository-metadata",
-          config: {
-            origin,
-            repository_id: "7311",
-            repository: "fixture/credential-free",
-            agent_id: agent.id,
-            authority: "execution",
-          },
+      const source = await app.controller.createCredentialSource(app.principal.id, {
+        namespaceId: namespace.id,
+        name: "metadata-order",
+        type: "credential-free-repository-metadata",
+        config: {
+          origin,
+          repository_id: "7311",
+          repository: "fixture/credential-free",
+          agent_id: agent.id,
+          authority: "execution",
         },
       });
-      assert.equal(created.status, 201);
-      driverGrant = provider.normalizeGrant([], created.data.config);
+      driverGrant = provider.normalizeGrant([], source.config);
       if (reordered) {
         driverGrant = Object.fromEntries(Object.entries(driverGrant).reverse());
         setGrant(driverGrant);
@@ -98,11 +95,11 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
         body: {
           configurationId: agent.configurationId,
           harnessAuth: { method: "runtime" },
-          credentialSources: [{ sourceId: created.data.id }],
+          credentialSources: [{ sourceId: source.id }],
         },
       });
       assert.equal(bound.status, 200);
-      return { agent: bound.data, source: created.data };
+      return { agent: bound.data, source };
     },
   };
   const f = await staticEgressFixture(t, options);
@@ -146,11 +143,13 @@ test("Gateway-owned source admission consults its catalog despite a matching Pro
   const f = await staticEgressFixture(t, { admitRevision: false });
   // Runtime-managed authentication has no provider override; its supplemental source
   // authorizes the native default so this case isolates catalog ownership.
-  const created = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
-    body: { name: "supplemental", type: "openai", config: {}, secrets: f.source.secrets },
+  const source = await f.controller.createCredentialSource(f.principal.id, {
+    namespaceId: f.namespace.id,
+    name: "supplemental",
+    type: "openai",
+    config: {},
+    secrets: f.source.secrets,
   });
-  assert.equal(created.status, 201);
-  const source = created.data;
   const controller: OpenClawController = f.controller;
   const gateway = controller.selectedDriver("credential_gateway");
   const providers = controller.selectedDriver("credential_proxy").sourceControl

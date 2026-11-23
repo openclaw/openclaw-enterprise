@@ -16,7 +16,7 @@ import type { PlatformOperationRepository } from "./platform-operations.ts";
 import { platformReadMethods, type PlatformReadView } from "./platform-read-view.ts";
 import type { PresetRepository } from "./presets.ts";
 import type { RepositorySessionRepository } from "./repository-sessions.ts";
-import type { SavedConnectionRepository } from "./saved-connections.ts";
+import type { OAuthCredentialRepository } from "./oauth-credentials.ts";
 import type { SecretRepository } from "./secrets.ts";
 import type { ServiceAccountRepository } from "./service-accounts.ts";
 import type {
@@ -40,7 +40,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
   readonly connectionTemplates: ConnectionTemplateRepository;
-  readonly savedConnections: SavedConnectionRepository;
+  readonly oauthCredentials: OAuthCredentialRepository;
   readonly presets: PresetRepository;
   readonly authenticationStates: AuthenticationStateRepository;
   readonly secrets: SecretRepository;
@@ -126,14 +126,10 @@ export function bindPlatformUnitOfWork(
       "updateConnectionTemplate",
       "deleteConnectionTemplate",
     ]),
-    savedConnections: bindRepository(repositories.savedConnections, lifetime, [
-      ...platformReadMethods.savedConnections,
+    oauthCredentials: bindRepository(repositories.oauthCredentials, lifetime, [
+      ...platformReadMethods.oauthCredentials,
       "createTokenCustody",
       "recordTokenSchedule",
-      "createSavedConnection",
-      "requestConnectionRevocation",
-      "confirmConnectionRevocation",
-      "deleteSavedConnection",
     ]),
     authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
       ...platformReadMethods.authenticationStates,
@@ -151,7 +147,8 @@ export function bindPlatformUnitOfWork(
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
       ...platformReadMethods.credentialSources,
-      "associateStaticConnectionTemplate",
+      "requestOAuthRevocation",
+      "confirmOAuthRevocation",
       "lockCredentialSource",
       "createCredentialSource",
       "markCredentialSourceDeleting",

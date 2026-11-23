@@ -5,7 +5,6 @@ import {
   validatePluginRequestAuthority,
   type SelectedPluginBinding,
 } from "./plugin-credential-bindings.ts";
-import { resolveConfiguredHarnessId } from "./configured-harness.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   storedSecretBindings,
@@ -21,7 +20,7 @@ import {
   type BackendRef,
   type Configuration,
   type ConfigurationDriver,
-  type CredentialSource,
+  type StoredCredentialSource,
   type HarnessAuthBinding,
   type HarnessExecutionMode,
   type InitialWorkspaceFiles,
@@ -109,7 +108,7 @@ interface AgentDraftDependencies {
     "repositorySettings" | "reconcileAgentBindings"
   >;
   readonly validateSavedAgentTopology: ReturnType<typeof createSavedAgentTopologyValidator>;
-  readonly pluginDriver: (harnessId: string, forConfiguration: boolean) => PluginDriver;
+  readonly pluginDrivers: () => readonly PluginDriver[];
   readonly validateAgentPlugins: ReturnType<
     typeof createAgentPluginValidation
   >["validateAgentPlugins"];
@@ -249,8 +248,8 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     driver: PluginDriver | undefined,
     plugins: PluginDesiredState | undefined,
     harnessAuth: HarnessAuthBinding | null | undefined,
-    resolveSource: (sourceId: string) => Promise<Readonly<CredentialSource> | undefined>,
-    resolved: readonly CredentialSource[] = [],
+    resolveSource: (sourceId: string) => Promise<Readonly<StoredCredentialSource> | undefined>,
+    resolved: readonly StoredCredentialSource[] = [],
   ): Promise<readonly SelectedPluginBinding[]> {
     const selected = selectedPluginBindings(driver, plugins);
     const plugin = await dependencies.credentialAccess.authorizePluginCredentialSources(
@@ -261,12 +260,9 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       resolveSource,
       resolved,
     );
-    const authorized = [
-      ...new Map([...resolved, ...plugin.sources].map((source) => [source.id, source])).values(),
-    ];
-    await validatePluginCredentialSources(driver, plugins, plugin.metadata, harnessAuth);
-    const descriptions = await describePluginBindings(driver, plugins, selected, authorized);
-    validatePluginRequestAuthority(descriptions, plugin.destinations);
+    await validatePluginCredentialSources(driver, plugins, plugin.sources, harnessAuth);
+    const descriptions = await describePluginBindings(driver, plugins, selected, plugin.sources);
+    validatePluginRequestAuthority(descriptions, plugin.templates);
     return selected;
   }
 
@@ -783,13 +779,15 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       );
       let selectedPluginIds: readonly string[] = [];
       if (plugins !== undefined && agent.plugins && Object.keys(agent.plugins).length > 0) {
-        const previousDriver =
-          driver ??
-          dependencies.pluginDriver(
-            resolveConfiguredHarnessId((await savedConfiguration()).values),
-            true,
+        const previousDriver = dependencies
+          .pluginDrivers()
+          .find(
+            ({ id, implementation }) =>
+              id === agent.pluginDriver?.id && implementation === agent.pluginDriver.implementation,
           );
-        pluginOwner(previousDriver, agent);
+        if (!previousDriver) {
+          throw new ConfigurationHarnessError("The Agent's saved Plugin Driver is unavailable.");
+        }
         const previous = selectedPluginBindings(previousDriver, agent.plugins);
         await dependencies.credentialAccess.authorizeBoundCredentialSources(
           principalId,

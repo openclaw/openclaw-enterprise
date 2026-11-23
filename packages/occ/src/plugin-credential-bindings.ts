@@ -1,7 +1,8 @@
 import {
   intersectCredentialRequests,
-  type CredentialBindingAuthority,
-  type CredentialSource,
+  type ConnectionTemplateVersion,
+  type OAuthConnectionTemplateVersion,
+  type StoredCredentialSource,
   type CredentialSourceReference,
   type DeploymentRequestMatch,
   type PluginCredentialConnection,
@@ -10,6 +11,14 @@ import {
   type PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { ResourceStateConflictError } from "./errors.ts";
+
+/** The current Template bounds admission. An OAuth Source also retains the original grant's bounds. */
+export type PluginSourceTemplate =
+  | { readonly current: Extract<ConnectionTemplateVersion, { mode: "static_bearer" }> }
+  | {
+      readonly current: OAuthConnectionTemplateVersion;
+      readonly consent: OAuthConnectionTemplateVersion;
+    };
 
 export interface SelectedPluginBinding {
   readonly pluginId: string;
@@ -44,7 +53,7 @@ export async function describePluginBindings(
   driver: PluginDriver | undefined,
   plugins: PluginDesiredState | undefined,
   bindings: readonly SelectedPluginBinding[],
-  sources: readonly CredentialSource[],
+  sources: readonly StoredCredentialSource[],
 ): Promise<ReadonlyMap<string, PluginDeploymentDescription>> {
   const descriptions = new Map<string, PluginDeploymentDescription>();
   const authorized = new Map(sources.map((source) => [source.id, source]));
@@ -102,7 +111,7 @@ export async function describePluginBindings(
 export function pluginCredentialRequests(
   description: PluginDeploymentDescription,
   account: PluginCredentialConnection,
-  destinations: CredentialBindingAuthority["destinations"],
+  template: PluginSourceTemplate | undefined,
 ): readonly DeploymentRequestMatch[] {
   const rules = new Map(description.networkRequirements.map((rule) => [rule.id, rule]));
   if (rules.size !== description.networkRequirements.length) {
@@ -117,12 +126,33 @@ export function pluginCredentialRequests(
         "The Plugin connection names an unavailable invocation requirement.",
       );
     }
+    if (rule.match.requestPolicy?.type !== "http") {
+      throw new ResourceStateConflictError(
+        "Plugin credential delivery requires a reviewed HTTP method and path.",
+      );
+    }
     return rule.match;
   });
-  const allowed = intersectCredentialRequests(reviewed, destinations);
+  if (!template) {
+    throw new ResourceStateConflictError("The Plugin Source has no approved Connection Template.");
+  }
+  const { current } = template;
+  const approved = intersectCredentialRequests(
+    reviewed,
+    current.mode === "static_bearer"
+      ? current.destinations
+      : current.destinations.map((destination) => ({ ...destination, method: null })),
+  );
+  const allowed =
+    "consent" in template
+      ? intersectCredentialRequests(
+          approved,
+          template.consent.destinations.map((destination) => ({ ...destination, method: null })),
+        )
+      : approved;
   if (allowed.length === 0) {
     throw new ResourceStateConflictError(
-      "The Plugin connection has no request approved by its pinned Source Template version.",
+      "The Plugin connection has no request approved by its Connection Template and Source.",
     );
   }
   return allowed;
@@ -130,16 +160,12 @@ export function pluginCredentialRequests(
 
 export function validatePluginRequestAuthority(
   descriptions: ReadonlyMap<string, PluginDeploymentDescription>,
-  destinations: ReadonlyMap<string, CredentialBindingAuthority["destinations"]>,
+  templates: ReadonlyMap<string, PluginSourceTemplate>,
 ): void {
   for (const description of descriptions.values()) {
     for (const accounts of Object.values(description.credentials)) {
       for (const account of Object.values(accounts)) {
-        pluginCredentialRequests(
-          description,
-          account,
-          destinations.get(account.sourceRef.id) ?? [],
-        );
+        pluginCredentialRequests(description, account, templates.get(account.sourceRef.id));
       }
     }
   }

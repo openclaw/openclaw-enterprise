@@ -1,4 +1,8 @@
-import { pluginCredentialRequests, selectedPluginBindings } from "./plugin-credential-bindings.ts";
+import {
+  pluginCredentialRequests,
+  selectedPluginBindings,
+  type PluginSourceTemplate,
+} from "./plugin-credential-bindings.ts";
 import { assertAgentConfiguration } from "./deployment-policy.ts";
 import { unchangedDriver, type RegisteredDriver } from "./driver-registry.ts";
 import {
@@ -30,8 +34,7 @@ import {
   type Configuration,
   type ConfigurationDriver,
   type CredentialProxyDriver,
-  type CredentialSource,
-  type CredentialBindingAuthority,
+  type StaticCredentialSource,
   type CredentialInjectionPolicy,
   type DeploymentCredentialBinding,
   type DeploymentPolicy,
@@ -141,9 +144,7 @@ export interface ModelCredentialPreset {
 }
 
 interface PreparedModelCredentialDeployment {
-  readonly source: Readonly<
-    CredentialSource & { ownerCapability: "token_service"; tokenServiceInstanceId: string }
-  >;
+  readonly source: Readonly<StaticCredentialSource>;
   readonly preset: ModelCredentialPreset;
   readonly owner: InstalledDriver;
   readonly proxy: CredentialProxyDriver;
@@ -270,6 +271,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (
       !isManagedTokenServiceSource(source) ||
       source.state !== "ready" ||
+      source.type !== "static" ||
+      source.connectionTemplateId !== undefined ||
       source.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
       source.type !== auth.sourceType
     ) {
@@ -345,7 +348,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     delivery: ReturnType<typeof prepareCredentialDelivery>,
     stagedModel: PreparedModelCredentialDeployment | undefined,
     descriptions: ReadonlyMap<string, PluginDeploymentDescription>,
-    destinations: ReadonlyMap<string, CredentialBindingAuthority["destinations"]>,
+    templates: ReadonlyMap<string, PluginSourceTemplate>,
     additions: readonly SandboxNetworkGrant[],
   ): NonNullable<AgentRevision["credentialDeployment"]> {
     const network: DeploymentRequestMatch[] = additions.map(({ binary, host, ports }) => ({
@@ -383,7 +386,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           const allowedRequests = pluginCredentialRequests(
             description,
             account,
-            destinations.get(account.sourceRef.id) ?? [],
+            templates.get(account.sourceRef.id),
           );
           network.push(...allowedRequests);
           const bindingRef = JSON.stringify(["plugin", pluginId, requirement, connection]);
@@ -827,6 +830,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
           ? dependencies.pluginDriver(requestedHarness.id, true)
           : undefined;
+      const pluginState =
+        driver && lockedAgent.plugins
+          ? immutableCopy({
+              driver: pluginOwner(driver, lockedAgent),
+              plugins: lockedAgent.plugins,
+            } satisfies PluginRevisionState)
+          : undefined;
       const selectedPlugins = selectedPluginBindings(driver, lockedAgent.plugins);
       await dependencies.credentialAccess.grantDeployedAgentSources(
         state,
@@ -893,13 +903,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         }
       }
       dependencies.harnessAuth.requireCredentialSourceDrivers(harnessAuth, sandbox);
-      const pluginState =
-        driver && lockedAgent.plugins
-          ? immutableCopy({
-              driver: pluginOwner(driver, lockedAgent),
-              plugins: lockedAgent.plugins,
-            } satisfies PluginRevisionState)
-          : undefined;
       const admittedSources = await dependencies.credentialAccess.admitCredentialSources(
         state,
         principalId,
@@ -1027,9 +1030,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         });
       }
       const stagedCredential = stagedModel !== undefined || admittedSources.descriptions.size > 0;
-      if (stagedCredential && repositoryCredentials !== undefined) {
+      if (
+        stagedCredential &&
+        (repositoryCredentials !== undefined ||
+          credentialSources.some((source) => source.tokenServiceInstanceId === undefined))
+      ) {
         throw new ResourceStateConflictError(
-          "Staged credential delivery cannot share an execution with repository credential delivery.",
+          "Staged credential delivery cannot share an execution with other credential delivery.",
         );
       }
       if (stagedCredential && policy?.repositoryNetworkPolicy !== undefined) {
@@ -1047,7 +1054,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
               delivery,
               stagedModel,
               admittedSources.descriptions,
-              admittedSources.destinations,
+              admittedSources.templates,
               policy?.additions ?? [],
             );
       const proxyAdmission =
@@ -1061,6 +1068,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
               repositoryCredentials,
               harnessAuth,
               revisionHarness.configuration,
+              policy?.repositoryNetworkPolicy === undefined
+                ? undefined
+                : admittedRepository?.nativeGit,
             )
           : undefined;
       const egressPlan = proxyAdmission?.plan;
@@ -1219,8 +1229,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         dependencies.channels.assertPreparedDeploymentDrivers(prepared);
       }
       if (delivery !== undefined) {
-        if (stagedModel !== undefined) {
-          dependencies.ownedTokenServiceDriver(stagedModel.source.tokenServiceInstanceId);
+        for (const source of credentialSources) {
+          if (source.tokenServiceInstanceId !== undefined) {
+            dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+          }
         }
         let owner: InstalledDriver | undefined;
         try {

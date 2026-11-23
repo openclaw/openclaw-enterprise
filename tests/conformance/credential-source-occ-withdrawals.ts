@@ -122,18 +122,6 @@ export function registerWithdrawalCases(): void {
         { status: 404, code: "NOT_FOUND", message: WITHDRAWAL_NOT_FOUND },
       );
     }
-    // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
-    // and that reference, not the queued withdrawal, is what the refusal names.
-    await assert.rejects(
-      controller.deleteCredentialSource(administrator, namespace.id, source.id),
-      (error) =>
-        error instanceof ResourceConflictError &&
-        error.name === "ResourceStateConflictError" &&
-        error.message.startsWith(
-          "An Agent, active revision, pending deployment, or provisioning request",
-        ),
-    );
-
     // A later deployment's pending withdrawal with no attempt outstanding, as exhausted attempts
     // leave it (memory never runs work, so it is recorded without any), needs a replay. The read
     // reports it ahead of the active revision's withdrawal, whose attempt is still outstanding.

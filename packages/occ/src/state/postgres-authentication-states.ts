@@ -28,7 +28,6 @@ type DeviceBinding = Pick<DeviceAuthenticationState, (typeof deviceKeys)[number]
 type CommonRow = { id: string; namespace_id: string; actor_id: string; expires_at: Date };
 type OAuthRow = CommonRow & {
   binding: OAuthBinding;
-  credential_source_id: string;
   connection_template_id: string;
   connection_template_version: number;
   created_at: Date;
@@ -56,7 +55,6 @@ function oauthFromRow(row: OAuthRow): OAuthAuthenticationState {
     ...common(row),
     ...row.binding,
     kind: "oauth_connection",
-    credentialSourceId: row.credential_source_id,
     connectionTemplateId: row.connection_template_id,
     connectionTemplateVersion: row.connection_template_version,
     createdAt: row.created_at.toISOString(),
@@ -105,15 +103,14 @@ export function postgresAuthenticationStates(
         record.kind === "oauth_connection" ? pick(record, oauthKeys) : pick(record, deviceKeys);
       await client.query(
         `INSERT INTO occ.authentication_states
-        (kind,id,namespace_id,actor_id,expires_at,credential_source_id,connection_template_id,connection_template_version,created_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        (kind,id,namespace_id,actor_id,expires_at,connection_template_id,connection_template_version,created_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
           record.kind,
           record.id,
           record.namespaceId,
           record.actorId,
           record.expiresAt,
-          oauth?.credentialSourceId,
           oauth?.connectionTemplateId,
           oauth?.connectionTemplateVersion,
           oauth?.createdAt,
@@ -156,16 +153,10 @@ export function postgresAuthenticationStates(
         FROM expired WHERE d.kind = 'device_authorization' AND d.id = expired.id`,
         [at, limit],
       );
-      const { rows } = await client.query(
-        `DELETE FROM occ.authentication_states WHERE kind = 'oauth_connection' AND id IN (
-          SELECT id FROM occ.authentication_states WHERE kind = 'oauth_connection' AND expires_at <= $1 ORDER BY expires_at,id LIMIT $2)
-        RETURNING namespace_id,credential_source_id`,
+      await client.query(
+        `DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND id IN (SELECT id FROM occ.authentication_states WHERE kind='oauth_connection' AND expires_at<=$1 ORDER BY expires_at,id LIMIT $2)`,
         [at, limit],
       );
-      return (rows as { namespace_id: string; credential_source_id: string }[]).map((row) => ({
-        namespaceId: row.namespace_id,
-        credentialSourceId: row.credential_source_id,
-      }));
     },
   };
 }

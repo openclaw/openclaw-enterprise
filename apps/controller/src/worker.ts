@@ -30,14 +30,13 @@ import {
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { OAuthAccountTokens } from "./backends/token-service/oauth-connection.ts";
 import { installSelectedSandboxDrivers } from "./composition/sandbox-drivers.ts";
 import { isSandboxFacet } from "@openclaw-enterprise/contracts";
 import type {
   Agent,
   AgentRevision,
   AgentRevisionMetadata,
-  CredentialSource,
+  StoredCredentialSource as CredentialSource,
   CredentialDeploymentConfiguration,
   CredentialProjection,
   ResolvedCredential,
@@ -1661,12 +1660,24 @@ export class ControllerWorker {
       },
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
     });
-    this.resolveRevisionSecretContext = createRevisionCredentialResolver({
+    const resolveRevisionSecretContext = createRevisionCredentialResolver({
       state: this.state,
       compute: this.compute,
       ...this.revisionHarnessCredentialDependencies,
       credentialDeliveryRef: this.credentialDeliveryRegistration?.ref,
     });
+    this.resolveRevisionSecretContext = async (revision, operation) => {
+      // A refused native deployment must not resolve material. Withdrawal still has to work
+      // when the selected Sandbox can no longer enforce the revision's policy.
+      if (operation === "reconcile") {
+        try {
+          this.validateNativeRepositorySandbox(revision);
+        } catch {
+          return { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } };
+        }
+      }
+      return resolveRevisionSecretContext(revision, operation);
+    };
   }
 
   async start(): Promise<void> {
@@ -1704,15 +1715,6 @@ export class ControllerWorker {
             provisioningOptions,
             this.repositoryAdmission,
           );
-    if (this.secretDriver) {
-      this.preparedTokens?.registerIssuer(
-        new OAuthAccountTokens(
-          this.state,
-          this.secretDriver,
-          provisioning.resolveConnectionClient.bind(provisioning),
-        ),
-      );
-    }
     const sandboxOwner = this.protectedDriver ?? this.credentialDeliveryRegistration;
     const selectedSandboxDrivers = {
       sandboxDriver: this.sandbox,
@@ -1952,7 +1954,7 @@ export class ControllerWorker {
     controller: OpenClawController,
     installationId: string,
   ): Promise<void> {
-    const canRenew = this.preparedTokens?.issuer("oauth_refresh_token") !== undefined;
+    const canRenew = this.tokenServiceDrivers?.installation.drivers.token_service !== undefined;
     const pollMs = Math.min(this.pollIntervalMs, 250);
     const cleanupIntervalMs = 5_000;
     const batchSize = 4;
@@ -1972,22 +1974,22 @@ export class ControllerWorker {
       if (canRenew && !this.stopping) {
         try {
           const accounts = await this.state.read((view) =>
-            view.savedConnections.listDueConnectionTokens(installationId, batchSize, cursor),
+            view.oauthCredentials.listDueOAuthSources(installationId, batchSize, cursor),
           );
           if (this.stopping) {
             return;
           }
           // Advance past unhealthy accounts so later sources can renew in the same scan.
           const outcomes = await Promise.allSettled(
-            accounts.map(({ namespaceId, credentialSourceId }) =>
-              controller.maintainConnectionToken(namespaceId, credentialSourceId),
+            accounts.map(({ namespaceId, id }) =>
+              controller.maintainConnectionToken(namespaceId, id),
             ),
           );
           if (outcomes.some(({ status }) => status === "rejected")) {
             this.emit({ event: "worker.error", code: "CONNECTION_TOKEN_MAINTENANCE_FAILED" });
           }
           if (accounts.length === batchSize) {
-            cursor = accounts[batchSize - 1]!.credentialSourceId;
+            cursor = accounts[batchSize - 1]!.id;
             continue;
           }
           cursor = undefined;
@@ -2009,7 +2011,7 @@ export class ControllerWorker {
   /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
   private async sweepConnectionRevocation(): Promise<void> {
     if (
-      !this.preparedTokens?.issuer("oauth_refresh_token") ||
+      !this.tokenServiceDrivers?.installation.drivers.token_service ||
       !this.provisioningController ||
       this.connectionRevocationScanAfter > Date.now()
     ) {
@@ -2017,7 +2019,7 @@ export class ControllerWorker {
     }
     try {
       const [account] = await this.state.read((view) =>
-        view.savedConnections.listRevokingConnections(
+        view.oauthCredentials.listRevokingOAuthSources(
           this.installation!.id,
           1,
           this.connectionRevocationCursor,
@@ -2028,11 +2030,32 @@ export class ControllerWorker {
         this.connectionRevocationScanAfter = Date.now() + 30_000;
         return;
       }
-      this.connectionRevocationCursor = account.credentialSourceId;
-      await this.provisioningController.finishConnectionRevocation(
+      this.connectionRevocationCursor = account.id;
+      const result = await this.provisioningController.finishConnectionRevocation(
         account.namespaceId,
-        account.credentialSourceId,
+        account.id,
       );
+      if (result?.deleted) {
+        await this.state.transact((unit) =>
+          unit.audit.append({
+            ...this.auditIdentity(this.installation!, {
+              actorId: result.requestedBy,
+              namespaceId: account.namespaceId,
+            }),
+            kind: "mutation",
+            action: "openclaw.credential_sources.delete",
+            resource: {
+              kind: "credential_source",
+              namespaceId: account.namespaceId,
+              id: account.id,
+            },
+            outcome: "success",
+            ...(result.removedAccessBindings.length === 0
+              ? {}
+              : { details: { removedAccessBindings: result.removedAccessBindings } }),
+          }),
+        );
+      }
     } catch {
       this.emit({ event: "worker.error", code: "CONNECTION_REVOCATION_PENDING" });
     }
@@ -2252,6 +2275,7 @@ export class ControllerWorker {
       }
       validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
       await validateRepositoryNetworkPolicy(this.compute, revision);
+      this.validateNativeRepositorySandbox(revision);
     }
     signal.throwIfAborted();
     const applyStage = async () => {
@@ -2375,6 +2399,7 @@ export class ControllerWorker {
     }
     validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
     await validateRepositoryNetworkPolicy(this.compute, revision);
+    this.validateNativeRepositorySandbox(revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
@@ -4694,7 +4719,11 @@ export class ControllerWorker {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     const owner =
       source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
-    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
+    if (
+      source.ownerCapability === "token_service" ||
+      source.driverId !== owner?.id ||
+      !credentialSourceMatchesSnapshot(source, snapshot)
+    ) {
       throw new CredentialWithdrawalRefusedError(
         "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
         "The source and selected owner must match the revision's credential source admission.",
@@ -5964,7 +5993,9 @@ export class ControllerWorker {
         ((revision.executionAdmission.version === 6 &&
           revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
           (revision.executionAdmission.version === 5 &&
-            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request") ||
+          (revision.executionAdmission.version === 9 &&
+            revision.egressPlan?.repositoryGitAuthorization === "network-policy")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&
@@ -6080,6 +6111,25 @@ export class ControllerWorker {
       failureLogFields,
     );
     return true;
+  }
+
+  private validateNativeRepositorySandbox(revision: Readonly<AgentRevision>): void {
+    if (
+      revision.executionAdmission.version !== 9 ||
+      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+    ) {
+      return;
+    }
+    const sandbox = this.sandbox;
+    if (
+      sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
+      sandbox.id !== revision.sandboxDriverId
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected Sandbox cannot enforce this repository network policy.",
+      );
+    }
+    sandbox.validateProtectedRepositoryNetworkPolicy(revision);
   }
 
   private revisionPluginDriverAvailable(revision: Readonly<AgentRevision>): boolean {
@@ -6664,7 +6714,9 @@ export class ControllerWorker {
           resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
           (activated.executionAdmission.version === 6 ||
             (activated.executionAdmission.version === 5 &&
-              activated.egressPlan?.repositoryGitAuthorization === "online-request"))
+              activated.egressPlan?.repositoryGitAuthorization === "online-request") ||
+            (activated.executionAdmission.version === 9 &&
+              activated.egressPlan?.repositoryGitAuthorization === "network-policy"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this
           // deployment ready, retire a predecessor, or release traffic at the held boundary.

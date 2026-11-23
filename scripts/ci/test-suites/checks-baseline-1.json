@@ -88,6 +88,7 @@
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-staged-credential-proxy.test.ts",
+    "tests/conformance/openshell-git-callback-observer.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
@@ -370,8 +371,18 @@
       "path": "tests/conformance/openshell-staged-credential-proxy.test.ts"
     },
     {
+      "path": "tests/conformance/openshell-git-callback-observer.test.ts",
+      "expectedTests": [
+        "Git callback evidence requires the exact calibrated HTTPS endpoint",
+        "Git callback counter sees malformed streams and requires a live observer"
+      ]
+    },
+    {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
-      "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
+      "expectedTests": [
+        "provider profile wire defaults preserve Git overlap enforcement",
+        "direct Git bootstrap reports missing readiness and a mismatched loaded selector"
+      ]
     },
     {
       "path": "tests/conformance/oauth-connection.test.mjs"
@@ -838,9 +849,6 @@
       "path": "tests/integration/credential-proxy-provider-pin.test.ts",
       "expectedTests": [
         "classification diagnostics reject contradictory reports and preserve audit-write refusal",
-        "live adoption refuses duplicate provider identity in either catalog order",
-        "live adoption keeps catalog order for distinct provider identities",
-        "live adoption refuses a provider duplicate added during material resolution",
         "credential exchange refuses a conflicted eligible provider before route fallback",
         "static deployment refuses ambiguous or incompatible providers without redirecting its exact binding",
         "credential exchange refuses duplicate and substituted providers before material access",
@@ -849,17 +857,8 @@
         "credential exchange preserves the original possible-send receipt after provider drift",
         "credential exchange withholds an observed response after provider replacement",
         "credential exchange cuts a cached stream lease after provider replacement",
-        "an unbound source update keeps its admitted provider when same-type providers reorder",
-        "a source update withholds resolved material after its provider or injector changes",
-        "explicit live adoption does not require Compute placement",
-        "fresh static source refuses duplicate provider identity in either catalog order",
-        "fresh static source keeps catalog order for distinct provider identities",
-        "fresh static source refuses a provider duplicate added during material resolution",
-        "live static registration does not require Compute placement",
-        "live static source validation does not consult backend Gateway placement",
-        "live static registration losing to DELETE preserves its deleting row without Gateway cleanup",
         "capability discovery omits only conflicting static provider types",
-        "fresh protected enrollment rejects Gateway lifecycle mismatch before material or refresh setup"
+        "capability discovery omits Gateway lifecycle mismatches"
       ]
     },
     {
@@ -1027,7 +1026,8 @@
         "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
         "Git denial receipt rejects normalized or noncanonical event dates",
         "Git denial receipt refuses a replaced supervisor before or during the read",
-        "Git removal denial command reports only signed or transport failures"
+        "Git removal denial command reports only signed or transport failures",
+        "Git ACL environment guard refuses an embedded credential without echoing it"
       ]
     },
     {

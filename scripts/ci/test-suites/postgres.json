@@ -32,6 +32,7 @@
         "Canonical migration refuses unexplained histories before mutation",
         "Credential Proxy preview receipts require the exact history before the shared migration",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
+        "TokenService Source migration refuses a retained pending OAuth Source without mutation",
         "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
         "Drizzle generates repository schema migrations without redundant regeneration",
         "Migration rejects legacy active_runtime state without changing persisted rows",

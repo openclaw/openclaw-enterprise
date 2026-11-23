@@ -116,6 +116,7 @@ test(
     const legacyBefore = await p.state.read((view) =>
       view.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
     );
+    assert.ok(legacyBefore && legacyBefore.ownerCapability !== "token_service");
     assert.equal(legacyBefore?.driverId, p.controller.selectedDriver("credential_gateway").id);
     assert.equal(legacyBefore?.state, "ready");
     assert.equal(legacyBefore?.egress, undefined);
@@ -135,6 +136,7 @@ test(
     const legacyAfter = await p.state.read((view) =>
       view.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
     );
+    assert.ok(legacyAfter && legacyAfter.ownerCapability !== "token_service");
     assert.equal(legacyAfter?.driverId, legacyBefore?.driverId);
     assert.deepEqual(legacyAfter?.egress?.key.provider, openAiStaticProviderRef);
     assert.deepEqual([...f.providers.entries()], gatewayBefore);
@@ -148,6 +150,7 @@ test(
     const unboundBefore = await p.state.read((view) =>
       view.credentialSources.findCredentialSource(f.namespace.id, unboundId),
     );
+    assert.ok(unboundBefore && unboundBefore.ownerCapability !== "token_service");
     assert.ok(unboundBefore?.egress);
     assert.equal(unboundBefore.egress.adoption, "live");
     const accepted = await f.request("PATCH", `${f.path}/${unboundId}`, {
@@ -157,6 +160,7 @@ test(
     const unboundAfter = await p.state.read((view) =>
       view.credentialSources.findCredentialSource(f.namespace.id, unboundId),
     );
+    assert.ok(unboundAfter && unboundAfter.ownerCapability !== "token_service");
     assert.ok(unboundAfter?.egress);
     assert.equal(
       unboundAfter.egress.key.source.generation,
@@ -170,6 +174,7 @@ test(
     const stored = await p.state.read((view) =>
       view.credentialSources.findCredentialSource(f.namespace.id, unboundId),
     );
+    assert.ok(stored && stored.ownerCapability !== "token_service");
     assert.ok(stored?.egress);
     assert.deepEqual(stored.egress.key.provider, openAiStaticProviderRef);
     assert.deepEqual(stored.secrets, secretUpdate.secrets);
@@ -372,6 +377,7 @@ test(
     };
     const retained = await snapshot();
     const originalSource = retained.sources.find((source) => source.id === f.source.id);
+    assert.ok(originalSource && originalSource.ownerCapability !== "token_service");
     assert.ok(originalSource?.egress);
     assert.equal(originalSource.state, "ready");
     assert.equal(originalSource.config.authorized_base_url, f.modelProvider.baseUrl);

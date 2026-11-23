@@ -59,20 +59,17 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
-  `choices(sources)` reads public Source metadata and returns preliminary slot
-  candidates. A ready static TokenService Source must have a Template ID and
-  version. The pin does not prove route compatibility: deployment admission must
-  resolve the exact approved version and intersect its authority with the
-  credential-bearing invocation requirements. OCC returns choices as
-  `credentialSlots` in a dedicated Agent's plugin capabilities.
-  `selectedBindings({pluginId, selection})` reports selected Source
-  IDs as `[requirement][connection]` before source or release validation. The
-  OpenClaw Driver uses the `default` connection for each selected slot. Agent save
-  and deployment admission use this reporter to resolve exact Source authority.
-  `validate(selections, sources, modelSourceId)` checks public Source metadata,
-  the reviewed release and slot, and refuses the Source that authenticates the
-  model. OCC supplies metadata with the exact approved Template pin for each
-  selected Source.
+  For a dedicated Agent, OCC passes ready Namespace Sources the caller may read
+  to `choices(sources)` and returns eligible choices in `credentialSlots`.
+  A caller needs exact Source `operate` when saving a selection.
+  `selectedBindings({pluginId, selection})` reports Source IDs keyed by requirement
+  and connection. The OpenClaw Driver uses the `default` connection for each
+  selected slot. OCC uses these IDs to authorize and resolve each Source before
+  it asks the Driver to validate the selection or describe deployment.
+  `validate(selections, sources, modelSourceId)` checks the reviewed release and
+  slot and refuses the Source that authenticates the model. OCC checks the
+  [Template and consent](../credential-sources.md#bind-a-source-to-an-agent) for
+  credential-bearing requests.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

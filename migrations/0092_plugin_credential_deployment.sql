@@ -1,4 +1,56 @@
--- Extend standalone revision validation to contracted Plugin bindings. Model-only validation remains unchanged.
+-- An admitted Plugin Source records the Template version used to intersect its requests.
+CREATE OR REPLACE FUNCTION occ.credential_source_snapshots_are_valid(snapshots jsonb) RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, occ, pg_temp
+AS $$
+DECLARE
+  entry jsonb;
+  owner_key text;
+  template jsonb;
+  template_version numeric;
+  ids text[] := ARRAY[]::text[];
+BEGIN
+  IF jsonb_typeof(snapshots) IS DISTINCT FROM 'array'
+    OR jsonb_array_length(snapshots) = 0
+    OR jsonb_array_length(snapshots) > 64 THEN
+    RETURN false;
+  END IF;
+  FOR entry IN SELECT value FROM jsonb_array_elements(snapshots) LOOP
+    owner_key := CASE
+      WHEN entry ? 'tokenServiceInstanceId' THEN 'tokenServiceInstanceId'
+      WHEN entry ? 'credentialProxyId' THEN 'credentialProxyId'
+      ELSE 'credentialGatewayId'
+    END;
+    IF jsonb_typeof(entry) IS DISTINCT FROM 'object'
+      OR NOT (entry ?& ARRAY['sourceId', owner_key, 'sourceType'])
+      OR entry - 'sourceId' - owner_key - 'sourceType' - 'connectionTemplate' <> '{}'::jsonb
+      OR jsonb_typeof(entry->'sourceId') IS DISTINCT FROM 'string'
+      OR (entry->>'sourceId') !~ '^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      OR (entry->>'sourceId') = ANY(ids)
+      OR jsonb_typeof(entry->owner_key) IS DISTINCT FROM 'string'
+      OR COALESCE(btrim(entry->>owner_key), '') = ''
+      OR (owner_key = 'tokenServiceInstanceId' AND (entry->>owner_key) !~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+      OR jsonb_typeof(entry->'sourceType') IS DISTINCT FROM 'string'
+      OR (entry->>'sourceType') !~ '^[a-z][a-z0-9-]{0,63}$' THEN
+      RETURN false;
+    END IF;
+    IF entry ? 'connectionTemplate' THEN
+      template := entry->'connectionTemplate';
+      IF owner_key <> 'tokenServiceInstanceId' OR jsonb_typeof(template) IS DISTINCT FROM 'object'
+        OR template - 'id' - 'version' <> '{}'::jsonb
+        OR jsonb_typeof(template->'id') IS DISTINCT FROM 'string'
+        OR (template->>'id') !~ '^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        OR jsonb_typeof(template->'version') IS DISTINCT FROM 'number' THEN RETURN false; END IF;
+      template_version := (template->>'version')::numeric;
+      IF template_version NOT BETWEEN 1 AND 2147483647 OR trunc(template_version) <> template_version THEN RETURN false; END IF;
+    END IF;
+    ids := array_append(ids, entry->>'sourceId');
+  END LOOP;
+  RETURN true;
+END;
+$$;
+--> statement-breakpoint
 CREATE OR REPLACE FUNCTION occ.standalone_credential_deployment_is_valid(spec jsonb, owner_namespace text) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, occ, pg_temp AS $$
 DECLARE
@@ -81,7 +133,8 @@ BEGIN
         OR COALESCE(btrim(binding #>> '{consumer,providerId}'), '') = ''
         OR COALESCE(binding #>> '{projection,presentation}', '') NOT IN ('bearer', 'x-api-key') THEN RETURN false; END IF;
     ELSIF binding #>> '{consumer,kind}' = 'plugin' THEN
-      IF snapshot->>'sourceType' IS DISTINCT FROM 'static'
+      IF snapshot->>'sourceType' NOT IN ('static', 'oauth2-refresh-token')
+        OR NOT (snapshot ? 'connectionTemplate')
         OR NOT ((binding->'consumer') ?& ARRAY['kind', 'pluginId', 'requirement', 'connection'])
         OR (binding->'consumer') - 'kind' - 'pluginId' - 'requirement' - 'connection' <> '{}'::jsonb
         OR jsonb_typeof(binding #> '{consumer,pluginId}') IS DISTINCT FROM 'string'

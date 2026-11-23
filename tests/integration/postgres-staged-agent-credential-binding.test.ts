@@ -338,7 +338,6 @@ test(
       name: "Plugin Source",
       type: "static",
       connectionTemplateId: templateId,
-      connectionTemplateVersion: 1,
       secret: { opaque: selectedMaterial },
     };
     // A Template scoped to the first ready Namespace is unavailable in another real Namespace.
@@ -373,7 +372,7 @@ test(
     );
     assert.equal(installedSource.statusCode, 201, installedSource.body);
     assert.equal(installedSource.json().data.connectionTemplateId, installedTemplateId);
-    assert.equal(installedSource.json().data.connectionTemplateVersion, 1);
+    assert.equal(Object.hasOwn(installedSource.json().data, "connectionTemplateVersion"), false);
     assert.equal(
       (await inject("DELETE", `${otherBase}/credential-sources/${installedSource.json().data.id}`))
         .statusCode,
@@ -385,13 +384,27 @@ test(
     );
     sourceCountsBeforeCustody.length = 0;
 
-    const incomplete = remember(
+    // A Source selects identity only; a caller cannot pin a Template version in this API.
+    const versionSelection = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
-        connectionTemplateVersion: undefined,
+        connectionTemplateVersion: 1,
       }),
     );
-    assert.equal(incomplete.statusCode, 400, incomplete.body);
+    assert.equal(versionSelection.statusCode, 400, versionSelection.body);
+    const catalog = await inject("GET", "/connection-templates");
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    const oauthTemplate = catalog
+      .json()
+      .data.find((entry: { current: { mode: string } }) => entry.current.mode !== "static_bearer");
+    assert.ok(oauthTemplate);
+    const wrongMode = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        connectionTemplateId: oauthTemplate.id,
+      }),
+    );
+    assert.equal(wrongMode.statusCode, 409, wrongMode.body);
     const mixed = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
@@ -427,19 +440,20 @@ test(
     });
     assert.equal(advanced.statusCode, 200, advanced.body);
     assert.equal(advanced.json().data.current.version, 2);
-    // v1 still exists, but new enrollment must select the approved current version.
-    const custodyBeforeStale = sourceCountsBeforeCustody.length;
-    const stale = remember(
+    // Updating the Template preserves the existing association and permits selection by the same ID.
+    const afterUpdate = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
-        name: "Historical selection",
+        name: "Updated Template Source",
       }),
     );
-    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(afterUpdate.statusCode, 201, afterUpdate.body);
+    assert.equal(afterUpdate.json().data.connectionTemplateId, templateId);
+    assert.equal(Object.hasOwn(afterUpdate.json().data, "connectionTemplateVersion"), false);
     assert.equal(
-      sourceCountsBeforeCustody.length,
-      custodyBeforeStale,
-      "historical selection must fail before additional custody",
+      (await inject("DELETE", `${base}/credential-sources/${afterUpdate.json().data.id}`))
+        .statusCode,
+      204,
     );
     const selectedReplacement = randomUUID();
     material.push(selectedReplacement);
@@ -466,10 +480,10 @@ test(
       listed,
     ]) {
       assert.equal(projected?.connectionTemplateId, templateId);
-      assert.equal(projected?.connectionTemplateVersion, 1);
+      assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
     }
-    // The immutable version cannot be removed while a Source holds it. Source retirement
-    // still belongs to TokenService; its ordinary deletion cascades the association.
+    // The Template cannot be removed while a Source references it. Deleting the Source
+    // through the TokenService releases its immutable Template reference.
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 409);
     assert.equal(
       (await inject("DELETE", `${base}/credential-sources/${selectedId}`)).statusCode,
@@ -492,11 +506,11 @@ test(
     const sourceId = source.id;
     // Nor can the application role attach a Template to an existing model-preset Source.
     await assert.rejects(
-      pool.query(
-        "INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id,connection_template_version) VALUES ($1,$2,$3,$4)",
-        [namespaceId, sourceId, templateId, 1],
-      ),
-      { code: "23514" },
+      pool.query("UPDATE occ.credential_sources SET connection_template_id=$2 WHERE id=$1", [
+        sourceId,
+        templateId,
+      ]),
+      { code: "42501" },
     );
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 204);
     const sourceRef: CredentialSourceReference = {
@@ -507,13 +521,17 @@ test(
     const sourcePath = `${base}/credential-sources/${sourceId}`;
     const assertPublicSource = (value: Record<string, unknown>) => {
       assert.equal(value.id, sourceId);
-      assert.equal(value.ownerCapability, "token_service");
       assert.equal(value.type, "static");
       assert.deepEqual(value.config, { provider_preset: "openai" });
-      assert.deepEqual(value.secrets, {});
       assert.equal(Object.hasOwn(value, "connectionTemplateId"), false);
       assert.equal(Object.hasOwn(value, "connectionTemplateVersion"), false);
-      for (const privateField of ["secret", "driverId", "tokenServiceInstanceId"]) {
+      for (const privateField of [
+        "secret",
+        "secrets",
+        "ownerCapability",
+        "driverId",
+        "tokenServiceInstanceId",
+      ]) {
         assert.equal(Object.hasOwn(value, privateField), false, privateField);
       }
     };
@@ -530,7 +548,6 @@ test(
       view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
     assert.ok(recorded?.ownerCapability === "token_service");
-    assert.deepEqual(recorded.secrets, {});
     assert.equal(JSON.stringify(recorded).includes(enrollmentMaterial), false);
     assert.equal(
       (
@@ -685,7 +702,6 @@ test(
         type: "static",
         config: { provider_preset: "unknown" },
         connectionTemplateId: `ctp_${randomUUID()}`,
-        connectionTemplateVersion: 1,
         secret: { opaque: deniedEnrollmentMaterial },
       }),
     );
@@ -1249,10 +1265,9 @@ test(
     assert.equal(sandbox, runtime.sandboxDriver);
     const credentialSourceDelivery = credentialSourceDeliveryBinding(runtime);
     assert.ok(credentialSourceDelivery);
-    const nativeOptions = installationControllerOptions(runtime.installation);
     const nativeController = new OpenClawController(controller.installation, {
       state,
-      ...nativeOptions,
+      ...installationControllerOptions(runtime.installation),
       credentialSourceDelivery,
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
       backends: runtime.installation.backend,
@@ -1275,46 +1290,6 @@ test(
     nativeController.installPluginDrivers([pluginDriver]);
     const nativeApp = createApp(nativeController);
 
-    // The real Managed Plugin Driver reports the selected Source before placement.
-    // A Plugin Source needs an approved exact Template pin even though a generic Source does not.
-    const google = managedCliInstalls.find(
-      ({ packageName }) => packageName === "oce-google-workspace",
-    );
-    assert.ok(google);
-    const googleSlot = Object.keys(google.credentials)[0]!;
-    const googleTemplate = await inject(
-      "POST",
-      "/connection-templates",
-      {
-        namespaceId,
-        displayName: "Gmail Plugin access",
-        mode: "static_bearer",
-        destinations: [
-          { method: "GET", host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/**" },
-        ],
-      },
-      nativeApp,
-    );
-    assert.equal(googleTemplate.statusCode, 201, googleTemplate.body);
-    const googleTemplateId = googleTemplate.json().data.id;
-    const googleMaterial = randomUUID();
-    material.push(googleMaterial);
-    const googleSourceResponse = remember(
-      await inject(
-        "POST",
-        `${base}/credential-sources`,
-        {
-          name: "Gmail Source",
-          type: "static",
-          connectionTemplateId: googleTemplateId,
-          connectionTemplateVersion: 1,
-          secret: { opaque: googleMaterial },
-        },
-        nativeApp,
-      ),
-    );
-    assert.equal(googleSourceResponse.statusCode, 201, googleSourceResponse.body);
-    const googleSource = googleSourceResponse.json().data;
     const nativeMaterial = randomUUID();
     material.push(nativeMaterial);
     const enrolledNative = remember(
@@ -1332,176 +1307,6 @@ test(
     );
     assert.equal(enrolledNative.statusCode, 201, enrolledNative.body);
     const nativeSource = enrolledNative.json().data;
-
-    // Tenant Secret metadata persists the Kubernetes UID, which PostgreSQL requires to be a UUID.
-    assert.equal(Reflect.set(core, "secretUid", randomUUID()), true);
-    const modelSecret = await inject(
-      "POST",
-      `${base}/secrets`,
-      { name: `Plugin model key ${randomUUID()}`, value: randomUUID() },
-      nativeApp,
-    );
-    assert.equal(modelSecret.statusCode, 201, modelSecret.body);
-    const pluginAgentResponse = await inject(
-      "POST",
-      `${base}/agents`,
-      {
-        name: `Plugin Agent ${randomUUID()}`,
-        configurationId,
-        executionMode: "dedicated",
-        harnessAuth: { method: "api_key", source: modelSecret.json().data.ref },
-      },
-      nativeApp,
-    );
-    assert.equal(pluginAgentResponse.statusCode, 201, pluginAgentResponse.body);
-    const pluginAgent = pluginAgentResponse.json().data;
-    const selection = {
-      configurationId,
-      plugins: {
-        [google.id]: {
-          enabled: true,
-          driverPolicy: {
-            releaseSha256: google.releaseSha256,
-            credentials: { [googleSlot]: googleSource.id },
-          },
-        },
-      },
-    };
-    // The member can update this Agent and operate its existing model Secret, but cannot
-    // operate the selected Plugin Source. The denial must reach that exact Source check.
-    const modelOperateRole = await inject(
-      "POST",
-      `${base}/iam/roles`,
-      {
-        name: "Exact model Secret operator",
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      },
-      nativeApp,
-    );
-    assert.equal(modelOperateRole.statusCode, 201, modelOperateRole.body);
-    const modelOperateGrant = await inject(
-      "POST",
-      `${base}/iam/access-bindings`,
-      {
-        subjectKind: "identity",
-        subjectId: authorId,
-        roleId: modelOperateRole.json().data.id,
-        resourceKind: "secret",
-        resourceId: modelSecret.json().data.ref.id,
-      },
-      nativeApp,
-    );
-    assert.equal(modelOperateGrant.statusCode, 201, modelOperateGrant.body);
-    const deniedSelection = await memberRequest(
-      "PATCH",
-      `${base}/agents/${pluginAgent.id}`,
-      selection,
-      nativeApp,
-    );
-    assert.equal(deniedSelection.statusCode, 403, deniedSelection.body);
-    const selectionDenial = await pool.query(
-      `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
-       FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND actor_id=$3
-         AND action='openclaw.agents.update' AND kind='authorization_denial' AND outcome='denied'
-         AND details->'__occAuditMetadata'->>'requestId'=$4`,
-      [namespaceId, pluginAgent.id, authorId, deniedSelection.json().meta.requestId],
-    );
-    assert.deepEqual(selectionDenial.rows, [
-      {
-        authorization: {
-          principalId: authorId,
-          action: "operate",
-          resource: { kind: "credential_source", namespaceId, id: googleSource.id },
-        },
-      },
-    ]);
-    assert.equal(
-      (
-        await pool.query(
-          "SELECT count(*)::int AS count FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_kind='credential_source' AND resource_id=$3",
-          [namespaceId, pluginAgent.servicePrincipalId, googleSource.id],
-        )
-      ).rows[0].count,
-      0,
-    );
-    const unpinnedSelection = {
-      configurationId,
-      plugins: {
-        [google.id]: {
-          enabled: true,
-          driverPolicy: {
-            releaseSha256: google.releaseSha256,
-            credentials: { [googleSlot]: nativeSource.id },
-          },
-        },
-      },
-    };
-    // Create preflight performs the same Source authorization and exact-pin checks without
-    // saving a Configuration, Agent, or Agent-principal grant.
-    const preflight = (plugins: object) => ({
-      configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-4.1") },
-      executionMode: "dedicated",
-      harnessAuth: { method: "api_key" },
-      plugins,
-    });
-    const deniedPreflight = await memberRequest(
-      "POST",
-      `${base}/agents/validate`,
-      preflight(selection.plugins),
-      nativeApp,
-    );
-    assert.equal(deniedPreflight.statusCode, 403, deniedPreflight.body);
-    const unpinnedPreflight = await inject(
-      "POST",
-      `${base}/agents/validate`,
-      preflight(unpinnedSelection.plugins),
-      nativeApp,
-    );
-    assert.equal(unpinnedPreflight.statusCode, 409, unpinnedPreflight.body);
-    assert.match(
-      unpinnedPreflight.json().error.message,
-      /approved exact Connection Template version/,
-    );
-    const refusedPin = await inject(
-      "PATCH",
-      `${base}/agents/${pluginAgent.id}`,
-      unpinnedSelection,
-      nativeApp,
-    );
-    assert.equal(refusedPin.statusCode, 409, refusedPin.body);
-    assert.match(refusedPin.json().error.message, /approved exact Connection Template version/);
-
-    // This selected native installation has no Credential Gateway. The Plugin Driver still
-    // refuses placement, so C6 must not save the selection, grant Source use, or queue a revision.
-    const refusedPlacement = await inject(
-      "PATCH",
-      `${base}/agents/${pluginAgent.id}`,
-      selection,
-      nativeApp,
-    );
-    assert.equal(refusedPlacement.statusCode, 400, refusedPlacement.body);
-    assert.match(refusedPlacement.json().error.message, /OpenShell Sandbox and Credential Gateway/);
-    const unchangedAgent = await inject(
-      "GET",
-      `${base}/agents/${pluginAgent.id}`,
-      undefined,
-      nativeApp,
-    );
-    assert.equal(unchangedAgent.statusCode, 200, unchangedAgent.body);
-    assert.equal(Object.hasOwn(unchangedAgent.json().data, "plugins"), false);
-    assert.equal(Object.hasOwn(unchangedAgent.json().data, "credentialSources"), false);
-    const noEffects = await pool.query(
-      `SELECT
-      (SELECT count(*)::int FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_kind='credential_source' AND resource_id = ANY($3::text[])) AS grants,
-      (SELECT count(*)::int FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$4) AS revisions`,
-      [
-        namespaceId,
-        pluginAgent.servicePrincipalId,
-        [googleSource.id, nativeSource.id],
-        pluginAgent.id,
-      ],
-    );
-    assert.deepEqual(noEffects.rows[0], { grants: 0, revisions: 0 });
 
     // Guided provisioning cannot supply the network grants that staged delivery requires.
     // Exact Source authorization must still precede that refusal, and neither request may queue work or create resources.
@@ -1641,6 +1446,142 @@ test(
       nativeApp,
     );
     assert.equal(selectedNative.statusCode, 200, selectedNative.body);
+
+    // The Google release declares its account in Agent.plugins. Submit only that selection.
+    const google = managedCliInstalls.find(
+      ({ packageName }) => packageName === "oce-google-workspace",
+    );
+    assert.ok(google);
+    const googleTemplate = await inject(
+      "POST",
+      "/connection-templates",
+      {
+        namespaceId,
+        displayName: "Gmail Plugin access",
+        mode: "static_bearer",
+        destinations: [
+          { method: "GET", host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/**" },
+        ],
+      },
+      nativeApp,
+    );
+    assert.equal(googleTemplate.statusCode, 201, googleTemplate.body);
+    const googleTemplateId = googleTemplate.json().data.id;
+    const googleMaterial = randomUUID();
+    material.push(googleMaterial);
+    const googleSourceResponse = remember(
+      await inject(
+        "POST",
+        `${base}/credential-sources`,
+        {
+          name: "Gmail Source",
+          type: "static",
+          connectionTemplateId: googleTemplateId,
+          secret: { opaque: googleMaterial },
+        },
+        nativeApp,
+      ),
+    );
+    assert.equal(googleSourceResponse.statusCode, 201, googleSourceResponse.body);
+    const googleSource = googleSourceResponse.json().data;
+    const pluginSelection = (sourceId: string) => ({
+      [google.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: google.releaseSha256,
+          credentials: { account: sourceId },
+        },
+      },
+    });
+    const googleSelection = pluginSelection(googleSource.id);
+    const updateUrl = `${base}/agents/${dedicatedId}`;
+    // The member may update the Agent and operate its model Source, but lacks access to the
+    // separately selected Plugin Source. The audit must identify that exact Source.
+    const modelGrant = await inject(
+      "POST",
+      `${base}/iam/access-bindings`,
+      {
+        subjectKind: "identity",
+        subjectId: authorId,
+        roleId: sourceRole.json().data.id,
+        resourceKind: "credential_source",
+        resourceId: nativeSource.id,
+      },
+      nativeApp,
+    );
+    assert.equal(modelGrant.statusCode, 201, modelGrant.body);
+    const deniedSelection = await memberRequest(
+      "PATCH",
+      updateUrl,
+      { configurationId, plugins: googleSelection },
+      nativeApp,
+    );
+    assert.equal(deniedSelection.statusCode, 403, deniedSelection.body);
+    const selectionDenial = await pool.query(
+      `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND actor_id=$3
+         AND action='openclaw.agents.update' AND kind='authorization_denial' AND outcome='denied'
+         AND details->'__occAuditMetadata'->>'requestId'=$4`,
+      [namespaceId, dedicatedId, authorId, deniedSelection.json().meta.requestId],
+    );
+    assert.deepEqual(selectionDenial.rows, [
+      {
+        authorization: {
+          principalId: authorId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: googleSource.id },
+        },
+      },
+    ]);
+    // The generic Source is valid for a draft Harness. A Plugin also requires a Template.
+    const missingTemplate = pluginSelection(providerlessId);
+    const preflight = (plugins: typeof googleSelection) => ({
+      configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-4.1") },
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key" },
+      plugins,
+    });
+    const deniedPreflight = await memberRequest(
+      "POST",
+      `${base}/agents/validate`,
+      preflight(googleSelection),
+      nativeApp,
+    );
+    assert.equal(deniedPreflight.statusCode, 403, deniedPreflight.body);
+    const refusedPreflight = await inject(
+      "POST",
+      `${base}/agents/validate`,
+      preflight(missingTemplate),
+      nativeApp,
+    );
+    assert.equal(refusedPreflight.statusCode, 409, refusedPreflight.body);
+    assert.match(refusedPreflight.json().error.message, /Connection Template/);
+    const refusedAssociation = await inject(
+      "PATCH",
+      updateUrl,
+      { configurationId, plugins: missingTemplate },
+      nativeApp,
+    );
+    assert.equal(refusedAssociation.statusCode, 409, refusedAssociation.body);
+    assert.match(refusedAssociation.json().error.message, /Connection Template/);
+
+    // A valid static Template cannot make its Source eligible for Google's OAuth slot.
+    const refusedSlot = await inject(
+      "PATCH",
+      updateUrl,
+      { configurationId, plugins: googleSelection },
+      nativeApp,
+    );
+    assert.equal(refusedSlot.statusCode, 400, refusedSlot.body);
+    assert.match(refusedSlot.json().error.message, /matches the reviewed credential slot/);
+    const unchanged = await inject("GET", updateUrl, undefined, nativeApp);
+    assert.equal(unchanged.statusCode, 200, unchanged.body);
+    assert.equal(Object.hasOwn(unchanged.json().data, "plugins"), false);
+    assert.deepEqual(unchanged.json().data.credentialSources, [{ sourceId: nativeSource.id }]);
+    for (const id of [googleSource.id, providerlessId]) {
+      assert.deepEqual(await deploymentEffects(id, dedicatedAgent), noDeploymentEffects);
+    }
+
     assert.equal(
       (await inject("DELETE", `${base}/credential-sources/${providerlessId}`, undefined, nativeApp))
         .statusCode,
@@ -1773,20 +1714,14 @@ test(
     ]);
 
     assert.ok(revision);
-    // This checks only the PostgreSQL structural validator. Start with the actual admitted
-    // model revision and enrolled pinned Source, then compose a candidate Plugin binding;
-    // native Plugin placement and successful Fastify deployment remain unsupported.
+    // Exercise the PostgreSQL CHECK separately with a candidate mixed policy. Only the
+    // model revision above passed deployment admission. No Plugin revision is saved here.
     const storedSpec = (
       await pool.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id])
     ).rows[0].admitted_spec;
-    const pinnedSource = await nativeController.transact((unit) =>
-      unit.credentialSources.findCredentialSource(namespaceId, googleSource.id),
-    );
-    assert.ok(pinnedSource?.ownerCapability === "token_service");
-    assert.equal(pinnedSource.tokenServiceInstanceId, instanceId);
     const mixedSpec = structuredClone(storedSpec);
     const pluginRequest = {
-      binary: "/usr/local/lib/oce/plugins/google/bin/gog",
+      binary: google.binaryPath,
       host: "gmail.googleapis.com",
       ports: [{ from: 443, to: 443 }],
       requestPolicy: { type: "http", method: "GET", path: "/gmail/v1/users/**" },
@@ -1797,22 +1732,23 @@ test(
       consumer: {
         kind: "plugin",
         pluginId: google.id,
-        requirement: googleSlot,
+        requirement: "account",
         connection: "default",
       },
       projection: {
-        environment: google.credentials[googleSlot]!.delivery.env,
+        environment: "GOG_ACCESS_TOKEN",
         presentation: "bearer",
       },
     };
     mixedSpec.plugins = {
       driver: { id: pluginDriver.id, implementation: pluginDriver.implementation },
-      plugins: selection.plugins,
+      plugins: googleSelection,
     };
     mixedSpec.credential_sources.push({
       sourceId: googleSource.id,
       sourceType: "static",
       tokenServiceInstanceId: instanceId,
+      connectionTemplate: { id: googleTemplateId, version: 1 },
     });
     mixedSpec.credential_deployment.networkAccessPolicy.allowed.push(pluginRequest);
     mixedSpec.credential_deployment.bindings.push(pluginBinding);
@@ -1831,6 +1767,13 @@ test(
       await structurallyValid(mixedSpec),
       true,
       "a mixed policy preserves the exact model/Harness linkage",
+    );
+    const missingReceipt = structuredClone(mixedSpec);
+    delete missingReceipt.credential_sources[1].connectionTemplate;
+    assert.equal(
+      await structurallyValid(missingReceipt),
+      false,
+      "a Plugin binding requires its admitted Template version",
     );
     const missingModel = structuredClone(mixedSpec);
     missingModel.credential_deployment.bindings.shift();

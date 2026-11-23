@@ -1054,6 +1054,11 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const deploy = await controller.request("POST", `${path}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.match(deploy.body.error.message, /Clear the Agent's existing plugin selections/);
+  // Clearing the old selection uses its saved Driver, even after the Configuration names a new Harness.
+  const cleared = await controller.request("PATCH", path, {
+    body: { configurationId: configuration.id, plugins: {} },
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
   // A second Agent in the same Installation can select and admit a plugin through Codex.
   const codexAgent = await controller.request("POST", agentsPath, {
     body: {
@@ -1074,6 +1079,10 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
 
   // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
   await changeHarness("openclaw");
+  const restored = await controller.request("PATCH", path, {
+    body: { configurationId: configuration.id, plugins },
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
   const unsupportedCompute = createReadyComputeDriver("compute-without-packages", {
     validateHarnessAuth() {},
     async stopRevision() {},

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CredentialSourceMetadata } from "../../packages/contracts/src/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -96,72 +95,6 @@ test("OpenClaw refuses malformed or disabled credential selections", () => {
     assert.throws(
       () => driver.credentials.selectedBindings({ pluginId, selection }),
       /Invalid credential/,
-    );
-  }
-});
-
-test("OpenClaw admits a pinned static Source as a preliminary Google credential candidate", async () => {
-  const driver = new OCCPluginDriver();
-  const source: CredentialSourceMetadata = {
-    id: "cs_static",
-    namespaceId: "ns_team",
-    name: "Static Google bearer",
-    type: "static",
-    ownerCapability: "token_service",
-    state: "ready",
-    config: {},
-    secrets: {},
-    connectionTemplateId: "ct_google",
-    connectionTemplateVersion: 1,
-    ref: { kind: "credential_source", namespaceId: "ns_team", id: "cs_static" },
-  };
-  const slot = driver.credentials
-    .choices([source])
-    .find(({ pluginId }) => pluginId.startsWith("occ-plugin:google@"));
-  assert.ok(slot);
-  assert.deepEqual(slot.sources, [{ id: source.id, name: source.name }]);
-  const selection = {
-    enabled: true,
-    driverPolicy: { releaseSha256: slot.releaseSha256, credentials: { [slot.id]: source.id } },
-  };
-  await driver.credentials.validate({ [slot.pluginId]: selection }, [source]);
-  await assert.rejects(
-    async () => driver.credentials.validate({ [slot.pluginId]: selection }, [source], source.id),
-    /Select a ready Google/,
-  );
-  const description = await driver.describeDeployment({
-    plugin: { catalog: "driver", pluginId: slot.pluginId },
-    selection,
-    connections: { [slot.id]: { default: source.ref } },
-  });
-  const connection = description.credentials[slot.id]?.default;
-  assert.deepEqual(connection?.sourceRef, source.ref);
-  assert.ok(connection && connection.networkRequirementIds.length > 0);
-  assert.ok(
-    description.networkRequirements
-      .filter(({ id }) => connection.networkRequirementIds.includes(id))
-      .every(
-        ({ purpose, match }) => purpose === "invocation" && match.requestPolicy?.type === "http",
-      ),
-  );
-
-  const unpinned = { ...source };
-  delete unpinned.connectionTemplateId;
-  delete unpinned.connectionTemplateVersion;
-  for (const unavailable of [
-    unpinned,
-    { ...source, state: "registering" as const },
-    { ...source, ownerCapability: "credential_gateway" as const },
-    { ...source, ref: { ...source.ref, id: "cs_other" } },
-  ]) {
-    assert.deepEqual(
-      driver.credentials.choices([unavailable]).find(({ pluginId }) => pluginId === slot.pluginId)
-        ?.sources,
-      [],
-    );
-    await assert.rejects(
-      async () => driver.credentials.validate({ [slot.pluginId]: selection }, [unavailable]),
-      /Google/,
     );
   }
 });

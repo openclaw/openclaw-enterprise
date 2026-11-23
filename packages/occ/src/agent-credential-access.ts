@@ -4,11 +4,9 @@ import {
   describePluginBindings,
   pluginSourceIds,
   type SelectedPluginBinding,
+  type PluginSourceTemplate,
 } from "./plugin-credential-bindings.ts";
-import {
-  credentialSourceMetadata,
-  isManagedTokenServiceSource,
-} from "./credential-source-metadata.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
   MAX_AGENT_CREDENTIAL_SOURCES,
   isSecretHarnessAuth,
@@ -16,10 +14,8 @@ import {
   type Agent,
   type AgentCredentialSourceBinding,
   type ComputeDriver,
-  type CredentialSource,
-  type CredentialBindingAuthority,
+  type StoredCredentialSource,
   type CredentialSourceReference,
-  type CredentialSourceMetadata,
   type CredentialSourceSnapshot,
   type HarnessAuthBinding,
   type PluginDriver,
@@ -59,7 +55,7 @@ interface AgentCredentialAccessDependencies {
     CredentialSourceDrivers,
     "assertCredentialSourceOwnerSelected" | "credentialSourceOwner" | "credentialSourceType"
   >;
-  readonly requireTokenServiceOwner: (instanceId?: string) => void;
+  readonly requireTokenServiceOwner: (instanceId: string) => void;
   readonly offersProtectedType: (type: string) => boolean;
 }
 
@@ -173,8 +169,8 @@ export function createAgentCredentialAccess({
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
-  ): Promise<readonly CredentialSource[]> {
-    const sources: CredentialSource[] = [];
+  ): Promise<readonly StoredCredentialSource[]> {
+    const sources: StoredCredentialSource[] = [];
     for (const { sourceId } of bindings) {
       await authorizeSourceOperate(principalId, namespaceId, sourceId);
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
@@ -195,16 +191,17 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
+        if (source.type !== "static" || source.connectionTemplateId !== undefined) {
+          throw new ResourceStateConflictError(
+            "Template-associated Source admission is not implemented.",
+          );
+        }
         if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
           throw new ResourceStateConflictError(
             "This TokenService source must authenticate the selected Agent Harness.",
           );
         }
       } else {
-        // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-        if (source.ownerCapability === "token_service") {
-          throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
-        }
         sourceDrivers.credentialSourceOwner(source);
       }
       sources.push(source);
@@ -213,107 +210,84 @@ export function createAgentCredentialAccess({
     return sources;
   }
 
-  /** Plugin connections require an exact approved Source Template version or completed OAuth consent. */
+  /** Authorize each reported Source and resolve the Template version for this admission. */
   async function authorizePluginCredentialSources(
     state: PlatformReadView,
     principalId: string,
     namespaceId: string,
     bindings: readonly SelectedPluginBinding[],
-    resolveSource: (sourceId: string) => Promise<Readonly<CredentialSource> | undefined>,
-    resolved: readonly CredentialSource[] = [],
-  ): Promise<{
-    readonly sources: readonly CredentialSource[];
-    readonly metadata: readonly CredentialSourceMetadata[];
-    readonly destinations: ReadonlyMap<string, CredentialBindingAuthority["destinations"]>;
-  }> {
-    const sources: CredentialSource[] = [];
-    const destinations = new Map<string, CredentialBindingAuthority["destinations"]>();
-    const existing = new Map(resolved.map((source) => [source.id, source]));
-    const metadata = new Map(
-      resolved.map((source) => [source.id, credentialSourceMetadata(source)]),
-    );
+    resolveSource: (sourceId: string) => Promise<Readonly<StoredCredentialSource> | undefined>,
+    attached: readonly StoredCredentialSource[] = [],
+  ) {
+    const sources = new Map(attached.map((source) => [source.id, source]));
+    const templates = new Map<string, PluginSourceTemplate>();
     for (const sourceId of pluginSourceIds(bindings)) {
-      let source = existing.get(sourceId);
+      let source = sources.get(sourceId);
       if (source === undefined) {
         await authorizeSourceOperate(principalId, namespaceId, sourceId);
         source = await resolveSource(sourceId);
       }
-      if (!source || source.state !== "ready" || source.ownerCapability !== "token_service") {
+      if (!isManagedTokenServiceSource(source) || source.state !== "ready") {
         throw new ResourceStateConflictError(
           "The Plugin connection requires a ready TokenService Source.",
         );
       }
-      const staticPin = await state.credentialSources.findStaticConnectionTemplate(
-        namespaceId,
-        sourceId,
+      requireTokenServiceOwner(source.tokenServiceInstanceId);
+      if (source.connectionTemplateId === undefined) {
+        throw new ResourceStateConflictError(
+          "The Plugin Source requires an associated Connection Template.",
+        );
+      }
+      const template = await state.connectionTemplates.findConnectionTemplate(
+        source.connectionTemplateId,
       );
-      const consent = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
-      const templateId = staticPin?.connectionTemplateId ?? consent?.connectionTemplateId;
-      const version = staticPin?.connectionTemplateVersion ?? consent?.connectionTemplateVersion;
-      const template =
-        templateId === undefined
-          ? undefined
-          : await state.connectionTemplates.findConnectionTemplate(templateId);
       if (
         !template ||
-        version === undefined ||
         (template.namespaceId !== undefined && template.namespaceId !== namespaceId)
       ) {
         throw new ResourceStateConflictError(
-          "The Plugin Source requires an approved exact Connection Template version.",
+          "The Plugin Source's Connection Template is unavailable.",
         );
       }
-      if (staticPin) {
-        const pinned = await state.connectionTemplates.findStaticConnectionTemplateVersion(
-          templateId!,
-          version,
-        );
-        if (!isManagedTokenServiceSource(source) || source.type !== "static" || !pinned) {
+      const current = template.current;
+      if (source.type === "static") {
+        if (current.mode !== "static_bearer") {
           throw new ResourceStateConflictError(
-            "The Plugin Source's pinned static Connection Template version is unavailable.",
+            "The static Plugin Source requires a static bearer Connection Template.",
           );
         }
-        requireTokenServiceOwner(source.tokenServiceInstanceId);
-        destinations.set(sourceId, pinned.destinations);
+        templates.set(sourceId, { current });
       } else {
-        const pinned = await state.connectionTemplates.findOAuthConnectionTemplateVersion(
-          templateId!,
-          version,
-        );
         if (
-          !consent ||
-          consent.revocationRequestedBy ||
-          consent.revokedAt ||
-          source.type !== "oauth2-refresh-token" ||
-          source.config.connection_template_id !== templateId ||
-          source.config.connection_template_version !== String(version) ||
-          !pinned
+          current.mode !== "manual" ||
+          source.consent.kind !== "connection_template" ||
+          source.consent.revocationRequestedBy !== undefined ||
+          source.consent.revokedAt !== undefined
         ) {
           throw new ResourceStateConflictError(
-            "The Plugin Source's completed OAuth consent is unavailable.",
+            "The Plugin Source requires active OAuth consent for an HTTP Connection Template.",
           );
         }
-        destinations.set(
-          sourceId,
-          consent.destinations.map((destination) => ({ ...destination, method: null })),
-        );
+        const consent =
+          current.version === source.consent.version
+            ? current
+            : await state.connectionTemplates.findOAuthConnectionTemplateVersion(
+                template.id,
+                source.consent.version,
+              );
+        if (consent?.mode !== "manual" || consent.oauthClientId !== source.consent.oauthClientId) {
+          throw new ResourceStateConflictError(
+            "The Plugin Source's original OAuth consent version is unavailable.",
+          );
+        }
+        templates.set(sourceId, { current, consent });
       }
-      sources.push(source);
-      metadata.set(
-        sourceId,
-        credentialSourceMetadata(source, undefined, {
-          connectionTemplateId: templateId!,
-          connectionTemplateVersion: version,
-        }),
-      );
+      sources.set(sourceId, source);
     }
-    return { sources, metadata: [...metadata.values()], destinations };
+    return { sources: [...sources.values()], templates };
   }
 
-  /**
-   * Freezes every source the Agent lists, including the one `harnessAuth` names. Each needs the
-   * Agent principal's `operate`, a ready record, and an offered source type.
-   */
+  /** Freeze explicit and Plugin-selected Sources after checking the Agent principal's exact grants. */
   async function admitCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -343,9 +317,7 @@ export function createAgentCredentialAccess({
       (sourceId) => state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId),
       attached,
     );
-    const sources = [
-      ...new Map([...attached, ...plugin.sources].map((source) => [source.id, source])).values(),
-    ];
+    const { sources } = plugin;
     if (sources.length > MAX_AGENT_CREDENTIAL_SOURCES) {
       throw new ScopeViolationError("The Agent revision has too many credential sources.");
     }
@@ -354,12 +326,7 @@ export function createAgentCredentialAccess({
         "Agent credential sources require a selected Sandbox Driver.",
       );
     }
-    await validatePluginCredentialSources(
-      driver,
-      agent.plugins,
-      plugin.metadata,
-      agent.harnessAuth,
-    );
+    await validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
     const descriptions = await describePluginBindings(driver, agent.plugins, selected, sources);
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const source of sources) {
@@ -371,16 +338,15 @@ export function createAgentCredentialAccess({
       });
       compute.validateHarnessCredentialSources?.(harness, [source]);
       if (isManagedTokenServiceSource(source)) {
-        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        const current = plugin.templates.get(sourceId)?.current;
         snapshots.push({
           sourceId,
           tokenServiceInstanceId: source.tokenServiceInstanceId,
           sourceType: source.type,
+          ...(current && {
+            connectionTemplate: { id: current.templateId, version: current.version },
+          }),
         });
-      } else if (source.ownerCapability === "token_service") {
-        throw new ResourceStateConflictError(
-          "The selected OAuth Source has no registered staged credential resolver.",
-        );
       } else {
         const owner = sourceDrivers.credentialSourceOwner(source);
         if (owner.kind === "proxy") {
@@ -401,8 +367,7 @@ export function createAgentCredentialAccess({
     return {
       snapshots: immutableCopy(snapshots),
       descriptions,
-      destinations: plugin.destinations,
-      selected,
+      templates: plugin.templates,
     };
   }
 

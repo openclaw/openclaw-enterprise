@@ -145,9 +145,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preStaticConnectionTemplates";
   }
   if (count === 89 && completedCount > 89) {
-    return "preStaticSourceTemplateAssociation";
+    return "preNativeGitDelivery";
   }
   if (count === 90 && completedCount > 90) {
+    return "preTokenServiceCredentialSources";
+  }
+  if (count === 91 && completedCount > 91) {
     return "prePluginCredentialDeployment";
   }
   if (count === completedCount) {

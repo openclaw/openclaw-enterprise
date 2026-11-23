@@ -15,13 +15,12 @@ import {
   validatePolicies,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import type {
-  CredentialSource,
+  LegacyCredentialSource,
   PluginApprover,
   PluginApprovers,
   PluginDriver,
 } from "../../packages/contracts/src/index.ts";
 import { PluginPolicyValidationError } from "../../packages/occ/src/index.ts";
-import { credentialSourceMetadata } from "../../packages/occ/src/credential-source-metadata.ts";
 import {
   calendarPluginId,
   codexSelection,
@@ -162,7 +161,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       /Select distinct literal Slack tool names/,
     );
   }
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: "cs_slack",
     name: "Slack test account",
     namespaceId: "ns_test",
@@ -186,20 +185,15 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     config: { ...source.config, protocol: "rest" },
   };
   const credentials: NonNullable<PluginDriver["credentials"]> = driver.credentials;
-  const slots = credentials.choices(
-    [source, broaderRestSource].map((item) => credentialSourceMetadata(item)),
-  );
+  const slots = credentials.choices([source, broaderRestSource]);
   const slackSlot = slots.find(({ pluginId }) => pluginId === slack.id);
   assert.ok(slackSlot);
   assert.equal(slackSlot.id, "account");
   assert.equal(slackSlot.label, "Slack user account");
   assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
-  await driver.credentials.validate(selections, [credentialSourceMetadata(source)]);
+  await driver.credentials.validate(selections, [source]);
   await assert.rejects(
-    async () =>
-      driver.credentials.validate(selections, [
-        credentialSourceMetadata({ ...broaderRestSource, id: source.id }),
-      ]),
+    async () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
     /Select a ready Slack account/,
   );
   const mixedPlacement = { ...selections, ...occSelection() };

@@ -194,15 +194,6 @@ export function postgresConnectionTemplates(
         )
       ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
-    findStaticConnectionTemplateVersion: async (templateId, version) => {
-      const [row] = (
-        await client.query(
-          "SELECT template_id AS id, version AS current_version, destinations AS static_destinations, created_at AS static_created_at FROM occ.static_key_template_versions WHERE template_id=$1 AND version=$2",
-          [templateId, version],
-        )
-      ).rows;
-      return row === undefined ? undefined : immutableCopy(staticVersionFromRow(row as Row));
-    },
     findOAuthConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
         await client.query(
@@ -351,15 +342,15 @@ export function postgresConnectionTemplates(
         ]);
         return deleted.rowCount === 1;
       } catch (error) {
-        // A saved account or an unexpired consent attempt can still reference a version.
+        // A canonical Source or an unexpired consent attempt can still reference the Template.
         if (
           error instanceof Error &&
           "code" in error &&
           (error.code === "23001" || error.code === "23503") &&
           "constraint" in error &&
           (error.constraint === "authentication_states_template_version" ||
-            error.constraint === "saved_connections_template_version" ||
-            error.constraint === "static_credential_source_templates_version")
+            error.constraint === "credential_sources_connection_template_id_fkey" ||
+            error.constraint === "credential_sources_oauth_template_version")
         ) {
           throw new ResourceStateConflictError("The connection template is in use.");
         }

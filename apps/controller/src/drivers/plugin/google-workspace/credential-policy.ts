@@ -1,5 +1,5 @@
 import type {
-  CredentialSourceMetadata,
+  StoredCredentialSource as CredentialSource,
   PluginDeploymentNetworkRequirement,
 } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
@@ -57,7 +57,10 @@ function googleNetworks(
   return [...rules.values()];
 }
 
-function sourceScope(source: Pick<CredentialSourceMetadata, "config">) {
+function sourceScope(source: CredentialSource) {
+  if (source.ownerCapability === "token_service") {
+    return undefined;
+  }
   const config = source.config;
   return googleRequestScope({
     host: config.host,
@@ -79,11 +82,11 @@ export const googleWorkspaceCredentialPolicy = {
   accepts(
     install: ManagedCliInstall,
     slot: ManagedCredentialSlot,
-    source: Pick<
-      CredentialSourceMetadata,
-      "config" | "state" | "ownerCapability" | "egress" | "type"
-    >,
+    source: CredentialSource,
   ): boolean {
+    if (source.ownerCapability === "token_service") {
+      return false;
+    }
     const config = source.config;
     const scope = sourceScope(source);
     return (
@@ -98,12 +101,9 @@ export const googleWorkspaceCredentialPolicy = {
       eligibleGoogleOperations(scope).length > 0
     );
   },
-  conflict(
-    selected: Pick<CredentialSourceMetadata, "id" | "config">,
-    sources: readonly Pick<CredentialSourceMetadata, "id" | "config">[],
-  ) {
+  conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
     const scope = sourceScope(selected);
-    if (!scope) {
+    if (!scope || selected.ownerCapability === "token_service") {
       return undefined;
     }
     // The qualified adapter selects middleware by host, including discovery requests.
@@ -111,6 +111,7 @@ export const googleWorkspaceCredentialPolicy = {
     if (
       sources.some(
         (s) =>
+          s.ownerCapability !== "token_service" &&
           s.id !== selected.id &&
           (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
       )

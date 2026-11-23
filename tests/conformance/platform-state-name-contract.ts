@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 import type {
-  CredentialSource,
+  LegacyCredentialSource,
   Namespace,
   Preset,
   Secret,
@@ -58,7 +58,7 @@ export async function verifyDuplicateNameContract(store: PlatformStateStore) {
     namespaceId: namespace.id,
     name: "Taken account " + randomUUID(),
   };
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: identifier("cs"),
     namespaceId: namespace.id,
     name: "Taken source " + randomUUID(),
@@ -170,7 +170,7 @@ export async function verifyNameLengthContract(store: PlatformStateStore) {
     namespaceId: namespace.id,
     name,
   });
-  const source = (name: string): CredentialSource => ({
+  const source = (name: string): LegacyCredentialSource => ({
     id: identifier("cs"),
     namespaceId: namespace.id,
     name,
