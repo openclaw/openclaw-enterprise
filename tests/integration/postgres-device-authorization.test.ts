@@ -333,15 +333,16 @@ test(
     assert.equal(expired.statusCode, 409, expired.body);
     assert.deepEqual(secretDriver.calls, [], "login state must never reach a Secret Driver");
 
-    // Namespace finalization removes its transient login rows.
     const namespacePath = `/namespaces/${namespaceId}`;
-    for (const sourceId of gateway.sources.keys()) {
-      const deleted = await first.inject(
-        "DELETE",
-        `${namespacePath}/credential-sources/${sourceId}`,
-      );
-      assert.equal(deleted.statusCode, 204, deleted.body);
-    }
+    const sourcesPath = `${namespacePath}/credential-sources`;
+    // The Source API manages TokenService registrations. A completed Gateway login still
+    // has its existing credential until the device login switches to TokenService.
+    const gatewaySourceId = completed.json().data.source.id;
+    const legacyDelete = await first.inject("DELETE", `${sourcesPath}/${gatewaySourceId}`);
+    assert.equal(legacyDelete.statusCode, 404, legacyDelete.body);
+    assert.equal(legacyDelete.json().error.code, "NOT_FOUND");
+    assert.equal(gateway.sources.get(gatewaySourceId), "ready");
+
     const removedTemplate = await first.inject(
       "DELETE",
       `/connection-templates/${template.json().data.id}`,
@@ -349,15 +350,9 @@ test(
     assert.equal(removedTemplate.statusCode, 204, removedTemplate.body);
     const removedClient = await first.inject("DELETE", `/oauth-clients/${client.json().data.id}`);
     assert.equal(removedClient.statusCode, 204, removedClient.body);
-    const deleting = await first.inject("DELETE", namespacePath);
-    assert.equal(deleting.statusCode, 202, deleting.body);
-    await first.controller.handleNamespaceLifecycle(first.principal.id, namespaceId, "deleted");
-    const missing = await first.inject("GET", namespacePath);
-    assert.equal(missing.statusCode, 404, missing.body);
-    const sessions = await first.pool.query(
-      "SELECT id FROM occ.authentication_states WHERE kind = 'device_authorization' AND namespace_id = $1",
-      [namespaceId],
-    );
-    assert.equal(sessions.rowCount, 0);
+    const blocked = await first.inject("DELETE", namespacePath);
+    assert.equal(blocked.statusCode, 409, blocked.body);
+    assert.equal(blocked.json().error.code, "NAMESPACE_NOT_EMPTY");
+    assert.match(blocked.json().error.message, /credential sources/);
   },
 );
