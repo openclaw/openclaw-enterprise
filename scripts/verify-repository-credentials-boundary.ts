@@ -161,7 +161,6 @@ const reviewedImports: ReviewedModules = {
     "node:fs/promises": ["open"],
   },
   "drivers/repo/github/access/registry.ts": {
-    "@openclaw-enterprise/contracts": ["parseRepositoryApiActions"],
     "node:crypto": ["createHash"],
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
