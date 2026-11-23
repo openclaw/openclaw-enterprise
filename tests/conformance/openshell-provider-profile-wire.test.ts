@@ -307,7 +307,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
   const beside = (endpoint: Record<string, unknown>) => ({
     authored: { sibling: { ...sibling, endpoints: [endpoint] } },
   });
-  // An inspected literal destination beside the Git rule is released. Each refusal
+  // An inspected literal destination beside the Git rule passes the readback. Each refusal
   // below therefore follows from its one change, not from the presence of a sibling.
   assert.equal((await observeWith(beside(inspected)))?.credentialState, "bootstrap");
   for (const [label, next] of Object.entries({
@@ -351,7 +351,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
       assert.equal(await observeWith(next), undefined);
     });
   }
-  // No refusal is retained: the unchanged ready state is released again.
+  // No refusal is retained: the unchanged ready state passes again.
   assert.equal((await observeWith({}))?.credentialState, "bootstrap");
 });
 
