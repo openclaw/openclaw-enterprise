@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-23
-last_updated_session: authoring-run/9c98e573-cb4a-4060-a169-eccbce1e83cc
+last_updated_session: authoring-run/de26f92b-d7fd-42e6-a746-6a046aa3e0bf
 ---
 
 # Credential source lifecycle flow
@@ -55,7 +55,7 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevisionWorkloads`, `apps/controller/src/worker.ts:configureCredentialDeployment`, `apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`
 
-Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to each Source, confirms its TokenService instance, and gives Credential Proxy a resolver limited to the admitted Sources.
+Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to each Source, matches its identity, type, and TokenService instance against the revision snapshot, and refuses withdrawn or unavailable Sources. It gives Credential Proxy a resolver limited to the admitted Sources. The selected TokenService determines which credential it can resolve.
 
 The OpenShell Proxy resolves the credential and version from TokenService only when it creates an absent OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating its credential, then attaches the Provider to the Sandbox. If a new attachment fails, Proxy attempts to delete its owned Provider and profile; OpenShell refuses Provider deletion while another Sandbox is attached. For each binding, the Harness receives a fresh Sandbox placeholder. The native pair requires a managed model binding and can compile additional HTTP Plugin bindings with distinct Sources and environments. A sole model route retains its existing endpoint shape, with the request path in its REST rule. Aggregate routes also set endpoint paths for Provider selection. The pair refuses broad Plugin grants that compilation cannot preserve. The ordinary Agent workflow still needs Plugin admission and pinned Template authority. OpenShell does not enforce HTTPS-only substitution; the [status table](../reference/credential-sources.md#implementation-status) records this accepted limit. MCP requests are refused. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
 
@@ -103,6 +103,8 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 16:40: Resolve admitted Sources through their selected TokenService after checking the frozen Source snapshot. (authoring-run/de26f92b-d7fd-42e6-a746-6a046aa3e0bf - f6c697e0d752b15132d5b4e9c1e8c06ccfec26cc)
 
 - 2026-11-23 16:03: Narrow the broad network grant exception to the unique model grant. (authoring-run/9c98e573-cb4a-4060-a169-eccbce1e83cc - 5ce2820dff8456af43fe2444afae1ae63996ec31)
 

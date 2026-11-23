@@ -6214,8 +6214,7 @@ export class ControllerWorker {
         withdrawal ||
         !source ||
         source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== instanceId ||
-        source.type !== "static"
+        source.tokenServiceInstanceId !== instanceId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
@@ -6223,6 +6222,7 @@ export class ControllerWorker {
         .with(
           { kind: "model" },
           ({ providerId }) =>
+            source.type === "static" &&
             isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) &&
             source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === providerId,
         )
