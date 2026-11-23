@@ -2954,3 +2954,70 @@ export const nativeBrowserHandles = occSchema.table(
     index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
   ],
 );
+
+/** One native Git Provider copy of a repository token Source per Agent revision (0093). */
+export const repositorySourceCopies = occSchema.table(
+  "repository_source_copies",
+  {
+    revisionId: text("revision_id").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    tokenServiceInstanceId: text("token_service_instance_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    providerName: text("provider_name"),
+    sourceVersion: text("source_version"),
+    installedAt: timestamp("installed_at", { withTimezone: true }),
+    confirmedSourceVersion: text("confirmed_source_version"),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    unknownWriteVersion: text("unknown_write_version"),
+    unknownWriteAt: timestamp("unknown_write_at", { withTimezone: true }),
+    retirementBlocked: text("retirement_blocked"),
+    retirementAttemptedAt: timestamp("retirement_attempted_at", { withTimezone: true }),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.namespaceId, t.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    }).onDelete("cascade"),
+    index("repository_source_copies_unretired")
+      .on(t.namespaceId, t.credentialSourceId)
+      .where(sql`${t.retiredAt} IS NULL`),
+    check("repository_source_copies_revision_id_check", sql`${t.revisionId} <> ''`),
+    check(
+      "repository_source_copies_token_service_instance_id_check",
+      sql`${t.tokenServiceInstanceId} <> ''`,
+    ),
+    check("repository_source_copies_agent_id_check", sql`${t.agentId} <> ''`),
+    check("repository_source_copies_provider_name_check", sql`${t.providerName} <> ''`),
+    check("repository_source_copies_source_version_check", sql`${t.sourceVersion} <> ''`),
+    check(
+      "repository_source_copies_confirmed_source_version_check",
+      sql`${t.confirmedSourceVersion} <> ''`,
+    ),
+    check(
+      "repository_source_copies_unknown_write_version_check",
+      sql`${t.unknownWriteVersion} <> ''`,
+    ),
+    check("repository_source_copies_retirement_blocked_check", sql`${t.retirementBlocked} <> ''`),
+    check(
+      "repository_source_copies_installed_check",
+      sql`(${t.providerName} IS NULL) = (${t.installedAt} IS NULL) AND (${t.sourceVersion} IS NULL) = (${t.installedAt} IS NULL)`,
+    ),
+    check(
+      "repository_source_copies_confirmed_check",
+      sql`(${t.confirmedSourceVersion} IS NULL) = (${t.confirmedAt} IS NULL)`,
+    ),
+    check(
+      "repository_source_copies_unknown_write_check",
+      sql`(${t.unknownWriteVersion} IS NULL) = (${t.unknownWriteAt} IS NULL)`,
+    ),
+    check(
+      "repository_source_copies_retirement_check",
+      sql`(${t.retirementBlocked} IS NULL OR ${t.retirementAttemptedAt} IS NOT NULL) AND (${t.retiredAt} IS NULL OR ${t.retirementBlocked} IS NULL)`,
+    ),
+  ],
+);

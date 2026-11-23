@@ -1484,6 +1484,22 @@ export class CredentialWithdrawalInProgressError extends ResourceStateConflictEr
 }
 
 /**
+ * A repository token Source keeps its value while a native Git Provider copy of it may still be
+ * installed: the Worker confirms each copy retired only after it reads back that the Provider is
+ * gone, which needs the revision's Sandbox to be gone and its Gateway to answer.
+ */
+export class RepositorySourceCopiesUnretiredError extends ResourceStateConflictError {
+  readonly unretired: number;
+  constructor(unretired: number) {
+    super(
+      `${unretired} native Git ${unretired === 1 ? "copy" : "copies"} of this credential source ${unretired === 1 ? "is" : "are"} not confirmed retired (unretired_repository_source_copy). Stop or redeploy without the source each Agent whose revision uses it; the Worker retires a copy once its Sandbox is gone and its Gateway answers. Then retry.`,
+    );
+    this.unretired = unretired;
+    this.name = "RepositorySourceCopiesUnretiredError";
+  }
+}
+
+/**
  * Source deletion is refused only because a provider token issued for the source may still be
  * valid: an issue or revocation whose outcome was lost. It settles once the provider's maximum
  * token lifetime has passed, never earlier. A retry repeats only the safe withdrawal.

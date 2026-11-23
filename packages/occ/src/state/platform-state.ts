@@ -21,6 +21,7 @@ import type {
   ConnectionTemplateRepository,
 } from "../ports/connection-templates.ts";
 import type {
+  RepositorySourceCopy,
   StoredCredentialWithdrawal,
   CredentialSourceReadRepository,
   CredentialSourceRepository,
@@ -655,6 +656,8 @@ interface PlatformSnapshot {
   readonly authenticationStates: Map<string, AuthenticationState>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
+  /** Keyed by revision. This adapter has no Worker, so a recorded copy is never retired here. */
+  readonly repositorySourceCopies: Map<string, Readonly<RepositorySourceCopy>>;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
@@ -825,6 +828,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: copyStoredMap(snapshot.credentialWithdrawals),
     credentialSources: copyStoredMap(snapshot.credentialSources),
+    repositorySourceCopies: copyStoredMap(snapshot.repositorySourceCopies),
     serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
     agents: copyStoredMap(snapshot.agents),
     predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
@@ -2658,6 +2662,20 @@ function repositories(
       }
       return revisionOperations(true) ? "withdrawal_work" : undefined;
     },
+    recordRepositorySourceCopy: async (copy) => {
+      if (snapshot.repositorySourceCopies.has(copy.revisionId)) {
+        throw new ResourceConflictError("The repository source copy is already recorded.");
+      }
+      if ((await findCredentialSource(copy.namespaceId, copy.credentialSourceId)) === undefined) {
+        throw new ScopeViolationError("The credential source does not belong to the Namespace.");
+      }
+      snapshot.repositorySourceCopies.set(copy.revisionId, Object.freeze({ ...copy }));
+    },
+    findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
+      Array.from(snapshot.repositorySourceCopies.values()).filter(
+        (copy) =>
+          copy.namespaceId === namespaceId && copy.credentialSourceId === credentialSourceId,
+      ),
     deleteCredentialSource: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
         return false;
@@ -2669,6 +2687,11 @@ function repositories(
       }
       const key = agentKey(namespaceId, credentialSourceId);
       snapshot.credentialSources.delete(key);
+      for (const [revisionId, copy] of snapshot.repositorySourceCopies) {
+        if (copy.namespaceId === namespaceId && copy.credentialSourceId === credentialSourceId) {
+          snapshot.repositorySourceCopies.delete(revisionId);
+        }
+      }
       snapshot.connectionTokenCustody.delete(key);
       snapshot.savedConnections.delete(key);
       for (const [id, state] of snapshot.authenticationStates) {
@@ -4250,6 +4273,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     authenticationStates: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    repositorySourceCopies: new Map(),
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),

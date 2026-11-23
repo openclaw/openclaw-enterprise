@@ -8,6 +8,15 @@ import type {
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 
+/** Identity of one installed copy of a repository token Source; never a value. */
+export interface RepositorySourceCopy {
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
+  readonly tokenServiceInstanceId: string;
+  readonly agentId: string;
+  readonly revisionId: string;
+}
+
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
 
 export interface CredentialSourceReadRepository {
@@ -103,6 +112,16 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     namespaceId: string,
     credentialSourceId: string,
   ): Promise<CredentialSourceBlockingReference | undefined>;
+  /**
+   * Records the native Git Provider copy of a repository token Source that a deployment admits,
+   * before the deployment is queued. The Worker completes and retires it.
+   */
+  recordRepositorySourceCopy(copy: RepositorySourceCopy): Promise<void>;
+  /** The copies of the source that the Worker has not confirmed retired. */
+  findUnretiredRepositorySourceCopies(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<readonly Readonly<RepositorySourceCopy>[]>;
   /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
   requestCredentialWithdrawal(
     withdrawal: CredentialWithdrawal,

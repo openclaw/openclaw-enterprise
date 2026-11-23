@@ -42,6 +42,7 @@ import {
   DependencyUnavailableError,
   DriverSelectionError,
   NamespaceNotReadyError,
+  RepositorySourceCopiesUnretiredError,
   ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
@@ -573,6 +574,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           throw new ResourceStateConflictError(
             "The repository registry selects this credential source for a Namespace registration. Remove it from the registry and restart the controller and Worker, then delete it.",
           );
+        }
+        // Read under the Namespace and Source row locks this transaction already holds: a deploy
+        // records its copy under the same Source lock, and the Worker only retires copies.
+        const unretired = await state.credentialSources.findUnretiredRepositorySourceCopies(
+          locked.id,
+          found.id,
+        );
+        if (unretired.length > 0) {
+          throw new RepositorySourceCopiesUnretiredError(unretired.length);
         }
         const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
         if (blocking === "reference") {

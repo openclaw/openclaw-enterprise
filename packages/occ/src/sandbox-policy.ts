@@ -90,7 +90,7 @@ interface SandboxPolicyDependencies {
     agent: Readonly<Agent>,
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
