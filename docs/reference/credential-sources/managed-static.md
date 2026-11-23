@@ -17,6 +17,21 @@ In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` wi
 
 `secret` is write-only and accepts one nonempty credential. Its field name does not grant destination authority. The optional `config.provider_preset` associates the Source with an approved provider; without it the Source cannot authorize a model destination. The response contains sanitized metadata, `ownerCapability: "token_service"`, and `secrets: {}`. OCC does not store a Namespace Secret reference or return the credential.
 
+### Register a GitHub repository token
+
+The `github` preset holds one GitHub fine-grained personal access token. `config.repositories` is required with this preset and is not allowed with other presets. It is the Source's repository ceiling: comma-separated `owner/name:read` or `owner/name:write` entries, at most 32, each repository once, in canonical lowercase form. The response returns the ceiling in repository order.
+
+```json
+{
+  "name": "Repository token",
+  "type": "static",
+  "config": { "provider_preset": "github", "repositories": "octo/app:write,octo/docs:read" },
+  "secret": { "token": "<fine-grained token>" }
+}
+```
+
+OCC refuses every other token class with `400` before custody. The message names the accepted class and does not include the value. OCC makes no GitHub request. A `github` Source is not a model credential: an Agent cannot list it or use it for Harness authentication. No repository access uses the Source yet.
+
 If the private-store write cannot be confirmed, registration can fail while leaving orphaned material. A failure after TokenService commits can leave a Source without its creator IAM grant. The private store cannot list orphaned material. See the [custody flow](../../flows/token-service-static-custody.md) for failure handling.
 
 ## Deploy an Agent with the source
@@ -102,7 +117,7 @@ Exact GET requires `credential_source:read`; list requires Namespace `read` and 
 
 ## Update a source
 
-Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset; `config: {}` removes it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Repeating the same preset while replacing the credential does not change policy. Credential replacement is allowed while an active Agent revision uses the Source. After TokenService commits the replacement, it notifies the selected Credential Proxy. The native Proxy updates an existing Provider; it does not create one if none exists. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE`; the Source remains ready and the replacement stays in custody. See the [lifecycle flow](../../flows/credential-source-lifecycle.md#deliver-source-updates) for execution.
+Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset; `config: {}` removes it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Repeating the same preset while replacing the credential does not change policy. A `github` Source keeps its preset: adding or removing `github` returns `409 RESOURCE_CONFLICT`. Every `config` update to it must include `repositories`. The ceiling changes only in a request without `secret` and only while the Source is unbound. A replacement credential passes the same class check. Credential replacement is allowed while an active Agent revision uses the Source. After TokenService commits the replacement, it notifies the selected Credential Proxy. The native Proxy updates an existing Provider; it does not create one if none exists. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE`; the Source remains ready and the replacement stays in custody. See the [lifecycle flow](../../flows/credential-source-lifecycle.md#deliver-source-updates) for execution.
 
 ## Delete a source
 
