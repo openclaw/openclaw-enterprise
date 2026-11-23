@@ -15,6 +15,7 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
@@ -857,6 +858,73 @@ test("one revision resolves to one credential: App and Source, or two Sources, a
       sourceBindings(appAndSource, ["other"]),
     ).credential,
     { kind: "github_app" },
+  );
+});
+
+test("registrations that resolve to one Source carry one permission set, never the wider one", () => {
+  // Both repositories name the same Source; one registration allows read, the other write.
+  const input = sourceRegistryInput();
+  input.repositories[1]!.namespaces[0]!.permissions = { metadata: "read", contents: "read" };
+  const mixed = validateGitHubRepositoryRegistry(input);
+  const bindings = sourceBindings(mixed, ["token", "token-peer"]);
+  const both = [
+    { repository: "fixture/token", access: "read" },
+    { repository: "fixture/token-peer", access: "read" },
+  ] as const;
+  // Save and deploy resolve the selection through the policy Driver; the Worker resolves its
+  // grant and delivery from the same registry. Each refuses, so nothing is lent.
+  const policy = new GitHubRepositoryPolicy(
+    { driverId: "github", backendId: "github-primary" },
+    mixed,
+    {
+      sessionDurationSeconds: 600,
+    },
+  );
+  const requests = ["token", "token-peer"].map((repositoryRef) => ({
+    repositoryRef,
+    profile: "github-repository" as const,
+  }));
+  assert.throws(
+    () => policy.resolveBindings({ namespaceId: "namespace-a", bindings: requests }),
+    /not permitted for this Namespace/,
+  );
+  for (const resolve of [
+    () => resolveSelectedRepositoryScope(mixed, "namespace-a", bindings),
+    () => resolveSelectedRepositoryGrant(mixed, "namespace-a", "rev_source", bindings),
+    () => createGitHubRepositoryDeliveryResolver(mixed)(sourceRevision(bindings, both)),
+  ]) {
+    assert.throws(resolve, /selected-repository-permissions-differ/);
+  }
+  // Each registration alone keeps its own permissions.
+  for (const [ref, contents] of [
+    ["token", "write"],
+    ["token-peer", "read"],
+  ] as const) {
+    const alone = resolveSelectedRepositoryScope(
+      mixed,
+      "namespace-a",
+      sourceBindings(mixed, [ref]),
+    );
+    assert.equal(alone.permissions.contents, contents);
+  }
+  // Identical permissions resolve to the one Source with that one permission set.
+  const same = validateGitHubRepositoryRegistry(sourceRegistryInput());
+  const sameBindings = sourceBindings(same, ["token", "token-peer"]);
+  const scope = resolveSelectedRepositoryScope(same, "namespace-a", sameBindings);
+  assert.deepEqual(scope.credential, {
+    kind: "credential_source",
+    sourceId: "cs_repository_token",
+  });
+  assert.deepEqual(scope.permissions, { metadata: "read", contents: "write" });
+  assert.deepEqual(
+    scope.repositories.map(({ repository }) => repository),
+    ["fixture/token", "fixture/token-peer"],
+  );
+  assert.equal(
+    new GitHubRepositoryPolicy({ driverId: "github", backendId: "github-primary" }, same, {
+      sessionDurationSeconds: 600,
+    }).resolveBindings({ namespaceId: "namespace-a", bindings: requests }).credentialSource,
+    "cs_repository_token",
   );
 });
 
