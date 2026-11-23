@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-24
-last_updated_session: merge-readiness-20261025T022847Z
+updated: 2026-11-22
+last_updated_session: authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d
 ---
 
 # OCC CLI publication flow
@@ -68,8 +68,9 @@ lightweight version tag only when none exists; a matching tag is required on a
 retry. It finds an existing draft through the authenticated release list,
 creates one if absent, and uploads only missing assets,
 downloads every asset, and compares each byte with the prepared artifact before
-publishing the draft. An existing published release is not modified. A partial
-failure leaves a draft and tag for inspection and a matching retry.
+publishing the draft. An existing published release is not modified.
+A failed run can leave a tag without a release, a tag with a draft, or an
+already published release.
 
 This assumes trusted release administrators do not change the tag or draft
 during publication. The workflow concurrency group serializes participating
@@ -89,8 +90,8 @@ provenance.
   release assets, and `SHA256SUMS`. A draft means publication stopped before the
   user-facing release became available.
 - A tag pointing to another source, changed existing asset, or already
-  published release stops a retry. Inspect the registry state before dispatching
-  again; do not move an established release tag.
+  published release stops a retry. Before retrying, check the tag target and the
+  authenticated GitHub release list. Do not move an established release tag.
 
 ## Related docs
 
@@ -104,6 +105,7 @@ provenance.
 
 ## Changelog
 
+- 2026-11-22 23:03: Corrected CLI publication failure states and retry checks (authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 - 2026-10-24 21:35: Retained current-directory packaging and Go 1.27.3 during the main-branch sync (merge-readiness-20261025T022847Z - c27fb27edfa1fdcb3417494f2bac8814d0631a63)
 - 2026-10-24 13:47: Documented absolute packaging paths and current-directory retry verification (authoring-run/13963312-37cc-41b3-9ddb-00da20e78c92 - 7f39fb17418ed8653f1dfb71b0204a65f636aa7e)
 - 2026-10-23 15:28: Require Go 1.27.3 for the existing clean-source CLI packaging gate (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)

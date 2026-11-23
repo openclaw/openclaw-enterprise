@@ -152,7 +152,7 @@ async function observedGitRoute(
     policy: async () => sourcePolicy,
     execution: async () => "original-execution",
   };
-  const gitRule = new OpenShellPreparedGitProvider(f.client, {
+  const observedProvider = new OpenShellPreparedGitProvider(f.client, {
     ...f.entry.authorization.delivery,
     workspace: f.sandbox.workspace,
     workspaceId: "workspace-id",
@@ -161,7 +161,9 @@ async function observedGitRoute(
     gitOrigin: "https://github.com",
     apiOrigin: "https://api.github.com",
     binaries: ["/usr/bin/git"],
-  }).previewNetworkRule();
+  });
+  const gitRule = observedProvider.previewNetworkRule();
+  f.provider.withEnrollment = observedProvider.withEnrollment.bind(observedProvider);
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
   let environment;
@@ -462,6 +464,30 @@ async function observedGitRoute(
     await expectDenied(f, "route_blocked");
     return;
   }
+  if (narrowRepository === "another-api-origin") {
+    // repository.openShell binds only github.com: the refusal names the origin and the fix.
+    f.owner.material = { ...f.owner.material, apiOrigin: "https://ghe.example.test:8443" };
+    await f.reconcile();
+    await f.entry.previewClosure?.confirming;
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "material_mismatch",
+    });
+    assert.equal(f.calls.rotate, 0, "material for another origin never reaches the provider");
+    assert.deepEqual(
+      f.errors().map(({ code, reason, message }) => ({ code, reason, message })),
+      [
+        {
+          code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
+          reason: "material_mismatch",
+          message:
+            "repository.openShell reaches only https://github.com and https://api.github.com but repository.preparedGitHub.apiOrigin is ghe.example.test:8443. Remove apiOrigin to use github.com: repository.openShell supports no other GitHub origin.",
+        },
+      ],
+    );
+    await expectDenied(f, "route_blocked");
+    return;
+  }
   // The controlled supervisor delays the post-write observation. The production runtime
   // must nevertheless cross its own pre-write observation at the new reservation fence.
   f.faults.observeAfterRotate = true;
@@ -535,9 +561,12 @@ async function observedGitRoute(
     };
     let deliveries = 0;
     await assert.rejects(
-      f.runtime.releasePreview(revision.id, startupId, async () => {
-        deliveries++;
-        return true;
+      f.runtime.releasePreview(revision.id, startupId, {
+        prepare: async () => {},
+        deliver: async () => {
+          deliveries++;
+          return true;
+        },
       }),
       { message: "The preview release was not acknowledged." },
     );
@@ -552,9 +581,12 @@ async function observedGitRoute(
   if (releaseFault === "response-lost") {
     const sent = Promise.withResolvers();
     const response = Promise.withResolvers();
-    const releasing = f.runtime.releasePreview(revision.id, startupId, async () => {
-      sent.resolve();
-      return response.promise;
+    const releasing = f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => {
+        sent.resolve();
+        return response.promise;
+      },
     });
     const failed = assert.rejects(releasing, { message: "release response lost" });
     await sent.promise;
@@ -588,7 +620,10 @@ async function observedGitRoute(
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe),
     "installed",
   );
-  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => {},
+    deliver: async () => true,
+  });
   assert.ok(await f.lookup(), "first read after held launch ACK");
   if (afterRelease) {
     await afterRelease(f, revision);
@@ -710,7 +745,10 @@ async function observedGitRoute(
       "a new process preserves the same execution authorization",
     );
     assert.equal(await f.lookup(), undefined, "fresh readiness alone cannot release a launcher");
-    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    await f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => true,
+    });
     assert.ok(await f.lookup());
     assert.equal(f.calls.rotate, 1, "recovery never replays the credential write");
 
@@ -731,7 +769,10 @@ async function observedGitRoute(
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe);
     assert.equal(f.runtime.previewReleased(revision.id), false);
     await f.reconcile();
-    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    await f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => true,
+    });
     resume.resolve();
     assert.equal(await staleRequest, undefined, "the previous launcher cannot borrow the new ACK");
     assert.ok(await f.lookup());
@@ -806,6 +847,7 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
     "material-push-ref",
     "delivery-push-ref",
     "foreign-repository-id",
+    "another-api-origin",
   ]) {
     await observedGitRoute(2, { narrowRepository });
   }

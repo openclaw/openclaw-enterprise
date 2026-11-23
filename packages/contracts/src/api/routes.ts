@@ -618,7 +618,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rename a connection template, or create a version with new approved values",
+    summary: "Rename a connection template or create a version with updated settings",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1218,7 +1218,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "List connection templates the caller may connect in this Namespace",
+    summary: "List connection templates available in this Namespace",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1283,7 +1283,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Register a Credential Gateway source; managed static registration is staged",
+    summary: "Register a credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -1332,13 +1332,13 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Update a Credential Gateway source; managed updates are staged",
+    summary: "Update a Source through its recorded owner",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
       body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
-      response: { 200: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
   {

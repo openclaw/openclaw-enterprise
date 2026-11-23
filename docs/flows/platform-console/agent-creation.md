@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-22
+last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
 ---
 
 # Console Agent creation
@@ -66,6 +66,11 @@ field lists it disabled with its reason and never stages it; the Preset's **Use 
 list does the same, and **Use Preset** refuses it. A permission reread, a refused create or an
 inline Secret create reads the answer again. A failed read keeps the last answer, or marks
 none before any answer.
+
+`secret-picker.mts:bindSecret` waits for the permission answer. During a model Secret
+choice, `renderAgentForm` blocks submission. A provider or authentication method change
+calls `clearModelCredential`, which clears the choice and its hint. A late answer cannot
+restore that choice or replace a newer one. Accepting a choice marks the draft as edited.
 
 ### 2. Choose a model and starter Configuration
 
@@ -178,6 +183,17 @@ it sent, and the Agent name, Namespace and Configuration. Before granting creden
 reads that Agent and confirms its service principal matches the create response. A mismatch
 stops the grant; **Retry credential access** reads the saved Agent again without recreating it.
 An unrecognized success leaves the outcome unknown and blocks another create.
+On an ordinary Agent POST `403`, `create.mts:agentSaveAccessReason` compares
+the complete API denial with the request. It checks Agent create in this Namespace,
+Configuration read on the saved ID, and Configuration update for browser setup.
+It names Secret operate or ServiceAccount read for the selected Harness reference,
+or CredentialSource operate for a submitted source. An unnamed Secret refusal
+identifies the permission alone. Other denials stay generic. Members can ask an
+Installation administrator to check access. Administrators can review grants and
+IAM Restrictions. The alert keeps the request ID. Once access changes, a manual
+**Create Agent** retry in this draft reuses the Configuration.
+**Cancel** warns that the saved Configuration remains and a fresh draft can save
+another. An uncertain Agent write stays locked.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
 After a known registration refusal, empty checks retain the refusal and the saved Secret.
@@ -225,8 +241,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Debugging and Verification
 
-- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.ts`, and
-  `console-agent-repositories.test.ts` exercise the form against the real controller.
+- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.ts`,
+  `console-agent-repositories.test.ts`, and `console-create-agent-member.test.ts`
+  exercise the form against the real controller.
 - A refused write shows the API's reason and a request ID; inspect saved
   Configuration and Agent IDs before retrying.
 
@@ -242,6 +259,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
+- 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 
 - 2026-11-20 14:31: Trace the Create Agent tabs, the action bar, and the tab selection for a field that fails validation; accompanies uncommitted Console changes. (authoring-run/2a00b231-82dc-480a-a3af-9dd8215aefe0 - 5bf2ae7fd703197701f311098d734a10ed4ab593)

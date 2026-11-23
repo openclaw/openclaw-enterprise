@@ -101,7 +101,7 @@ export function renderAgentAccess(
       "label",
       { className: "agent-access-consent" },
       acknowledge,
-      "I understand this grants full native administration of this Agent.",
+      "I understand this grants full native administration of this Agent. Removing the Agent grant leaves the Namespace discovery grant in place.",
     ),
     element("div", { className: "form-actions" }, share),
   );
@@ -135,7 +135,7 @@ export function renderAgentAccess(
       element(
         "p",
         { className: "muted" },
-        "Sharing adds read access to this Namespace for discovery and read plus native administration for this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
+        "Sharing creates or reuses a Namespace read grant for discovery and a separate grant for read access and native administration of this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
       ),
       feedback,
       form,

@@ -16,7 +16,12 @@ import type {
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
+import {
+  namedDenial,
+  type RequestOptions,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
 import defaultCodexPreset from "../default-codex-preset.mjs";
 import type { createDraftStore } from "../drafts.mjs";
@@ -40,7 +45,13 @@ import {
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
-import { agentCreateDenied, CONFIGURATION_CREATE_REFUSED, notIncluded } from "./access-reasons.mjs";
+import {
+  ACCESS_NOT_INCLUDED,
+  agentCreateDenied,
+  askAdministratorTo,
+  CONFIGURATION_CREATE_REFUSED,
+  notIncluded,
+} from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -207,6 +218,66 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
 const AGENT_NAME_TAKEN_FIELD = "Another Agent in this Namespace has this name.";
+
+function agentSaveAccessReason(
+  denial: string | undefined,
+  namespaceId: string,
+  request: {
+    configurationId: string;
+    harnessAuth: HarnessAuthBinding;
+    credentialSources: readonly AgentCredentialSourceBinding[] | undefined;
+    nativeAdmin?: boolean;
+  },
+) {
+  if (!denial) {
+    return;
+  }
+  // Interpret only complete caller-denial sentences for inputs submitted by this form.
+  const matches = (
+    kind: "Configuration" | "CredentialSource" | "Secret" | "ServiceAccount",
+    action: "read" | "update" | "operate",
+    id?: string,
+  ) => {
+    const target = id === undefined ? `a ${kind} this request uses` : `${kind} ${id}`;
+    return (
+      denial ===
+      `Not authorized: this needs ${kind} ${action} on ${target}. Ask an Installation administrator to grant it.`
+    );
+  };
+  const { configurationId, harnessAuth, credentialSources, nativeAdmin } = request;
+  const source =
+    "source" in harnessAuth && harnessAuth.source.namespaceId === namespaceId
+      ? harnessAuth.source
+      : undefined;
+  if (matches("Configuration", "read", configurationId)) {
+    return "You need Configuration read on the saved Configuration.";
+  }
+  if (nativeAdmin && matches("Configuration", "update", configurationId)) {
+    return "You need Configuration update on the saved Configuration.";
+  }
+  if (source?.kind === "secret" && matches("Secret", "operate", source.id)) {
+    return "You need Secret operate on the selected model Secret.";
+  }
+  if (matches("Secret", "operate")) {
+    // Stored Configuration bindings can require Secret operate without naming a Secret.
+    return "You need Secret operate on a Secret this request uses.";
+  }
+  if (source?.kind === "service_account" && matches("ServiceAccount", "read", source.id)) {
+    return "You need ServiceAccount read on the selected service account.";
+  }
+  if (credentialSources?.some(({ sourceId }) => matches("CredentialSource", "operate", sourceId))) {
+    return "You need CredentialSource operate on a Credential Source used by this Agent.";
+  }
+  if (
+    denial ===
+      `Not authorized: this needs Agent create in Namespace ${namespaceId}. Review this permission with whoever manages IAM.` ||
+    denial ===
+      `Not authorized: a Restriction in Namespace ${namespaceId} denies Agent create, even for Installation administrators. Check your access and the applicable IAM Restriction.`
+  ) {
+    return "You need Agent create in this Namespace.";
+  }
+}
+
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -1220,12 +1291,13 @@ function renderAgentForm(
     id: "provider-credential-secret",
     label: "Model credential Secret",
     getCurrentSource: () => modelCredentialSource,
+    onPendingChange: () => updateControls(),
     onSecretSelected(secret) {
+      edited = true;
       modelCredentialSource = secret.ref;
       modelCredentialSecret = secret;
       resetPluginDiscovery();
       feedback.textContent = "";
-      updateControls();
     },
     createSecretName: () => {
       const agentName = name.value.trim();
@@ -1239,6 +1311,11 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  // The picker owns validation and reports an accepted choice above. Searching its list
+  // must not clear the field's validity or mark the draft as edited.
+  for (const event of ["input", "change"]) {
+    modelCredentialField.addEventListener(event, (search) => search.stopPropagation());
+  }
   let secretNameConflict: string | null = null;
   const secretConflictMessage = element("p", { className: "status-body" });
   const ownsSecretRecovery = () =>
@@ -1723,7 +1800,7 @@ function renderAgentForm(
     apiKey.value = "";
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
-    modelCredentialPicker.refresh();
+    modelCredentialPicker.resetSelection();
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
@@ -2393,7 +2470,11 @@ function renderAgentForm(
     { className: "form-actions" },
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
-      if (!discardsWork() || window.confirm("Discard this draft?")) {
+      const configurationToKeep = savedAgent ? undefined : savedConfiguration;
+      const confirmation = configurationToKeep
+        ? `Discard this draft? Configuration ${configurationToKeep.id} will remain saved. A new draft can save another Configuration.`
+        : "Discard this draft?";
+      if ((!configurationToKeep && !discardsWork()) || window.confirm(confirmation)) {
         context.setDiscardOnExit(true);
         context.navigate("agents");
       }
@@ -3414,7 +3495,9 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
+    const checkingSecret = modelCredentialPicker.pendingStatus();
     const submitUnavailable =
+      Boolean(checkingSecret) ||
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -3430,18 +3513,19 @@ function renderAgentForm(
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
-    let submitReason: HTMLElement | null = null;
+    let submitReason: HTMLElement | null = checkingSecret;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
       (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
       submitReason = capabilityStatus;
-      submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
       submitReason = accessStatus;
-      submit.setAttribute("aria-describedby", accessStatus.id);
+    }
+    if (submitReason) {
+      submit.setAttribute("aria-describedby", submitReason.id);
     } else {
       submit.removeAttribute("aria-describedby");
     }
@@ -3926,6 +4010,7 @@ function renderAgentForm(
       input.setCustomValidity(workspaceFileProblem(filename, input.value));
     }
     if (
+      modelCredentialPicker.pendingStatus() ||
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||
@@ -4255,8 +4340,8 @@ function renderAgentForm(
           },
         }).catch((error: unknown) => {
           if (requestFailure(error).status === 403) {
-            // A refused Configuration create names the grants it needs: one fixed text for
-            // every 403, since only an Installation administrator can create one (finding 2111).
+            // A Configuration create can be refused by the collection check or a bound Secret
+            // check. Give both requirements without guessing which check refused it.
             responseFields(error).refusal = CONFIGURATION_CREATE_REFUSED;
           }
           throw error;
@@ -4290,19 +4375,32 @@ function renderAgentForm(
       let createdServicePrincipalId: string | undefined;
       if (!savedAgent) {
         mutationStarted = true;
+        const agentBody = {
+          ...body,
+          harnessAuth,
+          credentialSources,
+          configurationId: savedConfiguration.id,
+          ...(nativeAdmin.checked && nativeAdminAvailable
+            ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
+            : {}),
+        };
         const created = responseFields(
           await request(`${namespacePath(namespaceId)}/agents`, {
             method: "POST",
             expectedStatus: 201,
-            body: {
-              ...body,
-              harnessAuth,
-              credentialSources,
-              configurationId: savedConfiguration.id,
-              ...(nativeAdmin.checked && nativeAdminAvailable
-                ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
-                : {}),
-            },
+            body: agentBody,
+          }).catch((cause: unknown) => {
+            if (repositoryBindings.length === 0 && requestFailure(cause).status === 403) {
+              const reason = agentSaveAccessReason(namedDenial(cause), namespaceId, agentBody);
+              const help =
+                capabilitiesUnreadable && context.installationAdmin === false
+                  ? askAdministratorTo("check your access")
+                  : "Review grants and IAM Restrictions.";
+              const retry = reason ? " If access changes, select Create Agent again here." : "";
+              responseFields(cause).refusal =
+                `Agent creation was refused. ${reason ?? ACCESS_NOT_INCLUDED} ${help}${retry}`;
+            }
+            throw cause;
           }),
         );
         // The next step grants this principal access to the selected Secrets. Confirm the
@@ -4487,7 +4585,9 @@ function renderAgentForm(
             guidance +
             (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
       if (!refusedInConfiguration && !confirmedSecretConflict && !savedAgent) {
-        offerPresetVariableChange(error.serverMessage);
+        offerPresetVariableChange(
+          typeof responseFields(cause).refusal === "string" ? undefined : error.serverMessage,
+        );
       }
       focusFeedbackLine(confirmedSecretConflict ? secretConflictRecovery : feedback);
       // A create that raced another Agent to the name (the preflight checked it).

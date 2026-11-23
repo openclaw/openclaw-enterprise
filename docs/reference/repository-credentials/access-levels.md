@@ -38,6 +38,125 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
+### Native Git delivery
+
+A Namespace registration can select `nativeGit: "v1"` with the finite
+`github-repository` profile. Select it consistently across the Agent's bindings.
+Deployment also requires a saved [repository policy](../sandbox-policies.md#repository-network-policy)
+and a Compute Driver that admits the placement. Omitting the policy retains
+online authorization. Existing ref, draft and standing grants retain their own profiles.
+
+Before enabling `nativeGit: "v1"`, finish replacing incompatible Workers. An old
+Worker can consume a scoped deployment job attempt before refusing its marked
+revision. The repository policy reference covers recovery and the restriction on
+adopting previously deployed legacy Agents.
+
+OpenShell matches discovery and upload-pack for each read grant. Write also
+permits receive-pack. The Sandbox binds each repository path to a credential
+held by the Gateway. By default, this selection grants Git only.
+
+Before installing or renewing the credential, OCE checks that the expected
+Sandbox is the Provider's sole recipient and the workspace has no additional
+members. Operators must retain exclusive control of workspace, Sandbox and
+Provider writes for this delivery mode.
+
+To allow GitHub API access with stock OpenShell 0.1.9 and the managed Installation
+Provider, set `scopedRest: "v1"` alongside `nativeGit: "v1"` on the Installation's
+registration for the OCE Namespace. Each operation also requires the registration
+permission in this table, the corresponding GitHub App permission, and a saved
+repository grant:
+
+| Operation                              | `permissions` entry                | Saved grant   |
+| -------------------------------------- | ---------------------------------- | ------------- |
+| List issues or read one issue          | `issues`: `read` or `write`        | Read or Write |
+| List pull requests or read one of them | `pull_requests`: `read` or `write` | Read or Write |
+| Create a pull request                  | `pull_requests`: `write`           | Write         |
+
+GitHub's issue routes also return pull requests as issue records, so the issue
+permission alone lets an Agent read pull request titles and descriptions.
+
+Complete the compatible Worker rollout before enabling these settings. After
+changing the registration, rebind existing repository access under the usual
+credential approval and deploy or redeploy the Agent. A Worker upgrade does not
+change a running Sandbox. If the registration already had `scopedRest: "v1"` and
+a `pull_requests` permission, the Agent receives the pull request routes at its
+next deployment. Use the supplied `GITHUB_TOKEN` placeholder:
+
+```sh
+gh api --method GET repos/OWNER/REPO/issues
+gh api --method GET repos/OWNER/REPO/issues/NUMBER
+gh api --method GET repos/OWNER/REPO/pulls
+gh api --method GET repos/OWNER/REPO/pulls/NUMBER
+```
+
+`NUMBER` must be a positive decimal number of at most 19 digits.
+
+Three parties act on a request:
+
+- **OpenShell** checks every request inside the Sandbox. It refuses a request
+  outside the saved grants before GitHub receives it, and adds the real
+  credential to an allowed one. The Agent holds only a placeholder.
+- **OCE** sees no request. It writes the OpenShell rules from the saved grants
+  when the Agent is deployed, and the Worker renews the credential. API access
+  continues without the Worker while the current credential is valid (at most
+  one hour).
+- **GitHub** applies the permissions and repositories of the credential.
+
+Omitting `scopedRest` keeps native delivery Git-only. These settings do not permit comments, reviews, PR updates or merges, issue writes,
+GraphQL, or direct access to repositories without a saved grant. Pull request
+creation has the exceptions under [Known limits](#known-limits).
+
+#### Pull request creation
+
+To create a normal or draft pull request, save the request in `pull.json` and
+send it as the JSON body:
+
+```json
+{ "title": "Fix", "head": "topic/fix", "base": "main" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/pulls --input pull.json
+```
+
+OCE writes the creation route only when every repository bound to the Agent has a
+saved Read or Write grant. While one binding has no grant, the Agent keeps Git and
+the read routes, and OpenShell refuses creation with 403 before GitHub receives
+it. To allow creation, save a Read grant for that repository, or remove its
+binding, and redeploy. A Sandbox that an earlier Worker started with the
+creation route in that state gets no new credential until the Agent is
+redeployed.
+
+If a creation result is uncertain, inspect the repository before submitting again.
+To withdraw creation, save Read for the repository and redeploy. Verify that the
+old Sandbox retires.
+
+#### Known limits
+
+OpenShell matches the method, path and query of a request. It does not inspect
+the body, and OCE does not check it. An Agent that can create pull requests in a
+repository can also do the following in that repository:
+
+- Name another repository's branch as the head, with `head: "OWNER:BRANCH"` or
+  `head_repo`. Commits of that repository become readable through the target's
+  pull request ref and diff. GitHub refuses a head repository that the
+  credential does not cover, with 422 "not all refs are readable" (verified
+  against github.com). The credential covers every repository bound to the
+  Agent, and creation is only available while each of them has a saved grant,
+  so the head can only be a repository the Agent can already read.
+- Convert an existing issue into a pull request, with `issue: NUMBER`, which
+  changes that issue.
+
+A query string can carry the same fields.
+
+Two things bound both cases. GitHub applies the permissions and repositories of
+the credential. The target is always a repository for which the Agent already
+holds a saved Write grant.
+
+Issue conversion stays open: preventing it needs OpenShell to inspect request
+bodies, which it does not. To rule it out, leave `pull_requests` at `read` on
+the registration, which withholds creation.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |

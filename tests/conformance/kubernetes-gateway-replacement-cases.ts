@@ -57,16 +57,16 @@ export async function checkGatewayRolloutReadiness() {
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" } as const;
   const ownership = { namespaceId: tenant.id, agentId: "agent-rollout" };
   const name = `gateway-${digest(ownership.agentId)}`;
-  const deployment = driver["deployment"](
+  const deployment = driver["deployment"]({
     name,
     ownership,
     namespace,
-    { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
-    name,
-    "gateway",
-    {},
-    "info",
-  );
+    images: { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
+    serviceAccountName: name,
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+  });
   deployment.metadata.generation = 2;
   const status = {
     observedGeneration: 2,
@@ -206,20 +206,20 @@ export async function checkCandidateGatewayReplacement(t: TestContext) {
       save(policy);
     }
   }
-  const predecessor = driver["deployment"](
-    gatewayName,
-    gatewayOwnership,
-    { name: gatewayNamespace, plane: "control" },
-    { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
-    gatewayName,
-    "gateway",
-    {},
-    "info",
-    driver["gatewayConfiguration"](oldRevision, "previous-node", {
+  const predecessor = driver["deployment"]({
+    name: gatewayName,
+    ownership: gatewayOwnership,
+    namespace: { name: gatewayNamespace, plane: "control" },
+    images: { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
+    serviceAccountName: gatewayName,
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: driver["gatewayConfiguration"](oldRevision, "previous-node", {
       name: namespace,
       plane: "execution",
     }),
-  );
+  });
   assert.ok(predecessor.metadata.annotations);
   predecessor.metadata.annotations["openclaw.dev/agent-revision"] = String(oldRevision.revision);
   predecessor.metadata.annotations["openclaw.dev/agent-revision-id"] = oldRevision.id;

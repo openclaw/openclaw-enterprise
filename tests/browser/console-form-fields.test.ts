@@ -345,6 +345,10 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   const acknowledge = panel.getByRole("checkbox");
   const share = panel.getByRole("button", { name: "Share Agent", exact: true });
   await panel.locator("#share-principal-id:enabled").waitFor();
+  assert.match(
+    (await accessible(page, acknowledge)).name,
+    /full native administration of this Agent.*Removing the Agent grant leaves the Namespace discovery grant in place/,
+  );
   await share.click();
   assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
   assert.equal(await focusedId(page), "share-principal-id");

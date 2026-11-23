@@ -97,10 +97,11 @@ selected runtime before relying on it.
 1. Sign in, select the same Namespace, and open **Agents → Create Agent**.
    You need `read` on the Preset and Agent and Configuration `create` in the
    Namespace. An administrator can grant exact Preset access through
-   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy), but
-   Namespace IAM cannot grant `create`, so only Installation administrators can save
-   the Agent. Other members can render a Preset into a draft, and the console says
-   that creating it needs Installation access.
+   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy).
+   That API cannot grant `create`. An
+   [Installation-configured Role and binding](../../reference/authorization/default-users.md)
+   can grant create to a member. If Agent create is unavailable, the console
+   explains the required access instead of opening the form.
 2. The form opens on **Basics** with **No Preset**. In **Preset**, choose your
    Preset, fill its variables, and select **Use Preset**. The installed
    [`default-codex` copy](../../reference/presets.md#plain-console-default) is

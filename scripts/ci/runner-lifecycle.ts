@@ -22,7 +22,6 @@ type Phase = "prepare" | "run" | "cleanup";
 type PhaseStatus = "not-run" | "passed" | "failed" | "timed-out";
 
 export type PhaseRequest = {
-  phase: Phase;
   root: string;
   lane: string;
   statePath: string;
@@ -30,7 +29,7 @@ export type PhaseRequest = {
   manifestPath: string;
   file?: string | undefined;
   testName?: string | undefined;
-};
+} & ({ phase: "prepare" | "run" } | { phase: "cleanup"; expectState: boolean });
 
 type PhaseResult = {
   exitCode: number;
@@ -368,11 +367,13 @@ export async function runCompleteLifecycle(
       }
     }
     const previous = phases.run.status === "not-run" ? phases.prepare : phases.run;
-    if (previous.terminal) {
+    const runJournalMissing =
+      isRecord(phases.run.error) && phases.run.error.code === "cleanup-state-missing";
+    if (previous.terminal && !runJournalMissing) {
       await assertAttemptOwned();
       activeDeadline = Date.now() + cleanupAllowanceMs();
       phases.cleanup = await lifecyclePhase(
-        { ...phaseRequest, phase: "cleanup" },
+        { ...phaseRequest, phase: "cleanup", expectState: phases.prepare.status === "passed" },
         cleanupAllowanceMs(),
         entryURL,
       );
@@ -405,6 +406,9 @@ export async function runCompleteLifecycle(
     const uncertain = Object.values(phases).some(
       (phase) => phase.status !== "not-run" && !phase.terminal,
     );
+    const missingJournal =
+      runJournalMissing ||
+      (isRecord(phases.cleanup.error) && phases.cleanup.error.code === "cleanup-state-missing");
     const passed =
       !interrupted &&
       Object.values(phases).every((phase) => phase.status === "passed") &&
@@ -414,7 +418,7 @@ export async function runCompleteLifecycle(
       exitCode = 128 + osConstants.signals[interrupted];
     }
     let status = passed ? "passed" : "failed";
-    if (uncertain) {
+    if (uncertain || missingJournal) {
       status = "reconciliation-required";
     }
     const lifecycle = {
@@ -422,7 +426,14 @@ export async function runCompleteLifecycle(
       interrupted,
       phases,
     };
-    if (!passed) {
+    if (missingJournal) {
+      const missing = issue(
+        "cleanup-state-missing",
+        "Expected cleanup journal is missing. Retain the attempt directory for reconciliation.",
+      );
+      summary.issues.push(missing);
+      logIssues([missing]);
+    } else if (!passed) {
       summary.issues.push(
         issue(
           "lifecycle-incomplete",

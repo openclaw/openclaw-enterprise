@@ -95,6 +95,19 @@ In **Return to loaded pages**, Tab to Namespaces and press Enter: its heading
 receives focus, then Tab reaches Refresh. Check retained editors through
 Back/Forward, Refresh, refocus, and Namespace switches.
 
+In **Return to an interrupted Agent link**, choose **← Agents** while the
+Console looks for the linked Agent in another Namespace. The list stays open
+when the delayed response arrives. Back opens the historical version in
+**Z history holder** with **Deployment** selected; Forward returns to the list.
+The fixture simulates API responses.
+
+In **Recover from a mismatched Agent lookup**, the fixture simulates an unavailable
+holder probe and a reply from that holder returned for another Namespace. Confirm
+**Agent not in this Namespace**, an unscoped URL, and that **Switch Namespace**
+focuses the selector. Use the Console **Refresh** once to open the requested
+historical version in the holder Namespace with **Deployment** selected. Browser
+reload resets the fixture.
+
 **Return Backend access denied** checks Installation-wide denial.
 **Return access denied** and **Return session expired** must remove retained
 private content on response. These fixtures prove presentation only; the
@@ -177,11 +190,20 @@ do not prove installation, invocation access, runtime enforcement, or live Agent
 turns.
 
 In **Pages/Agent detail → Choose tools for a connected Slack account**, select the
-simulated account and load tools. Retry after the simulated permission error.
+simulated account and load tools. After the simulated permission error, choose
+**Recheck access**. Verify it disappears and focus moves to **Load plugins**
+when the recheck still owns focus. Choose **Load plugins**, reopen Slack and
+load its tools.
 Enable a tool, open **Tool policy**, and set **Require approval for** to **Every
 action**. Confirm unsupported settings are disabled. Save, reopen, and verify the
 selection. Disable the tool to remove its approval setting. The displayed note
 explains that Gateway approval does not cover direct credentialed scripts.
+
+In **Pages/Agent detail → Recover a Slack account after access is restored**,
+follow the same steps through **Recheck access** and **Load plugins**. Reopen
+Slack. Check that no account is eligible. Activate **Recheck accounts** with the
+keyboard. Focus moves to **Load plugins**. Load plugins, reopen Slack, and load
+tools for the restored account.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844
@@ -216,6 +238,16 @@ and can be cleared to inherit. Tool IDs match the JSON keys.
 **Pages/Agent detail → Edit plugins in new version** starts with Calendar saved;
 **Plugins** preloads the catalog with its Service Accounts Secret. In **Configure
 plugins**, add Documents, change Calendar's policy, save, and deploy. The deployment details show the saved plugin settings.
+
+In **Pages/Agent detail → Plugin catalog changed while loading**, confirm stale
+entries are gone, then use **Load plugins**. In **Plugin details changed while
+loading**, confirm **Add** is disabled, then use **Retry tools** for the selected
+plugin. Both stories show the request ID and keep draft selections unchanged.
+
+In **Plugin discovery during Agent deletion**, wait for Calendar’s tools and
+choose **Load plugins**. Check that both tabs show the deletion message and
+request ID, and that discovery is disabled. Choose **Done** and check that
+**Plugin selections JSON** still contains the unsaved Project tracker selection.
 
 ## Update
 

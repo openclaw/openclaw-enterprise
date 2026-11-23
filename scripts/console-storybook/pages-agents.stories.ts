@@ -3,6 +3,11 @@ import { story } from "./story.ts";
 export default { title: "Pages/Agents" };
 
 export const Agents = { ...story("agents"), name: "Populated" };
+export const DeploymentFailurePhone = story("agentsDeploymentFailed", {
+  name: "Latest deployment failed on mobile",
+  frameWidth: "390px",
+  frameHeight: "844px",
+});
 export const RowNavigation = story("agentsRowNavigation");
 export const NamespaceFocusDuringRefresh = {
   ...story("agentsNamespaceFocusDuringRefresh"),
