@@ -144,7 +144,7 @@ operation was not authorized.`
   also requires `secret:operate` on each Secret it reads.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
-- [Retrying credential delivery](../credential-sources.md#retry-credential-delivery)
+- [Retrying credential delivery](../api.md#post-namespacesnamespaceidagentsagentidcredentialspush)
   requires exact `agent:operate` and `credential_source:update` on every selected
   deployed Source. The Agent service principal also needs `credential_source:operate`.
 - [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)
