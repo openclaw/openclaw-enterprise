@@ -36,9 +36,31 @@ cleanup fails. Disabled channel candidates exit without dependency changes.
 The [Kubernetes](kubernetes-setup.md) and [Amazon EKS](eks-openshell-setup.md)
 quickstart templates explicitly set `channelEgress.enabled: false`. After
 generating `$RUN_DIR/values.json` and `$RUN_DIR/installation.json`, and before
-installing OCC, use this block only with the original disabled channel settings.
-If either file has custom channel settings, [configure both inputs](#configure-upstream-proxy-endpoints)
-instead. Keep `upstreamProxies` and any `proxyTrust` in sync.
+installing OCC, choose the procedure for your inputs.
+
+**Custom settings.** If either file has custom channel settings, skip the staging block below.
+Use the [channel configuration](../../reference/drivers/kubernetes-compute/channel-egress.md#configuration)
+to enable channels in `values.json` and match the names, ports and exclusions in
+`installation.json`. Set Compute's `gatewayNamespace` to the value of
+`$PLATFORM_NS`. Include every Pod, Service and node range from your inventory.
+If you use
+[upstream proxies](../../reference/drivers/kubernetes-compute/channel-egress.md#upstream-proxy-configuration),
+match `upstreamProxies` and any `proxyTrust` in both files.
+
+Run this check from the matching release checkout.
+
+```bash
+scripts/setup-channel-egress check \
+  --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
+  --namespace "$PLATFORM_NS" --values "$RUN_DIR/values.json"
+```
+
+The command checks `values.json` and probes the Envoy dependencies. It
+does not compare `installation.json`. Correct input errors or ask the
+dependency owner to repair the dependencies, then rerun the check.
+Continue the quickstart only after the two inputs agree and the check passes.
+
+**Original disabled settings.** Use the staging block below.
 Make sure no other person or process edits either file until both copies finish.
 
 Set `CHANNEL_EXCLUDED_CIDRS` to a JSON array from your operator's network
@@ -91,8 +113,9 @@ class and exclusions. Compute receives the same names, ports and exclusions.
 The chart's channel image stays separate from `ENVOY_IMAGE`, which selects
 workspace ingress.
 
-The dependency check reads the Helm values only. If it fails, retain the
-staged files and repair the dependencies. If either copy is interrupted,
+The check probes Envoy with the staged Helm values. It does not compare the
+Installation file. On failure, retain the staged files and resolve the error
+before retrying. If either copy is interrupted,
 stop before installing OCC. Check for intervening edits and reconcile them
 before repeating both copies from the same checked directory. Use `cmp -s`
 to verify each destination matches its staged file before continuing.
