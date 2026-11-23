@@ -1400,6 +1400,116 @@ test("dedicated automation MCP grants endpoint egress and private CA trust only 
     undefined,
     "removing the approved grant must remove endpoint CA data from the next projection",
   );
+
+  // Exercise the public dedicated transport with the installed SDK's actual
+  // deserializer. Kubernetes returns model instances, not renderer records.
+  const modelDraft = structuredClone(draft);
+  delete modelDraft.mcp;
+  modelDraft.agents.entries.main.tools.allow = [];
+  modelDraft.tools.gatewayPolicy.allow = [];
+  const modelFixture = dedicatedFirstDeployFixture({
+    computeOptions: {
+      images: {
+        gateway: fixture.driver.options.images.gateway,
+        agent: fixture.driver.options.images.agent,
+        requireImmutableDigest: true,
+      },
+    },
+    gatewayNodes: nodes,
+    revision: {
+      harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+      configuration: admitGatewaySecurityDefaults(modelDraft),
+      plugins: undefined,
+    },
+  });
+  await modelFixture.prepare();
+  const image = modelFixture.driver.options.images.agent;
+  const observedPods = ["gateway", "agent"].map((role) => {
+    const name = role === "gateway" ? modelFixture.gatewayName : modelFixture.agentName;
+    const template = modelFixture.read("Deployment", name).spec.template;
+    return {
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: {
+        ...structuredClone(template.metadata),
+        name: role + "-pod",
+        namespace: modelFixture.namespace,
+        uid: role + "-uid",
+      },
+      spec: structuredClone(template.spec),
+      status: {
+        phase: "Running",
+        podIP: role === "gateway" ? "10.42.0.12" : "10.42.0.13",
+        conditions: [{ type: "Ready", status: "True" }],
+        containerStatuses: [
+          { name: role, ready: true, containerID: "containerd://" + role, imageID: image },
+        ],
+      },
+    };
+  });
+  modelFixture.clients.core.listNamespacedPod = async ({ labelSelector }) =>
+    ObjectSerializer.deserialize(
+      {
+        items: observedPods.filter((pod) =>
+          selectorMatches({ matchLabels: labelSelectorLabels(labelSelector) }, pod.metadata.labels),
+        ),
+      },
+      "V1PodList",
+    );
+  const readConfigMap = modelFixture.clients.core.readNamespacedConfigMap.bind(
+    modelFixture.clients.core,
+  );
+  modelFixture.clients.core.readNamespacedConfigMap = async (request) =>
+    ObjectSerializer.deserialize(await readConfigMap(request), "V1ConfigMap");
+  modelFixture.clients.discovery.listNamespacedEndpointSlice = async ({ labelSelector }) => {
+    const name = labelSelectorLabels(labelSelector)["kubernetes.io/service-name"];
+    const service = modelFixture.read("Service", name);
+    const gatewayPod = observedPods[0];
+    return ObjectSerializer.deserialize(
+      {
+        items: [
+          {
+            metadata: {
+              namespace: modelFixture.gatewayNamespace,
+              labels: { "kubernetes.io/service-name": name },
+              ownerReferences: [{ kind: "Service", name, uid: service.metadata.uid }],
+            },
+            endpoints: [
+              {
+                conditions: { ready: true },
+                targetRef: {
+                  kind: "Pod",
+                  namespace: modelFixture.gatewayNamespace,
+                  name: gatewayPod.metadata.name,
+                  uid: gatewayPod.metadata.uid,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "V1EndpointSliceList",
+    );
+  };
+  modelFixture.clients.core.connectGetNamespacedPodProxyWithPath = async ({ path }) => {
+    assert.equal(path, "openclaw/runtime/image");
+    return { openclawCommit: AGENT_AUTOMATIONS_OPENCLAW_SOURCE };
+  };
+  const modelQualification = await modelFixture.driver.evaluateAgentAutomationPolicy(
+    modelFixture.revision,
+  );
+  assert.deepEqual(modelQualification?.grant.tools, []);
+  const openModel = () =>
+    modelFixture.driver.openAgentAutomationTransport(modelFixture.revision, modelQualification);
+  const admitted = await openModel();
+  assert.ok(admitted, "a valid SDK-deserialized dedicated Pod must admit transport");
+  await admitted.close();
+  observedPods[1].spec.securityContext.runAsUser = 0;
+  assert.equal(
+    await openModel(),
+    undefined,
+    "a changed SDK-deserialized security field must still refuse transport",
+  );
 });
 
 test("automation transport refuses a Gateway with changed identity or configuration origin", async (t) => {

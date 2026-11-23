@@ -1368,6 +1368,72 @@ code_mode = false
 code_mode_only = false
 sleep_tool = false
 `;
+// Kubernetes SDK models and renderer records have different prototypes. Compare
+// only their exact own data fields; keep types, array order, and extra fields strict.
+function automationOwnStructureEqual(actual: unknown, expected: unknown): boolean {
+  if (Object.is(actual, expected)) {
+    return true;
+  }
+  if (
+    actual === null ||
+    expected === null ||
+    typeof actual !== "object" ||
+    typeof expected !== "object"
+  ) {
+    return false;
+  }
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) {
+      return false;
+    }
+    const actualKeys = Reflect.ownKeys(actual);
+    const expectedKeys = Reflect.ownKeys(expected);
+    if (actualKeys.length !== expectedKeys.length) {
+      return false;
+    }
+    return actualKeys.every((key) => {
+      if (!expectedKeys.includes(key)) {
+        return false;
+      }
+      if (key === "length") {
+        return true;
+      }
+      const left = Object.getOwnPropertyDescriptor(actual, key);
+      const right = Object.getOwnPropertyDescriptor(expected, key);
+      return (
+        !!left &&
+        !!right &&
+        left.enumerable === true &&
+        right.enumerable === true &&
+        "value" in left &&
+        "value" in right &&
+        automationOwnStructureEqual(left.value, right.value)
+      );
+    });
+  }
+  const actualKeys = Reflect.ownKeys(actual);
+  const expectedKeys = Reflect.ownKeys(expected);
+  if (actualKeys.length !== expectedKeys.length) {
+    return false;
+  }
+  return actualKeys.every((key) => {
+    if (typeof key !== "string" || !expectedKeys.includes(key)) {
+      return false;
+    }
+    const left = Object.getOwnPropertyDescriptor(actual, key);
+    const right = Object.getOwnPropertyDescriptor(expected, key);
+    return (
+      !!left &&
+      !!right &&
+      left.enumerable === true &&
+      right.enumerable === true &&
+      "value" in left &&
+      "value" in right &&
+      automationOwnStructureEqual(left.value, right.value)
+    );
+  });
+}
+
 const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   AUTOMATION_CODEX_REQUIREMENTS_ENVIRONMENT,
   "OPENCLAW_AGENT_REVISION_ID",
@@ -3897,8 +3963,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return privileged === undefined || privileged === false ? rest : value;
     };
     if (
-      !isDeepStrictEqual(podSecurity, expectedPodSecurity) ||
-      !isDeepStrictEqual(cleanSecurity(security), expectedSecurity) ||
+      !automationOwnStructureEqual(podSecurity, expectedPodSecurity) ||
+      !automationOwnStructureEqual(cleanSecurity(security), expectedSecurity) ||
       (Array.isArray(spec.ephemeralContainers) && spec.ephemeralContainers.length > 0)
     ) {
       return false;
@@ -4011,7 +4077,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ]
         : []),
     ];
-    if (!isDeepStrictEqual(normalizeMounts(agent.volumeMounts), normalizeMounts(expectedMounts))) {
+    if (
+      !automationOwnStructureEqual(
+        normalizeMounts(agent.volumeMounts),
+        normalizeMounts(expectedMounts),
+      )
+    ) {
       return false;
     }
     const volumes = Array.isArray(spec.volumes) ? spec.volumes.map(asRecord) : [];
@@ -4020,10 +4091,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return selected.length === 1 ? selected[0] : undefined;
     };
     if (
-      !isDeepStrictEqual(asRecord(volume("runtime-state")?.emptyDir), {
+      !automationOwnStructureEqual(asRecord(volume("runtime-state")?.emptyDir), {
         sizeLimit: RUNTIME_STATE_VOLUME_SIZE,
       }) ||
-      !isDeepStrictEqual(asRecord(volume("runtime-temporary")?.emptyDir), { sizeLimit: "64Mi" }) ||
+      !automationOwnStructureEqual(asRecord(volume("runtime-temporary")?.emptyDir), {
+        sizeLimit: "64Mi",
+      }) ||
       asRecord(volume(HARNESS_WORKSPACE_VOLUME)?.persistentVolumeClaim)?.claimName !==
         this.harnessWorkspaceClaimName(revision.agentId) ||
       (scratch !== undefined &&
@@ -4038,7 +4111,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         secret?.secretName !== this.workspaceNodeName(revision) ||
         secret.optional !== true ||
         secret.defaultMode !== 0o440 ||
-        !isDeepStrictEqual(secret.items, [{ key: "setupCode", path: NODE_SETUP_FILE }])
+        !automationOwnStructureEqual(secret.items, [{ key: "setupCode", path: NODE_SETUP_FILE }])
       ) {
         return false;
       }
@@ -4050,15 +4123,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !!observed &&
       observed.image === expected.image &&
       observed.imagePullPolicy === expected.imagePullPolicy &&
-      isDeepStrictEqual(observed.command, expected.command) &&
-      isDeepStrictEqual(observed.args, expected.args) &&
-      isDeepStrictEqual(observed.env ?? [], expected.env ?? []) &&
+      automationOwnStructureEqual(observed.command, expected.command) &&
+      automationOwnStructureEqual(observed.args, expected.args) &&
+      automationOwnStructureEqual(observed.env ?? [], expected.env ?? []) &&
       (!Array.isArray(observed.envFrom) || observed.envFrom.length === 0) &&
-      isDeepStrictEqual(
+      automationOwnStructureEqual(
         normalizeMounts(observed.volumeMounts),
         normalizeMounts(expected.volumeMounts),
       ) &&
-      isDeepStrictEqual(
+      automationOwnStructureEqual(
         cleanSecurity(asRecord(observed.securityContext)),
         expected.securityContext,
       ) &&
@@ -4130,7 +4203,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       map?.immutable !== true ||
       !isNonEmptyString(map.metadata.uid) ||
-      !isDeepStrictEqual(map.data, expectedMap.data) ||
+      !automationOwnStructureEqual(map.data, expectedMap.data) ||
       Object.keys(map.binaryData ?? {}).length !== 0
     ) {
       return undefined;
@@ -4180,7 +4253,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       agent.workingDir !== undefined ||
       (Array.isArray(agent.volumeDevices) && agent.volumeDevices.length > 0) ||
       asRecord(agent.securityContext)?.readOnlyRootFilesystem !== true ||
-      !isDeepStrictEqual(agent.command, RUNTIME_WRAPPER_COMMAND) ||
+      !automationOwnStructureEqual(agent.command, RUNTIME_WRAPPER_COMMAND) ||
       !this.verifyAutomationAgentProgram(agent.args, revision) ||
       !this.verifyAutomationReadinessProbe(probe, http, agent.ports) ||
       (Array.isArray(agent.envFrom) && agent.envFrom.length > 0)
@@ -4209,6 +4282,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             },
           },
           { name: "CODEX_LOGIN_MODE", value: "api_key" },
+          { name: "OPENCLAW_HARNESS_MODEL", value: harnessPrimaryModel(revision.configuration) },
         ],
       },
       pluginRuntime: { ...snapshot, automationRequirementsUid: map.metadata.uid },
@@ -4273,11 +4347,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           })
         : undefined;
     if (
-      !isDeepStrictEqual(
+      !automationOwnStructureEqual(
         normalizeEnvironment(agent.env),
         normalizeEnvironment(expectedAgent?.env),
       ) ||
-      !isDeepStrictEqual(normalizePorts(agent.ports), normalizePorts(expectedAgent?.ports))
+      !automationOwnStructureEqual(
+        normalizePorts(agent.ports),
+        normalizePorts(expectedAgent?.ports),
+      )
     ) {
       return undefined;
     }
@@ -4297,7 +4374,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       source?.name !== snapshot.name ||
       source.optional !== false ||
       (source.defaultMode !== undefined && source.defaultMode !== 0o644) ||
-      !isDeepStrictEqual(source.items, expectedItems)
+      !automationOwnStructureEqual(source.items, expectedItems)
     ) {
       return undefined;
     }
