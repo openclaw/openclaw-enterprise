@@ -6,10 +6,6 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import type { OccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { AgentDeviceAuthorizationResponse } from "../../packages/contracts/src/api/resources.ts";
-import type {
-  CredentialGatewayDriver,
-  CredentialRefreshDriver,
-} from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
@@ -18,7 +14,7 @@ import {
   createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.mjs";
+} from "../helpers/device-credential-gateway.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
@@ -30,18 +26,12 @@ type ApiResponse = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "body" |
   data: unknown;
 };
 
-interface FixtureOptions {
+type FixtureOptions = Omit<
+  NonNullable<Parameters<typeof createDeviceCredentialDrivers>[0]>,
+  "now"
+> & {
   logger?: OccLogger;
   auditSink?: InMemoryAuditSink;
-  approve?: () => Promise<boolean>;
-  beforePoll?: () => Promise<void>;
-  startError?: unknown;
-  formatExpiresAt?: (at: number) => string;
-}
-
-type DeviceGateway = CredentialGatewayDriver & {
-  calls: readonly { operation: string; sourceId: string }[];
-  sources: ReadonlyMap<string, "pending" | "ready">;
 };
 
 export type DeviceLogin = Static<typeof AgentDeviceAuthorizationResponse>["data"];
@@ -73,12 +63,10 @@ export async function createFixture(
 ) {
   const clock = createControlledClock();
   const secretDriver = createTestSecretDriver();
-  const drivers = createDeviceCredentialDrivers({
+  const { gateway, refresh } = createDeviceCredentialDrivers({
     now: () => clock.wallNow(),
     ...gatewayOptions,
   });
-  const gateway = drivers.gateway satisfies DeviceGateway;
-  const refresh = drivers.refresh satisfies CredentialRefreshDriver;
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     secretDriver,

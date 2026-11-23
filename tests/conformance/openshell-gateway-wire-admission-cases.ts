@@ -73,6 +73,8 @@ export function registerAdmissionCases(): void {
     };
     const labelRefusal = "external resource not admitted by required labels";
     const plainPreconditions: Record<string, string> = {
+      CONFIG_DISABLED:
+        "caller driver config is disabled; a gateway administrator must enable allow_driver_config",
       PLAIN: "provider 'x' not found",
       PVC_LABELS: `PersistentVolumeClaim 'fixture/private-claim': ${labelRefusal}`,
       CLASS_LABELS: `RuntimeClass 'private-class': ${labelRefusal}`,
@@ -146,6 +148,7 @@ export function registerAdmissionCases(): void {
         // The details envelope must carry the same status code.
         [`REQUEST_OUTCOME_UNCERTAIN||${grpc.status.ABORTED}`, "UNKNOWN"],
         ["SANDBOX_INVALID", "UNKNOWN"],
+        ["CONFIG_DISABLED", "CALLER_DRIVER_CONFIG_DISABLED"],
         ["PLAIN", "UNKNOWN"],
         ["PVC_LABELS", "PVC_ADMISSION_LABELS"],
         ["CLASS_LABELS", "CLASS_ADMISSION_LABELS"],
@@ -259,7 +262,10 @@ export function registerAdmissionCases(): void {
           assert.ok(error instanceof TransientDependencyError);
           assert.equal(error.dependency, "sandbox_admission");
           assert.equal(error.code, "SANDBOX_ADMISSION_LIMIT_REACHED");
-          assert.match(error.message, /limit of 1000 durable request admissions.*then redeploy/);
+          assert.match(
+            error.message,
+            /limit of durable request admissions.*mutation_admission_limit_per_caller.*then redeploy/,
+          );
           assert.equal(asRecord(error.cause)?.code, grpc.status.RESOURCE_EXHAUSTED);
           return true;
         });

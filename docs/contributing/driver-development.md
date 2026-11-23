@@ -19,7 +19,7 @@ enforce, and which failures must stop the operation:
 
 Installed npm packages can implement **Compute, Configuration, IAM, or Sandbox**.
 A Sandbox package can also provide Credential Proxy through one registration;
-follow the [Credential Proxy walkthrough](credential-proxy-driver.md) for that
+follow the [legacy egress Driver walkthrough](credential-proxy-driver.md) for that
 paired capability and its profile limits. Secret, Plugin, and ServiceAccount
 have bundled selections only. If you need one of those capabilities, change the
 existing platform implementation; adding an npm package alone will not make it

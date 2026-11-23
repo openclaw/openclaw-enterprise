@@ -90,7 +90,17 @@ test(
       );
     });
     assert.equal(jobUid(await resource("job", name, namespace)), uid);
-    assert.equal((await helm("list", "--all", "--short")).stdout.trim(), "");
+    const releases = await helm(
+      "list",
+      "--deployed",
+      "--failed",
+      "--pending",
+      "--superseded",
+      "--uninstalled",
+      "--uninstalling",
+      "--short",
+    );
+    assert.equal(releases.stdout.trim(), "");
     assert.equal((await kubectl("get", "pods", "-n", namespace, "-o", "name")).trim(), "");
   },
 );

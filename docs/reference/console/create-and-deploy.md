@@ -45,8 +45,8 @@ as the reason Dedicated OpenClaw is disabled.
    OpenClaw uses provider API keys. Get an
    [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
-   Choose a model Secret or **Create new Secret...** unless a Preset binds one
-   or you use ChatGPT OAuth.
+   Unless a Preset binds one or you use ChatGPT OAuth, choose or create a Secret.
+   Wait for the access check. Changing provider or method clears your choice.
    No model is preselected. Choose a starter model or **Enter model ID manually**.
    **Choose a model from the list** keeps listed models and other settings.
    Reselect unlisted IDs when you return.
@@ -84,11 +84,10 @@ as the reason Dedicated OpenClaw is disabled.
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-Before saving, forms and Preset variables survive navigation; passwords clear.
-**Cancel** and **Start over** discard the draft, confirming once changed. Saved Agents
-and Secrets remain. Sign-out clears drafts; a reload asks first. A refused Create stays a draft
-reusing saved resources, except a repository-policy refusal; uncertain outcomes follow save
-recovery below.
+Navigation retains drafts and Preset variables and clears passwords.
+**Cancel** and **Start over** confirm discarding edits. Saved resources
+remain. Sign-out discards drafts. Reload asks first. See below
+for rejected or uncertain writes.
 
 For Codex plugins, open **Configure plugins**. With the
 [OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),
@@ -195,9 +194,10 @@ deployment follows the separate guidance above.
 After a Stop, including `PROVISIONING_CANCELLED` before deployment, open the
 Agent and deploy when ready.
 
-If Agent creation is rejected after Configuration saves, correct the ordinary
-zero-binding Agent's editable fields and retry. The retry reuses Configuration
-and needs no repository choices or Repo Driver.
+After an ordinary Agent refusal, correct editable fields or check the named
+permission. If access changes, select **Create Agent** in this draft to reuse
+the Configuration without repository setup. **Cancel** warns that the
+Configuration stays saved. A fresh draft can save another.
 
 An unknown Agent response may mean a successful save; the form hides rejection
 actions. Check the **Agents** list and any displayed Configuration ID's

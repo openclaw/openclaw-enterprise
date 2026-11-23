@@ -12,7 +12,7 @@ const execute = promisify(execFile);
 const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
 const runtimeFile = "tests/integration/runtime-image-startup.test.ts";
-const runtimeChildCase = "runtime startup child consumes the CI-prepared Codex seccomp profile";
+const runtimeChildCase = "runtime startup child consumes the reviewed Codex startup inputs";
 const runtimeChildFixture = new URL(
   "../fixtures/staging-qualification-seccomp-child.ts",
   import.meta.url,
@@ -20,7 +20,10 @@ const runtimeChildFixture = new URL(
 
 test("staging workflow command consumes bound digests and refuses invalid release evidence", (t) =>
   checkWorkflowCommand(t));
-test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
+test(
+  "staging runtime lane preserves the reviewed Codex startup inputs in its child",
+  checkRuntimeChild,
+);
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
@@ -1034,6 +1037,9 @@ async function checkRuntimeChild(t: TestContext) {
           OCC_TEST_WORKSPACE_ENVOY_IMAGE:
             original.prepare.defaultEnv.OCC_TEST_WORKSPACE_ENVOY_IMAGE,
           OCC_TEST_STAGING_CODEX_VERSION: version,
+          OCC_TEST_PRODUCTION_IMAGE: version === undefined ? undefined : `sha256:${"c".repeat(64)}`,
+          EXPECTED_OCC_REVISION:
+            version === undefined ? undefined : "54bfa7fc1b99e362450beb5f9211e164991fa7b4",
           OCC_TEST_STAGING_UNDECLARED: "outer-only",
         },
       },

@@ -8,7 +8,7 @@ the current Agent deployment boundary. See the [parent flow](../docker-compose-d
 ### 6. Authenticated API calls create Namespace resources
 
 `internal/occclient/client.go`,
-`packages/occ/src/index.ts:OpenClawController`
+`packages/occ/src/controller.ts:OpenClawController`
 
 After `dev-up` prints the loopback API URL and private bootstrap key path, the
 operator uses `OCC_URL` and `OCC_SERVICE_KEY_FILE` for authenticated OCC calls.
@@ -27,7 +27,7 @@ start a gateway or prove model access.
 
 ### 8. Agent deployment stops at harness authentication admission
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`,
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.validateHarnessAuth`
 
 Deployment requires Agent `harnessAuth`. The Docker Driver rejects bindings,

@@ -195,7 +195,7 @@ export function registerCliCases(): void {
       );
       assert.deepEqual(
         propertyAt(resources, "namespace", "quota"),
-        { pods: "10" },
+        { pods: "20" },
         `${name} quota`,
       );
     }

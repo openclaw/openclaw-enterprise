@@ -30,10 +30,14 @@ export function agentSandboxControllerForNodes(nodes: NodeList) {
       ({ status }) => `${status.nodeInfo.operatingSystem}/${status.nodeInfo.architecture}`,
     ),
   );
-  if (platforms.size !== 1) {
+  const [platform] = platforms;
+  if (platforms.size !== 1 || platform === undefined) {
     throw new Error("Agent Sandbox requires one node platform.");
   }
-  const platform = [...platforms][0];
+  return agentSandboxControllerForPlatform(platform);
+}
+
+function agentSandboxControllerForPlatform(platform: string) {
   const selected = controllerPlatforms[platform as keyof typeof controllerPlatforms];
   if (!platform || !selected) {
     throw new Error(`Unsupported Agent Sandbox node platform ${platform}.`);
@@ -175,4 +179,34 @@ export async function verifyPreloadedAgentSandbox({
       throw new Error("Agent Sandbox running image does not match the native release config.");
     }
   }
+}
+
+// Before allocating k3d, use the selected Docker server’s native platform. The
+// installer repeats admission against the actual node before importing the image.
+async function main() {
+  if (process.argv.length !== 3 || process.argv[2] !== "check-cache") {
+    throw new Error("Usage: node scripts/ci/agent-sandbox.ts check-cache");
+  }
+  const { boundedImageCommand, selectNativeSourceImage } = await import("./k3d-image-admission.ts");
+  const { stdout } = await boundedImageCommand([
+    "version",
+    "--format",
+    "{{.Server.Os}}/{{.Server.Arch}}",
+  ]);
+  const platform = stdout.trim();
+  const { source, nativeSelection } = agentSandboxControllerForPlatform(platform);
+  const cached = await selectNativeSourceImage(
+    source,
+    nativeSelection,
+    "Agent Sandbox controller",
+    "cache-only",
+  );
+  console.log(JSON.stringify({ platform, source, ...cached }));
+}
+
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
 }

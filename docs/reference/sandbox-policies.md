@@ -53,72 +53,18 @@ disabling it stays allowed. When the Installation selects no Sandbox Driver,
 validate, save and apply return the same 409 right after authorization. Policy GET
 then returns `capability: null` and the cause in `unavailableReason`.
 
+If the controller cannot read the active revision of an Agent with saved
+repository grants, GET returns the saved policy with `protectedExecution`,
+`capability` and `defaults` set to `null`. See `unavailableReason`. An
+authorized editor can clear saved grants. Use a compatible controller and
+Worker to inspect or stop the workload and confirm retirement.
+
 ## Installation ceiling
 
-The Installation stores one versioned network policy ceiling in PostgreSQL.
-Preview, save, application admission, and deployment admission use its current
-rules. Pending worker applications recheck them before provider effects. The
-ceiling grants no access by itself; an empty ceiling permits no additions.
-Changes do not revoke running access or replace Sandbox Driver defaults.
-
-`GET` and `PUT /installation/sandbox-network-policy-ceiling` require `administer`
-on the server-selected Installation. The read returns `installationId`, `version`,
-`rules`, `updatedAt`, and `updatedBy` in the standard data envelope. PUT takes
-`{ expectedVersion, rules }`. A stale version returns a conflict. Successful
-changes and attributable audit evidence commit together.
-
-`POST /installation/sandbox-network-policy-ceiling/validate` takes the same fields
-with a draft `rules` value. It requires the same authority and checks the
-version and shared rule validation without saving. The data envelope contains
-`{ success: true, data: { rules } }` or
-`{ success: false, error: { details } }`. Preview success grants no authority to
-PUT, which repeats its checks.
-
-Ordinary Agent policy reads expose the rules through their existing Agent and
-SandboxPolicy permissions, without update attribution.
-
-Trusted startup configuration seeds version 1 once from
-`sandboxNetworkPolicyCeiling`. An omitted seed initializes an empty list.
-Subsequent starts preserve saved rules, including an explicitly empty list;
-a different seed produces a diagnostic, without replacing them. Missing,
-unreadable, or invalid state causes dependent operations to fail explicitly.
-Workers refuse startup until the API has initialized the ceiling. They never
-initialize it or fall back to their startup configuration.
-
-Saved state is the only runtime authority. Startup never reconciles existing
-rules or disables administrator edits. API replicas need no ceiling ownership
-lease or coordinated restart to change the saved rules. The retired
-`sandboxNetworkPolicyCeilingOverwriteOnStartup` setting is rejected.
-
-Each rule has `id`, an exact absolute `binary` path, a DNS `host`, and `ports`
-containing inclusive `{from,to}` ranges. For example, this startup seed permits
-future requests for one service:
-
-```yaml
-sandboxNetworkPolicyCeiling:
-  - id: approved-service
-    binary: /usr/bin/python3.11
-    host: service.example.com
-    ports:
-      - from: 443
-        to: 443
-```
-
-The complete requested scope must fit the ceiling. Executable paths must match
-exactly; a symlink or alternate interpreter path is a different executable.
-`*.example.com` covers one DNS label, not the apex or deeper subdomains. A
-wildcard addition requires that exact wildcard in the ceiling. Port coverage may
-combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. Policy documents allow at most 32 grants and 16 ranges
-per grant. OpenShell additionally limits each grant to 1024 distinct ports.
-
-Default rules, generated workspace access, model credential delivery, and Compute
-isolation remain controlled by their existing owners. Users cannot submit
-arbitrary provider policy YAML, alter defaults, share policies, or change their
-Agent/Namespace association. Policy identities use `sbp_` and the owner's UUID.
-Policies are created and removed with the Agent; there is no standalone
-create/delete or policy-reference API. Exact policy AccessBindings and
-Restrictions are removed with their policy.
+The [persisted Installation ceiling](settings/installation-network-policy-ceiling.md)
+bounds future network additions and pending applications. Startup seeds absent
+state once; Installation administrators manage saved rules through Settings or
+the owner API. It grants no access and does not revoke running access.
 
 ## Desired and applied versions
 
@@ -189,6 +135,46 @@ for `GetSandbox` and `GetSandboxPolicyStatus`, and `config:write` and Workspace
 role `admin` for `UpdateConfig`. Recommendations through `GetDraftPolicy` need
 `config:read` and Workspace role `user`. OpenShell scope enforcement must be configured
 on its OIDC gateway; these permissions are separate from OCE resource authority.
+
+## Repository network policy
+
+Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
+
+`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
+
+PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
+
+A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+
+When a Channel needs a bound Secret, the controller checks the saved repository
+policy and the caller's Secret access before handing the value to the Channel.
+The handoff shares the lock used by permission changes. The controller checks
+permissions committed before it acquires the lock. It releases the lock before
+waiting for the provider and checks deployment admission again before saving the
+revision.
+
+To opt into repository policy, an Agent must have an explicit list from its
+first deployment. Ordinary Agents can keep deploying without a list.
+A delayed write to its Gateway can outlive a Worker claim and a completed
+stop. Deployment returns 409 if any earlier revision has no list. The Worker
+checks the same history before preparing a queued scoped revision. For a
+previously deployed Agent with that history, create a new Agent and save
+the list before deploying it. An Agent that started with a list can
+deploy subsequent policy changes under the same Agent ID.
+
+After refusing a scoped replacement before its first provider call, the Worker
+can maintain the serving predecessor if the deployment has no earlier attempt.
+If earlier work could have changed the Gateway, the Worker keeps that repair
+blocked. Stop the Agent and confirm its workload has retired.
+
+The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/access-levels.md#native-git-delivery)
+for a dedicated Codex Harness, an OpenAI credential source and the managed
+Gateway. The controller build must pin the inspected Gateway and Agent images
+by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
+`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both role images together, then use the
+[runtime-first controller build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). Leaving the arguments empty disables this
+placement. A first empty list can be saved. Deploying it is refused before
+launch. Stop the active revision to retire its access.
 
 ## Denials and recommendations
 

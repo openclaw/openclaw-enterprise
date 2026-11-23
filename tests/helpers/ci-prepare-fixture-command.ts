@@ -756,6 +756,29 @@ async function fakeCommand({
     const node = args[0] === "exec" ? clusterNode(args[1]) : undefined;
     if (node) {
       const alias = state.aliases?.[node];
+      if (
+        scenario?.startsWith("slack-helm-") &&
+        equals(args.slice(2), ["ip", "route", "get", "10.42.3.34"])
+      ) {
+        assert.equal(node, "server-0");
+        if (scenario === "slack-helm-default-route") {
+          return finish("10.42.3.34 via 172.19.0.1 dev eth0 src 172.19.0.2\n");
+        }
+        if (scenario === "slack-helm-no-route") {
+          stderr("RTNETLINK answers: Network unreachable\n");
+          return exit(2);
+        }
+        if (scenario === "slack-helm-wrong-device") {
+          return finish("10.42.3.34 dev flannel.1 src 10.42.3.33\n");
+        }
+        if (scenario === "slack-helm-wrong-source") {
+          return finish("10.42.3.34 dev cni0 src 10.42.3.17\n");
+        }
+        if (scenario === "slack-helm-duplicate-source") {
+          return finish("10.42.3.34 dev cni0 src 10.42.3.33 src 10.42.3.35\n");
+        }
+        return finish("10.42.3.34 dev cni0 src 10.42.3.33 uid 0\n    cache\n");
+      }
       if (equals(args.slice(2), ["ip", "route", "get", "10.42.7.0"])) {
         assert.ok(node === "server-0");
         // Node readiness can precede Flannel's cross-node route. The first lookup
@@ -1118,6 +1141,22 @@ async function fakeCommand({
       }
       if (equals(args.slice(4), ["get", "nodes", "-o", "json"])) {
         assert.ok(typeof scenario === "string", "the kubectl fixture requires CI_FIXTURE_SCENARIO");
+        if (scenario.startsWith("slack-helm-")) {
+          const server = {
+            metadata: { name: `k3d-${state.cluster}-server-0` },
+            spec: {
+              podCIDR: scenario === "slack-helm-invalid-cidr" ? "10.42.3.33/28" : "10.42.3.32/28",
+            },
+          };
+          const items = scenario === "slack-helm-missing-node" ? [] : [server];
+          if (scenario === "slack-helm-extra-node") {
+            items.push({
+              metadata: { name: `k3d-${state.cluster}-agent-0` },
+              spec: { podCIDR: "10.42.7.0/24" },
+            });
+          }
+          return finish(JSON.stringify({ items }));
+        }
         if (scenario.startsWith("nodes-unready")) {
           return finish(
             JSON.stringify({

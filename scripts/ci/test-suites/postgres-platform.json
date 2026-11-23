@@ -31,6 +31,7 @@
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+    "tests/integration/postgres-staged-agent-credential-binding.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -38,6 +39,7 @@
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
     "tests/integration/postgres-presets.test.ts",
+    "tests/integration/postgres-preset-update-authority.test.ts",
     "tests/integration/postgres-workspace-setup.test.ts",
     "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
@@ -84,12 +86,6 @@
     "tests/integration/postgres-egress-replacement.test.ts"
   ],
   "files": [
-    {
-      "path": "tests/integration/installation-network-policy-ceiling.test.ts",
-      "expectedTests": [
-        "Installation ceiling owner API preserves empty state and rejects stale saves"
-      ]
-    },
     {
       "path": "tests/integration/postgres-connection-auth.test.ts",
       "expectedTests": [
@@ -148,6 +144,8 @@
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
+        "memory State admits both execution modes with repository network policy",
+        "PostgreSQL saves repository network policy and binds reader markers for both execution modes",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
         "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
@@ -204,8 +202,15 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
+      "expectedTests": [
+        "public managed Source enrollment and active staged Agent withdrawal preserve custody"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
+        "static Connection Templates preserve configured request destinations across scoped CRUD and immutable versions",
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
         "an administrator registers OAuth clients against a pinned template and its availability",
         "OAuth client secret mutations refuse an enclosing controller transaction",
@@ -248,6 +253,12 @@
         "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
         "shipped Preset API preserves contract-sized templates through PostgreSQL",
         "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-preset-update-authority.test.ts",
+      "expectedTests": [
+        "Preset PATCH refuses an exact grant withdrawn while waiting for its Namespace lock"
       ]
     },
     {
@@ -334,7 +345,8 @@
     {
       "path": "tests/integration/postgres-api-request-audit.test.ts",
       "expectedTests": [
-        "PostgreSQL records API admission and results and blocks work when admission cannot be saved"
+        "PostgreSQL records API admission and results and blocks work when admission cannot be saved",
+        "PostgreSQL retains the mutation and result audit when an admitted client disconnects"
       ]
     },
     {
@@ -493,6 +505,7 @@
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
         "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
+        "bundled OpenShell custody discovers and prepares a native v9 repository session",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
@@ -630,9 +643,14 @@
     {
       "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
       "expectedTests": [
+        "PostgreSQL rejects scoped SandboxPolicy saves after IAM revocation during an advisory lock wait",
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
+        "Agent policy HTTP preserves and withdraws stored repository grants",
+        "scoped deployment channel observes IAM revocation after the writer lock",
+        "scoped deployment admission observes IAM revocation after the writer lock",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
+        "live apply saves edits and enqueues their exact snapshot atomically",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
         "worker rechecks saved ceiling after admission and fails closed on lost state"
       ]
@@ -798,6 +816,10 @@
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
     },
     {
+      "path": "tests/integration/postgres-metrics-listener-capacity.test.ts",
+      "expectedTests": ["metrics listener bounds PostgreSQL scrape waiters and pipelined responses"]
+    },
+    {
       "path": "tests/integration/postgres-private-secret-create.test.ts",
       "expectedTests": [
         "a refused Installation-private create removes only its exact Kubernetes object",
@@ -814,6 +836,12 @@
     },
     {
       "path": "tests/integration/postgres-egress-replacement.test.ts"
+    },
+    {
+      "path": "tests/integration/installation-network-policy-ceiling.test.ts",
+      "expectedTests": [
+        "Installation ceiling owner API preserves empty state and rejects stale saves"
+      ]
     }
   ]
 }

@@ -6,6 +6,17 @@ import {
 
 export type InferenceProtocol = "openai-responses" | "openai-completions";
 
+const sourceProviderPresetIds = ["openai"] as const;
+
+/** An approved provider preset that OCC can associate with a credential source. */
+export type SourceProviderPresetId = (typeof sourceProviderPresetIds)[number];
+
+export const SOURCE_PROVIDER_PRESET_CONFIG_KEY = "provider_preset";
+
+export function isSourceProviderPresetId(value: unknown): value is SourceProviderPresetId {
+  return typeof value === "string" && sourceProviderPresetIds.some((id) => id === value);
+}
+
 export interface ModelProviderModel {
   readonly id: string;
   readonly name?: string;

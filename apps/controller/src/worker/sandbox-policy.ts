@@ -358,8 +358,7 @@ export async function reconcileSandboxPolicy(
         return "pending";
       }
     },
-    options.queueOptions,
-    { isolationLevel: "read committed" },
+    { ...options.queueOptions, readCommitted: true },
   );
 }
 

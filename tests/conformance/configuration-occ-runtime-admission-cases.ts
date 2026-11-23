@@ -21,12 +21,14 @@ import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 import {
   catalogRowUnselected,
   codexRuntimeOffProvider,
-  CODEX_NEEDS_DEDICATED,
   keepRuntime,
   runtimePoliciesConflict,
   selectableModelOffProvider,
-  selectableModelRuntimeMismatch,
 } from "../helpers/refusal-text.mjs";
+import {
+  CODEX_NEEDS_DEDICATED,
+  selectableModelRuntimeMismatch,
+} from "../helpers/refusal-configuration-runtime.ts";
 
 export function registerRuntimeAdmissionCases(): void {
   test("deployment names a non-object agents setting before model policy", async () => {

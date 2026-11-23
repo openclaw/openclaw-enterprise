@@ -6,7 +6,7 @@ import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type { Restriction } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";

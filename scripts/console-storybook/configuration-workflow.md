@@ -34,6 +34,9 @@ components with simulated API state; they do not prove persistence or enforcemen
   denial logs available while policy and suggestion reads show permission refusals
   without retry controls. **Sandbox policy capability unavailable** shows one
   unsupported message without fetching logs or recommendations.
+- **Reconcile concurrent repository grant changes:** after the simulated save
+  conflict, refresh the policy. Check that the panel shows the newer grants and
+  only offers discard. Discard, narrow the remaining grant, and save.
 - Inspect the existing empty, unsupported, loading, missing-credential, denied,
   and apply-rejected policy stories. After a saved change whose apply fails, the
   alert must identify the saved version.
@@ -84,3 +87,32 @@ Restore the original Model ID before retrying.
 Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
+
+## Inspect, save, and withdraw repository grants
+
+Open **Inspect Namespace repository limits** in **Pages / Agent detail**. Open
+**View network limits** and check both repository entries. Open **Manage rules**
+to verify that the Agent has no saved repository policy. Its earlier deployment
+requires creating a new Agent for scoped access.
+
+Open **Save Agent repository access and narrow a grant**. In **Manage rules**,
+set `example/application` to **Read** and `example/tooling` to **Write**. Save
+the repository policy. Reopen **Manage rules**, change tooling to **Read**,
+and select **Refresh policy**. Verify that tooling still shows **Read**, then
+save. The notice gives deployment requirements and explains when a new Agent is
+required. Reopen **Manage rules** and set application to **No access**. The
+story rejects this partial list. Check that the selection remains, then select
+**Discard repository changes** to restore the saved choices.
+Reload the story to reset it. Choose **Deny all repositories** and confirm the
+save. Verify that a saved deny-all list replaces the legacy access summary.
+
+In the protected execution story, remove and save the ordinary network rules
+first. Reopen **Manage rules** and select **Withdraw saved repository grants**.
+Use **Back to editing** to return to the saved grants, then open the review
+again. Select **Save deny-all policy** and verify the saved deny-all state. This
+story simulates the Console and API exchange.
+
+Open **Withdraw grants with an unreadable active revision**. Verify that the
+Console reports the active policy as unavailable. In **Manage rules**, review
+withdrawal and check the compatible controller and Worker instructions before
+saving.

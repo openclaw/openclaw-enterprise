@@ -10,7 +10,7 @@ import {
   OPTIONAL_BOOTSTRAP_FILES,
   RETIRED_OPENCLAW_SETTINGS,
 } from "../../packages/occ/src/configuration-settings.ts";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
   gatewayRuntimeEntrypoint,

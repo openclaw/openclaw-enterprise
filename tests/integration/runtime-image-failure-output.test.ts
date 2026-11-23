@@ -7,7 +7,7 @@ import { inspect } from "node:util";
 import test, { type TestContext } from "node:test";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const reporterMessageLimit = 16_384;
 

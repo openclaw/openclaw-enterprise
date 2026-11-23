@@ -24,10 +24,8 @@ import {
   type Role,
   type ServicePrincipal,
 } from "../../packages/contracts/src/index.ts";
-import {
-  InMemoryPlatformState,
-  type PlatformUnitOfWork,
-} from "../../packages/occ/src/state/platform-state.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 import { immutableSnapshot } from "../../packages/utils/src/index.ts";
 import {
   AuthAccountRoleInvalidError,

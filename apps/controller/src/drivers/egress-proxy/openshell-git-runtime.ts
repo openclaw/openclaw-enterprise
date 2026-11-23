@@ -1,10 +1,15 @@
+import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
+import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
-import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
+import {
+  admitRepositoryNetworkPolicy,
+  githubInstallationProfile,
+} from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
   ProtectedGitHubInstallationMaterial,
@@ -13,6 +18,7 @@ import type {
   ProtectedRepositoryGitMaterial,
   ProxyRevisionContext,
   RepositoryGitInstallationFence,
+  RepositoryNetworkGrant,
   RepositoryWorkerRestartDisposition,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
@@ -23,6 +29,7 @@ import {
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
+import { openShellGitOriginRefusal } from "../sandbox/openshell-git-network-policy.ts";
 import type {
   RepositoryGitDeliveryResolver,
   RepositoryGitDeliveryBinding,
@@ -48,7 +55,6 @@ import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitBinding,
-  type OpenShellPreparedGitDelivery,
   type OpenShellPreparedGitGeneration,
   type OpenShellPreparedGitInstalled,
 } from "./openshell-prepared-git-provider.ts";
@@ -77,6 +83,7 @@ import {
   type OpenShellGitObservationFailure,
   type OpenShellGitRouteBlockReason,
 } from "./openshell-git-installation.ts";
+import type { OpenShellExpectedProviderRule } from "./openshell-repository-policy-readback.ts";
 
 export type {
   OpenShellGitObservationFailure,
@@ -95,7 +102,8 @@ export interface OpenShellGitRuntimeConfiguration {
 /** Only the worker that witnessed a held launch can authorize its next Git session. */
 function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
   return (
-    revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
+    (revision.egressPlan?.repositoryGitAuthorization === "online-request" ||
+      revision.egressPlan?.repositoryGitAuthorization === "network-policy") &&
     profile !== githubInstallationProfile
   );
 }
@@ -107,7 +115,7 @@ type MaterialReader = {
       revisionId: RepositoryGitInstallationFence["revisionId"],
       signal: AbortSignal,
       route?: RepositoryGitInstallationFence | undefined,
-      installationScope?: typeof githubInstallationProfile | "github-repository",
+      installationScope?: typeof githubInstallationProfile | "github-repository" | "network-policy",
     ]
   ): Promise<
     | Awaited<ReturnType<ReadMaterial>>
@@ -119,7 +127,7 @@ type OnlineGitOwner = MaterialReader & {
   authorizeOnlineRequest: OpenShellOnlineGitAuthorityOptions["authorizeOnlineRequest"];
 };
 
-/** The bundled sender cannot honor an exact-send permit. Both calls use only the online port. */
+/** Select custody from the verified runtime route. */
 export function protectedOpenShellGitOwner(
   authority: ProtectedRepositoryGitAuthority,
   preview = false,
@@ -130,11 +138,13 @@ export function protectedOpenShellGitOwner(
   return {
     readOpenShellMaterial: async (revisionId, signal, route, scope) => {
       const owner =
-        scope === "github-repository"
-          ? authority.online.githubRepository
-          : scope === githubInstallationProfile
-            ? installationAuthority
-            : authority.online;
+        scope === "network-policy"
+          ? authority.networkPolicy
+          : scope === "github-repository"
+            ? authority.online.githubRepository
+            : scope === githubInstallationProfile
+              ? installationAuthority
+              : authority.online;
       return route?.revisionId === revisionId ? owner?.readMaterial(route, signal) : undefined;
     },
     authorizeOnlineRequest: async (request, installed, signal) => {
@@ -213,11 +223,15 @@ export function openShellGitRouteReadiness(
   return "pending";
 }
 
+type OpenShellGitScope = RepositoryGitDeliveryBinding & {
+  readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
+};
+
 interface Entry extends OpenShellGitObservationEntry {
   readonly preview: ObservedHookPreview;
   continuityDiagnosticReported?: true;
   readonly bindingId: string;
-  readonly authorization: RepositoryGitDeliveryBinding;
+  readonly authorization: OpenShellGitScope;
   /** The loss of material the route had was reported (on the first request it refused). */
   materialLost?: true | undefined;
   material?: MaterialIdentity;
@@ -282,16 +296,6 @@ interface EntryState {
 /** The runtime image's PATH, then the draft helper's directory. The image's own `gh` stays
  * first: the broker `gh` shim beside the helper has no repository manifest in this sandbox. */
 const OPENSHELL_GIT_DRAFT_PATH = `/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${REPOSITORY_CLIENT_BIN}`;
-const binaries = [
-  "/usr/bin/git",
-  "/usr/lib/git-core/git-remote-https",
-  "/usr/lib/git-core/git-remote-http",
-  "/usr/libexec/git-core/git-remote-https",
-  "/usr/libexec/git-core/git-remote-http",
-  "/usr/bin/curl",
-  "/usr/local/bin/node",
-  "/usr/bin/node",
-];
 const OBSERVE_TIMEOUT_MS = 5000;
 const REFRESH_INTERVAL_MS = 10_000;
 // A failed read is observed again after 1 s, doubling to this cap. A replaced OpenShell
@@ -305,6 +309,9 @@ const RELEASE_INTERVAL_CAP_MS = 60_000;
 /** The store closed the route at this worker's fence: another worker withdrew the revision or
  * expired its access, and the row already says why (finding 2218). */
 class OpenShellGitRouteClosedError extends OpenShellGitRouteError {}
+/** The prepared material is for a GitHub origin the OpenShell Git rules never reach; the worker
+ * log carries the message, which names the origin and the fix. */
+class OpenShellGitOriginRefusedError extends OpenShellGitRouteError {}
 
 export class OpenShellGitRouteBlockedError extends Error {
   readonly reason: OpenShellGitRouteBlockReason;
@@ -357,8 +364,11 @@ function gitProvider(
   workspaceId: string,
   sandbox: string,
   executionId: string,
-  delivery: OpenShellPreparedGitDelivery,
+  { delivery, repositoryNetworkPolicy }: OpenShellGitScope,
   observedHookPreview?: true,
+  expectedProviders?: readonly OpenShellExpectedProviderRule[],
+  managedSandbox?: true,
+  workspaceRoute?: InspectedWorkspaceNodeRoute,
 ) {
   return new OpenShellPreparedGitProvider(client, {
     workspace,
@@ -366,12 +376,12 @@ function gitProvider(
     sandbox,
     executionId,
     ...delivery,
+    ...(repositoryNetworkPolicy !== undefined && { repositoryNetworkPolicy }),
+    ...(expectedProviders !== undefined && { expectedProviders }),
+    ...(managedSandbox && { managedSandbox }),
+    ...(workspaceRoute && { workspaceRoute }),
     ...(observedHookPreview && { observedHookPreview }),
-    binaries: delivery.installationId
-      ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"]
-      : binaries,
-    gitOrigin: "https://github.com",
-    apiOrigin: "https://api.github.com",
+    ...openShellGitNetworkDefaults(delivery),
   });
 }
 
@@ -446,9 +456,24 @@ export class OpenShellGitRuntime {
     this.resolveDelivery = resolveDelivery;
   }
 
-  private scope(revision: Readonly<AgentRevision>) {
+  /** Use the real delivery resolver and ACL checks without preparing or attaching a route. */
+  validateRepositoryNetworkPolicy(revision: Readonly<AgentRevision>): void {
+    if (this.scope(revision).repositoryNetworkPolicy === undefined) {
+      throw new Error("OpenShell Git requires an admitted repository network policy.");
+    }
+  }
+
+  private scope(revision: Readonly<AgentRevision>): OpenShellGitScope {
+    const policy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+    if (policy !== undefined && (!Array.isArray(policy.grants) || policy.grants.length === 0)) {
+      throw new Error("OpenShell Git requires a nonempty admitted repository network policy.");
+    }
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
+    const native =
+      revision.executionAdmission?.version === 9 &&
+      revision.executionAdmission.mode === "protected" &&
+      revision.egressPlan?.repositoryGitAuthorization === "network-policy";
     if (
       !state ||
       (state.bindings.length !== 1 &&
@@ -460,10 +485,11 @@ export class OpenShellGitRuntime {
         ? !this.configuration.observedHookPreviewWorkspace ||
           binding.profile !== githubInstallationProfile ||
           revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
-        : revision.executionAdmission?.version !== 5 ||
-          revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
-          (binding.profile === githubInstallationProfile &&
-            !!this.configuration.observedHookPreviewWorkspace)) ||
+        : !native &&
+          (revision.executionAdmission?.version !== 5 ||
+            revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
+            (binding.profile === githubInstallationProfile &&
+              !!this.configuration.observedHookPreviewWorkspace))) ||
       !revision.egressPlan?.driver ||
       !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
       typeof revision.egressPlan.execution?.executionId !== "string" ||
@@ -478,7 +504,46 @@ export class OpenShellGitRuntime {
     if (!isDeepStrictEqual(scope.binding, binding)) {
       throw new Error("OpenShell Git delivery does not match the admitted binding.");
     }
-    return scope;
+    const { delivery } = scope;
+    const nativeGrant =
+      "scope" in delivery && delivery.scope === "github-repository" && delivery.nativeGit === "v1";
+    if (
+      native !== nativeGrant ||
+      (native &&
+        (policy === undefined ||
+          state.standingApprovalId !== undefined ||
+          !Number.isSafeInteger(state.deadlineWallMs) ||
+          state.deadlineWallMs <= 0))
+    ) {
+      throw new Error("OpenShell native Git requires its exact finite repository network grant.");
+    }
+    if (policy === undefined) {
+      return scope;
+    }
+    if (
+      !native ||
+      revision.executionAdmission?.mode !== "protected" ||
+      binding.profile !== "github-repository" ||
+      !("scope" in delivery) ||
+      delivery.scope !== "github-repository" ||
+      !isDeepStrictEqual(policy, admitRepositoryNetworkPolicy(policy.grants, policy.grants))
+    ) {
+      throw new Error(
+        "OpenShell repository network policy requires protected selected-repository Git.",
+      );
+    }
+    const selected = new Set(delivery.repositories.map(({ repository }) => repository));
+    if (
+      policy.grants.some(
+        ({ repository, access }) =>
+          !selected.has(repository) ||
+          (delivery.permissions.contents !== "write" &&
+            !(access === "read" && delivery.permissions.contents === "read")),
+      )
+    ) {
+      throw new Error("OpenShell repository network grants must fit the selected Git credential.");
+    }
+    return { ...scope, repositoryNetworkPolicy: structuredClone(policy.grants) };
   }
 
   /** Composition connects only a read callback; API observation never starts the sender. */
@@ -609,6 +674,8 @@ export class OpenShellGitRuntime {
     otherProviders: readonly string[] = [],
     otherHosts: readonly string[] = [],
     retainedSandbox?: (sandbox: OpenShellSandboxResponse) => Promise<void>,
+    runtimeFileRule?: OpenShellExpectedProviderRule,
+    workspaceRoute?: InspectedWorkspaceNodeRoute,
   ) {
     if (retainedSandbox && !this.routes) {
       throw new Error("Retained Git replacement requires a durable route store.");
@@ -671,8 +738,15 @@ export class OpenShellGitRuntime {
         }
         // A read that fails here is read again on the next pass, nothing written (finding
         // 2210); a refused identity or an overlapping provider is final.
-        await read(
-          () => checkOpenShellGitProviders(client, workspace, otherProviders, signal),
+        const expectedProviders = await read(
+          () =>
+            checkOpenShellGitProviders(
+              client,
+              workspace,
+              otherProviders,
+              signal,
+              scope.repositoryNetworkPolicy !== undefined,
+            ),
           signal,
         );
         const current = await read(
@@ -700,8 +774,13 @@ export class OpenShellGitRuntime {
           await read(() => this.gateway(client, workspace, signal), signal),
           sandbox,
           revision.id,
-          scope.delivery,
+          scope,
           true,
+          scope.repositoryNetworkPolicy === undefined
+            ? undefined
+            : [...expectedProviders, ...(runtimeFileRule ? [runtimeFileRule] : [])],
+          retainedSandbox ? true : undefined,
+          workspaceRoute,
         );
         const bindingId = admittedExecutionId;
         const route = {
@@ -741,7 +820,12 @@ export class OpenShellGitRuntime {
           authorization: structuredClone(scope),
           otherProviders: [...otherProviders],
           bindingId,
-          preview: new ObservedHookPreview(workspace, bindingId, mandatory),
+          preview: new ObservedHookPreview(
+            workspace,
+            bindingId,
+            mandatory,
+            revision.egressPlan?.repositoryGitAuthorization === "network-policy",
+          ),
           fence,
         };
         // The written generation is recorded now; a store that does not answer leaves the
@@ -796,9 +880,17 @@ export class OpenShellGitRuntime {
     ) {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
+    const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
+    // The Sandbox Driver and the Credential Proxy derive the same answer from this rule.
+    const scopedRoutes =
+      entry.preview.native &&
+      entry.provider.boundNetworkRule()?.endpoints.some(({ host }) => host === "api.github.com");
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
+      nativePolicy: entry.preview.native
+        ? { binaries: openShellGitNetworkDefaults(scope.delivery).binaries, scopedRest }
+        : undefined,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
         ...(draft ? [{ name: "PATH", value: OPENSHELL_GIT_DRAFT_PATH }] : []),
@@ -838,7 +930,12 @@ export class OpenShellGitRuntime {
         { name: "GIT_CONFIG_KEY_6", value: "push.negotiate" },
         { name: "GIT_CONFIG_VALUE_6", value: "true" },
       ],
-      middlewares: openShellGitMiddleware(this.configuration.registrationName, entry.bindingId),
+      middlewares: openShellGitMiddleware(
+        this.configuration.registrationName,
+        entry.bindingId,
+        entry.preview.native,
+        scopedRoutes,
+      ),
     };
   }
 
@@ -893,9 +990,7 @@ export class OpenShellGitRuntime {
       return;
     }
     if (entry.supervisor && entry.preview?.mandatory) {
-      const { enrollment: _previous, ...observed } = entry.supervisor;
-      const enrollment = entry.preview.enrollment();
-      const current = { ...observed, ...(enrollment && { enrollment }) };
+      const current = entry.provider.withEnrollment(entry.supervisor, entry.preview.enrollment());
       // A fresh readiness read can replace the observation with an equivalent value.
       // Keep that installation's launcher acknowledgement in step with the saved state.
       if (isDeepStrictEqual(entry.installed, entry.supervisor)) {
@@ -999,7 +1094,7 @@ export class OpenShellGitRuntime {
 
   async bind(
     revisionId: string,
-    verify: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) => void | Promise<void>,
+    verify: NonNullable<Entry["verify"]>,
     continuity?: OpenShellGitContinuity,
   ): Promise<void> {
     const entry = await this.entries.get(revisionId);
@@ -1021,11 +1116,15 @@ export class OpenShellGitRuntime {
   ): Promise<"held" | "installed" | undefined> {
     const entry = this.states.get(revisionId)?.entry;
     const preview = entry?.preview;
-    if (!preview || !entry || entry.blocked || !preview.recipient || !entry.supervisor) {
+    if (!preview || !entry || entry.blocked) {
+      return;
+    }
+    if (!preview.recipient || !entry.supervisor) {
       return;
     }
     if (
       preview.mandatory &&
+      !preview.native &&
       preview.hook?.startupId !== startupId &&
       preview.release === "acknowledged"
     ) {
@@ -1038,15 +1137,16 @@ export class OpenShellGitRuntime {
       }
       preview.recover();
       entry.installed = undefined;
-      entry.supervisor = { ...current, enrollment: preview.enrollment()! };
+      entry.supervisor = entry.provider.withEnrollment(current, preview.enrollment());
       await this.persist(entry, signal);
     }
-    if (preview.hook && preview.hook.startupId !== startupId) {
+    const priorStartupId = preview.startupId;
+    if (priorStartupId && priorStartupId !== startupId) {
       try {
         this.reportContinuity(entry, [
           {
             check: "held-startup-recorded",
-            keyHash: createHash("sha256").update(preview.hook.startupId).digest("hex"),
+            keyHash: createHash("sha256").update(priorStartupId).digest("hex"),
           },
           {
             check: "held-startup-observed",
@@ -1059,7 +1159,24 @@ export class OpenShellGitRuntime {
       this.block(entry, "execution_replaced");
       return;
     }
-    if (!preview.hook) {
+    if (preview.native && !preview.startupId) {
+      // The authenticated launcher and exact installed bootstrap generation must
+      // agree before this execution can select any usable credential.
+      if (entry.material || entry.binding.credentialState !== "bootstrap") {
+        return;
+      }
+      await this.fenced(entry, signal);
+      const before = await this.observation(entry, signal);
+      if (
+        !before ||
+        !isDeepStrictEqual(before, entry.supervisor) ||
+        !entry.provider.repositoryPolicyIsFresh(before)
+      ) {
+        return;
+      }
+      preview.bindNativeStartup(startupId);
+    }
+    if (!preview.startupId) {
       const recovery = preview.mandatory && entry.binding.credentialState === "active";
       if (
         !recovery &&
@@ -1071,7 +1188,11 @@ export class OpenShellGitRuntime {
       }
       await this.fenced(entry, signal);
       const before = await this.observation(entry, signal);
-      if (!before || !isDeepStrictEqual(before, entry.supervisor)) {
+      if (
+        !before ||
+        !isDeepStrictEqual(before, entry.supervisor) ||
+        !entry.provider.repositoryPolicyIsFresh(before)
+      ) {
         return;
       }
       try {
@@ -1110,7 +1231,7 @@ export class OpenShellGitRuntime {
     const observed = await this.observation(entry, signal);
     if (
       !observed ||
-      !preview.hook ||
+      !preview.startupId ||
       (!preview.mandatory && !observed.observedHook) ||
       entry.blocked
     ) {
@@ -1129,42 +1250,122 @@ export class OpenShellGitRuntime {
 
   /** Deliver one release, and open ordinary authorization only on the same launcher's ACK.
    * A lost response may mean the workload started. Block and retire this family, never resend. */
-  async releasePreview(
+  async releasePreview<T>(
     revisionId: string,
     startupId: string,
-    deliver: () => Promise<boolean>,
+    release: {
+      prepare: (expiresAt?: number) => Promise<T>;
+      deliver: (prepared: T) => Promise<boolean>;
+    },
+    signal: AbortSignal = this.stopped.signal,
   ): Promise<void> {
     const entry = this.states.get(revisionId)?.entry;
     const preview = entry?.preview;
     if (
-      !preview?.hook ||
+      !preview?.startupId ||
       !entry ||
       entry.blocked ||
       !entry.installed ||
       preview.release ||
-      preview.hook.startupId !== startupId ||
+      preview.startupId !== startupId ||
       (!preview.mandatory && !isDeepStrictEqual(entry.installed.observedHook, preview.hook))
     ) {
       throw new Error("Cannot release this preview startup.");
     }
-    preview.release = "sending";
-    try {
-      const signal = AbortSignal.any([
+    const fence = entry.fence;
+    const installed = entry.installed;
+    const { enrollment: _enrollment, ...generation } = installed;
+    // Persisting release intent changes the receipt within the same installation.
+    const matchesGeneration = (installed: OpenShellPreparedGitInstalled | undefined) => {
+      if (!installed) {
+        return false;
+      }
+      const { enrollment: _receipt, ...identity } = installed;
+      return isDeepStrictEqual(identity, generation);
+    };
+    const material = entry.material;
+    let policyCurrent = () => true;
+    let expiresAt: number | undefined;
+    const canSend = () =>
+      !signal.aborted &&
+      !this.stopped.signal.aborted &&
+      !entry.blocked &&
+      entry.fence === fence &&
+      preview.startupId === startupId &&
+      matchesGeneration(entry.installed) &&
+      policyCurrent();
+    if (preview.native) {
+      const observeUntil = Date.now() + this.observeTimeoutMs;
+      const leaseSignal = AbortSignal.any([
+        signal,
         this.stopped.signal,
         AbortSignal.timeout(this.observeTimeoutMs),
       ]);
-      await this.fenced(entry, signal);
-      await this.persist(entry, signal);
-      const releaseIsCurrent = () =>
-        !signal.aborted &&
-        !entry.blocked &&
-        preview.hook?.startupId === startupId &&
-        preview.release === "sending";
-      if (!releaseIsCurrent() || !(await deliver()) || !releaseIsCurrent()) {
+      const observed = await this.observation(entry, leaseSignal);
+      if (!observed || !material || !matchesGeneration(observed)) {
+        throw new Error("Cannot release this preview startup.");
+      }
+      const policyExpiresAt = entry.provider.repositoryPolicyExpiresAt(observed);
+      if (policyExpiresAt === undefined) {
+        throw new Error("Cannot release this preview startup.");
+      }
+      const deadline = Math.min(
+        policyExpiresAt,
+        observeUntil,
+        Date.parse(material.expiresAt),
+        Date.parse(entry.binding.expiresAt),
+        entry.revision.repositoryCredentials!.deadlineWallMs,
+      );
+      expiresAt = deadline;
+      policyCurrent = () =>
+        !leaseSignal.aborted &&
+        entry.provider.repositoryPolicyIsFresh(observed) &&
+        entry.material === material &&
+        deadline > Date.now();
+      if (!canSend() || preview.release) {
+        throw new Error("Cannot release this preview startup.");
+      }
+    }
+    preview.release = "preparing";
+    let prepared: T;
+    try {
+      prepared = await release.prepare(expiresAt);
+      if (!canSend() || !isDeepStrictEqual(installed, entry.installed)) {
+        throw new Error("Cannot release this preview startup.");
+      }
+    } catch (error) {
+      // Compute may need a fresh installation observation. This attempt sent nothing.
+      delete preview.release;
+      throw error;
+    }
+
+    preview.release = "sending";
+    try {
+      const dispatchSignal = AbortSignal.any([
+        signal,
+        this.stopped.signal,
+        AbortSignal.timeout(this.observeTimeoutMs),
+      ]);
+      await this.persist(entry, dispatchSignal);
+      if (canSend()) {
+        await this.fenced(entry, dispatchSignal);
+      }
+      const current = () => !dispatchSignal.aborted && canSend() && preview.release === "sending";
+      // Persisting send intent can advance the enrollment phase of the same installation.
+      const sendingInstallation = installed.enrollment
+        ? { ...installed, enrollment: { ...installed.enrollment, release: "sending" } }
+        : installed;
+      if (
+        !current() ||
+        (!isDeepStrictEqual(installed, entry.installed) &&
+          !isDeepStrictEqual(sendingInstallation, entry.installed)) ||
+        !(await release.deliver(prepared)) ||
+        !current()
+      ) {
         throw new Error("The preview release was not acknowledged.");
       }
       preview.release = "acknowledged";
-      await this.persist(entry, signal);
+      await this.persist(entry, dispatchSignal);
     } catch (error) {
       this.block(entry, "preview_release_unconfirmed");
       throw error;
@@ -1178,14 +1379,27 @@ export class OpenShellGitRuntime {
 
   /** Read, never adopt, the exact current observation. Material selection and later use are
    * independently fenced in PostgreSQL. A change after a write may leave a usable token. */
+  boundGitRule(revision: Readonly<AgentRevision>) {
+    const entry = this.states.get(revision.id)?.entry;
+    if (
+      entry?.preview.native &&
+      !entry.blocked &&
+      isDeepStrictEqual(entry.authorization, this.scope(revision))
+    ) {
+      return entry.provider.boundNetworkRule();
+    }
+    return;
+  }
+
   async mandatoryEnforcement(context: ProxyRevisionContext, sandboxId: string) {
     const entry = this.states.get(context.revision.id)?.entry;
     if (
       !entry?.preview.mandatory ||
-      !entry.preview.hook ||
+      !entry.preview.startupId ||
       entry.blocked ||
       entry.sandboxId !== sandboxId ||
-      context.plan.repositoryGitAuthorization !== "online-request"
+      context.plan.repositoryGitAuthorization !==
+        (entry.preview.native ? "network-policy" : "online-request")
     ) {
       return;
     }
@@ -1203,31 +1417,46 @@ export class OpenShellGitRuntime {
     }
     const recipient = await previewPolicyAndRecipient({
       mandatory: true,
+      native: entry.preview.native,
       client: entry.client,
       sandbox: box,
       observed: current,
       registration: this.configuration.registrationName,
       audience: this.configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
+      boundGitRule: entry.preview.native ? entry.provider.boundNetworkRule() : undefined,
       modelProvider: entry.continuity.model,
       runtimeProvider: entry.continuity.runtime,
       sourcePolicy: await read(() => entry.continuity!.policy(box, context.signal), context.signal),
       execution: entry.continuity.execution,
       signal: context.signal,
     });
-    if (!recipient || entry.preview.recipient !== recipient) {
+    const configurationId = entry.preview.configurationId;
+    if (
+      !recipient ||
+      entry.preview.recipient !== recipient ||
+      !configurationId ||
+      !entry.provider.repositoryPolicyIsFresh(current)
+    ) {
       return;
     }
-    const { providerId, attachmentEpoch } = current;
+    const { providerId, attachmentEpoch, processInstanceId, networkInstanceId } = current;
     return {
       instanceId: sandboxId,
       policyHash: current.policyHash,
       authorityScope: "execution" as const,
-      configurationId: recipient,
+      configurationId,
       repositoryGitRecipient: {
         providerId,
         attachmentEpoch,
-        authorization: "online-request" as const,
+        authorization: entry.preview.native
+          ? ("network-policy" as const)
+          : ("online-request" as const),
+        ...(entry.preview.native && {
+          processInstanceId,
+          networkInstanceId,
+          nativeStartupId: entry.preview.startupId,
+        }),
         ...(entry.authorization.binding.profile === "github-repository" && {
           deliveryProfile: "github_repository" as const,
         }),
@@ -1258,6 +1487,10 @@ export class OpenShellGitRuntime {
   ): Promise<OpenShellGitExpiryResult> {
     const credentials = revision.repositoryCredentials;
     if (!this.routes || !this.owner || !credentials) {
+      return "retire-runtime";
+    }
+    // An endpoint that binds this Provider prevents isolated detach.
+    if (revision.egressPlan?.repositoryGitAuthorization === "network-policy") {
       return "retire-runtime";
     }
     let finiteScopeIsCurrent = true;
@@ -1329,16 +1562,16 @@ export class OpenShellGitRuntime {
     attached: readonly string[],
     signal: AbortSignal,
   ): Promise<void> {
-    let delivery: OpenShellPreparedGitDelivery | undefined;
+    let scope: OpenShellGitScope | undefined;
     try {
-      delivery = this.scope(revision).delivery;
+      scope = this.scope(revision);
     } catch {
-      delivery = undefined;
+      scope = undefined;
     }
-    if (delivery !== undefined) {
+    if (scope !== undefined) {
       const current = await client.getWorkspace(workspace, signal);
       if (current?.id) {
-        await gitProvider(client, workspace, current.id, sandbox, revision.id, delivery).remove(
+        await gitProvider(client, workspace, current.id, sandbox, revision.id, scope).remove(
           signal,
         );
       }
@@ -1357,13 +1590,15 @@ export class OpenShellGitRuntime {
     // Keep the tombstone to prevent adoption/recreation under the same execution identity,
     // in this process and, through the store, in any later one. The entry itself is dropped
     // once its Sandbox is gone; its reason stays.
-    void this.entries.get(revisionId)?.then(
-      (entry) => {
-        entry.blocked ??= "withdrawn";
-        entry.installed = undefined;
-      },
-      () => {},
-    );
+    const entry = this.states.get(revisionId)?.entry;
+    if (entry) {
+      this.markWithdrawn(entry);
+    } else {
+      void this.entries.get(revisionId)?.then(
+        (pending) => this.markWithdrawn(pending),
+        () => {},
+      );
+    }
     this.recordWithdrawal({ revisionId });
   }
 
@@ -1389,16 +1624,18 @@ export class OpenShellGitRuntime {
   }
 
   withdrawNamespace(namespaceId: string): void {
-    for (const pending of this.entries.values()) {
-      void pending.then(
-        (entry) => {
-          if (entry.revision.namespaceId === namespaceId) {
-            entry.blocked ??= "withdrawn";
-            entry.installed = undefined;
-          }
-        },
-        () => {},
-      );
+    const withdraw = (entry: Entry) => {
+      if (entry.revision.namespaceId === namespaceId) {
+        this.markWithdrawn(entry);
+      }
+    };
+    for (const [revisionId, pending] of this.entries) {
+      const entry = this.states.get(revisionId)?.entry;
+      if (entry) {
+        withdraw(entry);
+      } else {
+        void pending.then(withdraw, () => {});
+      }
     }
     this.recordWithdrawal({ namespaceId });
   }
@@ -1412,6 +1649,11 @@ export class OpenShellGitRuntime {
       }
     }
     await this.routes?.withdraw({ namespaceId });
+  }
+
+  private markWithdrawn(entry: Entry): void {
+    entry.blocked ??= "withdrawn";
+    entry.installed = undefined;
   }
 
   /** The store's tombstone keeps any other worker from adopting the routes; this process's
@@ -1595,7 +1837,12 @@ export class OpenShellGitRuntime {
 
   /** Closes the route for good and reports why; the entry is a tombstone from here on, in
    * this process and, unless another worker holds the route now, in the store. */
-  private block(entry: Entry, reason: OpenShellGitRouteBlockReason, reported = false): void {
+  private block(
+    entry: Entry,
+    reason: OpenShellGitRouteBlockReason,
+    reported = false,
+    message?: string,
+  ): void {
     if (entry.blocked) {
       return;
     }
@@ -1636,6 +1883,7 @@ export class OpenShellGitRuntime {
       event: "worker.error",
       code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
       reason,
+      ...(message !== undefined && { message }),
       ...this.identity(entry),
     });
   }
@@ -1692,7 +1940,12 @@ export class OpenShellGitRuntime {
     }
     let failure: OpenShellGitObservationFailure | undefined;
     if (error instanceof OpenShellGitRouteError) {
-      this.block(entry, error.reason, error instanceof OpenShellGitRouteClosedError);
+      this.block(
+        entry,
+        error.reason,
+        error instanceof OpenShellGitRouteClosedError,
+        error instanceof OpenShellGitOriginRefusedError ? error.message : undefined,
+      );
       return;
     }
     if (error instanceof OpenShellPreparedGitProviderError) {
@@ -1773,7 +2026,7 @@ export class OpenShellGitRuntime {
       }
       // Commit the observed generation before the credential owner selects exactly that row.
       await this.persist(entry, signal);
-      if (!entry.preview.hook) {
+      if (!entry.preview.startupId) {
         return;
       }
       const owner = this.owner;
@@ -1787,7 +2040,16 @@ export class OpenShellGitRuntime {
             ? githubInstallationProfile
             : undefined;
       const readMaterial = (route = install) =>
-        owner.readOpenShellMaterial(entry.revision.id, signal, route, scopeName);
+        owner.readOpenShellMaterial(
+          entry.revision.id,
+          signal,
+          route,
+          entry.preview.native ? "network-policy" : scopeName,
+        );
+      if (!entry.provider.repositoryPolicyIsFresh(observed)) {
+        this.pending(entry, "unverified");
+        return;
+      }
       const material = await read(readMaterial, signal);
       if (!material || "absent" in material) {
         entry.absent = material?.absent;
@@ -1815,6 +2077,10 @@ export class OpenShellGitRuntime {
         );
       }
       const { binding, repository } = scope;
+      const unsupportedOrigin = openShellGitOriginRefusal(material.apiOrigin);
+      if (unsupportedOrigin) {
+        throw new OpenShellGitOriginRefusedError("material_mismatch", unsupportedOrigin);
+      }
       if (
         !isDeepStrictEqual(scope, entry.authorization) ||
         ("scope" in material
@@ -1832,8 +2098,7 @@ export class OpenShellGitRuntime {
             material.pushRef !== repository.pushRef ||
             material.pullRequestBase !== repository.pullRequestBase) ||
         material.providerInstanceId !== binding.grant.providerInstanceId ||
-        material.grantId !== binding.grant.grantId ||
-        material.apiOrigin !== "https://api.github.com"
+        material.grantId !== binding.grant.grantId
       ) {
         throw new OpenShellGitRouteError(
           "material_mismatch",
@@ -1856,37 +2121,72 @@ export class OpenShellGitRuntime {
         // unknown, and a stale fence writes nothing.
         await this.fenced(entry, signal, "rotate", material);
         // Retain the selected recipient, but authorize at this reservation's new fence.
-        const reservedInstall = install && { ...install, fence: entry.fence };
+        const fence = entry.fence;
+        const reservedInstall = install && { ...install, fence };
         try {
           const rotated = await entry.provider.rotate(
             entry.binding,
             async () => {
-              // Provider, profile and workspace have now been read. Recheck the fence, then
-              // ask the prepared owner for *current* approval, execution, session and material.
-              // A different selection needs a new observation, never a use receipt or a replay.
+              // Check durable custody after Gateway authentication.
+              // A changed selection needs a new observation, never a use receipt or a replay.
               await this.fenced(entry, signal);
-              if (
-                !isDeepStrictEqual(
-                  await this.observation(entry, signal, { predecessor: true }),
-                  observed,
-                )
-              ) {
+              const recipient = await this.observation(entry, signal, { predecessor: true });
+              if (!recipient && entry.authorization.repositoryNetworkPolicy !== undefined) {
+                return;
+              }
+              if (!recipient || !isDeepStrictEqual(recipient, observed)) {
                 throw new OpenShellGitRouteError(
                   "material_mismatch",
                   "Preview credential recipient changed before installation.",
                 );
+              }
+              const isCurrent = () =>
+                !entry.blocked &&
+                !this.stopped.signal.aborted &&
+                !signal.aborted &&
+                entry.fence === fence &&
+                this.materialIsLive(entry.revision, material.expiresAt) &&
+                entry.provider.repositoryPolicyIsFresh(recipient);
+              if (!isCurrent()) {
+                return;
               }
               const current = await read(() => readMaterial(reservedInstall), signal);
               if (
                 current &&
                 !("absent" in current) &&
                 isDeepStrictEqual(material, current) &&
-                this.materialIsLive(entry.revision, current.expiresAt) &&
-                !entry.blocked &&
-                !this.stopped.signal.aborted &&
-                !signal.aborted
+                isCurrent()
               ) {
-                return { value: current.value, expiresAt: current.expiresAt };
+                if (entry.authorization.repositoryNetworkPolicy !== undefined) {
+                  if (
+                    entry.preview.native &&
+                    !(await entry.client.readExclusivePreviewWorkspace?.(
+                      recipient.workspace,
+                      recipient.sandboxId,
+                      signal,
+                      recipient.provider,
+                    ))
+                  ) {
+                    return;
+                  }
+                  // The material snapshot can arrive after a different worker withdraws it.
+                  await this.fenced(entry, signal);
+                  if (!isCurrent()) {
+                    return;
+                  }
+                }
+                return {
+                  value: current.value,
+                  expiresAt: entry.preview.native
+                    ? new Date(
+                        Math.min(
+                          Date.parse(current.expiresAt),
+                          entry.revision.repositoryCredentials!.deadlineWallMs,
+                        ),
+                      ).toISOString()
+                    : current.expiresAt,
+                  ...(entry.authorization.repositoryNetworkPolicy !== undefined && { isCurrent }),
+                };
               }
               entry.absent = current && "absent" in current ? current.absent : undefined;
             },
@@ -1921,6 +2221,7 @@ export class OpenShellGitRuntime {
       const installed = await this.observation(entry, signal, { adopt: true });
       if (
         installed?.credentialState === "active" &&
+        entry.provider.repositoryPolicyIsFresh(installed) &&
         !entry.blocked &&
         !this.stopped.signal.aborted &&
         !signal.aborted
@@ -2042,7 +2343,11 @@ export class OpenShellGitRuntime {
         reason = "route_pending";
         break;
       }
-      const acknowledgedStartup = entry.preview.hook?.startupId;
+      if (entry.preview.native) {
+        reason = "route_pending";
+        break;
+      }
+      const acknowledgedStartup = entry.preview.startupId;
       if (!entry.installed || !entry.material) {
         // A route that had material and lost it names that, so an operator can tell a
         // retired credential (recovery required) from a version still verifying.
@@ -2088,7 +2393,7 @@ export class OpenShellGitRuntime {
         // A recovery during observation must obtain its own release acknowledgment.
         if (
           entry.preview.release !== "acknowledged" ||
-          entry.preview.hook?.startupId !== acknowledgedStartup
+          entry.preview.startupId !== acknowledgedStartup
         ) {
           reason = "route_pending";
           break;
@@ -2097,7 +2402,11 @@ export class OpenShellGitRuntime {
           reason = "material_rotated";
           break;
         }
-        if (!observed || !isDeepStrictEqual(observed, entry.installed)) {
+        if (
+          !observed ||
+          !isDeepStrictEqual(observed, entry.installed) ||
+          !entry.provider.repositoryPolicyIsFresh(observed)
+        ) {
           // The installation no longer reads as the one admitted: close the route until the
           // worker's own reconcile verifies it again.
           this.pending(entry, "unverified");
@@ -2110,6 +2419,7 @@ export class OpenShellGitRuntime {
         }
         return {
           sandboxId: identity.sandboxId,
+
           bindingId: identity.bindingId,
           workspace: identity.workspace,
           executionId: entry.revision.id,
@@ -2364,7 +2674,12 @@ export function openShellRepositoryAccess(
 }
 
 /** One policy definition, compared again by the Credential Proxy at Compute release. */
-export function openShellGitMiddleware(registrationName: string, bindingId: string) {
+export function openShellGitMiddleware(
+  registrationName: string,
+  bindingId: string,
+  native = false,
+  scopedRoutes = false,
+) {
   return {
     "oce-prepared-git": {
       name: "oce-prepared-git",
@@ -2372,7 +2687,14 @@ export function openShellGitMiddleware(registrationName: string, bindingId: stri
       config: { fields: { binding_id: { stringValue: bindingId } } },
       on_error: "fail_closed",
       order: 2147483647,
-      endpoints: { include: ["github.com", "api.github.com"] },
+      // Recipient verification pins the registered service. Stock selects middleware by host,
+      // so native delivery with any scoped API route selects no admitted GitHub host: OpenShell
+      // alone enforces issue reads, pull request reads and pull request creation.
+      endpoints: {
+        include: native
+          ? [scopedRoutes ? "deny-egress.invalid" : "api.github.com"]
+          : ["github.com", "api.github.com"],
+      },
     },
   };
 }

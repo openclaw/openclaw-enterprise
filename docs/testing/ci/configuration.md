@@ -92,6 +92,32 @@ Every `integration-main` job can reference its combined secret set. Workflow
 steps pass only their selected inputs to tests. Preserve the old environments
 until credential migration and hosted verification are complete.
 
+### Verify PR source before labeling
+
+For a focused [QA Advisory run](qa-advisory.md#trigger), read the PR's base
+and head SHAs and GitHub's generated merge commit before adding the label.
+Replace `OWNER`, `REPO`, and `NUMBER` with the PR's repository and number.
+Use the reported base branch for `BASE` and the SHA of
+`refs/pull/NUMBER/merge` for `MERGE_SHA`.
+
+```sh
+gh api repos/OWNER/REPO/pulls/NUMBER --jq '{base: .base.ref, baseSha: .base.sha, headSha: .head.sha}'
+git ls-remote https://github.com/OWNER/REPO.git refs/heads/BASE refs/pull/NUMBER/merge
+gh api repos/OWNER/REPO/git/commits/MERGE_SHA --jq '.parents[].sha'
+```
+
+The merge commit must have two parents. Its first parent must match both
+the base branch SHA and the PR's base SHA. Its second parent must match both
+the PR's head SHA and the reviewed head. Add the label only when the checks
+agree.
+
+If **Select advisory QA** reports a parent mismatch, no runtime jobs start.
+Remove the focused label. If the PR still reports an older base than the merge
+commit, update the branch through the normal non-force workflow. Reapply the
+label only after the source checks agree. This creates a new label event.
+Check the parents and selected files or scenarios in **Advisory selection and
+source**, then confirm the expected jobs in the job list.
+
 <a id="cleanup-command-deadlines"></a>
 <a id="select-immutable-images-for-local-preparation"></a>
 

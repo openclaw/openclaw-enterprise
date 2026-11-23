@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
@@ -22,6 +23,7 @@ import type {
   ResourceStateConflictError as ResourceStateConflictErrorType,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import {
   firstDeploymentFixture,
@@ -474,6 +476,103 @@ export async function runSlackLoopback(t: TestContext) {
   }
 }
 
+export async function runOrdinaryChannelAdmission(t: TestContext) {
+  for (const change of [
+    "unchanged",
+    "generation",
+    "binding",
+    "configuration",
+    "configuration-driver",
+    "channel",
+    "channel-validator",
+  ]) {
+    await t.test(change, async () => {
+      const { promise: reached, resolve: reach } = Promise.withResolvers<void>();
+      const { promise: released, resolve: release } = Promise.withResolvers<void>();
+      let held = false;
+      const deployment = await slackFirstDeploymentFixture(true, async () => {
+        if (held) {
+          reach();
+          await released;
+        }
+      });
+      const { controller, namespace, agent, path, work, channelDriver, providerCalls } = deployment;
+      const fixture = controller.fixture;
+      const replacement = await createConfiguration(controller, namespace.id);
+      const app = fixture.createApp(undefined, createFastifyApp);
+      try {
+        const url = await app.listen({ host: "127.0.0.1", port: 0 });
+        const send = () => request(url, "POST", `${path}/deploy`, { session: app.defaultSession });
+        // A normal later deployment remains intentional: seed its first admitted revision.
+        const first = await send();
+        assert.equal(checkedInjectedBody(first, 202, AgentRevisionResponse).data.revision, 1);
+        held = true;
+        const pending = send();
+        await reached;
+        if (change === "generation") {
+          const updated = await controller.request(
+            "PATCH",
+            `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+            {
+              body: { values: { temperature: "1" } },
+            },
+          );
+          assert.equal(updated.status, 200, JSON.stringify(updated.body));
+        } else if (change === "binding") {
+          const updated = await controller.request("PATCH", path, {
+            body: { configurationId: replacement.id },
+          });
+          assert.equal(updated.status, 200, JSON.stringify(updated.body));
+        } else if (change === "configuration") {
+          const driver = fixture.configurationDriver;
+          const saved = await driver.read({ namespaceId: namespace.id, id: agent.configurationId });
+          await driver.update({ ...saved, values: { temperature: "1" } });
+        } else if (change === "configuration-driver") {
+          const driver = createTestConfigurationDriver({ id: "replacement-configuration" });
+          fixture.controller.registerDriver(driver);
+          fixture.controller.selectDriver("configuration", driver.id);
+        } else if (change === "channel") {
+          const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
+          Object.defineProperty(driver, "id", { value: "replacement-channel" });
+          fixture.controller.registerDriver(driver);
+          fixture.controller.selectDriver("channel", driver.id);
+        } else if (change === "channel-validator") {
+          channelDriver.validateCredentials = async () => assert.fail("Unexpected validation");
+        }
+        const successes = () =>
+          fixture.auditSink.events.filter(
+            (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
+          ).length;
+        const beforeAudit = successes();
+        const beforeWork = work().length;
+        release();
+        const result = await pending;
+        assert.equal(
+          result.status,
+          change === "unchanged" ? 202 : 409,
+          JSON.stringify(result.body),
+        );
+        assert.equal(providerCalls(), 2, "one provider request per attempted deployment");
+        assert.equal(work().length - beforeWork, change === "unchanged" ? 1 : 0);
+        assert.equal(successes() - beforeAudit, change === "unchanged" ? 1 : 0);
+        const revisions = await deployment.listRevisionMetadata();
+        assert.equal(revisions.length, change === "unchanged" ? 2 : 1);
+        if (change === "unchanged") {
+          const admitted = checkedInjectedBody(result, 202, AgentRevisionResponse).data;
+          assert.equal(admitted.revision, 2);
+          assert.equal(admitted.configurationId, agent.configurationId);
+        } else {
+          const { error } = checkedInjectedBody(result, 409, ErrorResponse);
+          assert.doesNotMatch(error.message, /Recover the original first-deployment receipt/);
+        }
+      } finally {
+        release();
+        await app.close();
+      }
+    });
+  }
+}
+
 export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions) {
   const {
     deployment,
@@ -681,3 +780,11 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
     }),
   );
 }
+
+export {
+  runMalformedIntentBoundary,
+  runOrdinaryDeployGeneration,
+  runScalarCapture,
+  runStockDeployRetry,
+  runUnreadyNamespace,
+} from "./occ-api-first-deployment-intent-cases.ts";

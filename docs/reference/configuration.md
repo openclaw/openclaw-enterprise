@@ -60,6 +60,7 @@ starts preserve saved rules; administrators change them through the API or
 Console. The retired `sandboxNetworkPolicyCeilingOverwriteOnStartup` setting is
 rejected. See [Installation ceiling](sandbox-policies.md#installation-ceiling)
 for ownership, grant limits, and authorization.
+See [repository delegation](sandbox-policies.md#repository-network-policy).
 
 The optional `iam` block declares the
 [Default users](authorization/default-users.md#installation-iam-configuration)
@@ -345,7 +346,7 @@ details compatibility checks.
 - [Agent Configuration, versions, and deployment](agents.md)
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
-- [Configuration lifecycle implementation](../../packages/occ/src/index.ts)
+- [Configuration lifecycle implementation](../../packages/occ/src/configuration-operations.ts)
 - [Local testing](../testing/local.md)
 - [Kubernetes testing](../testing/kubernetes.md)
 

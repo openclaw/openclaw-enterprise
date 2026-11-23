@@ -15,6 +15,7 @@ import {
 import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
+import type { OpenShellReplacementChildOptions } from "../fixtures/ci-runner-openshell-replacement-child.ts";
 import {
   observeDeadline,
   pendingMessage,
@@ -36,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 async function reportingFixture(t: TestContext, lane: "failure" | "progress") {
   const root = await createRunnerFixture(t);
+  await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
   const file = `tests/integration/${lane}.test.ts`;
   await copyFile(
     new URL(`../fixtures/ci-runner-openshell-${lane}-child.ts`, import.meta.url),
@@ -415,11 +417,9 @@ const requestProgress = [
   ]),
   "replacement:started",
   "redeploy-request",
-  "replacement:failed",
 ];
-const requestBeforeFailure = [...requestStart, ...requestProgress];
 
-async function observeRequest(root: string) {
+async function observeRequest(root: string, entry: string, progress: readonly string[]) {
   const observer = join(root, "request-observer.ts");
   const reporterUrl = new URL("scripts/ci/reporter.ts", repositoryUrl);
   const processUrl = new URL("scripts/ci/runner-process.ts", repositoryUrl).href;
@@ -458,10 +458,10 @@ async function observeRequest(root: string) {
 
      export default async function* requestReporter(source: Parameters<typeof reporter>[0]) {
        const root = process.cwd();
-       const entry = join(root, upstreamOutageCase.entry);
+       const entry = ${JSON.stringify(entry)};
        const declaration = join(root, upstreamOutageCase.declaration);
        const order = join(root, ${JSON.stringify(requestReceipts.order)});
-       const progress = ${JSON.stringify(requestProgress)};
+       const progress = ${JSON.stringify(progress)};
        let count = 0;
        function record(step: string) {
          // The only persisted fields are these closed lifecycle and progress labels.
@@ -502,9 +502,10 @@ async function observeRequest(root: string) {
 test("CI records only observed upstream replacement checkpoints on failure", async (t) => {
   const upstreamFile = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
-  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
-  const workflowModule = new URL("tests/helpers/openshell-sandbox-workflows.mjs", repositoryUrl)
-    .href;
+  const replacementChildModule = new URL(
+    "tests/fixtures/ci-runner-openshell-replacement-child.ts",
+    repositoryUrl,
+  ).href;
   const progressModule = new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href;
   const reporterPath = fileURLToPath(new URL("scripts/ci/reporter.ts", repositoryUrl));
 
@@ -599,10 +600,19 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const fileTimeoutMs = runnerDeadline ? runnerTimeoutMs : 10000;
       const pendingActivation = caseDeadline || controlledDeadline;
       const sameRevision = mode === "same-revision";
-      const observedRequest = mode === "request" || sameRevision;
+      const reconciliation = mode === "reconciliation";
+      const observedActivation = mode === "activation" || reconciliation;
+      const observedRequest = mode === "request" || sameRevision || observedActivation;
+      const observedProgress = [
+        ...requestProgress,
+        ...(observedActivation ? ["activation"] : []),
+        ...(reconciliation ? ["reconciliation"] : []),
+        "replacement:failed",
+      ];
+      const beforeFailure = [...requestStart, ...observedProgress];
       const success = mode === "success";
       const name = mode === "wrong-case" ? "another case" : title;
-      const upstreamLane = mode === "reconciliation" ? "openshell" : "openshell-installers";
+      const upstreamLane = reconciliation ? "openshell" : "openshell-installers";
       const lane = mode === "wrong-lane" ? "other-installers" : upstreamLane;
       const file =
         mode === "wrong-file" ? "tests/integration/other-upstream.test.ts" : upstreamFile;
@@ -649,143 +659,25 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
            return { cleanup: () => writeFile(${JSON.stringify(cleanupMarker)}, "cleaned") };
          }`,
       );
+      const childOptions: OpenShellReplacementChildOptions = {
+        mode,
+        requestOrderPath: requestReceipts.order,
+        requestStart: requestStart.join("\n") + "\n",
+        requestBeforeFailure: beforeFailure.join("\n") + "\n",
+        requestAttempted: requestReceipts.attempted,
+        sameRevisionRefusal: requestReceipts.sameRevisionRefusal,
+        activationPoll,
+        pendingMessage,
+      };
       await writeFile(
         join(root, "tests/helpers", declaration),
-        `import assert from "node:assert/strict";
-         import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
-         import test from "node:test";
-         import { runOpenShellStage } from ${JSON.stringify(stageModule)};
-         import { emitOpenShellProgress, emitOpenShellReplacementCheckpoint, openShellProgressPrefix } from ${JSON.stringify(progressModule)};
-         import { redeployOpenShellReplacement } from ${JSON.stringify(workflowModule)};
-
-         const mode = ${JSON.stringify(mode)};
+        `import test from "node:test";
+         import { prepareOpenShellReplacementChild } from ${JSON.stringify(replacementChildModule)};
          const credential = process.env.CI_RUNNER_FIXTURE_CREDENTIAL;
          const failure = new Error("controlled failure " + credential);
-         const response = { status: 202, data: { id: "private-replacement-id" } };
-         const agentPath = "/namespaces/fixture/agents/fixture";
-         function waitForReceipt(expected, signal) {
-           const path = ${JSON.stringify(requestReceipts.order)};
-           const observed = () => existsSync(path) ? readFileSync(path, "utf8") : "";
-           return new Promise((resolve, reject) => {
-             const watcher = watch("state", { signal }, check);
-             watcher.once("error", reject);
-             watcher.once("close", () => {
-               if (observed() === expected) resolve();
-               else reject(new Error("request reporter did not acknowledge the case"));
-             });
-             function check() {
-               const order = observed();
-               if (order === expected || !expected.startsWith(order)) watcher.close();
-             }
-             check();
-           });
-         }
+         const runScenario = await prepareOpenShellReplacementChild(${JSON.stringify(childOptions)});
          test(${JSON.stringify(name)}, ${caseDeadline ? "{ timeout: 1200 }, " : runnerDeadline ? "{ timeout: 15000 }, " : ""}async (t) => {
-           if (mode === "completed-wrapper-emitter") {
-             // Supply the genuine failed measurement and terminal, but none of the earlier progress.
-             emitOpenShellProgress("replacement", "failed");
-             t.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"replacement","outcome":"failed","elapsedMs":1}');
-             throw failure;
-           }
-           if (${observedRequest}) {
-             await waitForReceipt(${JSON.stringify(requestStart.join("\n") + "\n")}, t.signal);
-           }
-           for (const step of ["installation", "exposure-auth", "initial-model"]) {
-             await runOpenShellStage(t, step, async () => {});
-           }
-           let sameRevisionError;
-           const replacement = runOpenShellStage(t, "replacement", async () => {
-             if (mode === "setup") throw failure;
-             if (mode === "out-of-order") {
-               emitOpenShellReplacementCheckpoint("activation");
-               emitOpenShellReplacementCheckpoint("redeploy-request");
-               throw failure;
-             }
-             if (mode === "extra-field") {
-               process.stdout.write(openShellProgressPrefix + JSON.stringify({
-                 kind: "openshell-replacement-checkpoint", checkpoint: "redeploy-request", extra: "private-progress-extra",
-               }) + "\\n");
-               throw failure;
-             }
-             // The equal-revision assertion must quote the fixture credential for the redaction check.
-             const previousRevisionId = ${sameRevision} ? credential : "private-previous-id";
-             assert.ok(previousRevisionId);
-             const topology = {
-               namespaceId: "fixture",
-               agent: { id: "fixture" },
-               revision: { id: previousRevisionId },
-               async request(method, path) {
-                 if (method === "POST") {
-                   assert.equal(path, agentPath + "/deploy");
-                   if (${observedRequest}) {
-                     writeFileSync(${JSON.stringify(requestReceipts.attempted)}, "invoked", { flag: "wx" });
-                   }
-                   if (mode === "request") throw failure;
-                   if (${sameRevision}) return { status: 202, data: { id: previousRevisionId } };
-                   return response;
-                 }
-                 assert.equal(method, "GET");
-                 if (${sameRevision}) writeFileSync(${JSON.stringify(activationPoll)}, "polling");
-                 if (path === agentPath) {
-                 if (${pendingActivation}) {
-                   writeFileSync(${JSON.stringify(activationPoll)}, "polling");
-                   if (${controlledDeadline}) t.log(${JSON.stringify(pendingMessage)});
-                   // Keep Node alive while the real activation poll and its caller are pending.
-                   const hold = setInterval(() => {
-                     // Wake a pending stdout read without emitting progress.
-                     if (${controlledDeadline}) process.stdout.write("\\n");
-                   }, 1000);
-                   t.signal.addEventListener("abort", () => clearInterval(hold), { once: true });
-                   return new Promise(() => {});
-                 }
-                   return { status: 200, data: {
-                     activeRevisionId: mode === "activation" ? topology.revision.id : response.data.id,
-                   }};
-                 }
-                 assert.equal(path, agentPath + "/deployments/" + response.data.id);
-                 assert.equal(mode, "activation");
-                 throw failure;
-               },
-               async diagnoseRevision() { return {}; },
-             };
-             try {
-               const deployed = await redeployOpenShellReplacement(topology, t, true, async () => "");
-               assert.equal(deployed, response);
-             } catch (error) {
-               if (mode === "activation" || mode === "request") assert.equal(error, failure);
-               if (
-                 ${sameRevision} &&
-                 error instanceof assert.AssertionError &&
-                 error.operator === "notStrictEqual" &&
-                 error.actual === previousRevisionId &&
-                 error.expected === previousRevisionId
-               ) {
-                 sameRevisionError = error;
-               }
-               throw error;
-             }
-             if (mode === "reconciliation" || mode.startsWith("wrong-")) throw failure;
-           }, "pod-replacement");
-           if (${observedRequest}) {
-             try {
-               await replacement;
-             } catch (error) {
-               const expectedFailure = ${sameRevision} ? sameRevisionError : failure;
-               if (expectedFailure !== undefined && error === expectedFailure) {
-                 // Wait for the last progress row while the native case is still active.
-                 await waitForReceipt(${JSON.stringify(requestBeforeFailure.join("\n") + "\n")}, t.signal);
-                 if (${sameRevision}) {
-                   writeFileSync(${JSON.stringify(requestReceipts.sameRevisionRefusal)}, "refused", { flag: "wx" });
-                 }
-               }
-               throw error;
-             }
-           } else {
-             await replacement;
-           }
-           if (mode === "later-stage") {
-             await runOpenShellStage(t, "untrusted-upstream", async () => { throw failure; });
-           }
+           await runScenario(t, failure);
          });`,
       );
       await writeRunnerManifest(root, {
@@ -795,7 +687,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       });
       let execArgv = runnerDeadline ? observeDeadline(controlledDeadline) : [];
       if (observedRequest) {
-        execArgv = await observeRequest(root);
+        execArgv = await observeRequest(root, join(runnerRoot, file), observedProgress);
       }
       const runner = await runRunnerAsync(
         laneArgs(runnerRoot, lane, state, results),
@@ -950,7 +842,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           context,
         );
         assert.deepEqual(order.trim().split("\n"), [
-          ...requestBeforeFailure,
+          ...beforeFailure,
           "case:complete",
           "case:fail",
           "file:complete",
@@ -1109,7 +1001,7 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     stage(name, "started"),
     stage(name, "passed"),
   ]);
-  const replacement = [stage("replacement", "started"), checkpoint("redeploy-request")];
+  const request = checkpoint("redeploy-request");
   const activation = checkpoint("activation");
   const failedStage = stage("replacement", "failed");
   const measurement = (outcome: "passed" | "failed"): Event => ({
@@ -1137,7 +1029,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
   const interrupted: Event = { type: "test:interrupted" };
   const fileStart = dequeue(envelope);
 
-  const active = [dequeue(), ...earlierStages, ...replacement];
+  const beforeRequest = [...earlierStages, stage("replacement", "started")];
+  const activeProgress = [...beforeRequest, request];
+  const caseStart = dequeue();
+  const active = [caseStart, ...activeProgress];
   const failed = [...active, activation, failedStage, ...complete()];
   const timedOut = complete(testCase, nativeTimeout);
   const malformed = progress({
@@ -1162,7 +1057,13 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     checkpoint?: FileEvidence["openShellReplacement"];
     unfinishedStage?: FileEvidence["unfinishedStage"];
     timedOut?: boolean;
+    interruptedNames?: string[];
+    partialLine?: string;
   };
+  const unfinishedReplacement = (events: Event[]): Cutoff => ({
+    events,
+    unfinishedStage: "replacement",
+  });
   const completions: Record<string, Cutoff> = {
     "request progress before failure": {
       events: [...active, failedStage, ...complete(), measurement("failed")],
@@ -1170,9 +1071,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     },
     "request progress after failure": {
       events: [
-        ...active.slice(0, -1),
+        caseStart,
+        ...beforeRequest,
         ...complete(),
-        replacement[1]!,
+        request,
         failedStage,
         measurement("failed"),
       ],
@@ -1201,75 +1103,65 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       timedOut: true,
     },
     "checkpoint reordered before case timeout": {
-      events: [...active.slice(0, -1), activation, replacement[1]!, ...timedOut],
+      events: [caseStart, ...beforeRequest, activation, request, ...timedOut],
       unfinishedStage: "replacement",
       timedOut: true,
     },
-    "wrong timeout category": {
-      events: [...active, activation, ...complete(testCase, { ...nativeTimeout, code: "OTHER" })],
-      unfinishedStage: "replacement",
-    },
-    "wrong timeout case coordinate": {
-      events: [...active, activation, ...complete({ ...testCase, line: 10 }, nativeTimeout)],
-      unfinishedStage: "replacement",
-    },
+    "wrong timeout category": unfinishedReplacement([
+      ...active,
+      activation,
+      ...complete(testCase, { ...nativeTimeout, code: "OTHER" }),
+    ]),
+    "wrong timeout case coordinate": unfinishedReplacement([
+      ...active,
+      activation,
+      ...complete({ ...testCase, line: 10 }, nativeTimeout),
+    ]),
     "case timeout with contradictory measurement": {
       events: [...active, activation, ...timedOut, measurement("passed")],
       timedOut: true,
     },
-    "malformed checkpoint beside an otherwise valid case timeout": {
-      events: [...active, malformed, activation, ...timedOut],
-      unfinishedStage: "replacement",
-    },
+    "malformed checkpoint beside an otherwise valid case timeout": unfinishedReplacement([
+      ...active,
+      malformed,
+      activation,
+      ...timedOut,
+    ]),
   };
-  type Interruption = Cutoff & {
-    interruptedNames?: string[];
-    partialLine?: string;
-  };
-  const interruptions: Record<string, Interruption> = {
-    "progress after interruption": {
-      events: [...active, interrupted, activation],
-      unfinishedStage: "replacement",
-    },
+  const interruptions: Record<string, Cutoff> = {
+    "progress after interruption": unfinishedReplacement([...active, interrupted, activation]),
     "interruption before replacement": {
       events: [dequeue(), ...earlierStages.slice(0, -1), interrupted],
     },
-    "nested interruption": {
-      events: [dequeue({ ...testCase, nesting: 1 }), ...active.slice(1), interrupted],
-      unfinishedStage: "replacement",
-    },
-    "foreign interruption": {
-      events: [
-        dequeue({ ...testCase, file: join(root, "tests/helpers/foreign.mjs") }),
-        ...active.slice(1),
-        interrupted,
-      ],
-      unfinishedStage: "replacement",
-    },
-    "duplicate interruption": {
-      events: [dequeue(), ...active, interrupted],
-      unfinishedStage: "replacement",
-    },
-    "completed wrapper interruption": {
-      events: [...completedWrapper, ...active, interrupted],
-      unfinishedStage: "replacement",
-    },
-    "missing coordinates at interruption": {
-      events: [
-        {
-          type: "test:dequeue",
-          data: {
-            name,
-            nesting: 0,
-            entryFile: absolutePath,
-            file: testCase.file,
-          },
+    "nested interruption": unfinishedReplacement([
+      dequeue({ ...testCase, nesting: 1 }),
+      ...activeProgress,
+      interrupted,
+    ]),
+    "foreign interruption": unfinishedReplacement([
+      dequeue({ ...testCase, file: join(root, "tests/helpers/foreign.mjs") }),
+      ...activeProgress,
+      interrupted,
+    ]),
+    "duplicate interruption": unfinishedReplacement([dequeue(), ...active, interrupted]),
+    "completed wrapper interruption": unfinishedReplacement([
+      ...completedWrapper,
+      ...active,
+      interrupted,
+    ]),
+    "missing coordinates at interruption": unfinishedReplacement([
+      {
+        type: "test:dequeue",
+        data: {
+          name,
+          nesting: 0,
+          entryFile: absolutePath,
+          file: testCase.file,
         },
-        ...active.slice(1),
-        interrupted,
-      ],
-      unfinishedStage: "replacement",
-    },
+      },
+      ...activeProgress,
+      interrupted,
+    ]),
     "truncated interruption preview with siblings": {
       events: [
         ...siblings.map((name, i) => dequeue({ ...testCase, line: 20 + i, name })),
@@ -1281,23 +1173,9 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       partialLine: '{"type":"test:output"',
     },
   };
-  const controls = [
-    ...Object.entries(completions).map(([label, control]) => ({
-      label,
-      ...control,
-      deadline: false,
-    })),
-    ...Object.entries(interruptions).map(([label, control]) => ({
-      label,
-      interruptedNames: [name],
-      ...control,
-      deadline: true,
-    })),
-  ];
-  for (const control of controls) {
-    const { label, events, deadline, checkpoint, unfinishedStage, timedOut } = control;
-    const partialLine = "partialLine" in control ? control.partialLine : undefined;
-    const interruptedNames = "interruptedNames" in control ? control.interruptedNames : undefined;
+  const runCutoff = async (label: string, control: Cutoff, deadline: boolean) => {
+    const { events, checkpoint, unfinishedStage, timedOut, partialLine, interruptedNames } =
+      control;
     await t.test(label, async () => {
       let stdout = "";
       for await (const chunk of reporter([fileStart, ...events])) {
@@ -1346,8 +1224,14 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       }
       assert.deepEqual(
         evidence.details?.interruptedTests?.map(({ name }) => name),
-        interruptedNames,
+        interruptedNames ?? (deadline ? [name] : undefined),
       );
     });
+  };
+  for (const [label, control] of Object.entries(completions)) {
+    await runCutoff(label, control, false);
+  }
+  for (const [label, control] of Object.entries(interruptions)) {
+    await runCutoff(label, control, true);
   }
 });

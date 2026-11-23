@@ -62,11 +62,13 @@ for credential values.
   reachable, then reload. If
   access stays unavailable, have an operator check
   [workspace routing](../deploy/workspace-routing.md#agent-workspace-files).
-- **A save has an unknown outcome:** it may have succeeded. Reload the affected
-  file and compare its content with your edit before saving again. A failure
-  for one file does not establish what happened to the others.
-- **The request is rejected:** check that the file is one of the four supported
-  names, your text fits the limit, and you have Agent `operate` permission.
+- **A save has an unknown outcome:** it may have succeeded. Keep a copy of your
+  edit before you select **Reload** for the affected file. Compare the result
+  with your copy before deciding whether to save again. A failure for one file
+  does not establish what happened to the others.
+- **The request is rejected:** check that the file has one of the four supported
+  names. For a load, check Agent `read` permission. For a save, check Agent
+  `operate` permission and the text size.
 
 For automation, the [workspace file API](../../reference/agents.md#workspace-files)
 documents the paths, limits, and errors.

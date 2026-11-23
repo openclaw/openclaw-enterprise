@@ -15,7 +15,8 @@ import {
   openClawSandboxRefusal,
   withSetting as buildSetting,
 } from "../helpers/admitted-configuration.mjs";
-import { configIncludeRefusal, pluginEntryKeyVariantRefusal } from "../helpers/refusal-text.mjs";
+import { pluginEntryKeyVariantRefusal } from "../helpers/refusal-text.mjs";
+import { configIncludeRefusal } from "../helpers/refusal-configuration-runtime.ts";
 
 const withSetting: (
   values: OpenClawConfigurationDocument,

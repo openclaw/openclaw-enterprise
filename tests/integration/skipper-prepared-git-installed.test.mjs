@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import {
   assertOnlyTokenRetirement,
   fetchAfterWithdrawalCommand,
@@ -51,6 +52,8 @@ test(
       checkpoint,
       ordinaryChat,
       sendScript,
+      withdrawalBarrier,
+      withdrawalBarrierPath,
     } = await prepareComputeSkipper(t, input, git.repositoryRef);
     const current = record(await api("GET", agentPath));
     assert.equal(current.activeRevisionId, revision.id);
@@ -58,11 +61,16 @@ test(
       { repositoryRef: git.repositoryRef, profile: "git-write" },
     ]);
     const sessions = await query(
-      "SELECT admission_id,session_id FROM occ.repository_session_attempts WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND phase='open'",
+      `SELECT s.admission_id,s.session_id,b.generation
+         FROM occ.repository_session_attempts s JOIN occ.repository_broker_receipts b
+           ON b.admission_id=s.admission_id AND b.session_id=s.session_id
+         WHERE s.namespace_id=$1 AND s.agent_id=$2 AND s.revision_id=$3 AND s.phase='open'
+           AND s.broker_protocol=3 AND b.state='active' AND b.generation IS NOT NULL`,
       [namespaceId, agent.id, revision.id],
     );
     assert.equal(sessions.rowCount, 1, "one live, durable admission for this Compute revision");
     const session = sessions.rows[0];
+    assert.match(session.generation, /^[a-f0-9-]{36}$/);
     const uses = async (operation = null) =>
       (
         await query(
@@ -157,7 +165,7 @@ test(
     // POST to exercise the broker boundary even for a client that doesn't run its local hook.
     const writePermits = await uses("receive-pack");
     assert.ok(writePermits > 0, "successful push must have gone through prepared authority");
-    await sendScript(
+    const protectedPush = await sendScript(
       [
         ...pre,
         "cd " + dir,
@@ -176,6 +184,7 @@ test(
         "/<= Recv header: HTTP.* 400 / { if (post && basic) denied++ }",
         "/^mixed-push-exit=[1-9][0-9]*$/ { failed++ }",
         "END {exit !(denied == 1 && failed == 1)}'",
+        "git rev-parse --verify HEAD",
       ].join("\n"),
       "installed-push-hook-and-other-repository-deny",
     );
@@ -197,20 +206,34 @@ test(
       writePermits,
     });
 
-    // Hold discovery at the private origin, PATCH away the binding, release discovery, require the
-    // same Git operation to get 503 for its authenticated upload POST. The broker uses one request per TLS.
-    await witness("/hold-next-discovery", "POST");
+    // Pause the same native Git process after its successful authenticated discovery, before
+    // the upload POST. Closing the broker too early would cancel discovery itself.
+    const barrierName = ".oce-git-withdrawal-" + git.id;
+    const [checkoutHead, ...extraHeads] = protectedPush.commitShas;
+    assert.ok(checkoutHead);
+    assert.deepEqual(extraHeads, []);
+    const barrier = await withdrawalBarrierPath(dir, checkoutHead);
+    let completed;
+    let released = false;
     const outcome = sendScript(
-      withdrawDuringFetchCommand(dir),
+      withdrawDuringFetchCommand(dir, 401, barrierName),
       "withdraw-during-native-fetch",
     ).then(
-      (value) => ({ value }),
-      (error) => ({ error }),
+      (value) => (completed = { value }),
+      (error) => (completed = { error }),
     );
     try {
       await waitFor(
-        "the same native Git process's authenticated discovery",
-        () => witness("/discovery-held"),
+        "native Git stored its authenticated discovery before starting the upload",
+        async () => {
+          if (completed) {
+            throw (
+              completed.error ??
+              new Error("the native Git command completed before its withdrawal barrier")
+            );
+          }
+          return withdrawalBarrier(barrier, "ready");
+        },
         60_000,
       );
       const prior = await witness("/evidence");
@@ -223,48 +246,71 @@ test(
       assert.equal(Object.hasOwn(record(removed), "repositoryBindings"), false);
       assert.ok(isRecord(removed));
       assert.equal(removed.activeRevisionId, revision.id);
-      await witness("/release-discovery", "POST");
-      // A diagnostic write must not replace the pending native completion failure.
-      await checkpoint("repository-binding-withdrawn-discovery-released").catch(() => {});
-      const done = await outcome;
-      if (done.error) {
-        throw done.error;
-      }
-      const after = await witness("/evidence");
-      const uploads = (s) =>
-        Object.fromEntries(Object.entries(s.endpoints).filter(([k]) => k.startsWith("upload-")));
-      assert.deepEqual(
-        uploads(after),
-        uploads(prior),
-        "zero additional authenticated or unauthenticated Git upload requests",
+      const retired = await waitFor(
+        "the original broker session and provider token were disposed",
+        async () => {
+          const { rows } = await query(
+            `SELECT s.phase, b.state, w.state AS work_state, w.reason_code
+             FROM occ.repository_session_attempts s
+             JOIN occ.repository_broker_receipts b USING (admission_id)
+             LEFT JOIN occ.controller_work w ON w.idempotency_key=$6
+             WHERE s.namespace_id=$1 AND s.agent_id=$2 AND s.revision_id=$3
+               AND s.admission_id=$4 AND s.session_id=$5 AND b.session_id=$5 AND b.generation=$7`,
+            [
+              namespaceId,
+              agent.id,
+              revision.id,
+              session.admission_id,
+              session.session_id,
+              repositoryRemovalWorkKey(revision.id),
+              session.generation,
+            ],
+          );
+          const row = rows[0];
+          if (row?.work_state === "succeeded") {
+            assert.equal(row.reason_code, "REPOSITORY_ACCESS_WITHDRAWN");
+          }
+          if (
+            row?.phase !== "disposed" ||
+            row?.state !== "disposed" ||
+            row?.work_state !== "succeeded"
+          ) {
+            return undefined;
+          }
+          const evidence = await witness("/evidence");
+          return evidence.endpoints["revoke:204"] ? evidence : undefined;
+        },
+        60_000,
       );
-      assert.equal(after.issued, 1, "single background issuance, no fallback issuer");
+      assertOnlyTokenRetirement(prior, retired);
+      released = await withdrawalBarrier(barrier, "release");
+      assert.ok(released, "the exact native barrier must still be present");
+      // The release receipt still uses the discovery checkpoint. Write it only after the
+      // original Git process can continue past its discovery barrier.
+      await checkpoint("repository-binding-withdrawn-discovery-released", {
+        brokerDisposed: true,
+      }).catch(() => {});
+      const done = await outcome;
+      const after = await witness("/evidence");
+      assert.deepEqual(after, retired, "no new origin activity after releasing the native upload");
       assert.equal(
         await uses(),
         permits,
         "zero new permit after withdrawing repository binding from this running Agent",
       );
+      if (done.error) {
+        throw done.error;
+      }
       await checkpoint("native-authenticated-post-after-withdrawal-refused", {
         gitSessionId: session.session_id,
         permits,
-        uploads: uploads(after),
       });
 
-      // The previous request crossed withdrawal. Now start a separate authenticated fetch, after
-      // observing both the denial and the committed binding change. The prepared-material owner
-      // records a use before releasing a provider credential; the origin counts even raw TCP opens.
       const bound = record(await api("GET", agentPath));
       assert.equal(bound.activeRevisionId, revision.id);
       assert.deepEqual(bound.repositoryBindings ?? [], []);
-      // Admission already refused the in-flight upload. Observe the background owner's one
-      // expected provider call before measuring that the fresh denied fetch opens no connection.
-      const retired = await waitFor("provider confirms retirement of the only token", async () => {
-        const state = await witness("/evidence");
-        return state.endpoints["revoke:204"] ? state : undefined;
-      });
-      assertOnlyTokenRetirement(prior, retired);
       const label = "fresh-authenticated-fetch-after-effective-withdrawal";
-      await sendScript(fetchAfterWithdrawalCommand(dir), label);
+      await sendScript(fetchAfterWithdrawalCommand(dir, 401), label);
       const denied = await witness("/evidence");
       assert.deepEqual(denied, retired, "no new origin connection, request, issuance or token use");
       assert.equal(await uses(), permits, "no new provider credential release by this admission");
@@ -275,7 +321,9 @@ test(
         requests: denied.requests,
       });
     } finally {
-      await witness("/release-if-held", "POST");
+      if (!released) {
+        await withdrawalBarrier(barrier, "release").catch(() => {});
+      }
       await outcome;
     }
     await ordinaryChat("same-compute-owned-skipper-chat-after-git-withdrawal", "after-withdrawal");

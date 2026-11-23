@@ -64,6 +64,10 @@
                       {
                         "page": "guides/integrations/codex-plugins",
                         "label": "Plugins"
+                      },
+                      {
+                        "page": "guides/integrations/channels",
+                        "label": "Channels"
                       }
                     ]
                   },
@@ -298,6 +302,14 @@
                   {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/other-delivery-modes",
+                    "label": "Other Delivery Modes"
                   },
                   {
                     "page": "guides/credential-proxy",
@@ -1107,7 +1119,7 @@
                   },
                   {
                     "page": "contributing/credential-proxy-driver",
-                    "label": "Implement a Credential Proxy Driver"
+                    "label": "Legacy Egress Driver"
                   },
                   {
                     "group": "Driver Contracts",
@@ -1375,7 +1387,8 @@
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy",
-              "flows/agent-sandbox-policy/history"
+              "flows/agent-sandbox-policy/history",
+              "reference/settings/installation-network-policy-ceiling"
             ]
           }
         ]

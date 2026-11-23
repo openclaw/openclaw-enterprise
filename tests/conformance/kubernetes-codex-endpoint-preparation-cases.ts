@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   admitLoggingConfiguration,
   type AgentRevision,
@@ -9,16 +8,9 @@ import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { apiKeyAuth } from "../helpers/kubernetes-routed-scenarios.mjs";
-import type { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
+import type { DedicatedDeployFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
 import { renderedRecord } from "./kubernetes-workspace-node-delivery-cases.ts";
 
-type DeployTransport = ReturnType<typeof createDedicatedDeployKubernetesFixture>;
-type EndpointPreparationFixture = Pick<DeployTransport, "objects" | "read"> & {
-  revision: Omit<AgentRevision, "configuration"> & {
-    configuration: AgentRevision["configuration"];
-  };
-  prepare: () => ReturnType<KubernetesComputeDriver["prepareRevision"]>;
-};
 type EndpointPreparationFixtureFactory = (options: {
   modelEndpoint: string;
   standaloneWebSearch?: boolean | undefined;
@@ -31,9 +23,11 @@ type EndpointPreparationFixtureFactory = (options: {
       }
     >;
   };
-}) => EndpointPreparationFixture;
+}) => Pick<DedicatedDeployFixture, "objects" | "read" | "prepare"> & {
+  revision: { configuration: AgentRevision["configuration"] };
+};
 
-function writtenConfigMap(objects: DeployTransport["objects"], field: string) {
+function writtenConfigMap(objects: DedicatedDeployFixture["objects"], field: string) {
   for (const object of objects.values()) {
     if (object.kind === "ConfigMap") {
       const data = asRecord(object.data);
@@ -58,7 +52,7 @@ function codexBridgePlugins(model: string) {
   return plugins;
 }
 
-function renderedAgentSettings(objects: DeployTransport["objects"]) {
+function renderedAgentSettings(objects: DedicatedDeployFixture["objects"]) {
   const { document } = writtenConfigMap(objects, "openclaw.json");
   const agents = renderedRecord(document.agents, "rendered agents");
   const defaults = renderedRecord(agents.defaults, "rendered agent defaults");

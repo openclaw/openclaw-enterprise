@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { installedGatewayRpc } from "../helpers/installed-gateway-rpc.ts";
 import { waitForWorkspaceReconnect } from "../helpers/gateway-workspace-readiness.ts";
 
 const disconnected = (changes: { type?: string; code?: string; message?: string } = {}) =>
@@ -61,4 +62,31 @@ test("a permanently disconnected workspace fails within the readiness deadline",
     }, 0),
     /Timed out waiting for workspace node reconnection: node not connected \(UNAVAILABLE\)/,
   );
+});
+
+test("installed history polling waits for a current session sharing acquisition", async () => {
+  const failure = {
+    type: "gateway_request_error",
+    code: "UNAVAILABLE",
+    message:
+      "SessionMutationFactsUnavailableError: Session access facts are unavailable; retry after session storage is ready. <- Error: Session sharing acquisition is no longer current",
+    retryable: false,
+  };
+  const history = { messages: [{ role: "assistant", text: "retained" }] };
+  const refused = (error: object) => JSON.stringify({ ok: false, error });
+  const responses = [refused(failure), JSON.stringify(history)];
+  const rpc = installedGatewayRpc(async () => responses.shift()!, 1000);
+  assert.equal(await rpc.readAvailableHistory("session"), undefined);
+  assert.deepEqual(await rpc.readAvailableHistory("session"), history);
+
+  for (const error of [
+    { ...failure, code: "FORBIDDEN" },
+    { ...failure, message: failure.message.split(" <- ")[0] },
+    { ...failure, details: { method: "chat.send" } },
+  ]) {
+    const other = installedGatewayRpc(async () => refused(error), 1000);
+    await assert.rejects(other.readAvailableHistory("session"), { cause: error });
+  }
+  const direct = installedGatewayRpc(async () => refused(failure), 1000);
+  await assert.rejects(direct.call("chat.send", {}), { cause: failure });
 });

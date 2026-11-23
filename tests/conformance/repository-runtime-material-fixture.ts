@@ -12,7 +12,7 @@ import type {
   AgentRevision,
   ComputeAgentBinding,
   ComputeRevisionContext,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   HarnessExecutionMode,
   OpenClawConfigurationValue,
   RepositoryCredentialRuntimeBinding,
@@ -96,7 +96,7 @@ interface ComputeFixturePorts {
     network: Mutable<KubernetesComputeDriverOptions["network"]>;
   };
   apiClients: Promise<KubernetesMaterialClients>;
-  readonly proxyDriver: CredentialProxyDriver | undefined;
+  readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   waitBeforeRetry: () => Promise<void>;
   sandboxDriver:
     | {

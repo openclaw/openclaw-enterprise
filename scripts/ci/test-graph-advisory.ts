@@ -261,6 +261,31 @@ function reachableChanges(
   return reached;
 }
 
+function reverseDependencies(dependencies: Map<string, string[]>) {
+  const importers = new Map<string, string[]>();
+  for (const [file, targets] of dependencies) {
+    for (const target of targets) {
+      const parents = importers.get(target);
+      if (parents) {
+        parents.push(file);
+      } else {
+        importers.set(target, [file]);
+      }
+    }
+  }
+  return importers;
+}
+
+function reachableImporters(importers: Map<string, string[]>, changed: Set<string>) {
+  const reached = new Set(changed);
+  for (const file of reached) {
+    for (const importer of importers.get(file) ?? []) {
+      reached.add(importer);
+    }
+  }
+  return reached;
+}
+
 // #6392 established this runtime edge on the exact unindexed importer blob.
 const fixture = "tests/conformance/kubernetes-dedicated-deploy-fixture.ts";
 const importer = "tests/conformance/kubernetes-compute.test.mjs";
@@ -280,6 +305,7 @@ function report(source: ReturnType<typeof sourceIdentity>) {
   }
   const changed = new Set(paths);
   const eligible = new Set<string>();
+  const runtime = new Set<string>();
   for (const file of changed) {
     const reason = fallbackFor(file);
     if (reason) {
@@ -289,6 +315,8 @@ function report(source: ReturnType<typeof sourceIdentity>) {
       fallback.add("unindexed_path");
     } else if (!reason) {
       eligible.add(file);
+    } else if (reason === "fixture_or_runtime" && file.endsWith(".mjs")) {
+      runtime.add(file);
     }
   }
   const hasStaticEdge =
@@ -322,6 +350,13 @@ function report(source: ReturnType<typeof sourceIdentity>) {
   if ([...eligible].some((file) => !owned.has(file))) {
     fallback.add("no_registered_owner");
   }
+  // Share the reverse graph for indexed runtime and Full Integration-only hints.
+  const importers =
+    runtime.size || eligible.size ? reverseDependencies(dependencies) : new Map<string, string[]>();
+  const runtimeConsumers = reachableImporters(importers, runtime);
+  const compilerConsumers = reachableImporters(importers, eligible);
+  const consumes = (lane: string, consumers: Set<string>) =>
+    files.get(lane)?.some((file) => consumers.has(file));
   return {
     graph: {
       compiler,
@@ -335,6 +370,14 @@ function report(source: ReturnType<typeof sourceIdentity>) {
       direct: [...hints.direct].sort(),
       compiler: [...hints.compiler].sort(),
       staticFixture: [...hints.staticFixture].sort(),
+      runtimeCompiler: ordinary.filter((lane) => consumes(lane, runtimeConsumers)).sort(),
+      fullOnlyCompiler: full
+        .filter(
+          (lane) =>
+            !ordinary.includes(lane) &&
+            (consumes(lane, runtimeConsumers) || consumes(lane, compilerConsumers)),
+        )
+        .sort(),
     },
     fallback: [...fallback].sort(),
   };

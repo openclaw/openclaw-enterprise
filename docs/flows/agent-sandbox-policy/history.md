@@ -68,3 +68,37 @@ This record preserves dated changes to the [Agent sandbox policy flow](../agent-
 - 2026-10-15 17:12: Bring rejected policy saves into view and preserve the attempted edit. (authoring-run/b37638d5-3a21-4fe8-99ab-3b9600cfe107 - a28596ab8)
 
 - 2026-10-15 16:14: Trace governed Agent network additions and separate decision evidence. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
+
+- 2026-11-23: CLI file apply.
+
+- 2026-11-23 11:47: Clarify policy flow. (authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80 - 226621cc08c630e3e966896ef04a7290d87d713a)
+
+- 2026-11-23 09:00: Explain that OpenShell alone enforces PR reads and creation, with no request-time OCE check. (authoring-run/19359633-e6f9-48aa-aedb-66a9b329a7fd - eab74449a971c0efd318d62304640dca4f54ba76)
+
+- 2026-11-22 13:25: Explain draft retention and recovery after a concurrent repository grant change. (authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa - 19ce90f1761a9da44d9a972c42d49686732a604a)
+
+- 2026-11-22 12:08: Reconcile managed model admission with current IAM handoff and repository grants. (authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f - a6b923bad)
+
+- 2026-11-22 10:36: Reconcile repository grants and managed model admission. (authoring-run/5fd71b49-d9db-436b-8ae0-2157ae7ca64a - 5a30353ef9a8f0388b857612c3b31624c810209d)
+
+- 2026-11-22 10:23: Trace managed model admission and legacy protected egress. (authoring-run/afd8fac9-f5bf-4366-9cd1-d3ff0c00ba14 - 6747afc21abe61933b5e5222cacb79141c2a692f)
+
+- 2026-11-22 10:05: Document IAM currentness during Channel handoff and deployment admission. (authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae - 00a5b1d2edc6de425e2e9d197bb0841a02f439e8)
+
+- 2026-11-22 09:55: Document transaction isolation for explicit repository policy saves. (authoring-run/0eda0b23-705a-489b-833d-3cde8916b691 - 42f0df7230de059d4a96da27298c911e22993cab)
+
+- 2026-11-22 09:28: Document the read check for explicit empty repository lists and omission from save responses. (authoring-run/df899b2b-1188-46fb-a341-5c7068e9208a - 8d738163780171c639367dbbccd9d9bb3a0ee63c)
+
+- 2026-11-21 11:25: Issue reads. (authoring-run/0bcc1e9a-07b4-4e62-84f3-5c8d8204522e - 64c5b34ff03f7b17aaa69af21aa75af0a91b1d56)
+
+- 2026-11-21 08:16: Document Console repository choices, first-deployment eligibility and active revision recovery. (authoring-run/6ef4f22d-ce36-4d4c-941f-cb7a21afbb49 - 9cd9c344f9c57cd158dd74b87029a8266ca7cac2)
+
+- 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
+
+- 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
+
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
+
+- 2026-11-20 16:26: Point policy admission and live application to their Sandbox policy module. (authoring-run/f1915f3d-1425-495a-b3d9-3ed171e6cf74 - c153a2bbf59310a74974a455c11152460d486af4)
+
+[Agent sandbox policy documentation history](agent-sandbox-policy/history.md) preserves all dated entries.

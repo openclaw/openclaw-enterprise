@@ -75,7 +75,7 @@ supervisor and Provider status. See the
 [Git execution trust boundary](../repository-credentials/protected-openshell-git.md#execution-identity).
 
 Build a Harness image containing `/opt/oce/runtime/openshell-bootstrap.cjs` and
-select it by immutable reference. OCE development and CI pin OpenShell v0.1.8.
+select it by immutable reference. See the [OpenShell development and CI pin](openshell-sandbox.md).
 For the prototype, verify that the OpenShell gateway enables
 `SandboxUpdates.UpdateSandbox` and that its Compute Driver applies updates to
 image, command, environment, labels and annotations with resource-version checks.
@@ -87,6 +87,22 @@ Provider and policy replacement requires a gateway that validates attachments
 against the latest stored policy, including credential inspection rules.
 
 ## Lifecycle and retained files
+
+Managed creation sends `kubernetes.agentResources` in the `spec.template.resources`
+protobuf Struct and omits `driver_config`. New Sandboxes can run with `allow_driver_config` disabled. Per-Agent sizing overrides remain legacy-mode only. See
+[resource settings](openshell-sandbox.md#configuration) for validation and defaults.
+
+Before upgrading a service installation that stores sizing in `driver_config`,
+copy each affected Agent’s retained files outside its Sandbox while it is running.
+After upgrading, create replacement Agents, restore and verify their files, then
+delete the originals. Keep `allow_driver_config` enabled until all Sandboxes that
+use it have been retired. Redeployment stops the predecessor before checking
+its template. Provisioning refuses the old layout with `SANDBOX_RECREATION_REQUIRED`,
+including on resume. Deleting an Agent removes its retained storage.
+
+Changing resource requests or limits on a retained Sandbox stops the predecessor
+and fails the deployment with `SANDBOX_WORKLOAD_IMMUTABLE`. Restore the original
+Installation sizing and deploy again to resume with the retained files.
 
 The Sandbox and runtime Provider names derive from the Agent ID. Stop and
 revision retirement retain the Sandbox and its storage. Replacement updates
@@ -130,8 +146,8 @@ failure handling.
   are refused. Bootstrap requires writable `/sandbox`; read-only policy paths
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
-- Changing the Harness type, static policy, non-Git middleware bindings, or resource requests
-  through workload replacement is refused.
+- Changing the Harness type, static policy, non-Git middleware bindings, or resource
+  requests or limits through workload replacement is refused.
 - Agents can enable or disable Git and change repository selections and resolved
   permissions between revisions. Cleanup closes the old authorization and removes
   its Provider and middleware before preparing the successor. Enabling Git requires

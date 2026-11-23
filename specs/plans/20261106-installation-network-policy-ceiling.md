@@ -32,12 +32,12 @@ GET and PUT at `/installation/sandbox-network-policy-ceiling` use the standard
 data envelope. PUT takes `{ expectedVersion, rules }`; POST adds `/validate` to
 that path and returns `ConfigurationResult<{ rules }>` without writes. Both
 check Installation authority and version. Preview grants no write
-authority. Agent policy reads expose only rules.
+authority.
 
 Shared ceiling locks precede Namespace/Agent locks in admission and worker
 transactions. Updates and initialization take the exclusive lock, including when
 the record is absent. Initialization precedes HTTP admission; workers require
-saved state and never seed it. Replicas retain no startup ownership lease.
+saved state and never seed it.
 
 ## Implementation
 
@@ -316,6 +316,8 @@ Main `a99a9c852` owns RFC-0044; the ceiling now uses RFC-20261106-installation-n
 Main `ebcc46a14` owns 0084; ceiling migrations move to 0085–0086 with unchanged SQL.
 
 Main `2c78d43bb` owns 0085; ceiling migrations move to 0086–0087 with unchanged SQL.
+
+Main `b3c6ef3d0`: ceiling migrations 0091–0092; extracted operations retain persisted authority.
 
 ## Manual Notes
 
