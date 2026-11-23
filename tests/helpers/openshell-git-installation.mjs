@@ -250,7 +250,10 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, issueReads?: boolean }} [options]
+ * `repositorySource` selects the OCC TokenService, enrolls a `github` Source holding a fake
+ * fine-grained value through the API, and names it on the primary Namespace's registrations; the
+ * peer Namespace stays on the App. The origin accepts that value as a static token. Native Git only.
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, issueReads?: boolean, repositorySource?: boolean }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -261,6 +264,7 @@ export function createOpenShellGitInstallation(
     nativeGit = false,
     networkAcl = false,
     issueReads = false,
+    repositorySource = false,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -271,14 +275,27 @@ export function createOpenShellGitInstallation(
       nativeGit,
       networkAcl,
       issueReads,
+      repositorySource,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, networkAcl, issueReads },
+  {
+    onSetupStep,
+    witnessIssuedGit,
+    allowStandingApprovals,
+    nativeGit,
+    networkAcl,
+    issueReads,
+    repositorySource,
+  },
 ) {
+  assert.ok(
+    !repositorySource || (nativeGit && !issueReads),
+    "A repository token Source lends to native Git only, without scoped REST",
+  );
   assert.ok(!(nativeGit && networkAcl), "Select one Git ACL credential fixture");
   assert.ok(
     !nativeGit || !allowStandingApprovals,
@@ -629,14 +646,15 @@ async function installOpenShellGit(
   };
   const repositoryScopes = nativeGit ? origin.network?.scopes : [originScope];
   assert.ok(repositoryScopes?.length);
-  const sessionDurationSeconds = 600;
+  // A Source journey outlives one renewal window and the Provider's 15-minute limit.
+  const sessionDurationSeconds = repositorySource ? 3600 : 600;
   const registry = {
     version: 1,
     backendId: "repository-backend",
     providerInstanceId: "isolated-git-fixture",
     appId: origin.appId,
     githubInstallationId: origin.installationId,
-    maximumDurationSeconds: 600,
+    maximumDurationSeconds: sessionDurationSeconds,
     ...(allowStandingApprovals && { allowStandingApprovals: true }),
     repositories: repositoryScopes.map((scope) => ({
       ...scope,
@@ -757,6 +775,10 @@ async function installOpenShellGit(
   assert.ok(installation.drivers.credential_gateway && backend.drivers.credential_gateway);
   backend.drivers.credential_proxy = sandbox.id;
   installation.drivers.credential_proxy = { id: sandbox.id, configuration: {} };
+  if (repositorySource) {
+    assert.equal(installation.drivers.token_service, undefined);
+    installation.drivers.token_service = { id: "occ", configuration: {} };
+  }
   sandbox.configuration.gateway.networkPolicyResources.push(supervisorPolicy);
   // The protected sender owns GitHub TLS inspection. Remove only Local Setup's
   // exact uninspected Git rule; preserve every unrelated operator policy.
@@ -927,6 +949,73 @@ async function installOpenShellGit(
   const modelSource = await registerModel(namespace);
   if (independent) {
     independent.modelSource = await registerModel(independent.namespace);
+  }
+  let repositorySourceState;
+  if (repositorySource) {
+    onSetupStep?.("enroll repository token Source");
+    // Fake values only, built from parts: never a real token.
+    const fake = () => ["github", "pat", randomBytes(30).toString("hex")].join("_");
+    const value = fake();
+    const sourcesPath = `/namespaces/${namespace.id}/credential-sources`;
+    const created = await request("POST", sourcesPath, {
+      name: "repository-token",
+      type: "static",
+      config: {
+        provider_preset: "github",
+        repositories: repositoryScopes.map(({ repository }) => `${repository}:write`).join(","),
+      },
+      secret: { token: value },
+    });
+    assert.match(created.id, /^cs_/u);
+    const sourcePath = `${sourcesPath}/${created.id}`;
+    await eventually("repository token Source", async () => {
+      const current = await request("GET", sourcePath);
+      assert.notEqual(current.state, "failed", "repository token Source failed");
+      assert.ok(!JSON.stringify(current).includes(value), "Source read returned its value");
+      return current.state === "ready" ? current : undefined;
+    });
+    const index = origin.network.acceptStaticToken(value);
+    // Name the Source on the primary Namespace's registrations; the peer keeps the App.
+    const sourceRegistry = {
+      ...registry,
+      repositories: registry.repositories.map((entry) => ({
+        ...entry,
+        namespaces: entry.namespaces.map((policy) =>
+          policy.namespaceId === namespace.id
+            ? {
+                namespaceId: policy.namespaceId,
+                profiles: policy.profiles,
+                permissions: { metadata: "read", contents: "write" },
+                nativeGit: "v1",
+                credentialSource: created.id,
+              }
+            : policy,
+        ),
+      })),
+    };
+    await apply([
+      configMap("git-fixture-registry-source", { "registry.json": JSON.stringify(sourceRegistry) }),
+    ]);
+    values.repositoryCredentials.registryConfigMapName = "git-fixture-registry-source";
+    const sourceValuesFile = join(directory, "oce-values-source.json");
+    await writeFile(sourceValuesFile, JSON.stringify(values), { mode: 0o600 });
+    onSetupStep?.("upgrade controller with the Source registry");
+    await command(
+      "helm",
+      [
+        "upgrade",
+        "openclaw-enterprise",
+        join(root, "deploy/helm/openclaw-enterprise"),
+        ...helmContext,
+        "-f",
+        sourceValuesFile,
+        "--wait",
+        "--timeout",
+        "180s",
+      ],
+      { timeout: 190_000 },
+    );
+    repositorySourceState = { id: created.id, path: sourcePath, value, index, fake };
   }
 
   // Local Setup imported the stock platform image. Bind the selected containerd
@@ -1753,10 +1842,31 @@ async function installOpenShellGit(
       throw error;
     }
   };
+  // Pause or resume the Worker's process on the k3d node; returns the node pid it signalled.
+  const signalWorker = async (signal) => {
+    assert.ok(signal === "STOP" || signal === "CONT");
+    const node = `k3d-${state.cluster}-server-0`;
+    const ids = (
+      await command("docker", ["exec", node, "crictl", "ps", "--name", "^worker$", "-q"])
+    )
+      .trim()
+      .split(/\s+/u)
+      .filter(Boolean);
+    assert.equal(ids.length, 1, "expected one running Worker container");
+    const inspected = JSON.parse(
+      await command("docker", ["exec", node, "crictl", "inspect", ids[0]]),
+    );
+    const pid = inspected.info?.pid;
+    assert.ok(Number.isSafeInteger(pid) && pid > 1, "Worker container pid");
+    await command("docker", ["exec", node, "kill", `-${signal}`, String(pid)]);
+    return pid;
+  };
   return {
     request,
     platform,
     sessionDurationSeconds,
+    ...(repositorySourceState && { repositorySource: repositorySourceState }),
+    signalWorker,
     ...(callbacks && { callbacks }),
     namespace,
     modelSource,

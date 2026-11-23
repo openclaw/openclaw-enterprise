@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
@@ -1926,6 +1927,698 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
       t.diagnostic(
         "Saved Git ACL clear persisted; deploy refused deny-all and explicit Stop retired both generations",
       );
+    }),
+  );
+}
+
+// A registry-selected repository token Source (OCC TokenService custody) instead of the App.
+// Select it with OCC_TEST_OPENSHELL_SAVED_AGENT_ACL=source and the lane's other fixture environment.
+// Every token value is fake and built from parts; the origin accepts it as a static token.
+function tokenFingerprints(values: readonly string[]) {
+  const digest = (form: string) => createHash("sha256").update(form).digest("hex");
+  return values.flatMap((value) => {
+    const basic = Buffer.from(`x-access-token:${value}`).toString("base64");
+    return [
+      [Buffer.byteLength(value), digest(value), value.slice(0, value.indexOf("_") + 1)],
+      [Buffer.byteLength(basic), digest(basic), basic.slice(0, 20)],
+    ] as const;
+  });
+}
+
+function searchWorkloadForTokens() {
+  // This function runs alone in the guest as a `node --eval` script, so it cannot import.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require("node:fs");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const crypto = require("node:crypto");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const childProcess = require("node:child_process");
+  const prints: [number, string, string][] = JSON.parse(process.argv[1] ?? "[]");
+  const hit = (buffer: Buffer) =>
+    prints.some(([length, hex, prefix]) => {
+      for (let at = buffer.indexOf(prefix); at !== -1; at = buffer.indexOf(prefix, at + 1)) {
+        const candidate = buffer.subarray(at, at + length);
+        if (
+          candidate.length === length &&
+          crypto.createHash("sha256").update(candidate).digest("hex") === hex
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+  const found = new Set<string>();
+  const counts = { environ: 0, cmdline: 0, gitconfig: 0, files: 0, bytes: 0, skipped: 0 };
+  for (const pid of fs.readdirSync("/proc").filter((name: string) => /^\d+$/.test(name))) {
+    for (const kind of ["environ", "cmdline"] as const) {
+      try {
+        const buffer = fs.readFileSync(`/proc/${pid}/${kind}`);
+        counts[kind] += 1;
+        if (hit(buffer)) {
+          found.add(kind);
+        }
+      } catch {
+        // The process ended or its file is not readable by the workload.
+      }
+    }
+  }
+  try {
+    const config = childProcess.execFileSync("git", ["config", "--list", "--show-origin"], {
+      cwd: "/",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    counts.gitconfig += 1;
+    if (hit(config)) {
+      found.add("gitconfig");
+    }
+  } catch {
+    // No effective Git configuration: SOURCE_SEARCH_GIT_CONFIG reports the zero count.
+  }
+  const roots = new Set(
+    ["/sandbox", "/home", "/root", "/tmp", "/var/tmp", "/etc", "/run", process.env.HOME]
+      .concat(process.cwd())
+      .filter((root): root is string => typeof root === "string" && root.length > 0),
+  );
+  const seen = new Set<string>();
+  const walk = (path: string) => {
+    if (counts.files >= 20_000 || seen.has(path)) {
+      return;
+    }
+    seen.add(path);
+    let stat;
+    try {
+      stat = fs.lstatSync(path);
+    } catch {
+      return;
+    }
+    if (stat.isDirectory()) {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(path);
+      } catch {
+        counts.skipped += 1;
+      }
+      for (const name of names) {
+        walk(path === "/" ? `/${name}` : `${path}/${name}`);
+      }
+    } else if (stat.isFile()) {
+      if (stat.size > 4 * 1024 * 1024) {
+        counts.skipped += 1;
+        return;
+      }
+      try {
+        const buffer = fs.readFileSync(path);
+        counts.files += 1;
+        counts.bytes += buffer.length;
+        if (hit(buffer)) {
+          found.add(path.startsWith("/tmp/") ? "file:/tmp" : `file:${path}`);
+        }
+      } catch {
+        counts.skipped += 1;
+      }
+    }
+  };
+  for (const root of roots) {
+    walk(root);
+  }
+  process.stdout.write(JSON.stringify({ found: [...found].sort(), ...counts }));
+}
+
+async function assertTokensAbsentFromWorkload(
+  t: TestContext,
+  execute: GitExec,
+  target: GitTarget,
+  values: readonly string[],
+  stage: string,
+) {
+  const script = `(${searchWorkloadForTokens.toString()})()`;
+  const result = await execute(target, [
+    "node",
+    "--eval",
+    script,
+    "--",
+    JSON.stringify(tokenFingerprints(values)),
+  ]);
+  const report = JSON.parse(result.stdout.toString("utf8"));
+  t.diagnostic(
+    JSON.stringify({
+      event: "saved-git-source-digest-search",
+      stage,
+      sandbox: savedGitAclIdentity(target.sandboxId),
+      ...report,
+    }),
+  );
+  assert.ok(report.environ > 0 && report.cmdline > 0 && report.files > 0, "SOURCE_SEARCH_COVERAGE");
+  assert.equal(report.gitconfig, 1, "SOURCE_SEARCH_GIT_CONFIG");
+  assert.deepEqual(report.found, [], "SOURCE_ABSENT_FROM_WORKLOAD");
+}
+
+/** The HTTP status of an OCC call that may be refused; a client timeout is "timeout". */
+function statusOf(pending: Promise<unknown>): Promise<number | "timeout"> {
+  return pending.then(
+    () => 200,
+    (error: unknown) => {
+      if (
+        error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError")
+      ) {
+        return "timeout";
+      }
+      const match = /returned HTTP (\d{3})/u.exec(error instanceof Error ? error.message : "");
+      if (!match) {
+        throw error;
+      }
+      return Number(match[1]);
+    },
+  );
+}
+
+if (savedAgentAcl === "source") {
+  test(
+    "A saved Agent's native Git borrows a repository token Source",
+    { timeout: 60 * 60_000 },
+    settleBeforeFixtureTeardown(async (t) => {
+      assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
+      for (const setting of ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE"]) {
+        assert.ok(
+          /^[^@\s]+@sha256:[a-f0-9]{64}$/.test(process.env[setting] ?? ""),
+          `${setting} must select a digest-pinned image for saved Agent validation`,
+        );
+      }
+      assert.equal(process.env.OCC_DEVELOPMENT_STATE_DIRECTORY, undefined);
+      assert.ok(
+        process.env.OPENAI_API_KEY === "fixture-only-no-model-call" &&
+          (process.env.CODEX_ACCESS_TOKEN === undefined ||
+            process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
+        "Use the inert Local Setup credential with the synthetic startup model",
+      );
+      const fixture = await createOpenShellGitInstallation(t, {
+        nativeGit: true,
+        repositorySource: true,
+      });
+      const { callbacks, gatewayClient, workspace, request } = fixture;
+      const source = fixture.repositorySource;
+      assert.ok(callbacks && source);
+      const origin: GitOrigin = fixture.origin;
+      const network = origin.network;
+      assert.ok(network && network.token === undefined);
+      assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
+      const evidence = (event: string, fields: Record<string, unknown>) =>
+        t.diagnostic(JSON.stringify({ event: `saved-git-source-${event}`, ...fields }));
+      const values = [source.value];
+      const sourceIndices = new Set([source.index]);
+      const nsPath = `/namespaces/${fixture.namespace.id}`;
+
+      // The Worker's own log: refusals and confirmations by code, never a value.
+      const workerSelector =
+        "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=worker";
+      const workerEvents = async () => {
+        const logs: string = await fixture.kube(
+          [
+            "logs",
+            "-n",
+            fixture.platform,
+            "-l",
+            workerSelector,
+            "--container=worker",
+            "--tail=-1",
+            "--max-log-requests=10",
+          ],
+          { timeout: 60_000 },
+        );
+        for (const value of values) {
+          assert.ok(!logs.includes(value), "SOURCE_VALUE_NOT_LOGGED");
+        }
+        return logs.split("\n").flatMap((line): Record<string, unknown>[] => {
+          if (!line.includes(source.id)) {
+            return [];
+          }
+          try {
+            const event = asRecord(JSON.parse(line.slice(line.indexOf("{"))));
+            return event ? [event] : [];
+          } catch {
+            return [];
+          }
+        });
+      };
+      const eventTime = (event: Record<string, unknown>) => {
+        const raw = event.time ?? event.timestamp ?? event.ts;
+        return typeof raw === "number" ? raw : typeof raw === "string" ? Date.parse(raw) : NaN;
+      };
+      const confirmations = async () =>
+        (await workerEvents())
+          .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
+          .map((event) => ({ version: event.credentialSourceVersion, at: eventTime(event) }));
+      const refusals = async () =>
+        (await workerEvents())
+          .filter(({ code }) => code === "REPOSITORY_SOURCE_LOAN_REFUSED")
+          .map((event) => ({ reason: event.reason, at: eventTime(event) }));
+
+      const callbackBaseline = await callbacks.disable();
+      assert.equal(callbackBaseline, 0);
+      const managed = createManagedWorkloadExec(t, {
+        backend: fixture.gatewayBackend,
+        gatewayClient,
+        workspace,
+        checkpoint: fixture.checkpoint,
+      });
+      const exec: GitExec = async (target, command) => {
+        const result = await managed(target, command);
+        for (const output of [result.stdout, result.stderr]) {
+          assert.ok(!network.containsIssuedCredential(output), "SOURCE_CREDENTIAL_IN_OUTPUT");
+        }
+        return result;
+      };
+      // One Git read from the workload; the origin names the credential each request carried.
+      const lsRemote = async (target: GitTarget, repository = "a") => {
+        const before = network.requests().length;
+        const result = await exec(target, [
+          "sh",
+          "-c",
+          `export LC_ALL=C GIT_TERMINAL_PROMPT=0; timeout 30 git ls-remote https://github.com/fixture/${repository}.git refs/heads/main >/dev/null 2>&1; echo $?`,
+        ]);
+        const indices = [
+          ...new Set(
+            network
+              .requests()
+              .slice(before)
+              .flatMap(({ authenticated, credentialIndex }) =>
+                authenticated && typeof credentialIndex === "number" ? [credentialIndex] : [],
+              ),
+          ),
+        ];
+        return { code: Number(result.stdout.toString("utf8").trim()), indices, at: Date.now() };
+      };
+      const readGitRule = async (target: GitTarget, namespaceWorkspace = workspace) => {
+        const config = await gatewayClient.getSandboxConfig(
+          namespaceWorkspace,
+          target.sandboxName,
+          t.signal,
+        );
+        const rules = asRecord(asRecord(config.policy)?.network_policies);
+        const endpoints = asRecord(rules?.["repository-git-network"])?.endpoints;
+        assert.ok(Array.isArray(endpoints));
+        const git = endpoints.map(asRecord).filter((endpoint) => endpoint?.host === "github.com");
+        return {
+          routes: wirePolicy(
+            git.map((endpoint) => ({ path: endpoint?.path, rules: endpoint?.rules })),
+          ),
+          providers: [
+            ...new Set(git.map((endpoint) => asRecord(endpoint?.credential_binding)?.provider)),
+          ],
+        };
+      };
+      const expectedRoutes = (grants: readonly RepositoryNetworkGrant[]) =>
+        wirePolicy(
+          grants.map(({ repository, access }) => ({
+            path: `/${repository}.git/**`,
+            rules: (access === "write"
+              ? ["git-upload-pack", "git-receive-pack"]
+              : ["git-upload-pack"]
+            ).flatMap((service) => [
+              {
+                allow: {
+                  method: "GET",
+                  path: `/${repository}.git/info/refs`,
+                  query: { service: { glob: service } },
+                },
+              },
+              { allow: { method: "POST", path: `/${repository}.git/${service}` } },
+            ]),
+          })),
+        );
+      const sourceProvider = async (target: GitTarget) => {
+        const box = await gatewayClient.getSandbox(
+          { workspace, name: target.sandboxName },
+          t.signal,
+        );
+        assert.equal(box?.id, target.sandboxId);
+        const providers = box?.spec?.providers;
+        assert.ok(Array.isArray(providers));
+        const git = providers.filter(
+          (name): name is string =>
+            typeof name === "string" && /^oce-github-(?:token|installation)-/u.test(name),
+        );
+        assert.equal(git.length, 1, "SOURCE_ONE_GIT_PROVIDER");
+        assert.ok(git[0]!.startsWith("oce-github-token-"), "SOURCE_PROVIDER_NAME");
+        return git[0]!;
+      };
+
+      // AC-6 save table: the Agent principal needs operate on the Source before save.
+      const prepared = await prepareFiniteGitAgent(
+        t,
+        fixture,
+        network.scopes.map(({ repositoryRef }) => repositoryRef),
+      );
+      const { agent, path } = prepared;
+      const policyPath = `${path}/sandbox-policy/networking`;
+      await request("PATCH", `${policyPath}/editing`, { enabled: true });
+      const save = async (grants: readonly RepositoryNetworkGrant[]) => {
+        const view: SandboxPolicyViewWire = await request("GET", policyPath);
+        return request("PUT", policyPath, {
+          expectedVersion: view.policy.version,
+          additions: view.policy.additions,
+          repositoryNetworkPolicy: grants,
+        });
+      };
+      const readWrite = [
+        { repository: "fixture/a", access: "read" },
+        { repository: "fixture/b", access: "write" },
+      ] as const;
+      const saveTable: Record<string, number | "timeout"> = {};
+      saveTable.saveWithoutOperate = await statusOf(save(readWrite));
+      const role = await request("POST", `${nsPath}/iam/roles`, {
+        name: `repository-token-${randomUUID()}`,
+        permissions: [{ action: "operate", resourceKind: "credential_source" }],
+      });
+      const binding = await request("POST", `${nsPath}/iam/access-bindings`, {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: role.id,
+        resourceKind: "credential_source",
+        resourceId: source.id,
+      });
+      saveTable.saveWithOperate = await statusOf(save(readWrite));
+      evidence("save-table", saveTable);
+      assert.equal(saveTable.saveWithoutOperate, 403, "SOURCE_SAVE_NEEDS_OPERATE");
+      assert.equal(saveTable.saveWithOperate, 200);
+
+      // AC-1: A read, B write, C none on the Source credential; no App issuance at deploy.
+      const issuedBefore = origin.snapshot().issued;
+      const first = await prepared.deploy();
+      assert.equal(origin.snapshot().issued, issuedBefore, "SOURCE_DEPLOY_ISSUES_NOTHING");
+      saveTable.deploy = 200;
+      const provider = await sourceProvider(first.target);
+      const firstRule = await readGitRule(first.target);
+      assert.deepEqual(firstRule.routes, expectedRoutes(readWrite), "SOURCE_READBACK_ROUTES");
+      assert.deepEqual(firstRule.providers, [provider]);
+      await exerciseSavedGitAcl(
+        t,
+        fixture,
+        exec,
+        { ...first, credentialIndex: source.index },
+        undefined,
+        callbackBaseline,
+      );
+      // AC-2 after deploy.
+      await assertTokensAbsentFromWorkload(t, exec, first.target, values, "deploy");
+
+      // AC-1 narrowing: B read-only on a new revision, confirmed by readback; same Source value.
+      const readOnly = [
+        { repository: "fixture/a", access: "read" },
+        { repository: "fixture/b", access: "read" },
+      ] as const;
+      await save(readOnly);
+      const narrowed = await prepared.deploy();
+      assert.notEqual(narrowed.target.sandboxId, first.target.sandboxId);
+      const narrowedRule = await readGitRule(narrowed.target);
+      assert.deepEqual(narrowedRule.routes, expectedRoutes(readOnly), "SOURCE_NARROWED_READBACK");
+      const narrowedProvider = await sourceProvider(narrowed.target);
+      const { guest } = savedGitProbeTools(fixture, exec);
+      const read = await lsRemote(narrowed.target, "b");
+      assert.ok(
+        read.code === 0 && isDeepStrictEqual(read.indices, [source.index]),
+        "SOURCE_NARROWED_READ",
+      );
+      const denied = await guest(narrowed.target, { kind: "git" }, [
+        "sh",
+        "-ceu",
+        `export LC_ALL=C; work=$(mktemp -d); git clone -q https://github.com/fixture/b.git "$work/b"; git -C "$work/b" -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m narrowed; exec git -C "$work/b" push -q origin HEAD:refs/heads/narrowed`,
+      ]);
+      assert.equal(denied.stdout.toString("utf8"), "403 native-git\n", "SOURCE_NARROWED_PUSH");
+      assert.equal(await network.ref("fixture/b", "refs/heads/narrowed"), undefined);
+      evidence("narrowed", {
+        sandbox: savedGitAclIdentity(narrowed.target.sandboxId),
+        provider: savedGitAclIdentity(narrowedProvider),
+      });
+      const target = narrowed.target;
+
+      // AC-3: replace the value by PATCH; delivery reaches the origin without a redeploy.
+      const replacement = source.fake();
+      const replacementIndex = network.acceptStaticToken(replacement);
+      values.push(replacement);
+      sourceIndices.add(replacementIndex);
+      const confirmedBefore = (await confirmations()).length;
+      await request("PATCH", source.path, { secret: { token: replacement } });
+      const committedAt = Date.now();
+      let probes = 0;
+      const delivered = await observeUntil(
+        "Source replacement at the origin",
+        t.signal,
+        async () => {
+          probes += 1;
+          await delay(5_000, undefined, { signal: t.signal });
+          const probe = await lsRemote(target);
+          return probe.code === 0 && isDeepStrictEqual(probe.indices, [replacementIndex])
+            ? probe
+            : undefined;
+        },
+        15 * 60_000,
+      );
+      const confirmed = (await confirmations()).slice(confirmedBefore);
+      evidence("replacement", {
+        committedAt: new Date(committedAt).toISOString(),
+        originFirstSeenAt: new Date(delivered.at).toISOString(),
+        originDelaySeconds: (delivered.at - committedAt) / 1000,
+        probes,
+        confirmations: confirmed.map(({ version, at }) => ({
+          version: typeof version === "string" ? savedGitAclIdentity(version) : version,
+          at: Number.isNaN(at) ? "untimed" : new Date(at).toISOString(),
+          delaySeconds: Number.isNaN(at) ? undefined : (at - committedAt) / 1000,
+        })),
+      });
+      assert.ok(confirmed.length > 0, "SOURCE_DELIVERY_CONFIRMED_LOGGED");
+      assert.equal(
+        await sourceProvider(target),
+        narrowedProvider,
+        "SOURCE_REPLACEMENT_NO_REDEPLOY",
+      );
+      await assertTokensAbsentFromWorkload(t, exec, target, values, "replacement");
+
+      // A classic-class value is refused at PATCH and the delivered value keeps working.
+      const classic = ["ghp", randomBytes(18).toString("hex")].join("_");
+      values.push(classic);
+      const classicStatus = await statusOf(
+        request("PATCH", source.path, { secret: { token: classic } }),
+      );
+      const after = await lsRemote(target);
+      evidence("classic", { patchStatus: classicStatus, gitExit: after.code });
+      assert.equal(classicStatus, 400, "SOURCE_CLASSIC_REFUSED_AT_PATCH");
+      assert.ok(after.code === 0 && isDeepStrictEqual(after.indices, [replacementIndex]));
+
+      // AC-6: DELETE is refused while the registry names the Source.
+      const deleteStatus = await statusOf(request("DELETE", source.path));
+      evidence("delete-while-named", { status: deleteStatus });
+      assert.equal(deleteStatus, 409, "SOURCE_DELETE_WHILE_NAMED");
+
+      // A peer Agent on the App path in the other Namespace: own credential, no Source value.
+      const independent = fixture.independent;
+      assert.ok(independent?.modelSource);
+      const peerFixture = {
+        ...fixture,
+        ...independent,
+        verifySupervisorImage: (peerTarget: GitTarget) =>
+          fixture.verifySupervisorImage(peerTarget, independent.workspace),
+      };
+      const peer = await prepareFiniteGitAgent(t, peerFixture, [network.scopes[0]!.repositoryRef]);
+      const peerPolicyPath = `${peer.path}/sandbox-policy/networking`;
+      await request("PATCH", `${peerPolicyPath}/editing`, { enabled: true });
+      const peerView: SandboxPolicyViewWire = await request("GET", peerPolicyPath);
+      await request("PUT", peerPolicyPath, {
+        expectedVersion: peerView.policy.version,
+        additions: peerView.policy.additions,
+        repositoryNetworkPolicy: [{ repository: "fixture/a", access: "read" }],
+      });
+      const peerDeployed = await deployWithIssuance(origin, peer.deploy);
+      assert.ok(!sourceIndices.has(peerDeployed.credentialIndex));
+      const peerManaged = createManagedWorkloadExec(t, {
+        backend: fixture.gatewayBackend,
+        gatewayClient,
+        workspace: independent.workspace,
+        checkpoint: fixture.checkpoint,
+      });
+      const peerExec: GitExec = async (peerTarget, command) => {
+        const result = await peerManaged(peerTarget, command);
+        for (const output of [result.stdout, result.stderr]) {
+          assert.ok(!network.containsIssuedCredential(output), "SOURCE_CREDENTIAL_IN_OUTPUT");
+        }
+        return result;
+      };
+      const peerRead = async (stage: string) => {
+        const before = network.requests().length;
+        const result = await peerExec(peerDeployed.target, [
+          "sh",
+          "-c",
+          "export LC_ALL=C GIT_TERMINAL_PROMPT=0; timeout 30 git ls-remote https://github.com/fixture/a.git refs/heads/main >/dev/null 2>&1; echo $?",
+        ]);
+        const indices = new Set(
+          network
+            .requests()
+            .slice(before)
+            .filter(({ authenticated }) => authenticated)
+            .map(({ credentialIndex }) => credentialIndex),
+        );
+        const code = Number(result.stdout.toString("utf8").trim());
+        evidence("peer", { stage, code, indices: [...indices] });
+        assert.ok(code === 0 && indices.size >= 1, "SOURCE_PEER_READS");
+        assert.ok(
+          [...indices].every((index) => !sourceIndices.has(index)),
+          "SOURCE_PEER_OWN_CREDENTIAL",
+        );
+      };
+      await peerRead("start");
+      await assertTokensAbsentFromWorkload(t, peerExec, peerDeployed.target, values, "peer");
+
+      // AC-4: pause the Worker, replace and try to retire the Source, resume; the delivered value
+      // only moves forward.
+      const third = source.fake();
+      const thirdIndex = network.acceptStaticToken(third);
+      values.push(third);
+      sourceIndices.add(thirdIndex);
+      const pausedAt = Date.now();
+      await fixture.signalWorker("STOP");
+      let paused: Record<string, unknown>;
+      try {
+        const patchStart = Date.now();
+        const patchStatus = await statusOf(
+          request("PATCH", source.path, { secret: { token: third } }),
+        );
+        const patchEnd = Date.now();
+        const deleteWhilePaused = await statusOf(request("DELETE", source.path));
+        const deleteEnd = Date.now();
+        paused = {
+          pausedAt: new Date(pausedAt).toISOString(),
+          patchStatus,
+          patchSeconds: (patchEnd - patchStart) / 1000,
+          deleteStatus: deleteWhilePaused,
+          deleteSeconds: (deleteEnd - patchEnd) / 1000,
+        };
+      } finally {
+        await fixture.signalWorker("CONT");
+      }
+      const resumedAt = Date.now();
+      evidence("paused-worker", { ...paused, resumedAt: new Date(resumedAt).toISOString() });
+      if (paused.patchStatus !== 200) {
+        // Recorded above; replace once more so the remaining criteria still run.
+        evidence("paused-worker-retry", {
+          status: await statusOf(request("PATCH", source.path, { secret: { token: third } })),
+        });
+      }
+      const order = [source.index, replacementIndex, thirdIndex];
+      let highest = order.indexOf(replacementIndex);
+      const seen: number[] = [];
+      await observeUntil(
+        "monotonic Source delivery after the paused Worker",
+        t.signal,
+        async () => {
+          await delay(5_000, undefined, { signal: t.signal });
+          const probe = await lsRemote(target);
+          assert.equal(probe.code, 0, "SOURCE_GIT_AFTER_RESUME");
+          for (const index of probe.indices) {
+            seen.push(index);
+            const rank = order.indexOf(index);
+            assert.ok(rank >= highest, "SOURCE_STALE_VALUE_RESTORED");
+            highest = rank;
+          }
+          return highest === order.indexOf(thirdIndex) ? true : undefined;
+        },
+        15 * 60_000,
+      );
+      // Keep sampling one more minute: a stale write must not land after the new value.
+      const settleEnds = Date.now() + 60_000;
+      while (Date.now() < settleEnds) {
+        await delay(5_000, undefined, { signal: t.signal });
+        const probe = await lsRemote(target);
+        assert.ok(
+          probe.code === 0 && isDeepStrictEqual(probe.indices, [thirdIndex]),
+          "SOURCE_STALE_VALUE_RESTORED",
+        );
+        seen.push(...probe.indices);
+      }
+      evidence("paused-worker-delivery", {
+        thirdSeenSeconds: (Date.now() - resumedAt) / 1000,
+        sequence: [...new Set(seen)],
+      });
+
+      // AC-6 and AC-5: revoke the Agent principal's operate. The next loan is refused, the Worker
+      // cannot renew, and the origin still accepts the value: Git stops when the last loan ends.
+      const lastDelivery = (await confirmations()).at(-1);
+      await request("DELETE", `${nsPath}/iam/access-bindings/${binding.id}`, undefined);
+      const revokedAt = Date.now();
+      const refusal = await observeUntil(
+        "Source loan refusal after operate is revoked",
+        t.signal,
+        async () => {
+          await delay(10_000, undefined, { signal: t.signal });
+          return (await refusals()).find(({ reason }) => reason === "operate_denied");
+        },
+        16 * 60_000,
+      );
+      evidence("operate-revoked", {
+        revokedAt: new Date(revokedAt).toISOString(),
+        refusalAt: Number.isNaN(refusal.at) ? "untimed" : new Date(refusal.at).toISOString(),
+        lastDeliveryAt:
+          lastDelivery && !Number.isNaN(lastDelivery.at)
+            ? new Date(lastDelivery.at).toISOString()
+            : "untimed",
+      });
+      let lastSuccess = Date.now();
+      const failed = await observeUntil(
+        "Git failure at the end of the last Source loan",
+        t.signal,
+        async () => {
+          await delay(10_000, undefined, { signal: t.signal });
+          const probe = await lsRemote(target);
+          if (probe.code === 0) {
+            assert.deepEqual(probe.indices, [thirdIndex]);
+            lastSuccess = probe.at;
+            return undefined;
+          }
+          return probe;
+        },
+        20 * 60_000,
+      );
+      evidence("expiry", {
+        lastSuccessAt: new Date(lastSuccess).toISOString(),
+        firstFailureAt: new Date(failed.at).toISOString(),
+        failureIndices: failed.indices,
+        sinceLastDeliverySeconds:
+          lastDelivery && !Number.isNaN(lastDelivery.at)
+            ? (failed.at - lastDelivery.at) / 1000
+            : undefined,
+        sinceRevokeSeconds: (failed.at - revokedAt) / 1000,
+      });
+      assert.ok(
+        failed.indices.every((index) => !sourceIndices.has(index)),
+        "SOURCE_NO_VALUE_AFTER_EXPIRY",
+      );
+      await peerRead("after-source-expiry");
+
+      // AC-6: after Stop the Sandbox and its Provider are gone and no request carries the value.
+      const stopped = await request(
+        "POST",
+        `${path}/stop?expectedActiveRevisionId=${encodeURIComponent(narrowed.revision.id)}`,
+      );
+      assert.equal(stopped.desiredRuntimeState, "stopped");
+      await observeUntil("Source Agent retirement", t.signal, async () => {
+        const sandbox = await gatewayClient.getSandbox(
+          { workspace, name: target.sandboxName },
+          t.signal,
+        );
+        const attached = await gatewayClient.getProvider(workspace, narrowedProvider, t.signal);
+        return !sandbox && !attached ? true : undefined;
+      });
+      const quiet = network.requests().length;
+      await peerRead("after-stop");
+      assert.ok(
+        network
+          .requests()
+          .slice(quiet)
+          .every(({ credentialIndex }) => !sourceIndices.has(credentialIndex)),
+        "SOURCE_NO_REQUEST_AFTER_STOP",
+      );
+      await workerEvents();
+      evidence("done", { sourceIndices: [...sourceIndices] });
     }),
   );
 }
