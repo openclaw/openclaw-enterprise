@@ -459,7 +459,7 @@ test(
     const expectedFailure =
       authMethod === "codex_pat"
         ? { check: "login", code: "LOGIN_FAILED" }
-        : { check: "model-probe", code: "MODEL_PROBE_FAILED" };
+        : { check: "model-probe", code: "AUTHENTICATION_FAILED" };
     const rejectedHarness = await dp.waitFor(
       "replacement credential failure evidence",
       async () => {
