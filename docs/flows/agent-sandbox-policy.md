@@ -1,23 +1,23 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/19359633-e6f9-48aa-aedb-66a9b329a7fd"
+last_updated_session: "authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80"
 ---
 
 # Agent sandbox policy flow
 
 ## Overview
 
-OCC saves and freezes Agent network additions at deployment. The Sandbox Driver
-can apply later versions. Operators review denials and recommendations.
+OCC saves desired network additions per Agent. Deployment freezes them. Operators review
+denials and recommendations.
 
 ## Entry Points
 
-- Trigger: the console Policy denials tab or `occ agent policy` commands.
+- Trigger: console Policy denials tab or `occ agent policy`.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
-- Assumptions: a ready Namespace, active Agent, exact grants, enabled editing for
-  mutations, and an Installation ceiling shared by API and worker.
+- Assumptions: ready Namespace, active Agent, exact grants, editing enabled for
+  mutations, shared API/worker Installation ceiling.
 
 ## Flow
 
@@ -33,22 +33,23 @@ graph TD
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
-  P --> W["Live application work<br/>exact running revision"]
+  P -->|"Explicit apply<br/>policy and revision<br/>lack repository lists"| W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
   S --> V["Confirm matching<br/>loaded version"]
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
 
-Solid arrows trace source paths, not provider verification.
+Arrows show implementation. Verify provider enforcement separately. OCC rejects apply for repository lists in
+saved policy or active Agent revision, even `[]`. Save and apply can share a transaction.
+Other admission checks apply.
 
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
 
-Policy CLI commands accept JSON (default) or YAML and reject unsupported formats
-before requesting. They print structured results
-(`internal/occcli/agent_policy.go:agentPolicyCommand`).
+Policy commands output JSON (default) or YAML. Unsupported formats fail before requests.
+Update reads a JSON file (`internal/occcli/agent_policy.go:agentPolicyCommand`).
 
 `SetupDiscovery.discoverConfigurations` lists selected Driver contributions.
 Installation `administer` permits [startup inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
@@ -271,6 +272,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 11:47: Clarify policy flow. (authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80 - 226621cc08c630e3e966896ef04a7290d87d713a)
 
 - 2026-11-23 09:00: Explain that OpenShell alone enforces PR reads and creation, with no request-time OCE check. (authoring-run/19359633-e6f9-48aa-aedb-66a9b329a7fd - eab74449a971c0efd318d62304640dca4f54ba76)
 
