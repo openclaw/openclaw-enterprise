@@ -53,7 +53,7 @@ Treat `deny: []` as omission. Every allow list (even `allow: []`) and every none
 
 Start with four actions. `issues:read` and `pull_requests:read` each cover list and numbered detail GETs. `issues:create` and `pull_requests:create` each cover one collection POST. Creation does not enable a separate GET. Give new operations distinct names. A new GitHub endpoint stays closed until OCE deliberately supports it and specifies its permissions.
 
-A future Console editor could let operators check the actions to keep on B. With **Include new eligible actions automatically** on, save unchecked actions in `deny`. With it off, save checked actions in `allow`. Preview each Agent’s effective actions at next deployment and explain exclusions separately from the running policy. No UI change is required.
+**Operator UX.** In the setup guide, check the actions to keep on B. With **Include new eligible actions automatically** on, generate `deny` from unchecked actions. With it off, generate `allow` from checked actions. Show the configuration to copy into the Namespace registration. Label the preview as an example and explain which grants or permissions limit access. The checklist cannot change a running Agent. Live policy reporting is separate work.
 
 **Before deploying**, remove `scopedRest` and check the approved permissions. To keep Git-only access, set `apiActions: { allow: [] }`. To keep issue creation off, use `apiActions: { deny: ["issues:create"] }`. An unchanged Write grant can otherwise gain issue or PR creation at the next deployment. A running Sandbox retains its loaded policy and may lose credential renewal after a change. Retire it to complete withdrawal.
 
@@ -84,11 +84,12 @@ One policy applies at every deployment. No compatibility mode, per-Agent upgrade
 ## Acceptance Criteria
 
 - **AC-1.** On stock OpenShell, bind A/B/C with identical permissions including Issues and Pull requests write. Grant A Read and B Write. Leave C bound without a grant and set `allow: []` on C. Create and independently read back an issue in B. Block PR creation on B. Require zero direct writes to A, zero direct requests to C, zero Worker callbacks and only a placeholder in the Agent.
-- **AC-2.** Unbind C and redeploy. Verify both POSTs in B. Deny `issues:create` on B and redeploy. Verify B’s reads, push and PR creation still work. Another eligible Write repository retains issue creation.
+- **AC-2.** Unbind C and redeploy. Through the same Agent and binding, read issues and PRs and verify both POSTs in B. Deny `issues:create` on B and redeploy. Verify B’s reads, push and PR creation still work. Another eligible Write repository retains issue creation.
 - **AC-3.** Check current permissions and filters on existing drafts, redeployment, rotation and downgrade. Reordering actions preserves grant identity. Tightening blocks renewal against stale policy. Verify the new limits on redeploy and retire the prior Sandbox. Block disallowed methods, routes and redirects before forwarding.
 - **AC-4.** Hold wider rollout until reviewers assess live parent links from B to A and C separately in authorized test repositories. Inspect both sides. Keep the hold if read-only A changes or denied C is exposed or changed.
 - **AC-5.** Reject invalid and retired settings. Allow only PR reads and block other API routes. Allow only `issues:create` on B and verify POST succeeds while GET stops before forwarding. Explicit allows must respect Read, missing permissions, Issues read and #7135. With `allow: []`, verify Git works and all API requests stop.
 - **AC-6.** With native policy missing, test issuance and renewal separately. Both must fail without fallback for `allow: []` and for a nonempty `deny`, even with no eligible API routes. Under the same conditions verify legacy delivery still works with the filter omitted or `deny: []`.
+- **AC-7.** Keep B’s Agent grant at Write and approve only Issues read for the token. Even with `issues:create` listed in `allow`, a valid issue POST must stop before the origin. Verify that the issued permission map remains unchanged.
 
 ## Delivery and verification
 
