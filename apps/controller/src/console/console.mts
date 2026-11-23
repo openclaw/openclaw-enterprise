@@ -11,6 +11,7 @@ import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
   button,
+  isUnavailable,
   requestIdDisclosure,
   setUnavailable,
   setFieldError,
@@ -1181,7 +1182,10 @@ function focusInShownView() {
               remounted.querySelectorAll<HTMLElement & { disabled?: boolean }>(
                 "[data-refocus-key]",
               ),
-            ).find((item) => item.dataset.refocusKey === wanted && !item.disabled)
+            ).find(
+              (item) =>
+                item.dataset.refocusKey === wanted && !item.disabled && item.checkVisibility(),
+            )
           : undefined;
       const target = rebuilt
         ? key &&
@@ -2239,6 +2243,12 @@ async function loadPage({
     // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
     // replacing the shell briefly leaves it on the body again.
     const restoreFocus = document.activeElement === document.body ? refocused : null;
+    // The Namespaces view is inert during the recheck. If Tab reached a shell control,
+    // match that control when the shell is replaced, including the phone navigation toggle.
+    const namespaceShellFocus =
+      retained && resumingView && current.feature === "namespaces" && !restoreFocus
+        ? focusInShownView()
+        : null;
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
@@ -2260,7 +2270,7 @@ async function loadPage({
       writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
-      restoreRefocus = () => restoreFocus?.restore(restoredShell.view);
+      restoreRefocus = () => (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
       return;
     }
     // The destination rebuilds: a retained view that did not match is stale from here on.
@@ -2778,6 +2788,11 @@ async function loadPage({
           ...agentContext,
           reload: () => loadPage(),
           fromRefresh,
+          // Only a successful read for the retained view's session can reuse its query.
+          searchQuery:
+            (retained && reuseView
+              ? retainedView?.snapshot.querySelector<HTMLInputElement>("#namespace-search")?.value
+              : undefined) ?? "",
           sorted,
           onRemoved(namespace) {
             clearRetainedViewsForNamespace(namespace.id);
@@ -2796,6 +2811,11 @@ async function loadPage({
         },
         items,
       );
+      const focus = restoreFocus ?? namespaceShellFocus;
+      if (retained && focus) {
+        const rebuiltView = shell.view;
+        restoreRefocus = () => focus.restore(rebuiltView, { rebuilt: restoreFocus !== null });
+      }
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
       // Only carry the reader's filter into freshly admitted rows for the same owner and route.
       const previous =
@@ -3006,11 +3026,14 @@ async function loadPage({
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
-        if (current.agentId && focusTarget && retainedView) {
+        const restoreScroll = Boolean(
+          focusTarget && (current.agentId || current.feature === "namespaces"),
+        );
+        if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
-          preventScroll: !current.agentId || !focusTarget,
+          preventScroll: !restoreScroll,
         });
       }
       if (fromRefresh && document.activeElement === document.body) {
@@ -3158,16 +3181,9 @@ async function revalidateMountedAgent(current: Route) {
     activeElement === document.body && !previousFocus?.cancel.signal.aborted
       ? previousFocus
       : undefined;
-  let editorFocus = deferredFocus;
-  if (
-    focused instanceof HTMLTextAreaElement &&
-    focused.id === "configuration-json" &&
-    view.contains(focused) &&
-    focused.selectionStart !== focused.selectionEnd
-  ) {
+  const watchFocus = () => {
     const cancel = new AbortController();
-    editorFocus = { editor: focused, cancel };
-    // Returning to the tab can focus the same textarea as the check starts. A different
+    // Returning to the tab can focus the same control as the check starts. A different
     // control taking focus cancels restoration even if focus later falls to the body.
     document.addEventListener(
       "focusin",
@@ -3178,6 +3194,19 @@ async function revalidateMountedAgent(current: Route) {
       },
       { signal: AbortSignal.any([cancel.signal, lifetime.signal]) },
     );
+    return cancel;
+  };
+  const recoveryFocus = focused?.matches('#configuration-editor-feedback[role="status"]')
+    ? watchFocus()
+    : undefined;
+  let editorFocus = deferredFocus;
+  if (
+    focused instanceof HTMLTextAreaElement &&
+    focused.id === "configuration-json" &&
+    view.contains(focused) &&
+    focused.selectionStart !== focused.selectionEnd
+  ) {
+    editorFocus = { editor: focused, cancel: watchFocus() };
   }
   if (previousFocus !== editorFocus) {
     previousFocus?.cancel.abort();
@@ -3212,6 +3241,20 @@ async function revalidateMountedAgent(current: Route) {
         app.querySelector<HTMLElement>(".content h1")?.focus({ preventScroll: true });
       }
       return;
+    }
+    // A stale save can describe Reload draft but cannot focus it while this view is inert.
+    if (!afterRetry && recoveryFocus && target === focused) {
+      if (recoveryFocus.signal.aborted || document.getSelection()?.isCollapsed === false) {
+        return;
+      }
+      const reload = view.querySelector<HTMLButtonElement>("#configuration-conflict-reload");
+      if (reload?.checkVisibility() && !isUnavailable(reload)) {
+        reload.focus();
+        if (document.activeElement === reload) {
+          target.scrollIntoView({ block: "nearest" });
+        }
+        return;
+      }
     }
     target.focus({ preventScroll: true });
     if (
@@ -3590,6 +3633,7 @@ async function revalidateMountedAgent(current: Route) {
     if (state.deferredConfigurationFocus !== editorFocus) {
       editorFocus?.cancel.abort();
     }
+    recoveryFocus?.abort();
   }
 }
 

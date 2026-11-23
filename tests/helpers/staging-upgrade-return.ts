@@ -1,6 +1,10 @@
-import { migrationEntry } from "../../scripts/lib/selected-image-migration.ts";
+import {
+  migrationEntry,
+  selectedImageMigrationEntry,
+} from "../../scripts/lib/selected-image-migration.ts";
 import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -23,6 +27,110 @@ import { Check } from "typebox/value";
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
+
+const gatewayContinuityReceipt = Type.Object({
+  namespaceId: Type.String(),
+  agentId: Type.String(),
+  revisionId: Type.String(),
+  runtime: Type.Object({
+    revisionId: Type.String(),
+    pods: Type.Array(
+      Type.Object({
+        role: Type.String(),
+        uid: Type.String({ minLength: 1 }),
+        phase: Type.String(),
+        containers: Type.Optional(
+          Type.Array(
+            Type.Object({
+              name: Type.String(),
+              state: Type.Optional(Type.String()),
+              restartCount: Type.Optional(Type.Unknown()),
+            }),
+          ),
+        ),
+      }),
+    ),
+  }),
+});
+
+export async function readGatewayContinuity(
+  directory: string,
+  {
+    namespaceId,
+    agentId,
+    revisionId,
+  }: { namespaceId: string; agentId: string; revisionId: string },
+) {
+  async function readGateway(phase: "before" | "after", filename: string) {
+    const label = `Agent continuity ${phase} the controller upgrade`;
+    const receipt = await readFile(join(directory, filename), "utf8")
+      .then(protectedJSON<unknown>)
+      .catch(() => {
+        throw new Error(`${label}: cannot read the receipt`);
+      });
+    assert.ok(Check(gatewayContinuityReceipt, receipt), `${label}: invalid receipt`);
+    assert.ok(
+      receipt.namespaceId === namespaceId &&
+        receipt.agentId === agentId &&
+        receipt.revisionId === revisionId &&
+        receipt.runtime.revisionId === revisionId,
+      `${label}: receipt identity does not match the selected Agent revision`,
+    );
+
+    // The upgrade CLI verifies readiness. Select the one live Gateway for comparison.
+    const gateways = receipt.runtime.pods.filter(
+      ({ role, phase }) => role === "gateway" && phase !== "Succeeded" && phase !== "Failed",
+    );
+    const [gateway] = gateways;
+    assert.ok(gateways.length === 1 && gateway, `${label}: expected exactly one live Gateway Pod`);
+    const containers = gateway.containers?.filter(({ name }) => name === "gateway");
+    const container = containers?.length === 1 ? containers[0] : undefined;
+    const count = container?.restartCount;
+    // Runtime inspection supplies a default zero when it has no container status.
+    const observed =
+      container?.state === "running" ||
+      container?.state === "waiting" ||
+      container?.state === "terminated";
+    return {
+      uid: gateway.uid,
+      restartCount:
+        observed && typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+          ? count
+          : null,
+    };
+  }
+
+  const before = await readGateway("before", "agent-continuity.json");
+  const after = await readGateway("after", "agent-continuity-after.json");
+  return {
+    podReplaced: before.uid !== after.uid,
+    gatewayRestartCountBefore: before.restartCount,
+    gatewayRestartCountAfter: after.restartCount,
+  };
+}
+
+// Both c0b09b2e and 4835e8bf ship these bytes at
+// deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs.
+const legacyRehearsalLoaderHash =
+  "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202";
+
+export function rehearsalMigrationProbeArgs(args: readonly string[] = []) {
+  if (!migrationEntry(args)) {
+    const [evaluate, program, separator, option, ...extra] = args;
+    if (
+      evaluate !== "-e" ||
+      separator !== "--" ||
+      !program ||
+      extra.length !== 0 ||
+      (option !== undefined && option !== "--expect-empty" && option !== "--require-current") ||
+      sha256Hex(program) !== legacyRehearsalLoaderHash
+    ) {
+      return undefined;
+    }
+  }
+  // The retained Job is evidence only. Use the current loader's guarded-mode check.
+  return [...selectedImageMigrationEntry, "--check"];
+}
 
 type ControllerImage = {
   reference: string;
@@ -356,18 +464,20 @@ type ExternalRequest = (
   body: undefined,
   options: { authenticated: boolean; signal?: AbortSignal },
 ) => Promise<ProductionTuiResponse>;
+type MeasureGuardedResume = <T>(resume: () => Promise<T>) => Promise<T>;
 
 // These observations describe the fixture's authenticated HTTPS route. They do
-// not establish continuous availability between requests or gate the upgrade.
+// not establish continuous availability between requests or gate the action.
 export async function measureUpgradeAvailability<T>(
   request: ExternalRequest,
   installationId: string,
   directory: string,
-  upgrade: () => Promise<T>,
+  upgrade: (measureGuardedResume: MeasureGuardedResume) => Promise<T>,
   record: (details: object) => Promise<void>,
   receiptName:
     | "forward-api-availability.json"
-    | "runtime-api-availability.json" = "forward-api-availability.json",
+    | "runtime-api-availability.json"
+    | "return-api-availability.json" = "forward-api-availability.json",
 ) {
   const samples: {
     phase: "before" | "during" | "after";
@@ -392,6 +502,16 @@ export async function measureUpgradeAvailability<T>(
   let maxStartGapMs = 0;
   const cadence: { start?: number; finish?: number } = {};
   const evidenceErrors: unknown[] = [];
+  let guardedResume: { startOffsetMs: number; endOffsetMs?: number } | undefined;
+  const measureGuardedResume: MeasureGuardedResume = async (resume) => {
+    const timing: NonNullable<typeof guardedResume> = { startOffsetMs: performance.now() - origin };
+    guardedResume = timing;
+    try {
+      return await resume();
+    } finally {
+      timing.endOffsetMs = performance.now() - origin;
+    }
+  };
   const evidence = (upgradeSucceeded: boolean | null) => {
     // A checkpoint covers only the last completed request. File-write time is
     // exposed by the next start; an interrupted write cannot extend this boundary.
@@ -399,6 +519,28 @@ export async function measureUpgradeAvailability<T>(
     const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
     const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
     const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    let successful = 0;
+    let unsuccessfulBeforeFirstSuccess: number | null = null;
+    let unsuccessfulAfterLastSuccess: number | null = null;
+    let previousSuccessfulFinish: number | undefined;
+    let maxSuccessfulResponseIntervalMs: number | null = null;
+    for (const [index, sample] of samples.entries()) {
+      if (sample.outcome !== "ok") {
+        continue;
+      }
+      const finish = sample.startOffsetMs + sample.elapsedMs;
+      if (previousSuccessfulFinish === undefined) {
+        unsuccessfulBeforeFirstSuccess = index;
+      } else {
+        maxSuccessfulResponseIntervalMs = Math.max(
+          maxSuccessfulResponseIntervalMs ?? 0,
+          finish - previousSuccessfulFinish,
+        );
+      }
+      previousSuccessfulFinish = finish;
+      unsuccessfulAfterLastSuccess = samples.length - index - 1;
+      successful++;
+    }
     return {
       schemaVersion: 2,
       requestTimeoutMs: 5_000,
@@ -410,6 +552,16 @@ export async function measureUpgradeAvailability<T>(
       throughOffsetMs: through - origin,
       maxStartGapMs,
       tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      responseSummary: {
+        successful,
+        unsuccessful: samples.length - successful,
+        unsuccessfulBeforeFirstSuccess,
+        unsuccessfulAfterLastSuccess,
+        maxSuccessfulResponseIntervalMs:
+          maxSuccessfulResponseIntervalMs === null
+            ? null
+            : Math.round(maxSuccessfulResponseIntervalMs),
+      },
       cadence:
         cadence.start === undefined
           ? null
@@ -421,6 +573,7 @@ export async function measureUpgradeAvailability<T>(
               probedSlots,
               unprobedSlots: scheduledSlots - probedSlots,
             },
+      ...(guardedResume === undefined ? {} : { guardedResume: { ...guardedResume } }),
       samples: samples.map((observation) => ({ ...observation })),
     };
   };
@@ -513,7 +666,7 @@ export async function measureUpgradeAvailability<T>(
   let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
   cadence.start = performance.now();
   try {
-    const upgrading = upgrade();
+    const upgrading = upgrade(measureGuardedResume);
     observing = (async () => {
       while (!stopped.signal.aborted) {
         await sample("during");
@@ -521,10 +674,12 @@ export async function measureUpgradeAvailability<T>(
         // actual starts. A slow request/write or late wake skips slots, never
         // queues requests to replay them. Recheck time after early timer wakes.
         const nextStart = previousStart! + nominalIntervalMs;
-        while (!stopped.signal.aborted && performance.now() < nextStart) {
-          await delay(nextStart - performance.now(), undefined, { signal: stopped.signal }).catch(
-            () => {},
-          );
+        while (!stopped.signal.aborted) {
+          const remainingMs = nextStart - performance.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+          await delay(remainingMs, undefined, { signal: stopped.signal }).catch(() => {});
         }
       }
     })();
@@ -1144,8 +1299,8 @@ export async function rehearsePopulatedReturn({
     assert.ok(migration, "initializer is missing its migration container");
     assert.equal(migration.image, image.reference, "migration probe must use the selected image");
     assert.ok(migration.env, "initializer migration container is missing its environment");
-    const entry = migration.args && migrationEntry(migration.args);
-    assert.ok(entry, "initializer has an unsupported migration entry point");
+    const args = rehearsalMigrationProbeArgs(migration.args);
+    assert.ok(args, "initializer has an unsupported migration entry point");
     const probeSecret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -1172,7 +1327,8 @@ export async function rehearsePopulatedReturn({
         containers: [
           {
             ...migration,
-            args: [...entry, "--check"],
+            command: ["node"],
+            args,
             env: [
               ...migration.env.filter(({ name }) => name !== "OCC_MIGRATION_DATABASE_URL"),
               {
@@ -1280,7 +1436,7 @@ export async function rehearsePopulatedReturn({
       externalRequest,
       installationId,
       directory,
-      async () => {
+      async (measureGuardedResume) => {
         const evidence = join(directory, "forward");
         const client = join(directory, "helm-client.json");
         const shimDirectory = join(directory, "helm-client-bin");
@@ -1527,7 +1683,7 @@ export async function rehearsePopulatedReturn({
         ];
         // The current chart has no obsolete external channel proxy to reconcile.
         // Resume still verifies completed migration and the complete live resource set.
-        await upgrade(recoveryArgs);
+        await measureGuardedResume(() => upgrade(recoveryArgs));
         const recovered = await helmStatus();
         assert.equal(recovered.version, baselineRelease.version + 2);
         assert.equal(recovered.info.status, "deployed");
@@ -1584,8 +1740,12 @@ export async function rehearsePopulatedReturn({
     candidatePods,
     helmRevision: candidateRelease.version,
   });
+  await phase("Check the candidate database with the previous controller", async () => {
+    await custody.assertRelease();
+    await checkMigration(previous, previousJob, originalDatabase, "return-preflight");
+  });
 
-  await phase("Stop both candidate writers", async () => {
+  const stopCandidateWriters = async () => {
     await custody.assertPostgres();
     await custody.assertRelease();
     for (const { component, deploymentUID } of candidatePods) {
@@ -1608,8 +1768,8 @@ export async function rehearsePopulatedReturn({
       async () => (await pods()).length === 0 && (await candidateConnections()) === "0",
     );
     await assertNoCandidateWriters();
-  });
-  await phase("Restore the candidate archive and reject the stale archive", async () => {
+  };
+  const restoreCandidateArchive = async () => {
     const receipts = await migrationReceipts(originalDatabase);
     assert.ok(receipts.length > 0, "no candidate migration receipts");
     await dump(candidateArchive);
@@ -1627,13 +1787,8 @@ export async function rehearsePopulatedReturn({
       agentIdentity(accepted),
       await databaseAgents(restoredDatabase),
     );
-  });
-
-  await phase("Check the restored database with the previous controller", () =>
-    checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
-  );
-
-  await phase("Return to the previous Helm revision on the restored database", async () => {
+  };
+  const rollBackHelm = async () => {
     await localCluster.assertCluster();
     await custody.assertRelease();
     await assertNoCandidateWriters();
@@ -1642,7 +1797,25 @@ export async function rehearsePopulatedReturn({
     await custody.assertRelease();
     await helm("rollback", release, String(baselineRelease.version), "--wait", "--timeout=5m");
     await verifyInstallation();
-  });
+  };
+  await measureUpgradeAvailability(
+    externalRequest,
+    installationId,
+    directory,
+    async () => {
+      await phase("Stop both candidate writers", stopCandidateWriters);
+      await phase(
+        "Restore the candidate archive and reject the stale archive",
+        restoreCandidateArchive,
+      );
+      await phase("Check the restored database with the previous controller", () =>
+        checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
+      );
+      await phase("Return to the previous Helm revision on the restored database", rollBackHelm);
+    },
+    (details) => record("Return API availability observations", details),
+    "return-api-availability.json",
+  );
   const returned = await helmStatus();
   assert.equal(returned.info.status, "deployed");
   await custody.bindRelease(returned.version);

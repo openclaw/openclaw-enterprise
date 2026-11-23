@@ -398,7 +398,7 @@ export const AgentCredentialSourcesSchema = Type.Array(
     maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
-      "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+      "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
   },
 );
 

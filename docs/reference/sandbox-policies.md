@@ -166,7 +166,7 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
 
-`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. PUT validates the whole list because a Driver can require multiple grants together.
+`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
 
 PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
 
@@ -192,6 +192,15 @@ After refusing a scoped replacement before its first provider call, the Worker
 can maintain the serving predecessor if the deployment has no earlier attempt.
 If earlier work could have changed the Gateway, the Worker keeps that repair
 blocked. Stop the Agent and confirm its workload has retired.
+
+The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/access-levels.md#native-git-delivery)
+for a dedicated Codex Harness, an OpenAI credential source and the managed
+Gateway. The controller build must pin the inspected Gateway and Agent images
+by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
+`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both images together before
+selecting those build arguments. Leaving the arguments empty disables this
+placement. A first empty list can be saved. Deploying it is refused before
+launch. Stop the active revision to retire its access.
 
 ## Denials and recommendations
 

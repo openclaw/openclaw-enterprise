@@ -248,6 +248,45 @@ const createProvisioningSecrets: StoryAction[] = [
   click("Apply channel settings"),
 ];
 
+function ordinarySaveRefused(permission: "Secret operate" | "Configuration read") {
+  const needsModelSecret = permission === "Secret operate";
+  // The preview allocates its first new Configuration at serial 100.
+  const target = needsModelSecret
+    ? "Secret sec_demo_model"
+    : "Configuration cfg_00000000-0000-4000-8000-000000000100";
+  return {
+    group: "Pages/Create Agent",
+    name: needsModelSecret
+      ? "Agent save refused after saving a Configuration"
+      : "Configuration read denied after saving",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message: `Not authorized: this needs ${permission} on ${target}. Ask an Installation administrator to grant it.`,
+        once: true,
+      },
+    ],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#provider-credential-secret", value: "Demo model API key" },
+      { selector: "#agent-model", value: "gpt-5.6-sol" },
+      click("Create Agent"),
+    ],
+    description: `The Configuration saves and the Agent save is refused because it needs ${permission}.`,
+    steps: [
+      `Read the ${permission} refusal and the saved Configuration ID.`,
+      "Select Cancel and read what remains saved. Dismiss the confirmation to keep the draft.",
+      "Select Create Agent again to simulate a retry after an access change. The Agent save reuses the Configuration.",
+    ],
+  } satisfies CreateAgentScenario;
+}
+
 export const createAgentFormScenarios = {
   createNamespaceProvisioning: {
     group: "Pages/Create Agent",
@@ -409,7 +448,7 @@ export const createAgentFormScenarios = {
     actions: form,
     secretCreateNotPermitted: true,
     description:
-      "The Namespace permission answer denies Secret creation. The API key Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+      "The Namespace permission answer denies Secret creation. Create new Secret... is disabled and names Secret create in this Namespace. The field also offers existing Secrets.",
     steps: [
       "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
       "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",
@@ -436,6 +475,8 @@ export const createAgentFormScenarios = {
     ],
     gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
   },
+  createAgentSaveRefused: ordinarySaveRefused("Secret operate"),
+  createAgentSaveConfigurationReadRefused: ordinarySaveRefused("Configuration read"),
   createRepositoryNotConfigured: {
     group: "Pages/Create Agent",
     name: "Repository access not set up",

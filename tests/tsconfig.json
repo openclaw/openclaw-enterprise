@@ -76,6 +76,7 @@
     "conformance/kubernetes-gateway-routing-cases.ts",
     "conformance/kubernetes-model-admission-cases.ts",
     "conformance/kubernetes-namespace-placement-cases.ts",
+    "conformance/kubernetes-namespace-teardown-cases.ts",
     "conformance/kubernetes-network-profile-cases.ts",
     "conformance/kubernetes-private-runtime-diagnostic-cases.ts",
     "conformance/kubernetes-provider-observation-cases.ts",
