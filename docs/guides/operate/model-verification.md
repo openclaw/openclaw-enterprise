@@ -66,7 +66,7 @@ Before relying on a custom Responses endpoint for an installation or upgrade, us
 1. Open a saved chat with the Agent, for example through the [OpenClaw TUI](../deploy/production-tui.md).
 2. Ask the Agent to complete a harmless task that requires a real local tool, such as reading a trial-owned workspace file. Confirm the tool ran and the Agent returned the result.
 3. Confirm the Agent can use the earlier result in a second turn. Give it a unique, nonsecret marker **only in this chat**. Before upgrading, record the marker and chat identifier outside the Agent’s workspace. For the TUI, save `TUI_SESSION`.
-4. After cutover, reopen that chat on the replacement revision’s Gateway (in the TUI, pass the saved value to `--session`). Ask, “Without using tools, what marker did I give you before the upgrade?” Check for an exact match and confirm no tool ran. Otherwise, continuity is unverified. Then repeat the tool check with fresh, nonsecret input.
+4. After cutover, reopen that chat on the replacement revision’s Gateway (in the TUI, pass the saved value to `--session`). Ask, “Without using tools, what marker did I give you before the upgrade?” Check for an exact match and confirm no tool ran. The TUI hides tool activity by default: run `/verbose on` first and confirm a known tool call appears. If the client cannot show tool activity for the recall turn, use a complete turn record. Otherwise, continuity is unverified. Then repeat the tool check with fresh, nonsecret input.
 
 The startup model probe asks for a text-only reply and fails if Codex uses a tool. The request can still advertise tools. A direct Responses request with a `function` tool checks only that tool type.
 
