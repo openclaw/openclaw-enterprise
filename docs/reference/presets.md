@@ -355,27 +355,27 @@ owner must explicitly grant Preset access; rerunning bootstrap does not change
 stored Roles. The public Namespace policy API supports exact-Preset access, but
 cannot edit an Installation Role or grant collection-wide `create`.
 
-Preset access grants no permission to create Agents or use referenced Secrets.
-After rendering, Configuration and Agent creation enforce their existing schemas,
-credential rules, and authorization before saving. Deployment rechecks admission.
-Console checks do not replace server validation. Audit records omit templates and
-variable values.
+Preset access alone permits neither Agent creation nor Secret use.
+The server validates schemas, credentials and authorization before saving
+Configurations and Agents. Deployment rechecks admission. Audits omit
+templates and variable values.
 
 Invalid inputs return `400`; denied access returns `403`; a missing exact target
 returns `404`; duplicate names or lifecycle conflicts return `409`; unavailable
 IAM, persistence, or required Driver capability returns `503`.
-[Delete blocking Presets](#bundled-default-upgrades) before Namespace deletion.
-Deleting one removes its resource-scoped IAM bindings, but keeps copied Agents,
-Configurations, and credential sources.
+[Delete blocking Presets](#bundled-default-upgrades) first.
+[Namespace deletion](namespaces.md#deletion-and-tombstones) requires `preset:delete`
+on each matching default copy. Deleting a Preset removes its IAM bindings.
+Copied Agents, Configurations and credential sources remain.
 
 ## Limits and recovery
 
 Create and update Presets through the HTTP API; `occ preset list`, `get`, and
 `delete` cover the rest ([CLI reference](cli.md#resource-commands)). The console
-only selects and applies them. There is no inheritance, version history, or Agent
-metadata recording which Preset was used. Creation still saves a Configuration
-and an Agent separately. Follow [partial-save recovery](console/create-and-deploy.md#create-an-agent)
-if the second save fails or a response is lost.
+only selects and applies them. Presets have no inheritance or version history.
+Agents do not record their Preset. Ordinary creation saves the Configuration
+and Agent separately. If the first save is uncertain, [trace it](../flows/platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft).
+For Agent save failures, follow [partial-save recovery](console/create-and-deploy.md#create-an-agent).
 
 A Preset is read once when selected. **Use Preset** renders its variables and
 opens an ordinary editable Agent form; changing the draft does not update or

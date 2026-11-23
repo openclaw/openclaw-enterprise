@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-11-23
-last_updated_session: authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036
+last_updated_session: authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea
 ---
 
 # Agent Presets flow
@@ -52,7 +52,8 @@ graph TD
   G --> S["Password input: create Secret in current Namespace"]
   S --> H["Configuration API admits and saves"]
   G -->|Existing credential binding| H
-  H --> I["Agent POST"]
+  H -->|Confirmed| I["Agent POST"]
+  H -->|Unknown| X0["Creation locked<br/>No Agent POST"]
   I -->|Saved| A0["Saved Agent"]
   I -->|Confirmed<br/>rejection| K["Retry Create Agent<br/>in this draft"]
   I -->|Outcome<br/>unknown| Q["Creation locked<br/>Check for saved Agent"]
@@ -280,10 +281,10 @@ and belong to the attempted name. Changing that name or submitting a new attempt
 feedback but preserves an edited alternate name. Submit trims and validates alternate
 names before writing. Selecting an existing Secret restores the optional service-account
 plugin discovery token field. Later save failures reuse the saved Secret reference.
-Confirmed Agent POST rejection locks Configuration controls. Retrying
-**Create Agent** in this draft reuses the saved Configuration ID. Refresh
-repository choices first when required. An uncertain Agent POST locks creation.
-Check for the saved Agent. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
+An [uncertain Configuration save](platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft)
+locks creation before Agent POST. Confirmed Agent refusal locks Configuration controls.
+Refresh repository choices if required. Retrying **Create Agent** here reuses
+the Configuration ID. An uncertain Agent POST locks creation. Check for the saved Agent. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
 
 ### 5. Hand off to deployment
 
@@ -327,6 +328,7 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-23 14:21: Show the Configuration save lock. (authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea - 54922275aed4dd2c5d6c23901fb0a2ff42a54136)
 - 2026-11-23 13:25: Clarify draft outcomes and refresh. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)
 - 2026-11-22 12:08: Explain how Preset PATCH rechecks the update grant under the Namespace lock. (authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d - ec37f064957a64fb8b8f4185ae17de6ca86f0b7a)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

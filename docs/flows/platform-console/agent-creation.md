@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-23
-last_updated_session: authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036
+last_updated_session: authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea
 ---
 
 # Console Agent creation
@@ -32,7 +32,7 @@ graph TD
   C --> D["Worker creates resources, grants and first deployment"]
   B -->|ordinary draft| E["Save Configuration"]
   E -->|Confirmed| Y["Agent POST"]
-  E -->|Unknown| X["Check Configuration"]
+  E -->|Unknown| X["Creation locked<br/>No Agent POST"]
   Y -->|Refused| M["Review refusal"]
   Y -->|Saved| I["Saved Agent"]
   Y -->|Unknown| N["Check for saved Agent"]
@@ -163,43 +163,46 @@ operator-managed (`runtime`) binding. When the capabilities are read, `checkRunt
 that binding to the preflight below; a `harnessAuth.method` refusal disables **Create Agent** and
 names what an administrator changes, because the form can change neither the binding nor the mode.
 
-Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
-(`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
-`agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. A new Secret gets no `operate` grant, so where the `operate` answer above denies
-any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
-is refused before any write. It then checks the Agent name, draft values with their staged channel
-`secretBindings`, plugins and the planned `harnessAuth`
-(only the method for a Secret it saves next or registers with a Credential Gateway; none for
-ChatGPT sign-in) with
-`POST /namespaces/:namespaceId/agents/validate`. After Agent create authorization,
-OCC rejects Configuration Secret bindings that name another Namespace, then applies
-Configuration create's size, content, and required Configuration Driver admission checks
-to the unsaved Configuration. It next checks the Agent's plugins and topology, then refuses
-a name another Agent has with Agent create's `409`. A channel token reference without a
-binding receives Configuration create's `400`. Preflight writes nothing; Secret existence
-and `operate` checks stay with the actual writes. `list.mts:channelBindingRefusal` shows
-the channel refusal, and the same one from
-provisioning, only under the Configuration JSON;
-the Slack drawer requires both token Secrets while Slack is enabled. It then posts
-`{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
-plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
-Console checks the returned Secret name and Namespace, Configuration values and bindings,
-and Agent name, Namespace and Configuration. Before granting access, it rereads the saved Agent
-and checks its service principal against the create response. A mismatch stops the grant.
-If offered, **Retry credential access** checks the saved Agent again.
-An unrecognized success leaves the outcome unknown and blocks another create.
-On an ordinary Agent POST `403`, `create.mts:agentSaveAccessReason` compares
-the complete API denial with the request. It checks Agent create in this Namespace,
-Configuration read on the saved ID, and Configuration update for browser setup.
-It names Secret operate or ServiceAccount read for the selected Harness reference,
-or CredentialSource operate for a submitted source. An unnamed Secret refusal
-identifies the permission alone. Other denials stay generic. Members can ask an
-Installation administrator to check access. Administrators can review grants and
-IAM Restrictions. The alert keeps the request ID. Once access changes, a manual
-**Create Agent** retry in this draft reuses the Configuration.
-**Cancel** warns that the saved Configuration remains and a fresh draft can save
-another. An uncertain Agent write stays locked.
+Before writing, `create.mts:renderAgentForm` checks the Agent name with the API rule
+`namespaces.mts:namespaceNameProblem` and initial files with the Workspace tab rule
+`agents/workspace.mts:workspaceFileProblem`. File errors identify the file and
+open Advanced settings. If the check above denies `operate` on any readable Secret,
+Console disables the Preset's **Create new Secret** and refuses a typed model key. A new Secret lacks that grant.
+
+`POST /namespaces/:namespaceId/agents/validate` checks the name, draft values,
+staged channel `secretBindings`, plugins and planned `harnessAuth` (method only
+for a Secret saved next or registered with a Credential Gateway, none for
+ChatGPT sign-in). After Agent create authorization, OCC rejects cross-Namespace
+Configuration Secret bindings, applies Configuration size, content and required
+Configuration Driver admission checks, then checks plugins, topology and name conflicts (`409`).
+A channel token reference without a binding returns `400`. Preflight writes nothing.
+Actual writes check Secret existence and `operate`.
+`list.mts:channelBindingRefusal` shows validation and provisioning refusals for channels
+only under Configuration JSON. Enabling Slack requires both token Secrets.
+
+Console posts `{kind: "agent", values, secretBindings}` to `.../configurations`,
+then its ID, plugins, `initialWorkspaceFiles` and `workspaceDefaultsId` to `.../agents`.
+It verifies Secret name and Namespace, Configuration values and bindings,
+and Agent name, Namespace and Configuration.
+
+An uncertain Configuration or Agent save, including an unrecognized success, locks creation. If the Configuration response is uncertain,
+Console has no confirmed ID and sends no Agent POST. Ask your
+[platform operator](../../guides/topics/audit-log.md#access-and-limitations)
+to trace `openclaw.configurations.create` by Namespace, time and any request ID.
+A successful event identifies the [Configuration to read](../../reference/configuration.md#create-read-update-and-delete).
+Confirm the outcome before starting again. For an uncertain Agent POST,
+follow [creation recovery](../../reference/console/create-and-deploy.md#create-an-agent).
+
+With repository bindings, reload repository choices after a confirmed refusal.
+Without them, for Agent POST `403`, `create.mts:agentSaveAccessReason` matches the complete
+denial to the request. It names Namespace Agent create, saved Configuration read,
+browser setup Configuration update, Harness Secret operate or ServiceAccount read,
+or submitted CredentialSource operate. An unnamed Secret yields only the permission.
+Other denials stay generic. The alert retains the request ID. Ask an Installation
+administrator to check grants and IAM Restrictions. After access changes, retry
+**Create Agent** in this draft to reuse the Configuration. **Cancel** warns it
+remains saved. A fresh draft can save another.
+
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
 After a known registration refusal, empty checks retain the refusal and the saved Secret.
@@ -213,15 +216,19 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 ### 5. Grant Secret access and edit authentication
 
-Known Installation non-administrators skip grants. Otherwise, for a model
-Secret or Credential Source, Console verifies the Agent and ensures its
-ServicePrincipal has `operate` on that resource. Configuration Secret bindings
-also trigger verification.
+Known Installation non-administrators skip grants. Otherwise, before the first grant,
+Console rereads the Agent and stops if its ServicePrincipal differs from the
+create response. For a model Secret or Credential Source, Console creates or
+reuses an `operate` AccessBinding for that principal on that exact resource.
+Deployment rechecks authorization. A matching deny Restriction can block use.
+
+Configuration Secret bindings also trigger verification.
 `create.mts:grantConfigurationSecretAccess` covers only staged channel Secrets
 matching final same-Namespace `env` bindings.
 [Transactional native IAM can grant at deployment](../namespace-iam-policy.md#6-default-users-owners-and-deploy-time-grants)
 if the caller has `operate`.
-Failure retains the draft. Retry if offered. With unreadable capabilities,
+Failure retains the draft. If offered, **Retry credential access** verifies
+the saved Agent again and uses the ServicePrincipal from that read. With unreadable capabilities,
 `403` on verification or grant hides retry and directs deployment from the Agent page.
 
 After a refused Installation read, **Your access** shows whether Agent `create`
@@ -271,6 +278,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-23 14:21: Clarify creation locks and bindings. (authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea - 54922275aed4dd2c5d6c23901fb0a2ff42a54136)
 - 2026-11-23 13:25: Clarify grants and recovery. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
