@@ -126,7 +126,7 @@ async function selectedV5(
     });
   }
   const selectedRegistry =
-    native &&
+    (native || rest !== undefined) &&
     validateGitHubRepositoryRegistry(
       {
         ...registry,
@@ -136,7 +136,7 @@ async function selectedV5(
             {
               namespaceId: "namespace-a",
               profiles: ["github-repository"],
-              ...(native && { nativeGit: "v1" }),
+              nativeGit: "v1",
               permissions: {
                 metadata: "read",
                 contents: "write",
@@ -204,7 +204,7 @@ async function selectedV5(
       boundGitRule: f.runtime.boundGitRule.bind(f.runtime),
     },
   );
-  const profile = native ? "github_repository" : "repository_git";
+  const profile = selectedRegistry ? "github_repository" : "repository_git";
   const admitted = await proxy.sourceControl.assertAvailable(
     t.signal,
     profile,
@@ -272,10 +272,13 @@ async function selectedV5(
       repositoryGit: repositoryCredentials,
     },
   } as unknown as AgentRevision;
-  assert.equal(revision.repositoryCredentials!.bindings.length, native ? repositories.length : 1);
+  assert.equal(
+    revision.repositoryCredentials!.bindings.length,
+    selectedRegistry ? repositories.length : 1,
+  );
   assert.equal(
     revision.repositoryCredentials!.bindings[0]!.profile,
-    native ? "github-repository" : "git-write",
+    selectedRegistry ? "github-repository" : "git-write",
   );
   const prepare = (
     runtime = f.runtime,
@@ -614,7 +617,11 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
     await f.runtime.observeHeldPreview(revision.id, startupId, t.signal, async (path) => {
       activity.probes += 1;
       assert.equal(native, false);
-      assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+      if (revision.repositoryCredentials!.bindings[0]!.profile === "github-repository") {
+        assert.ok(path.startsWith("/oce-observe-request/"));
+      } else {
+        assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+      }
       assert.match(path, /\/oce-observe-request\/[a-f0-9]{32}\.git\/info\/refs$/);
       assert.equal(f.calls.material, 0);
       const request: OpenShellOnlineHttpRequest = {
@@ -685,6 +692,8 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
         },
       });
     },
+    removeLoadedGitRule: () =>
+      Reflect.deleteProperty(effectivePolicy.network_policies, gitRule.name),
     resetLoadedGitRule: () => {
       Object.assign(effectivePolicy.network_policies, { [gitRule.name]: loadedGitRule });
     },
@@ -4584,6 +4593,60 @@ test("native Git refuses obsolete or standalone admissions before Provider work"
   assert.deepEqual(f.calls, calls);
   assert.equal(store.rows.size, rows);
   noCredentials();
+});
+
+test("API filters require native delivery at first issuance and renewal even without REST permissions", async (t) => {
+  for (const filter of [{ allow: [] }, { deny: ["issues:create"] }]) {
+    const rest = { permissions: {}, filters: { "example/delivery": filter } };
+    // No saved policy selects online authorization. Refuse before even reserving a Provider.
+    const online = await selectedV5(t, false, undefined, rest);
+    await assert.rejects(
+      online.prepare(),
+      /API action restrictions require a native repository network policy/,
+    );
+    assert.equal(online.store.rows.size, 0);
+    online.noCredentials();
+
+    const held = await heldGit(t, true, undefined, rest);
+    for (const updates of [0, 1]) {
+      // The second pass offers fresh material to the same installed Provider.
+      held.f.owner.material = {
+        ...held.f.owner.material,
+        materialVersion: randomUUID(),
+        preparationAttemptId: randomUUID(),
+        value: `controlled-version-${updates}`,
+      };
+      const reads = held.f.calls.material;
+      held.removeLoadedGitRule();
+      await held.reconcile();
+      assert.equal(held.f.calls.material, reads);
+      assert.equal(held.activity.updates, updates);
+      held.resetLoadedGitRule();
+      await held.reconcile();
+      assert.equal(held.activity.updates, updates + 1);
+      assert.equal(held.activity.probes, 0);
+    }
+  }
+});
+
+test("omitted and empty deny filters preserve online delivery without a saved native policy", async (t) => {
+  for (const filters of [undefined, { "example/delivery": { deny: [] } }]) {
+    const held = await heldGit(t, false, undefined, {
+      permissions: {},
+      ...(filters && { filters }),
+    });
+    await held.reconcile();
+    assert.equal(held.activity.updates, 1);
+    held.f.owner.material = {
+      ...held.f.owner.material,
+      materialVersion: randomUUID(),
+      preparationAttemptId: randomUUID(),
+      value: "controlled-renewed-token",
+    };
+    await held.reconcile();
+    assert.equal(held.activity.updates, 2);
+    assert.equal(held.activity.probes, 1);
+  }
 });
 
 test("native Git registration refuses an online authorization plan before Provider work", async (t) => {

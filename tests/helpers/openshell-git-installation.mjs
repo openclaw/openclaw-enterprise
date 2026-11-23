@@ -663,6 +663,18 @@ async function installOpenShellGit(
             scope.repository === "fixture/c" && {
               apiActions: { allow: [] },
             }),
+          ...(optedIn &&
+            rest === "reads" &&
+            scope.repository === "fixture/b" && {
+              apiActions: {
+                allow: [
+                  "issues:read",
+                  "issues:create",
+                  "pull_requests:read",
+                  "pull_requests:create",
+                ],
+              },
+            }),
           ...(allowStandingApprovals && { allowStandingApproval: true }),
         };
       }),

@@ -43,6 +43,7 @@ const rest =
     : undefined;
 const issueWrites = rest === "issues";
 const issueControls = rest === "issue-controls";
+const issueReadOnly = rest === "reads";
 const issueReads = rest !== undefined;
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
@@ -1501,7 +1502,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
         return result;
       };
 
-      const legacyFixture = issueControls ? peerFixture : fixture;
+      const legacyFixture = issueControls || issueReadOnly ? peerFixture : fixture;
       const legacy = await prepareAgent(legacyFixture);
       const control = await deployWithIssuance(origin, legacy.deploy);
       const view: SandboxPolicyViewWire = await request(
@@ -1582,7 +1583,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
         agentId: legacy.agent.id,
       });
 
-      if (issueControls) {
+      if (issueControls || issueReadOnly) {
         // Attempt fallback with the legacy callback still available. This Agent
         // has the active filters, and no saved network policy was supplied.
         const filtered = await prepareAgent(fixture);
@@ -1733,6 +1734,13 @@ git -C "$work/checkout" rev-parse HEAD`,
         assert.ok(token && !token.revoked);
         const { resourceVersion, providerRevision, ...binding } = installed;
         assert.ok(resourceVersion && binding.providerId);
+        if (issueReadOnly) {
+          // B still has saved Write and explicitly lists issues:create, but its
+          // actual App credential has Issues Read before and after renewal.
+          assertScopedRestCredential(origin, original);
+          await refuseSavedIssueCreation(fixture, exec, original);
+          assert.equal(await callbacks.read(), nativeCallbackBaseline);
+        }
         await exerciseSavedGitAcl(t, fixture, exec, original, undefined, nativeCallbackBaseline);
         const next = await observeUntil("same-grant Git credential renewal", t.signal, async () => {
           requireTimelyGit(original.target);
@@ -1931,6 +1939,10 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
       if (issueReads) {
         await t.test("Saved native Git grants admit read-only gh API on A and B", async () => {
           await exerciseSavedIssueReads(fixture, exec, original, nativeCallbackBaseline);
+          if (issueReadOnly) {
+            await refuseSavedIssueCreation(fixture, exec, original);
+            assert.equal(await callbacks.read(), nativeCallbackBaseline);
+          }
         });
       }
       if (issueWrites) {
