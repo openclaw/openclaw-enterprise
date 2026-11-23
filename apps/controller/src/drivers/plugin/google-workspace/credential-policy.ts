@@ -4,7 +4,6 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
 import {
-  googleActionPath,
   googleCatalog,
   googleDiscoveryRoutes,
   googleRouteCandidates,
@@ -17,19 +16,16 @@ const googleDiscovery = googleDiscoveryRoutes().map(({ host, path }) => ({
   method: "GET",
 }));
 
-const googleActions = Object.values(googleCatalog.operations).flatMap((operation) => {
+const googleActions = Object.entries(googleCatalog.operations).flatMap(([id, operation]) => {
   const { origin, method } = operation;
   const host = new URL(origin).hostname;
-  let path: string;
-  if (host === "gmail.googleapis.com") {
-    // Personal Gmail accounts use the provider's `me` resource. The static matcher cannot
-    // express object-ID segments, so advertise only exact reviewed requests it can enforce.
-    path = operation.path.replaceAll("{userId}", "me");
-    if (path.includes("{")) {
-      return [];
-    }
-  } else {
-    path = googleActionPath(operation);
+  // Personal Gmail accounts have a concrete `me` resource.
+  const path =
+    host === "gmail.googleapis.com" ? operation.path.replaceAll("{userId}", "me") : operation.path;
+  if (path.includes("{")) {
+    // TODO(operation-specific HTTP matching): support parameterized operations when the
+    // selected delivery path can enforce their complete method and path.
+    return [];
   }
   if (
     origin !== `https://${host}` ||
@@ -38,6 +34,13 @@ const googleActions = Object.values(googleCatalog.operations).flatMap((operation
     )
   ) {
     throw new Error("Google action endpoints must be HTTPS and separate from public discovery.");
+  }
+  const candidates = googleRouteCandidates(origin, method, path);
+  if (
+    !candidates.some((candidate) => candidate.id === id) ||
+    candidates.some((candidate) => !candidate.id || !candidate.supported)
+  ) {
+    return [];
   }
   return [{ host, method, path }];
 });
@@ -90,36 +93,12 @@ export const googleWorkspaceCredentialPolicy = {
     ) {
       return false;
     }
-    let reviewed = false;
-    for (const { host, port, path } of template.destinations) {
-      if (port !== 443) {
-        continue;
-      }
-      for (const route of googleActions) {
-        if (route.host !== host) {
-          continue;
-        }
-        let intersection: string | undefined;
-        if (googleSourcePathMatches(route.path, path)) {
-          intersection = path;
-        } else if (googleSourcePathMatches(path, route.path)) {
-          intersection = route.path;
-        }
-        if (!intersection) {
-          continue;
-        }
-        // The deployment matcher cannot enforce parameterized Google operations inside a
-        // subtree. Admit only intersections whose exact method and path are reviewed.
-        if (intersection.endsWith("/**")) {
-          return false;
-        }
-        const candidates = googleRouteCandidates(`https://${host}`, route.method, intersection);
-        if (candidates.length === 0 || candidates.some(({ id, supported }) => !id || !supported)) {
-          return false;
-        }
-        reviewed = true;
-      }
-    }
-    return reviewed;
+    return template.destinations.some(
+      ({ host, port, path }) =>
+        port === 443 &&
+        googleActions.some(
+          (route) => route.host === host && googleSourcePathMatches(path, route.path),
+        ),
+    );
   },
 };

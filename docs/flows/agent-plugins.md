@@ -149,7 +149,7 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save and deploy, the [validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts) checks authorized Sources against [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts). Google advertises exact Gmail `me` routes and refuses unenforceable method/path intersections. Public discovery carries no credential. Worker verifies artifacts and Driver–Harness compatibility.
+The [validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts) checks Source authority against [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts). Google injects credentials only for exact reviewed operations within the Template. Unsupported dynamic paths and public discovery receive none. Worker checks artifacts and Driver compatibility.
 
 - **CLI packages.** Gateway loads skills; Harness runs the pinned executable. For Google, [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) checks guard version before attachment. The [guard](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts) enforces Source scope and approved requests. WebSocket calls without signed supervisor identity immediately fail with `PERMISSION_DENIED`. A timely first frame gets `PERMISSION_DENIED` for Sandbox mismatch or `http_only` immediately for a match. Signed silence waits until the earlier guard budget (default 400 ms) or caller deadline; the client may see its own deadline error. Live late frames get `http_only`. Excess calls are denied at 256 waiting preflights per Sandbox or 1,024 per guard; HTTP capacity is separate.
 - **Hosted MCP packages.** Worker advertises selected tools; Gateway grants same-node execution. Hooks and cross-node calls return Code Mode results or denials. The credential Driver attaches the Source; Sandbox supplies its placeholder. OpenShell scopes requests, enforces exact tool names and rejects overlaps.
@@ -343,6 +343,7 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-23 10:45: Constrain Google injection. (authoring-run/aeadb0f8-1f55-4508-aadd-24f7be96ec75 - b2146cc2e)
 - 2026-11-23 09:20: Trace TokenService discovery and Google admission. (authoring-run/f79523c1-41c8-4d45-8e08-14669a2afd29 - f1cb47a2c)
 - 2026-11-22 22:57: Clarify preflight outcomes and qualification limits; restore contributor history. (authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768 - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 - 2026-11-22 22:35: Bound WebSocket preflights independently of HTTP. (authoring-run/032774b9-7075-41b5-b108-59a16c9d3d8e - fdf309517b43823b722df9d068ba95495dcbbde6)

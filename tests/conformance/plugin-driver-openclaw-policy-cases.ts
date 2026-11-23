@@ -11,6 +11,7 @@ import {
   type ManagedMcpInstall,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { googleWorkspaceDestinations } from "../../apps/controller/src/drivers/plugin/google-workspace/operations.ts";
+import { requestCovered } from "../../packages/contracts/src/deployment-request-match.ts";
 import {
   codexOpenClawConfiguration,
   openClawRuntimeArtifact,
@@ -344,7 +345,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     consent: {
       kind: "connection_template",
       version: 1,
-      oauthClientId: "oc_00000000-0000-4000-8000-000000000001",
+      oauthClientId: "ccr_00000000-0000-4000-8000-000000000001",
       ownerPrincipalId: "pr_00000000-0000-4000-8000-000000000001",
       requestedScopes: [],
       grantedScopes: [],
@@ -361,7 +362,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       issuer: "https://accounts.google.com",
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
-      oauthClientId: "oc_00000000-0000-4000-8000-000000000001",
+      oauthClientId: "ccr_00000000-0000-4000-8000-000000000001",
       scopes: [],
       authorizationParameters: {},
       destinations,
@@ -374,7 +375,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000004",
     consent: {
       ...googleSource.consent,
-      oauthClientId: "oc_00000000-0000-4000-8000-000000000002",
+      oauthClientId: "ccr_00000000-0000-4000-8000-000000000002",
       issuer: "https://other.example.test",
       tokenUrl: "https://other.example.test/token",
       clientId: "other-client-id",
@@ -385,7 +386,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       issuer: "https://other.example.test",
       authorizationUrl: "https://other.example.test/authorize",
       tokenUrl: "https://other.example.test/token",
-      oauthClientId: "oc_00000000-0000-4000-8000-000000000002",
+      oauthClientId: "ccr_00000000-0000-4000-8000-000000000002",
     },
   };
   const googleSlot = credentials
@@ -492,14 +493,65 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     ...googleSource,
     currentTemplate: { ...googleSource.currentTemplate, destinations: googleWorkspaceDestinations },
   };
-  await assert.rejects(
-    async () => credentials.validate({ [google.id]: googleSelection }, [builtInTemplate]),
-    /Select a ready Google Workspace account/,
-    "the built-in broad Template still includes other services whose operations cannot be enforced",
+  await credentials.validate({ [google.id]: googleSelection }, [builtInTemplate]);
+  const injection = deployment.networkRequirements
+    .filter(({ id }) => ids.has(id))
+    .map(({ match }) => match);
+  assert.ok(
+    injection.every(
+      (rule) => rule.requestPolicy?.type === "http" && !rule.requestPolicy.path.endsWith("/**"),
+    ),
   );
-  // A different service's literal can still be unsafe when an advertised method covers it
-  // but the reviewed operation catalog does not (DELETE on the group collection).
-  const unsafeGroup = {
+  const googleRequest = (
+    host: string,
+    method: string,
+    path: string,
+    binary = googleInstall.binaryPath,
+  ) => ({
+    binary,
+    host,
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http" as const, method, path },
+  });
+  assert.equal(
+    requestCovered(
+      googleRequest("gmail.googleapis.com", "GET", "/gmail/v1/users/me/messages"),
+      injection,
+    ),
+    true,
+  );
+  assert.equal(
+    requestCovered(
+      googleRequest("gmail.googleapis.com", "GET", "/gmail/v1/users/me/not-a-google-operation"),
+      injection,
+    ),
+    false,
+  );
+  assert.equal(
+    requestCovered(
+      googleRequest("gmail.googleapis.com", "GET", "/gmail/v1/users/me/messages/message-id"),
+      injection,
+    ),
+    false,
+    "an unresolved message ID cannot widen the list operation",
+  );
+  assert.equal(
+    requestCovered(
+      googleRequest("gmail.googleapis.com", "POST", "/gmail/v1/users/me/messages"),
+      injection,
+    ),
+    false,
+  );
+  assert.equal(
+    requestCovered(
+      googleRequest("gmail.googleapis.com", "GET", "/gmail/v1/users/me/messages", "/bin/curl"),
+      injection,
+    ),
+    false,
+  );
+  // The group collection is a reviewed GET operation. Its parent's DELETE operation
+  // requires an ID and must not turn into a DELETE grant for the whole collection.
+  const group = {
     ...googleSource,
     currentTemplate: {
       ...googleSource.currentTemplate,
@@ -508,9 +560,20 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       ],
     },
   };
-  await assert.rejects(
-    async () => credentials.validate({ [google.id]: googleSelection }, [unsafeGroup]),
-    /Select a ready Google Workspace account/,
+  await credentials.validate({ [google.id]: googleSelection }, [group]);
+  assert.equal(
+    requestCovered(
+      googleRequest("admin.googleapis.com", "GET", "/admin/directory/v1/groups"),
+      injection,
+    ),
+    true,
+  );
+  assert.equal(
+    requestCovered(
+      googleRequest("admin.googleapis.com", "DELETE", "/admin/directory/v1/groups"),
+      injection,
+    ),
+    false,
   );
   // Consent v1 remains tied to Gmail and the provider's actual grant; an admin's current
   // manual Template v2 can authorize a different reviewed Google destination for that account.
