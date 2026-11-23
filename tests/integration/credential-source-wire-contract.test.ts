@@ -140,7 +140,6 @@ test("existing Source responses serialize sanitized managed metadata for detail 
     ...metadata,
     secret: { opaque: "synthetic-material" },
     tokenServiceInstanceId: "private-instance",
-    registration: { backendRef: { key: "private" } },
   };
   for (const [schema, response, internal] of [
     [get.schema.response[200], { data: metadata, meta }, { data: privateSource, meta }],

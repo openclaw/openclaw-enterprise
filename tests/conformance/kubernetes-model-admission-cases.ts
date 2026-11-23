@@ -329,24 +329,23 @@ export function renderDedicatedCodexSeccompProfile() {
     embedded = false,
   ) => {
     // Keep the deployment renderer arguments used by the production preparation path.
-    const deployment = computeDriver["deployment"](
-      role,
+    const deployment = computeDriver["deployment"]({
+      name: role,
       ownership,
-      { name: namespace, plane: "execution" },
-      { runtime: `${role}:local`, workspaceSetup: options().images.gateway },
+      namespace: { name: namespace, plane: "execution" },
+      images: { runtime: `${role}:local`, workspaceSetup: options().images.gateway },
+      serviceAccountName: role,
       role,
-      role,
-      {},
-      "info",
-      computeDriver["gatewayConfiguration"](
+      environment: {},
+      loggingLevel: "info",
+      configuration: computeDriver["gatewayConfiguration"](
         routedRevision(computeDriver, { agentId: ownership.agentId }),
         undefined,
         { name: namespace, plane: "execution" },
       ),
       embedded,
-      undefined,
-      preparedAuth(computeDriver, namespace, embedded),
-    );
+      harnessAuth: preparedAuth(computeDriver, namespace, embedded),
+    });
     const pod = asRecord(asRecord(deployment.spec?.template)?.spec);
     const containers = pod?.containers;
     assert.ok(Array.isArray(containers));

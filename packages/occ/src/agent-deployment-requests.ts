@@ -1,3 +1,4 @@
+import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import { createHash } from "node:crypto";
 import type {
   AuditEvent,
@@ -217,6 +218,13 @@ function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
           "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
+      await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        target.namespaceId,
+        agent.id,
+      );
       return { metadata };
     });
     if (initial.receipt !== undefined) {
@@ -225,11 +233,7 @@ function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
     let preparation: FirstDeploymentGuard["preparation"];
     try {
       preparation = {
-        prepared: await dependencies.channels.prepareDeploymentChannels(
-          principalId,
-          target,
-          initial.metadata,
-        ),
+        prepared: await dependencies.channels.prepareDeploymentChannels(initial.metadata),
       };
     } catch (error) {
       // A concurrent matching admission wins over a fresh-only preparation failure.

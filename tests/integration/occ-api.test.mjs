@@ -368,41 +368,11 @@ test("guarded first deployment returns 409 and audits an unready Namespace witho
 });
 
 test("direct first-deployment intent boundary rejects malformed values before I/O", async (t) => {
-  const prepared = await firstDeploymentFixture();
-  const { controller, namespace, agent, intent, listRevisions, work } = prepared;
-  const { fixture } = controller;
-  const input = { namespaceId: namespace.id, agentId: agent.id };
-  const beforeAudit = fixture.auditSink.events.length;
-  const invalid = firstDeploymentCases.malformedIntents(input, intent);
-
-  // Independent public calls must reject before even opening a state boundary.
-  // Keep the real authorized controller; spies guard only downstream I/O.
-  for (const method of ["deployAgentFirst", "recoverAgentFirstDeployment"]) {
-    for (const [
-      label,
-      malformed,
-      target = input,
-      message = "Invalid first-deployment intent.",
-    ] of invalid) {
-      await t.test(`${method}: ${label}`, async (caseContext) => {
-        await firstDeploymentCases.expectMalformedRejection(
-          caseContext,
-          prepared,
-          { method, target, malformed, message, beforeAudit },
-          resolveApprovedDevelopmentHarness,
-          ScopeViolationError,
-        );
-      });
-    }
-  }
-  // No revision or queued work can be written without crossing the guarded state
-  // boundaries. Inspect the real store too, after the per-call spies are restored.
-  assert.deepEqual(await listRevisions(), []);
-  assert.equal(work().length, 0);
-
-  await t.test("valid string admits revision one and recovers with real grants", async () => {
-    await firstDeploymentCases.verifyValidAdmission(prepared, resolveApprovedDevelopmentHarness);
-  });
+  await firstDeploymentCases.runMalformedIntentBoundary(
+    t,
+    resolveApprovedDevelopmentHarness,
+    ScopeViolationError,
+  );
 });
 
 test("direct first-deployment captures intent for exact current receipt authority", async (t) => {
@@ -414,57 +384,7 @@ test("direct first-deployment captures intent for exact current receipt authorit
 });
 
 test("direct first-deployment captures scalars once for fresh admission and recovery", async (t) => {
-  for (const change of ["stateful key", "immediate target and generation mutation"]) {
-    await t.test(change, async (caseContext) => {
-      const prepared = await firstDeploymentFixture();
-      const { controller, namespace, agent, path, intent } = prepared;
-      const { fixture } = controller;
-      const actorId = fixture.principal.id;
-      const keyReads = firstDeploymentCases.installScalarCapture(
-        caseContext,
-        change,
-        prepared,
-        missingAgentId,
-      );
-      const beforeAudit = fixture.auditSink.events.length;
-      const admitted = await controller.request("POST", `${path}/deploy-first`, { body: intent });
-      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-      if (change === "stateful key") {
-        assert.equal(keyReads(), 1);
-      }
-      const { revisions, events } = await firstDeploymentCases.assertCapturedAdmission(
-        prepared,
-        admitted,
-        beforeAudit,
-      );
-      const input = { namespaceId: namespace.id, agentId: agent.id };
-      for (let attempt = 0; attempt < 2; attempt++) {
-        assert.deepEqual(
-          await fixture.controller.recoverAgentFirstDeployment(actorId, input, intent),
-          admitted.data,
-        );
-      }
-      if (change === "stateful key") {
-        let recoveryKeyReads = 0;
-        const lookup = {
-          ...intent,
-          get key() {
-            return ++recoveryKeyReads === 1 ? intent.key : 123;
-          },
-        };
-        assert.deepEqual(
-          await fixture.controller.recoverAgentFirstDeployment(actorId, input, lookup),
-          admitted.data,
-        );
-        assert.equal(recoveryKeyReads, 1);
-      }
-      const admissionSnapshot = { beforeAudit, revisions, events };
-      await firstDeploymentCases.assertFirstDeploymentRecoveryUnchanged(
-        prepared,
-        admissionSnapshot,
-      );
-    });
-  }
+  await firstDeploymentCases.runScalarCapture(t, missingAgentId);
 });
 
 test("guarded first deployment propagates snapshot read failures without entering admission", async () => {
@@ -551,8 +471,9 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
     "before-admission",
     "cross-namespace",
   ]) {
+    const beforeResponse = t.mock.fn();
     const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
-      await slackFirstDeploymentFixture();
+      await slackFirstDeploymentFixture(true, beforeResponse);
     const fixture = controller.fixture;
     const deny = () =>
       fixture.state.restrictions.push({
@@ -585,11 +506,8 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
         });
     }
     if (stage === "before-admission") {
-      const transact = fixture.platformState.transact.bind(fixture.platformState);
-      fixture.platformState.transact = (operation) => {
-        deny();
-        return transact(operation);
-      };
+      // Revoke Secret authority after the provider request and before locked admission.
+      beforeResponse.mock.mockImplementationOnce(deny);
     }
     if (stage === "cross-namespace") {
       const read = fixture.platformState.read.bind(fixture.platformState);
@@ -658,23 +576,7 @@ test("ordinary deploy rejects request bodies and admits the current saved genera
     "deploy-generation-baseline",
     { recordOperations: true },
   );
-  const agent = await createAgent(controller, namespace.id, "generation-baseline");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const reviewed = await controller.request("GET", configurationPath);
-  assert.equal(reviewed.status, 200);
-  const updated = await controller.request("PATCH", configurationPath, {
-    body: { values: { temperature: "1" }, expectedGeneration: reviewed.data.generation },
-  });
-  assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  assert.equal(updated.data.generation, reviewed.data.generation + 1);
-
-  await firstDeploymentCases.verifyOrdinaryDeploy(
-    { controller, fixture, namespace, agent, agentPath },
-    reviewed,
-    updated,
-  );
+  await firstDeploymentCases.runOrdinaryDeployGeneration(controller, fixture, namespace);
 });
 
 test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", () =>
@@ -1927,102 +1829,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
 });
 
 test("ordinary deployment admits only the Configuration and Drivers whose channels were validated", async (t) => {
-  for (const change of [
-    "unchanged",
-    "generation",
-    "binding",
-    "configuration",
-    "configuration-driver",
-    "channel",
-    "channel-validator",
-  ]) {
-    await t.test(change, async () => {
-      const { promise: reached, resolve: reach } = Promise.withResolvers();
-      const { promise: released, resolve: release } = Promise.withResolvers();
-      let held = false;
-      const deployment = await slackFirstDeploymentFixture(true, async () => {
-        if (held) {
-          reach();
-          await released;
-        }
-      });
-      const { controller, namespace, agent, path, work, channelDriver, providerCalls } = deployment;
-      const fixture = controller.fixture;
-      const replacement = await createConfiguration(controller, namespace.id);
-      const app = fixture.createApp(undefined, createFastifyApp);
-      try {
-        const url = await app.listen({ host: "127.0.0.1", port: 0 });
-        const send = () => request(url, "POST", `${path}/deploy`, { session: app.defaultSession });
-        // A normal later deployment remains intentional: seed its first admitted revision.
-        const first = await send();
-        assert.equal(first.status, 202, JSON.stringify(first.body));
-        assert.equal(first.data.revision, 1);
-        held = true;
-        const pending = send();
-        await reached;
-        if (change === "generation") {
-          const updated = await controller.request(
-            "PATCH",
-            `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-            {
-              body: { values: { temperature: "1" } },
-            },
-          );
-          assert.equal(updated.status, 200, JSON.stringify(updated.body));
-        } else if (change === "binding") {
-          const updated = await controller.request("PATCH", path, {
-            body: { configurationId: replacement.id },
-          });
-          assert.equal(updated.status, 200, JSON.stringify(updated.body));
-        } else if (change === "configuration") {
-          const driver = fixture.configurationDriver;
-          const saved = driver.stored({ namespaceId: namespace.id, id: agent.configurationId });
-          await driver.update({ ...saved, values: { temperature: "1" } });
-        } else if (change === "configuration-driver") {
-          const driver = createTestConfigurationDriver({ id: "replacement-configuration" });
-          fixture.controller.registerDriver(driver);
-          fixture.controller.selectDriver("configuration", driver.id);
-        } else if (change === "channel") {
-          const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
-          driver.id = "replacement-channel";
-          fixture.controller.registerDriver(driver);
-          fixture.controller.selectDriver("channel", driver.id);
-        } else if (change === "channel-validator") {
-          channelDriver.validateCredentials = async () => assert.fail("Unexpected validation");
-        }
-        const successes = () =>
-          fixture.auditSink.events.filter(
-            (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
-          ).length;
-        const beforeAudit = successes();
-        const beforeWork = work().length;
-        release();
-        const result = await pending;
-        assert.equal(
-          result.status,
-          change === "unchanged" ? 202 : 409,
-          JSON.stringify(result.body),
-        );
-        assert.equal(providerCalls(), 2, "one provider request per attempted deployment");
-        assert.equal(work().length - beforeWork, change === "unchanged" ? 1 : 0);
-        assert.equal(successes() - beforeAudit, change === "unchanged" ? 1 : 0);
-        const revisions = await deployment.listRevisionMetadata();
-        assert.equal(revisions.length, change === "unchanged" ? 2 : 1);
-        if (change === "unchanged") {
-          assert.equal(result.data.revision, 2);
-          assert.equal(result.data.configurationId, agent.configurationId);
-        } else {
-          assert.doesNotMatch(
-            result.body.error.message,
-            /Recover the original first-deployment receipt/,
-          );
-        }
-      } finally {
-        release();
-        await app.close();
-      }
-    });
-  }
+  await firstDeploymentCases.runOrdinaryChannelAdmission(t);
 });
 
 test("deployment credential use retains the selected Secret storage object after its read", async () => {

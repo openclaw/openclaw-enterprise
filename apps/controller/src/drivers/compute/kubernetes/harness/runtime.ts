@@ -10,8 +10,21 @@ import type {
   SandboxResourceRef,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
+import {
+  OpenShellSandboxDriver,
+  type OpenShellHarnessStatusContext,
+} from "../../../sandbox/openshell.ts";
 import { ManagedOpenShellSandbox } from "../../../sandbox/openshell/managed.ts";
+import {
+  ComputeStopYieldedError,
+  computeStopShouldYield,
+  isGatewayDrainStop,
+} from "../../operation-context.ts";
 import { ConfigurationFailure, OwnershipFailure } from "../failures.ts";
+
+/** How long a stop waits for a revision's workload Pods to end, and for its Harness to start. */
+export const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
+const HARNESS_STARTUP_POLL_MS = 1_000;
 
 export interface HarnessNamespace {
   readonly name: string;
@@ -42,6 +55,10 @@ export interface HarnessResources<Workload> {
     labels: Readonly<Record<string, string>>,
   ) => Promise<boolean>;
   readonly sandboxContext: (context: HarnessContext) => Promise<SandboxNamespaceContext>;
+  /** What an OpenShell Harness status read needs outside a preparation pass. */
+  readonly harnessStatusContext: (
+    context: HarnessContext,
+  ) => Promise<OpenShellHarnessStatusContext>;
 }
 
 /** Kubernetes owns retained storage unless the Sandbox explicitly owns it. */
@@ -145,6 +162,8 @@ export class SandboxHarnessRuntime<Workload> {
 
   protected readonly resources: HarnessResources<Workload>;
   readonly sandbox: SandboxDriver;
+  /** When each revision's stop first saw its Harness starting; kept across yielded passes. */
+  private readonly startingSince = new Map<string, number>();
 
   constructor(resources: HarnessResources<Workload>, sandbox: SandboxDriver) {
     this.resources = resources;
@@ -178,12 +197,61 @@ export class SandboxHarnessRuntime<Workload> {
   }
 
   async stop(context: HarnessContext): Promise<void> {
+    await this.awaitHarnessStartup(context);
     await this.sandbox.cleanup({
       ...(await this.resources.sandboxContext(context)),
       revision: context.revision,
     });
     if (this.sandbox.workspaceStorage !== "provider") {
       await this.resources.waitForPods(context);
+    }
+  }
+
+  /**
+   * An OpenShell Sandbox kills its whole workload as soon as its Pod is stopped, so a Harness
+   * stopped during Doctor or workspace setup leaves the workspace node state locked, and every
+   * later version is refused. An ordinary stop (an Agent stop, or the stop of an earlier version
+   * for a newer one) therefore lets a starting Harness finish first, as the Harness Deployment of
+   * Kubernetes Compute does. The wait yields like the Gateway drain, and ends when the Harness
+   * reports another state, when the read fails, or at the bound, counted from the first
+   * `starting` read. Other stops, an Agent deletion included, do not wait. Only a Codex Harness
+   * waits: a dedicated OpenClaw worker serves once its node enrolls with the Agent Gateway, which
+   * the stop has already deleted, so its status could not leave `starting` before the bound.
+   */
+  private async awaitHarnessStartup(context: HarnessContext): Promise<void> {
+    const sandbox = this.sandbox;
+    if (
+      !isGatewayDrainStop() ||
+      context.revision.harness.id !== "codex" ||
+      sandbox.workspaceStorage === "provider" ||
+      !(sandbox instanceof OpenShellSandboxDriver)
+    ) {
+      return;
+    }
+    const key = context.revision.id;
+    for (;;) {
+      let state: string | undefined;
+      try {
+        state = (
+          await sandbox.readHarnessStatus(await this.resources.harnessStatusContext(context))
+        ).state;
+      } catch {
+        // No answer is no reason to hold the stop; the error is not logged.
+        state = undefined;
+      }
+      const now = Date.now();
+      const since = this.startingSince.get(key) ?? now;
+      if (state !== "starting" || now - since >= WORKLOAD_TERMINATION_TIMEOUT_MS) {
+        this.startingSince.delete(key);
+        return;
+      }
+      this.startingSince.set(key, since);
+      if (await computeStopShouldYield("harness-startup")) {
+        throw new ComputeStopYieldedError(
+          "The AgentRevision Harness is still starting; other work is waiting.",
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, HARNESS_STARTUP_POLL_MS));
     }
   }
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { InstallationSecretStore } from "@openclaw-enterprise/contracts";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import type { OpenClawController, PlatformStateStore } from "@openclaw-enterprise/occ";
 
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
@@ -37,6 +37,8 @@ async function credentialStoreIdentity(
 export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
+  state: PlatformStateStore,
+  options: { bindSourceUpdatePlacement?: boolean } = {},
 ): Promise<void> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
@@ -52,12 +54,43 @@ export async function installTokenServiceDriver(
     drivers.secretDriver.id,
   );
   const instanceId = await controller.activateTokenServiceInstance(selection.id, storeIdentity);
+  const delivery = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   const owner = new OCCTokenServiceDriver(
     selection.id,
     controller.installation.id,
     store,
     instanceId,
+    state,
+    delivery,
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
+  if (delivery !== undefined && options.bindSourceUpdatePlacement !== false) {
+    const [{ OpenShellCredentialProxyDriver }, { OpenShellCredentialDeliveryRefusedError }] =
+      await Promise.all([
+        import("../drivers/credential-proxy/openshell.ts"),
+        import("../drivers/credential-proxy/openshell-pushed-provider.ts"),
+      ]);
+    if (delivery instanceof OpenShellCredentialProxyDriver) {
+      delivery.bindSourceNamespaceResolver(async (sourceRef, signal) => {
+        signal.throwIfAborted();
+        if (controller.selectedDriver("credential_proxy_delivery") !== delivery) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const namespace = await state.read((view) =>
+          view.namespaces.findNamespace(sourceRef.namespaceId),
+        );
+        if (namespace?.status !== "ready") {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const compute = controller.selectedDriver("compute");
+        const placed = await compute.resolveSandboxNamespace?.(namespace);
+        signal.throwIfAborted();
+        if (placed?.id !== sourceRef.namespaceId || placed.status !== "ready") {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        return placed;
+      });
+    }
+  }
 }

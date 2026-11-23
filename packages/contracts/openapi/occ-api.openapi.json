@@ -65,16 +65,6 @@
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
-      "MANAGED_SOURCE_NOT_IMPLEMENTED": {
-        "summary": "NOT_IMPLEMENTED",
-        "value": {
-          "error": {
-            "code": "NOT_IMPLEMENTED",
-            "message": "Managed credential source enrollment is unavailable."
-          },
-          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-        }
-      },
       "MODEL_DISCOVERY_RATE_LIMITED": {
         "summary": "MODEL_DISCOVERY_RATE_LIMITED",
         "value": {
@@ -291,7 +281,7 @@
       },
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.",
+        "description": "Register a managed static Source. OCC allocates its identity and selects the TokenService owner.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
@@ -327,7 +317,7 @@
       },
       "UpdateTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Supply at least one of config or secret. Omitted fields retain their values. Change or remove provider_preset separately from credential replacement; otherwise the update returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
         "minProperties": 1,
         "properties": {
           "config": {
@@ -11839,7 +11829,7 @@
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
-                            "version": 1
+                            "version": 2
                           },
                           "displayName": "Example account",
                           "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -11947,16 +11937,16 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
+                    "authorizationUrl": "https://accounts.example.com/authorize",
                     "destinations": [
-                      {
-                        "host": "inference.example.com",
-                        "method": "POST",
-                        "path": "/v1/responses",
-                        "port": 443
-                      }
+                      { "host": "api.example.com", "path": "/profile", "port": 443 }
                     ],
-                    "displayName": "Research inference",
-                    "mode": "static_bearer"
+                    "displayName": "Example account",
+                    "issuer": "https://accounts.example.com",
+                    "mode": "manual",
+                    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                    "scopes": ["profile.read"],
+                    "tokenUrl": "https://accounts.example.com/token"
                   }
                 }
               },
@@ -12141,21 +12131,22 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "current": {
+                          "authorizationParameters": {},
+                          "authorizationUrl": "https://accounts.example.com/authorize",
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "destinations": [
-                            {
-                              "host": "inference.example.com",
-                              "method": "POST",
-                              "path": "/v1/responses",
-                              "port": 443
-                            }
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
                           ],
-                          "mode": "static_bearer",
-                          "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "issuer": "https://accounts.example.com",
+                          "mode": "manual",
+                          "scopes": ["profile.read"],
+                          "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "tokenUrl": "https://accounts.example.com/token",
                           "version": 1
                         },
-                        "displayName": "Research inference",
-                        "id": "ctp_223e4567-e89b-42d3-a456-426614174000"
+                        "displayName": "Example account",
+                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -12666,7 +12657,7 @@
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
-                          "version": 1
+                          "version": 2
                         },
                         "displayName": "Example account",
                         "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -12980,7 +12971,7 @@
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
-                          "version": 1
+                          "version": 2
                         },
                         "displayName": "Engineering account",
                         "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -13100,7 +13091,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Rename a connection template, or create a version with new approved values",
+        "summary": "Rename a connection template or create a version with updated settings",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -16277,7 +16268,7 @@
                                 "type": "string"
                               },
                               "credentialSources": {
-                                "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                                "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -16780,7 +16771,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                    "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -17085,7 +17076,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -20981,7 +20972,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -21418,7 +21409,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                              "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -21944,7 +21935,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                    "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -22269,7 +22260,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -23393,7 +23384,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -23594,7 +23585,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -24003,7 +23994,19 @@
           },
           {
             "action": "read",
-            "condition": "saved_sandbox_policy_additions",
+            "condition": "saved_sandbox_policy_for_deployment",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          },
+          {
+            "action": "manage_policy",
+            "condition": "explicit_repository_network_policy",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "explicit_repository_network_policy",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
@@ -24012,7 +24015,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy-first": {
       "post": {
-        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgentFirst",
         "parameters": [
           {
@@ -24300,7 +24303,21 @@
           },
           {
             "action": "read",
-            "condition": "saved_sandbox_policy_additions",
+            "condition": "saved_sandbox_policy_for_deployment",
+            "phase": "fresh_admission",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          },
+          {
+            "action": "manage_policy",
+            "condition": "explicit_repository_network_policy",
+            "phase": "fresh_admission",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "explicit_repository_network_policy",
             "phase": "fresh_admission",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
@@ -30856,7 +30873,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                              "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -32128,7 +32145,9 @@
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
-                        "protectedExecution": false
+                        "protectedExecution": false,
+                        "repositoryNetworkPolicyCeiling": [],
+                        "repositoryNetworkPolicySaveSupported": false
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -32481,17 +32500,69 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "repositoryNetworkPolicy": {
+                              "description": "Saved repository grants. An empty array denies all repositories.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
+                                  "repository": {
+                                    "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                    "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                    "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["repository", "access"],
+                                "type": "object"
+                              },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
                             "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                           },
                           "required": ["id", "namespaceId", "agentId", "version", "additions"],
                           "type": "object"
                         },
                         "protectedExecution": {
-                          "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+                          "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+                          "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
+                        },
+                        "repositoryNetworkPolicyCeiling": {
+                          "description": "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "repositoryNetworkPolicySaveSupported": {
+                          "description": "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
-                          "description": "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+                          "description": "Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list.",
                           "type": "string"
                         }
                       },
@@ -32500,6 +32571,8 @@
                         "editingEnabled",
                         "protectedExecution",
                         "ceiling",
+                        "repositoryNetworkPolicyCeiling",
+                        "repositoryNetworkPolicySaveSupported",
                         "defaults",
                         "capability"
                       ],
@@ -32720,7 +32793,31 @@
                     "title": "Network rules",
                     "type": "array"
                   },
-                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                  "repositoryNetworkPolicy": {
+                    "description": "Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "repository": {
+                          "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                          "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["repository", "access"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
                 },
                 "required": ["expectedVersion", "additions"],
                 "type": "object"
@@ -32878,6 +32975,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
@@ -33065,7 +33186,7 @@
               },
               "schema": {
                 "additionalProperties": false,
-                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
                 "properties": {
                   "additions": {
                     "items": {
@@ -33136,7 +33257,7 @@
               }
             }
           },
-          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
           "required": true
         },
         "responses": {
@@ -33296,6 +33417,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
@@ -33550,7 +33695,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -34287,7 +34432,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -36673,7 +36818,7 @@
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
-                            "version": 1
+                            "version": 2
                           },
                           "displayName": "Example account",
                           "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -36764,7 +36909,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List connection templates the caller may connect in this Namespace",
+        "summary": "List connection templates available in this Namespace",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
@@ -36811,7 +36956,7 @@
                         {
                           "clientId": "example-client",
                           "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                          "connectionTemplateVersion": 1,
+                          "connectionTemplateVersion": 2,
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "destinations": [
@@ -37831,13 +37976,11 @@
           "501": {
             "content": {
               "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
-                },
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "Managed credential source enrollment is unavailable."
+            "description": "The selected Driver does not support this operation."
           },
           "503": {
             "content": {
@@ -37851,7 +37994,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a Credential Gateway source; managed static registration is staged",
+        "summary": "Register a credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
@@ -38329,17 +38472,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Managed credential source enrollment is unavailable."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -38352,7 +38484,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Update a Credential Gateway source; managed updates are staged",
+        "summary": "Update a Source through its recorded owner",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" },
@@ -44938,6 +45070,7 @@
                           "displayName": "Example provider client",
                           "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "issuer": "https://accounts.example.com",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "tokenEndpointAuthMethod": "client_secret_basic",
                           "tokenUrl": "https://accounts.example.com/token"
                         }
@@ -45153,6 +45286,7 @@
                         "displayName": "Example provider client",
                         "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                         "issuer": "https://accounts.example.com",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "tokenEndpointAuthMethod": "client_secret_basic",
                         "tokenUrl": "https://accounts.example.com/token"
                       },
@@ -45481,6 +45615,7 @@
                         "displayName": "Example provider client",
                         "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                         "issuer": "https://accounts.example.com",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "tokenEndpointAuthMethod": "client_secret_basic",
                         "tokenUrl": "https://accounts.example.com/token"
                       },

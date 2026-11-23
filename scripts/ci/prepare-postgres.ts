@@ -44,6 +44,8 @@ type PostgresAdminStep = {
   statements: readonly string[];
   stage: "postgres-settings" | "database-create" | "database-schema";
 };
+export type PostgresPreparationFailureReason =
+  "docker-subnet-exhausted" | "postgres-connection-refused";
 
 function databaseName(kind: DatabaseKind, label: string) {
   return ownedName(databasePrefixes[kind], label, { maxLength: 63, separator: "_" });
@@ -97,8 +99,18 @@ async function postgresAdmin(
       statements,
     });
   } catch (error) {
-    if (error instanceof Error && stage !== "postgres-settings") {
-      Object.assign(error, { code: "CI_PREPARATION_COMMAND_FAILED", stage });
+    if (error instanceof Error) {
+      if (stage !== "postgres-settings") {
+        Object.assign(error, { code: "CI_PREPARATION_COMMAND_FAILED", stage });
+      } else if (
+        asRecord(error)?.failure === "connect" &&
+        asRecord(error.cause)?.code === "ECONNREFUSED"
+      ) {
+        Object.assign(error, {
+          prepareFailureReason:
+            "postgres-connection-refused" satisfies PostgresPreparationFailureReason,
+        });
+      }
     }
     throw error;
   }
@@ -221,6 +233,10 @@ export function createPostgresPreparation(
           `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
           `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
           `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
+        Object.assign(error, {
+          prepareFailureReason:
+            "docker-subnet-exhausted" satisfies PostgresPreparationFailureReason,
+        });
       }
       throw error;
     }

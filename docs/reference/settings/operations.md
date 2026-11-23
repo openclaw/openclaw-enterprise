@@ -133,10 +133,11 @@ retained database before considering another attempt.
 Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
 authentication: recreate development Agents, revisions, and provisioning
 requests before migrating` when an Agent draft, any AgentRevision, or a
-provisioning plan still holds a retired `chatgpt_service_account` binding. No
-API deletes an Agent revision or provisioning request on its own: delete each affected
-Agent, which also deletes its Agent revisions and requests, and create it again after
-the upgrade. Changing an Agent's binding does not clear earlier Agent revisions.
+provisioning plan still holds a retired `chatgpt_service_account` binding.
+An authorized operator can clear a draft-only binding if the installed
+controller supports it. No API deletes individual Agent revisions or provisioning
+requests. If the binding cannot be cleared, [deleting the Agent](../agents.md#deletion)
+removes its revisions and associated requests. Recreate it after upgrading.
 
 A provisioning request that never created an Agent survives Agent deletion.
 Let queued or running requests finish. Then, as the migration role, list the
@@ -185,7 +186,7 @@ example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
 ```sh
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=docker
-./bin/occ dev down --volumes -- -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
+./bin/occ dev down --volumes -- -p "${DEV_COMPOSE_PROJECT:?}" -f compose.yaml &&
 ./bin/occ dev up --key-output /absolute/private/new-installation-key.json -- \
   -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
 ```
@@ -333,30 +334,39 @@ Never give the controller the migrator or administrator URL. The application
 role cannot create schema objects, modify migration history, or rewrite
 immutable audit and Agent revision records.
 
-For database-only debugging, start PostgreSQL and apply migrations using its
-dedicated role:
+Database-only debugging requires a local Docker engine.
 
 ```bash
-docker compose -f compose.postgres.yaml up -d --wait
-
-export OCC_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_enterprise
-pnpm db:migrate
+DEV_POSTGRES_ADDRESS=
+docker compose -f compose.postgres.yaml up -d --wait &&
+address=$(docker compose -f compose.postgres.yaml port postgres 5432) &&
+if [[ $address =~ ^127\.0\.0\.1:[0-9]+$ ]]; then
+  OCC_MIGRATION_DATABASE_URL="postgresql://occ_migrator:occ-migrator-local@$address/openclaw_enterprise" pnpm db:migrate &&
+  DEV_POSTGRES_ADDRESS=$address
+else
+  echo 'PostgreSQL must publish 127.0.0.1:<port>' >&2
+  false
+fi
 ```
 
-Add the application connection URL to the [required development controller environment](development.md#required-development-controller-environment), then initialize before starting the same server manually. Use an
-private input directory outside the checkout. Follow the
-[input contract](../authentication.md#installation-and-account-ownership) and
-[credential generation example](../../guides/deploy/production-installation-preparation.md#shared-credential-and-configuration-checks).
-Retain the files; reinitialization does not reissue keys. For host-process debugging:
+Prepare the controller's [development environment](development.md#required-development-controller-environment),
+[private inputs](../authentication.md#installation-and-account-ownership) and
+[credentials](../../guides/deploy/production-installation-preparation.md#shared-credential-and-configuration-checks).
+Retain files in a private directory outside the checkout. Reinitialization does not reissue keys.
 
 ```bash
-export OCC_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_enterprise
-export OCC_DATABASE_POOL_MAX=10
-export OCC_DEVELOPMENT_CONFIGURATION_ROOT="$(pwd)/.development/configurations"
-export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE='/absolute/private-directory/admin-password'
-export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE='/absolute/private-directory/admin-service-key'
-NODE_ENV=development node scripts/bootstrap-installation.mjs
-NODE_ENV=development node apps/controller/src/server.mjs
+(
+  set -e
+  : "${DEV_POSTGRES_ADDRESS:?Complete database setup in this Bash shell first}"
+  unset OCC_MIGRATION_DATABASE_URL
+  export OCC_DATABASE_URL="postgresql://occ_app:occ-app-local@$DEV_POSTGRES_ADDRESS/openclaw_enterprise"
+  export OCC_DATABASE_POOL_MAX=10
+  export OCC_DEVELOPMENT_CONFIGURATION_ROOT="$(pwd)/.development/configurations"
+  export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE='/absolute/private-directory/admin-password'
+  export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE='/absolute/private-directory/admin-service-key'
+  NODE_ENV=development node scripts/bootstrap-installation.mjs
+  NODE_ENV=development node apps/controller/src/server.mjs
+)
 ```
 
 Installation, Namespace, Agent, native IAM, audit, and controller-work state

@@ -1,4 +1,8 @@
-import type { AgentRevision, IAMDriver } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  AgentRevisionSummaryPage,
+  IAMDriver,
+} from "../../packages/contracts/src/index.ts";
 import type { ClaimedWork, WorkResult } from "../../packages/occ/src/index.ts";
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import assert from "node:assert/strict";
@@ -169,6 +173,9 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
     revisions: {
       findRevision: () => structuredClone(revision),
       listRevisionMetadata: () => [revision],
+      pageRevisionSummaries: async (): Promise<AgentRevisionSummaryPage> => ({
+        revisions: [revision],
+      }),
     },
     credentialSources: { listCredentialWithdrawals: () => [] },
   };

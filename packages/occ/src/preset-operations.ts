@@ -1,3 +1,5 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import { normalizeAgentPluginApprovers } from "./agent-plugin-validation.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isName,
@@ -11,7 +13,6 @@ import {
   type ConfigurationValidationOptions,
   type Namespace,
   type OpenClawConfigurationDocument,
-  type PluginApprovers,
   type Preset,
   type PresetDraftDefinition,
   type PresetDraftTemplate,
@@ -97,11 +98,7 @@ interface PresetDependencies {
   readonly installationId: string;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "readableListRows">;
-  bindCreator(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ): Promise<void>;
+  readonly bindCreator: IAMPolicyOperations["bindCreator"];
   getNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>>;
   nextPresetId(): string;
   timestamp(): string;
@@ -112,7 +109,6 @@ interface PresetDependencies {
   ): void;
   validateAgentBackend(backendId: BackendRef): void;
   readonly drivers: Pick<DriverRegistry, "hasPluginDrivers" | "enabledPluginDrivers">;
-  normalizeAgentPluginApprovers(approvers: unknown): PluginApprovers | undefined;
 }
 
 export function createPresetOperations(options: PresetDefaults, dependencies: PresetDependencies) {
@@ -454,12 +450,15 @@ export function createPresetOperations(options: PresetDefaults, dependencies: Pr
     }
     namespaceIdentity(input.namespaceId);
     return transact(async (state) => {
-      await authorize(principalId, "update", {
+      const target: ResourceRef = {
         kind: "preset",
         id: input.presetId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await authorize(principalId, "update", target);
       const namespace = await lockNamespace(state, input.namespaceId);
+      // Recheck under the same lock used by AccessBinding deletes.
+      await authorize(principalId, "update", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -617,7 +616,7 @@ export function createPresetOperations(options: PresetDefaults, dependencies: Pr
     }
     if (literal("pluginApprovers") && dependencies.drivers.hasPluginDrivers()) {
       checked("pluginApprovers", () => {
-        const approvers = dependencies.normalizeAgentPluginApprovers(agent.pluginApprovers);
+        const approvers = normalizeAgentPluginApprovers(agent.pluginApprovers);
         // The Harness can be filled in at launch. Reject a literal here only when
         // every enabled catalog would refuse it.
         let refusal: PluginPolicyValidationError | undefined;
