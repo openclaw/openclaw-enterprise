@@ -11,10 +11,10 @@ import {
 } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
-import { parseRepositoryApiActions } from "@openclaw-enterprise/contracts";
 import type {
   RepositoryApiAction,
   RepositoryApiActions,
+  repositoryApiActions,
   AdmittedRepositoryBinding,
   githubInstallationProfile as installationProfile,
   RepositoryApprovalScope,
@@ -233,16 +233,11 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      let apiActions: RepositoryApiActions | undefined;
-      if (Object.hasOwn(policy, "apiActions")) {
-        if (policy.nativeGit !== "v1") {
-          return invalid();
-        }
-        try {
-          apiActions = parseRepositoryApiActions(policy.apiActions);
-        } catch {
-          return invalid();
-        }
+      const apiActions = Object.hasOwn(policy, "apiActions")
+        ? parseApiActions(policy.apiActions)
+        : undefined;
+      if (Object.hasOwn(policy, "apiActions") && policy.nativeGit !== "v1") {
+        return invalid();
       }
       if (
         Object.hasOwn(policy, "nativeGit") &&
@@ -409,6 +404,36 @@ const installationGrantPolicy = Object.freeze({
   apiPermissions: "inherited-from-github-app-installation",
   deliveryPolicy: "github-installation-git-basic-api-bearer-online-authorization-v1",
 } as const);
+
+// The standalone credential service has no workspace runtime dependencies.
+// Type-check its local action list and canonical order against the Agent contract.
+const apiActions: typeof repositoryApiActions = [
+  "issues:read",
+  "issues:create",
+  "pull_requests:read",
+  "pull_requests:create",
+] as const;
+
+function parseApiActions(input: unknown): RepositoryApiActions | undefined {
+  const filter = object(input, ["allow", "deny"]);
+  if (Object.keys(filter).length !== 1) {
+    return invalid();
+  }
+  const allow = Object.hasOwn(filter, "allow");
+  const raw = allow ? filter.allow : filter.deny;
+  if (!Array.isArray(raw) || raw.length > apiActions.length) {
+    return invalid();
+  }
+  // Filtering the literal list gives a stable order. Unknowns and duplicates shorten it.
+  const actions = Object.freeze(apiActions.filter((action) => raw.includes(action)));
+  if (actions.length !== raw.length) {
+    return invalid();
+  }
+  if (allow) {
+    return Object.freeze({ allow: actions });
+  }
+  return actions.length ? Object.freeze({ deny: actions }) : undefined;
+}
 
 function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
   const { issues, pull_requests: pullRequests } = policy.permissions ?? {};
