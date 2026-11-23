@@ -1,10 +1,9 @@
-import type { IAMDriver, InstallationSecretStore } from "@openclaw-enterprise/contracts";
+import type { IAMDriver, TokenServiceDriver } from "@openclaw-enterprise/contracts";
 import type { PlatformStateStore, PostgresPool } from "@openclaw-enterprise/occ";
 import {
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   SOURCE_REPOSITORIES_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
-import { OCCTokenServiceDriver } from "../../drivers/token-service/occ.ts";
 import type { MaterialWriteHold } from "../../drivers/repo/access/material-hold.ts";
 import type {
   LockedRepositorySource,
@@ -26,11 +25,15 @@ const HOLD_LIMIT_MS = 60_000;
 export function createRepositorySourceCustody(options: {
   readonly lockPool: PostgresPool;
   readonly state: PlatformStateStore;
-  readonly secrets: InstallationSecretStore;
+  /** The selected TokenService driver; only its Sources are lent. */
   readonly tokenServiceDriverId: string;
+  /** That driver for the Source's own instance and Installation, as the row names them. */
+  readonly tokenService: (
+    custody: NonNullable<LockedRepositorySource["custody"]>,
+  ) => Pick<TokenServiceDriver, "resolveCredential">;
   readonly iam: Pick<IAMDriver, "authorize">;
 }): RepositorySourceCustody {
-  const { lockPool, state, secrets, tokenServiceDriverId, iam } = options;
+  const { lockPool, state, tokenServiceDriverId, tokenService, iam } = options;
   const custody: RepositorySourceCustody = {
     async lock({ namespaceId, sourceId }) {
       const client = await lockPool.connect();
@@ -47,7 +50,7 @@ export function createRepositorySourceCustody(options: {
           try {
             await client.query("COMMIT");
             client.release();
-          } catch (error) {
+          } catch {
             client.release(true);
           }
         },
@@ -104,19 +107,11 @@ export function createRepositorySourceCustody(options: {
       if (!source.custody) {
         throw new Error("The repository token Source has no TokenService custody.");
       }
-      const { installationId, tokenServiceInstanceId } = source.custody;
       // The value is read while the row is held; the driver rechecks owner and state as well.
-      const owner = new OCCTokenServiceDriver(
-        tokenServiceDriverId,
-        installationId,
-        secrets,
-        tokenServiceInstanceId,
-        state,
-      );
-      const { credential, version } = await owner.resolveCredential(
+      const { credential, version } = await tokenService(source.custody).resolveCredential(
         {
           sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
-          tokenServiceInstanceId,
+          tokenServiceInstanceId: source.custody.tokenServiceInstanceId,
         },
         AbortSignal.timeout(5000),
       );

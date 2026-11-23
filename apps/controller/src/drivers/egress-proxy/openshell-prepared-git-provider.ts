@@ -24,6 +24,7 @@ import {
   type OpenShellGitSandboxVerifier,
 } from "./openshell-repository-policy-readback.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
+import { repositorySourceLoanMaximumMs } from "../repo/github/access/source-loan.ts";
 import {
   OpenShellGatewayDispatchRefusedError,
   openShellProfileEndpoint,
@@ -60,9 +61,6 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkTarget & {
   readonly managedSandbox?: true;
   readonly workspaceRoute?: InspectedWorkspaceNodeRoute;
 };
-
-/** The longest a TokenService Source's value is lent to its Provider (the provisional bound). */
-export const repositorySourceLoanMaximumMs = 900_000;
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
 export interface OpenShellPreparedGitToken {

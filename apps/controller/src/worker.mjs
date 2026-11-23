@@ -2,6 +2,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import { createRepositorySourceCustody } from "./backends/repository-credentials/source-custody.ts";
+import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
@@ -229,8 +230,15 @@ try {
         repositorySourceCustody: createRepositorySourceCustody({
           lockPool: sourceLockPool,
           state: platformState,
-          secrets,
           tokenServiceDriverId: tokenService.id,
+          tokenService: ({ installationId, tokenServiceInstanceId }) =>
+            new OCCTokenServiceDriver(
+              tokenService.id,
+              installationId,
+              secrets,
+              tokenServiceInstanceId,
+              platformState,
+            ),
           iam: drivers.createIAMDriver(platformState),
         }),
       }),

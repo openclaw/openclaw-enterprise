@@ -233,6 +233,19 @@ const reviewedImports: ReviewedModules = {
     "node:fs/promises": ["open"],
     "node:util": ["isDeepStrictEqual"],
   },
+  // A Source loan derives its ids from nonsecret loan metadata and reads the stored ceiling with
+  // the shared parser; the value comes only through the custody port the Worker injects.
+  "drivers/repo/github/access/source-loan.ts": {
+    "node:crypto": ["createHash"],
+    "@openclaw-enterprise/contracts": ["readSourceRepositoryCeiling"],
+  },
+  // The Source row's config keys only; its TokenService read is injected by the Worker.
+  "backends/repository-credentials/source-custody.ts": {
+    "@openclaw-enterprise/contracts": [
+      "SOURCE_PROVIDER_PRESET_CONFIG_KEY",
+      "SOURCE_REPOSITORIES_CONFIG_KEY",
+    ],
+  },
   // One use of committed material via the private Unix socket; no preparation operation.
   "drivers/repo/github/access/warm-use.ts": {
     "node:crypto": ["randomUUID"],
