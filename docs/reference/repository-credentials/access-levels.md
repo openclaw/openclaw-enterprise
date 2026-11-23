@@ -157,6 +157,62 @@ Issue conversion stays open: preventing it needs OpenShell to inspect request
 bodies, which it does not. To rule it out, leave `pull_requests` at `read` on
 the registration, which withholds creation.
 
+### Repository token Source
+
+A Namespace registration can set `credentialSource` to the ID of a
+[`github` Source](../credential-sources/managed-static.md#register-a-github-repository-token)
+in that Namespace. Native Git then uses the Source's fine-grained personal access
+token instead of a GitHub App token. The Agent still holds only the placeholder.
+
+Registry validation refuses:
+
+- a value that is not a Source ID (`cs_…`);
+- the field without `nativeGit: "v1"` and the `github-repository` profile, with
+  `scopedRest`, or with a `permissions` key other than `metadata` and `contents`;
+- without the App's `appId` and `githubInstallationId`: a registration without
+  `credentialSource`, standing approvals, and `installationAccess`.
+
+An Agent's bindings must resolve to one credential: the App, or one Source.
+Naming another Source changes the grant, so earlier revisions go stale.
+
+Saving the repository policy and deploying check the Source again:
+
+| Condition                                                                                 | Result                                   |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------- |
+| The caller or the Agent's principal lacks `credential_source:operate`                     | `403`                                    |
+| The Source is missing, not `ready`, in another Namespace or TokenService, or not `github` | `409`                                    |
+| A saved grant exceeds the Source's repository ceiling                                     | `409`, detail `/repositoryNetworkPolicy` |
+| The bindings mix the App and a Source, or two Sources                                     | `409`; `400` when the Agent is saved     |
+| `DELETE` of the Source, or a ceiling change, while the registry names it                  | `409`                                    |
+
+The Worker lends the value for at most 15 minutes and renews it every 7.5 minutes.
+At each loan it checks the Source's state, owner, preset and ceiling, the Agent
+principal's `operate` and the token class. A refused loan logs
+`REPOSITORY_SOURCE_LOAN_REFUSED` once per Source version and reason, with the
+Source ID and version and never the value. The current loan stays in the
+Sandbox until it ends.
+
+- **Replacement.** `PATCH` of the Source's `secret` commits the replacement.
+  The Worker's next refresh (every 10 seconds) rotates it into the same Provider,
+  with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with the
+  Source ID and version once OpenShell reports it installed. Revoke the old token
+  at GitHub once every running Agent that uses the Source has logged that event
+  for the new version, or 15 minutes after the replacement. A `github` Source has
+  no Credential Proxy Provider, so
+  [manual delivery retry](../credential-sources.md#retry-credential-delivery)
+  does not apply to it: `"all"` skips it and naming it returns `409`.
+- **Revocation.** Removing the Agent principal's `operate`, narrowing the
+  registration, or changing the registry stops the next loan. Access ends when
+  the current loan does, at most 15 minutes later. Revoke the token at GitHub to
+  end it at once.
+- **Stop and retirement.** A stopped Agent's route is withdrawn: nothing is lent
+  or renewed for it. Once no registration names the Source, it can be deleted,
+  and no further loan is made.
+
+A loan holds the Source's catalog row from its checks until the Provider write
+returns, so replacement and retirement wait for an in-flight write. A hold ends
+after at most 60 seconds, and a Worker paused past it sends nothing.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |

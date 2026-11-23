@@ -24,7 +24,10 @@ through the [repository installation procedure](repository-credentials/installat
 It requires one immutable registry ConfigMap shared by API, worker and service,
 a separate public CA Secret, worker-only App-key and custody Secrets, and sender
 configuration and TLS Secrets. The [registry reference](../reference/repository-credentials.md#canonical-platform-registry)
-defines repository and Namespace policy. Set `sessionDurationSeconds: 86400` for
+defines repository and Namespace policy. For OpenShell native Git, a registration
+can instead name a `github` Source holding a fine-grained token
+([repository token Source](../reference/repository-credentials/access-levels.md#repository-token-source));
+the Worker configuration still requires the App key fields. Set `sessionDurationSeconds: 86400` for
 a 24-hour version; keep it within the registry's maximum.
 
 The chart's `repositoryCredentials.enabled` defaults to `false`. Follow the

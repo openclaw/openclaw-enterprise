@@ -81,6 +81,12 @@ OCC authorizes exact DELETE, refuses blocking references, and commits `deleting`
 
 An authorized Agent draft can bind a ready same-Namespace Source by ID without resolving credentials. Admission can freeze its approved model route in a revision. During deployment, the Worker provisions an idle Sandbox, the Proxy attaches the Provider, and the Sandbox applies the admitted credential policy before the Harness starts. Source creation and draft binding do not establish runtime credential delivery or a model turn. The [credential lifecycle flow](credential-source-lifecycle.md#4-resolve-the-source-at-dispatch) owns deployment details.
 
+### 6. Lend a `github` Source to native Git
+
+`apps/controller/src/drivers/repo/github/access/source-loan.ts:createRepositorySourceMaterialReader`, `apps/controller/src/backends/repository-credentials/source-custody.ts:createRepositorySourceCustody`
+
+A repository registration that names a `github` Source has no Credential Proxy binding. At each loan the Worker takes the Source's catalog row `FOR SHARE` on its own pool with a 2-second wait, rechecks state, owner, preset, ceiling, the Agent principal's `operate` and the token class, and resolves the value through TokenService. IDs derive from the 7.5-minute loan window and the custody version, so a replaced value is new material. The runtime writes it into the revision's `oce-github-token-` Provider and releases the row when the write returns, so a replacement's or retirement's row lock waits for it. A hold ends after 60 seconds; the Provider then sends nothing. The Worker logs `worker.openshell-git-delivery-confirmed` per revision and version once OpenShell reports it installed. See [Repository token Source](../reference/repository-credentials/access-levels.md#repository-token-source).
+
 ## Debugging and Verification
 
 Run `node --test tests/integration/postgres-staged-agent-credential-binding.test.ts` with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It exercises real Fastify routes, PostgreSQL application-role persistence, Native IAM, concrete TokenService custody, sanitized reads, updates, denial audit, retirement, and Agent draft binding. Source DELETE coverage uses the selected OpenShell Proxy and production gRPC client against a controlled loopback service. The Secret Driver's Kubernetes API transport is also controlled. This does not establish live Kubernetes storage, native OpenShell deletion, runtime delivery, or model execution.
