@@ -247,10 +247,42 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   );
 
   const grants: readonly RepositoryNetworkGrant[] = [
-    { repository: "example/project-a", access: "read" },
-    { repository: "example/project-b", access: "write" },
+    {
+      repository: "example/project-a",
+      access: "read",
+      apiActions: { allow: ["issues:read", "pull_requests:read"] },
+    },
+    {
+      repository: "example/project-b",
+      access: "write",
+      apiActions: { deny: ["issues:create", "pull_requests:create"] },
+    },
+    { repository: "example/project-c", access: "write", apiActions: { allow: [] } },
+    { repository: "example/project-d", access: "read" },
   ];
   const desired = { ...original, version: original.version + 1, repositoryNetworkPolicy: grants };
+  // Writers bypassing OCC must still store an unambiguous, canonical action set.
+  for (const apiActions of [
+    null,
+    {},
+    { allow: [], deny: ["issues:create"] },
+    { deny: [] },
+    { allow: ["issues:read"], other: true },
+    { allow: "issues:read" },
+    { allow: ["issues:*"] },
+    { deny: ["issues:read", "issues:read"] },
+    { allow: ["issues:create", "issues:read"] },
+  ]) {
+    const invalid = { ...desired, repositoryNetworkPolicy: [{ ...grants[0], apiActions }] };
+    await assert.rejects(
+      pool.query("UPDATE occ.sandbox_policies SET version=$2, document=$3 WHERE id=$1", [
+        desired.id,
+        desired.version,
+        JSON.stringify(invalid),
+      ]),
+      { code: "23514", constraint: "sandbox_policies_document_valid" },
+    );
+  }
   await assert.rejects(
     savePolicy({ ...desired, version: original.version }, original.version),
     ScopeViolationError,
@@ -336,6 +368,23 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
 
   const marker = { repositoryNetworkPolicyVersion: admitted.version };
   const storedAdmission = { ...scopedUnprotectedRevision.executionAdmission, ...marker };
+  // A revision cannot drop the action filters from its grants or its identity.
+  const unfiltered = snapshotPolicy(
+    grants.map(({ repository, access }) => ({ repository, access })),
+  );
+  for (const repositoryNetworkPolicy of [
+    unfiltered,
+    { ...admitted, identity: unfiltered.identity },
+  ]) {
+    await assert.rejects(
+      insertStoredRevision(nextRevision, {
+        sandbox_driver_id: baseSnapshot.driverId,
+        sandbox_policy: { ...baseSnapshot, repositoryNetworkPolicy },
+        execution_admission: storedAdmission,
+      }),
+      { code: "23514" },
+    );
+  }
   // The storage-only marker must never become part of the public execution admission.
   await assert.rejects(
     createRevision({ ...scopedUnprotectedRevision, executionAdmission: storedAdmission }),
@@ -555,7 +604,9 @@ async function policyEditor({ deployAgent, inject, state, pool }: PolicyApp) {
   assert.equal(enabled.statusCode, 200, enabled.body);
 
   const original = await stored();
-  const grants = [{ repository: "example/project", access: "write" }] as const;
+  const grants = [
+    { repository: "example/project", access: "write", apiActions: { deny: ["issues:create"] } },
+  ] as const;
   const read = async () => (await view()).policy;
   const seed = async () => {
     // Begin with a policy persisted by an installation supporting grant creation.
