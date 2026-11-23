@@ -4706,9 +4706,18 @@ export class ControllerWorker {
 
   private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
-    const owner =
-      source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
-    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
+    let ownerMatches: boolean;
+    if (source.ownerCapability === "token_service") {
+      ownerMatches =
+        source.tokenServiceInstanceId !== undefined &&
+        source.tokenServiceInstanceId ===
+          this.provisioningController?.currentTokenServiceInstanceId();
+    } else {
+      const owner =
+        source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
+      ownerMatches = source.driverId === owner?.id;
+    }
+    if (!ownerMatches || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new CredentialWithdrawalRefusedError(
         "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
         "The source and selected owner must match the revision's credential source admission.",
@@ -5841,6 +5850,13 @@ export class ControllerWorker {
       return secretBindings.result;
     }
     const refs = uniqueSecretRefs(secretBindings.bindings);
+    const proxySecretId = revision.networkProxy?.credentialSecretId;
+    if (
+      proxySecretId !== undefined &&
+      !refs.some((ref) => ref.id === proxySecretId && ref.namespaceId === revision.namespaceId)
+    ) {
+      refs.push({ kind: "secret", namespaceId: revision.namespaceId, id: proxySecretId });
+    }
     const auth = revision.harnessAuth;
     if (isSecretHarnessAuth(auth)) {
       if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId) {

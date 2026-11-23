@@ -134,6 +134,8 @@ import type {
   ErrorDetail,
   AgentDeploymentDiagnostics,
   AgentRevision,
+  AgentNetworkProxy,
+  HarnessExecutionMode,
   SandboxHarnessObservation,
   AgentRuntimeContainerStatus,
   AgentRuntimeDescribeOptions,
@@ -7872,7 +7874,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name),
         );
         await this.prepareRevisionStage("gateway_channel_network_policy", () =>
-          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
+          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context),
         );
         await this.prepareRevisionStage("gateway_workspace_node_binding", () =>
           this.deliverWorkspaceNodeBinding(
@@ -9015,7 +9017,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayOwnership,
             namespace,
           );
-          await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
+          await this.reconcileChannelNetworkPolicy(revision, channels, namespace, context);
           const images = this.workloadImages(revision, "gateway");
           const environment = launch.environment;
           const configuration = this.gatewayConfiguration(admittedRevision);
@@ -9269,7 +9271,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       secretEnvironment,
     );
-    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace);
+    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context);
     await this.harnessForRevision(revision).workspace.ensure({ revision, namespace });
     await this.reconcile(
       this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
@@ -9618,6 +9620,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
+    if (source.ownerCapability === "token_service") {
+      if (!credentialSourceMatchesSnapshot(source, snapshot)) {
+        throw new OwnershipFailure("The staged Source does not match its admitted owner.");
+      }
+      return this.withdrawStagedCredentialSource(revision, source, signal, options);
+    }
     const owner =
       source.ownerCapability === "credential_gateway"
         ? this.credentialGatewayDriver
@@ -9694,6 +9702,54 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new OwnershipFailure("The Credential Gateway withdrew another credential source.");
     }
     return status;
+  }
+
+  private async withdrawStagedCredentialSource(
+    revision: Readonly<AgentRevision>,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+    options: CredentialPolicyWithdrawalOptions,
+  ): Promise<CredentialAttachmentStatus> {
+    const deployment = revision.credentialDeployment;
+    const binding = deployment?.bindings.find((entry) => entry.sourceRef.id === source.id);
+    const proxy = this.credentialDeploymentProxyDriver;
+    if (
+      !deployment ||
+      !binding ||
+      binding.sourceRef.namespaceId !== revision.namespaceId ||
+      proxy?.id !== deployment.proxyDriverId
+    ) {
+      throw new OwnershipFailure("The staged credential binding or Proxy is unavailable.");
+    }
+    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+    const existing = await this.getNamespace(namespace);
+    if (existing !== undefined) {
+      this.verifyNamespaceOwnership(existing, { namespaceId: revision.namespaceId }, external);
+    }
+    const targetNamespace = await this.controlNamespace(revision.namespaceId);
+    const sandboxId = await this.credentialDeploymentTarget(revision, targetNamespace);
+    if (sandboxId === undefined) {
+      throw new DependencyUnavailableError(
+        "The staged Sandbox target is unavailable for withdrawal.",
+      );
+    }
+    await proxy.removeDeployment(
+      {
+        namespace: this.sandboxNamespaceForRevision(revision, namespace),
+        revision,
+        signal,
+      },
+      {
+        targetRef: {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          sandboxId,
+        },
+        ...(options.recheck === true ? {} : { bindingRefs: [binding.bindingRef] }),
+      },
+    );
+    return { sourceId: source.id, state: "revoked" };
   }
 
   /**
@@ -9966,7 +10022,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       {
         targetRef: { ...deployment, sandboxId },
-        bindingRefs: revision.credentialDeployment.bindings.map((binding) => binding.bindingRef),
       },
     );
     await this.deleteOwnedNamespacedResource(
@@ -16197,6 +16252,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  async admitGatewayChannelProxy(
+    selection: Readonly<AgentNetworkProxy>,
+    context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
+  ): Promise<string> {
+    if (!this.channelEgress || !this.options.runtime || this.options.executionCluster) {
+      throw new ConfigurationHarnessError(
+        "The selected Compute topology does not support Gateway channel proxy routing. Select a supported topology.",
+      );
+    }
+    return this.channelEgress.admitProxy(selection, context);
+  }
+
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
     let runtime: string | undefined;
@@ -17008,6 +17075,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     routing: PreparedChannelRouting | undefined,
     namespace: KubernetesNamespaceAddress,
+    context?: ComputeRevisionContext,
   ): Promise<void> {
     if (routing === undefined) {
       return;
@@ -17015,7 +17083,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!this.channelEgress) {
       throw new ConfigurationFailure("Managed channel egress is unavailable.");
     }
-    await this.channelEgress.prepare(revision, namespace.name, routing);
+    await this.channelEgress.prepare(revision, namespace.name, routing, context);
   }
 
   /** Only preparation passes `preparation`, while a Gateway of another revision

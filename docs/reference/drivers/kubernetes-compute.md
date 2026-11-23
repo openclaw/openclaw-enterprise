@@ -46,7 +46,7 @@ Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
-- [Managed channel egress](kubernetes-compute/channel-egress.md): per-Agent Envoy listeners, provider destinations and revocation.
+- [Managed channel egress](kubernetes-compute/channel-egress.md): per-Agent Envoy listeners, optional upstream proxies, provider destinations and revocation.
 
 ## Lifecycle
 

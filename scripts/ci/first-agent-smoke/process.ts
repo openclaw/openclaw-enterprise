@@ -157,7 +157,8 @@ type Phase =
   | "agent-logs"
   | "stop-agents"
   | "start-agents"
-  | "chat-after-start";
+  | "chat-after-start"
+  | "controlled-channel-proxy";
 
 interface TimingRow {
   name: string | undefined;
@@ -188,6 +189,7 @@ export function createStepRecorder(now = () => performance.now()) {
     ["stop-agents", "stop both Agents"],
     ["start-agents", "start both Agents"],
     ["chat-after-start", "chat turns after start"],
+    ["controlled-channel-proxy", "controlled two-Agent channel proxy workflow"],
   ]);
 
   async function step<T>(

@@ -110,6 +110,7 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import { createAgentCredentialWithdrawal } from "./agent-credential-withdrawal.ts";
+import { createAgentCredentialRetry } from "./agent-credential-retry.ts";
 import { createAgentTermination } from "./agent-termination.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import {
@@ -774,6 +775,13 @@ export function createControllerComposition(
     egressAdmission,
     managedCredentialSources,
   } = credentials;
+  const agentCredentialRetry = createAgentCredentialRetry({
+    transactions,
+    authority,
+    proxy: () => publicController.selectedDriver("credential_proxy_delivery"),
+    tokenService: (instanceId) => managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    timeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+  });
   const readAgentAuditEvents = createAgentAuditReader({
     installationId: admittedInstallation.id,
     platformState,
@@ -1023,6 +1031,7 @@ export function createControllerComposition(
       publicController.updateConfiguration(actorId, input),
     installationId: admittedInstallation.id,
     selectedCompute: () => drivers.selection("compute")?.driver as ComputeDriver | undefined,
+    ownedSecretDriver: secretOperations.ownedSecretDriver,
     refuseRepositoryNetworkOverlap: (actorId, policy) =>
       sandboxPolicyOperations.refuseRepositoryNetworkOverlap(actorId, policy),
     bindCreator: iamPolicy.bindCreator,
@@ -1102,6 +1111,7 @@ export function createControllerComposition(
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
+    ownedSecretDriver: secretOperations.ownedSecretDriver,
     validateComputeConfiguration,
     timestamp: resourceValues.timestamp,
     nextIdentifier: resourceValues.nextIdentifier,
@@ -1165,6 +1175,7 @@ export function createControllerComposition(
   }
   return {
     installation: admittedInstallation,
+    agentCredentialRetry,
     agentCredentialWithdrawal,
     agentDrafts,
     agentQueries,

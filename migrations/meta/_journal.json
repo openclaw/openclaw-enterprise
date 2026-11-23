@@ -631,6 +631,20 @@
       "when": 1787000000090,
       "tag": "0090_native_git_delivery",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1787000000091,
+      "tag": "0091_agent_network_proxy",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1787000000092,
+      "tag": "0092_agent_network_proxy_admission",
+      "breakpoints": true
     }
   ]
 }

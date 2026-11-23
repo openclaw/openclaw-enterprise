@@ -17,7 +17,10 @@ import type { GitHubRepositoryRegistry } from "../drivers/repo/github/access/reg
 import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider.ts";
 import { openShellGitOriginRefusal } from "../drivers/sandbox/openshell-git-network-policy.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
-import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
+import type {
+  OpenShellSandboxDriver,
+  OpenShellSandboxDriverSelection,
+} from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type {
   CredentialProxyDriver,
@@ -1593,12 +1596,19 @@ async function composeInstallationConfiguration(
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
+    const sandbox = pairedSandbox as SandboxDriver &
+      Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
+    if (typeof sandbox.withdrawStagedCredentialRoute !== "function") {
+      throw new Error(
+        "Native credential delivery requires the paired OpenShell Sandbox policy owner.",
+      );
+    }
     return new OpenShellCredentialProxyDriver({
       id: pairedSandbox.id,
       implementation: pairedSandbox.implementation,
       tokenServiceImplementation,
       backend: openShell!,
-      sandbox: pairedSandbox,
+      sandbox,
     });
   };
   const { sandboxDriver, protectedDriver, repositoryTransport } = await (async (): Promise<
