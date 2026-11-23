@@ -2749,8 +2749,10 @@ if (savedAgentAcl === "source") {
           const status = await statusOf(pending());
           return { status, seconds: (Date.now() - started) / 1000 };
         };
-        const replace = () => request("PATCH", source.path, { secret: { token: third } });
-        const retire = () => request("DELETE", source.path);
+        // The client waits well past the hold limit, so the measured time is the server's.
+        const replace = () =>
+          request("PATCH", source.path, { secret: { token: third } }, undefined, 150_000);
+        const retire = () => request("DELETE", source.path, undefined, undefined, 150_000);
         const firstWrite = await timed(deleteFirst ? retire : replace);
         const heldAfterFirst = await rowHeld();
         const secondWrite = await timed(deleteFirst ? replace : retire);

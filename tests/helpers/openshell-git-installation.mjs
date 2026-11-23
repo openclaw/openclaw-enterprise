@@ -83,7 +83,8 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
   // private dispatcher bypasses ambient proxies without altering other traffic.
   const dispatcher = new Agent();
   after(() => dispatcher.close());
-  return async (method, path, body, expectedFailure) => {
+  // `timeoutMs` lets a caller measure a write that waits on a database lock.
+  return async (method, path, body, expectedFailure, timeoutMs = 30_000) => {
     const url = new URL(path, base);
     assert.equal(url.origin, base.origin, "Installed Git API path changed origin");
     const response = await fetch(url, {
@@ -95,7 +96,7 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     });
     if (expectedFailure !== undefined) {
       let envelope;
