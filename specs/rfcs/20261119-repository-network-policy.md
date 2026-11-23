@@ -16,7 +16,7 @@ author: freeqaz-openai
 
 ## Summary
 
-An Admin grants an Agent read access to A, write access to B and no access to C, even when its credential covers all three. The Sandbox Driver owns every repository network rule and credential binding. The Credential Proxy provisions and rotates an endpointless OpenShell Provider. OpenShell authorizes Git and injects the credential locally. Scoped REST also permits issue reads, PR reads and PR creation. OpenShell alone enforces them: OCE makes no request-time check.
+An Admin grants an Agent read access to A, write access to B and no direct access to C, even when its credential covers all three. The Sandbox Driver owns every repository network rule and credential binding. The Credential Proxy provisions and rotates an endpointless OpenShell Provider. OpenShell authorizes Git and injects the credential locally. Scoped REST also permits issue reads, PR reads and PR creation. OpenShell alone enforces them: OCE makes no request-time check.
 
 ## Motivation
 
@@ -112,7 +112,7 @@ sequenceDiagram
 
 ### What can the Agent do on GitHub?
 
-The Agent can **list and read issues and pull requests** and **open pull requests** through GitHub’s REST API. Each operation requires both the Agent’s repository grant and the corresponding GitHub permission. For example, suppose the Namespace enables issue reads, PR reads and PR creation for A and B. The Admin gives this Agent read access to A, write access to B, and no access to C.
+The Agent can **list and read issues and pull requests** and **open pull requests** through GitHub’s REST API. Each operation requires both the Agent’s repository grant and the corresponding GitHub permission. Suppose the Namespace enables issue reads, PR reads and PR creation for A and B. The Admin gives this Agent read access to A, write access to B, and no access to C.
 
 | Agent action                          | A (read) | B (write) | C (no grant) |
 | ------------------------------------- | -------- | --------- | ------------ |
@@ -122,11 +122,13 @@ The Agent can **list and read issues and pull requests** and **open pull request
 | Push a branch                         | No       | Yes       | No           |
 | Open a PR (draft or ready for review) | No       | Yes       | No           |
 
-**Enabling API access.** The operator sets [`scopedRest: "v1"`](https://github.com/openclaw/openclaw-enterprise/pull/7118) on each participating `github-repository` Namespace registration, rebinds the credential and redeploys the Agent. Issue reads require at least **Issues: read**, PR reads at least **Pull requests: read**, and opening a PR **Pull requests: write**. No further flag exists. A registration that already has `scopedRest` and a Pull requests permission gains the PR routes at the next deployment, without a rebind. For a repository with a scoped Git grant, leaving REST disabled permits only the granted Git operations. Issue writes, PR updates and merges, and GraphQL are outside this grant.
+Rows describe requests addressed directly to each repository; the fork-network limit below is the exception.
+
+**Enabling API access.** The operator sets [`scopedRest: "v1"`](https://github.com/openclaw/openclaw-enterprise/pull/7118) on each participating `github-repository` Namespace registration, rebinds the credential and redeploys the Agent. Issue reads require at least **Issues: read**, the `/pulls` reads at least **Pull requests: read**, and opening a PR **Pull requests: write**. GitHub’s issue routes also return PRs as issue records. A registration that already has `scopedRest` and a Pull requests permission gains the PR routes at the next deployment, without a rebind. For a repository with a scoped Git grant, leaving REST disabled permits only the granted Git operations. Issue writes, PR updates and merges, and GraphQL are outside this grant.
 
 **PR creation uses the path rule only.** OpenShell admits `GET /issues`, `GET /pulls`, their `/{number}` detail paths and `POST /pulls` under the authorized repository on `api.github.com`. Recheck redirects. OCE stays out of the request path: a body check would attach a Worker hook to all of `api.github.com` and make API access depend on the Worker. The Git middleware therefore selects no admitted host once any API route is compiled.
 
-**Accepted limits.** Stock OpenShell matches method, path and query. It has no body matcher. GitHub’s [create endpoint](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) reads the source and any issue to convert from the body, so an Agent that can open PRs in B can also name a fork head (`head: "owner:branch"` or `head_repo`) or convert an issue of B (`issue`). The installation token’s GitHub permissions and repositories bound both cases, and the Agent already holds Write on B. A fork head can widen read access: when the token also covers an ungranted repository in B’s fork network, such as a private fork C, a PR in B with that head exposes C’s commits through B’s pull request ref and diff. Issue conversion is a write to an issue of B. A query string can carry the same fields; OpenShell restricts neither form.
+**Accepted limits.** Stock OpenShell matches method, path and query, not the body. GitHub’s [create endpoint](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) reads the source and any issue to convert from the body, so an Agent that can open PRs in B can also name a fork head (`head: "owner:branch"` or `head_repo`) or convert an issue of B (`issue`), which writes to that issue. The installation token’s GitHub permissions and repositories bound both cases, and the Agent already holds Write on B. A fork head can widen read access: when the token also covers an ungranted repository in B’s fork network, such as a private fork C, a PR in B with that head exposes C’s commits through B’s pull request ref and diff. A query string can carry the same fields; OpenShell restricts neither form.
 
 Codex discovers the [bundled skill](https://github.com/openclaw/openclaw-enterprise/pull/6658) automatically. It teaches stock `gh api` and grants no access. Use a JSON file with `--input` for writes, and verify the remote result before retrying. Draft-only grants retain their ref-constrained client.
 
