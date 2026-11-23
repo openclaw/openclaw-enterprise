@@ -6,8 +6,8 @@ import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalo
 import {
   googleActionPath,
   googleCatalog,
-  googleDestinationHasOperation,
   googleDiscoveryRoutes,
+  googleRouteCandidates,
   googleSourcePathMatches,
 } from "./operations.ts";
 
@@ -17,10 +17,20 @@ const googleDiscovery = googleDiscoveryRoutes().map(({ host, path }) => ({
   method: "GET",
 }));
 
-const googleActions = Object.values(googleCatalog.operations).map((operation) => {
+const googleActions = Object.values(googleCatalog.operations).flatMap((operation) => {
   const { origin, method } = operation;
   const host = new URL(origin).hostname;
-  const path = googleActionPath(operation);
+  let path: string;
+  if (host === "gmail.googleapis.com") {
+    // Personal Gmail accounts use the provider's `me` resource. The static matcher cannot
+    // express object-ID segments, so advertise only exact reviewed requests it can enforce.
+    path = operation.path.replaceAll("{userId}", "me");
+    if (path.includes("{")) {
+      return [];
+    }
+  } else {
+    path = googleActionPath(operation);
+  }
   if (
     origin !== `https://${host}` ||
     googleDiscovery.some(
@@ -29,7 +39,7 @@ const googleActions = Object.values(googleCatalog.operations).map((operation) =>
   ) {
     throw new Error("Google action endpoints must be HTTPS and separate from public discovery.");
   }
-  return { host, method, path };
+  return [{ host, method, path }];
 });
 
 function googleNetworks(
@@ -80,8 +90,36 @@ export const googleWorkspaceCredentialPolicy = {
     ) {
       return false;
     }
-    return template.destinations.some(
-      ({ host, port, path }) => port === 443 && googleDestinationHasOperation(host, path),
-    );
+    let reviewed = false;
+    for (const { host, port, path } of template.destinations) {
+      if (port !== 443) {
+        continue;
+      }
+      for (const route of googleActions) {
+        if (route.host !== host) {
+          continue;
+        }
+        let intersection: string | undefined;
+        if (googleSourcePathMatches(route.path, path)) {
+          intersection = path;
+        } else if (googleSourcePathMatches(path, route.path)) {
+          intersection = route.path;
+        }
+        if (!intersection) {
+          continue;
+        }
+        // The deployment matcher cannot enforce parameterized Google operations inside a
+        // subtree. Admit only intersections whose exact method and path are reviewed.
+        if (intersection.endsWith("/**")) {
+          return false;
+        }
+        const candidates = googleRouteCandidates(`https://${host}`, route.method, intersection);
+        if (candidates.length === 0 || candidates.some(({ id, supported }) => !id || !supported)) {
+          return false;
+        }
+        reviewed = true;
+      }
+    }
+    return reviewed;
   },
 };

@@ -59,8 +59,14 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   metadata that OCC authorized, never credential values. For Template-backed
   Sources, OCC also supplies the Template's current version in
   `currentTemplate`. The Driver matches OAuth accounts by their original consent
-  issuer and current Template identity. Google destinations must intersect reviewed
-  operations; static MCP requires an allowed POST to the reviewed endpoint. Template
+  issuer and current Template identity. Google accepts only intersections that the
+  deployment matcher can enforce as reviewed HTTP methods and exact paths. Gmail
+  supports exact `me` operations without object-ID parameters, such as
+  `GET /gmail/v1/users/me/messages` and `POST /gmail/v1/users/me/messages/send`.
+  The built-in Google Template includes other broad service subtrees and must be
+  narrowed before Plugin use; a Gmail-only `/gmail/**` destination on
+  `gmail.googleapis.com:443` works. Static MCP requires an allowed POST to the
+  reviewed endpoint. Template
   edits do not rewrite consent or provider-granted scopes. Generic slot matching
   does not test scopes.
   `choices(sources)` returns each slot with the attached ready sources that

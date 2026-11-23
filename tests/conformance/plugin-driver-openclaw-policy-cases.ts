@@ -10,6 +10,7 @@ import {
   managedMcpInstalls,
   type ManagedMcpInstall,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { googleWorkspaceDestinations } from "../../apps/controller/src/drivers/plugin/google-workspace/operations.ts";
 import {
   codexOpenClawConfiguration,
   openClawRuntimeArtifact,
@@ -408,7 +409,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     [
       "admin.googleapis.com",
       "/admin/directory/v1/customer/my_customer/orgunits/Engineering/Subteam/**",
-      true,
+      false,
     ],
     ["gmail.googleapis.com", "/gmail/v1/users/me/not-a-google-operation", false],
     ["gmail.googleapis.com", "/gmail/v1/users/me/not-a-google-operation/**", false],
@@ -426,6 +427,91 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       `${host}${path}`,
     );
   }
+  // A mixed Gmail Template cannot widen the Plugin's exact credential requirements.
+  const mixedGoogleSource = {
+    ...googleSource,
+    currentTemplate: {
+      ...googleSource.currentTemplate,
+      destinations: [
+        { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" },
+        {
+          host: "gmail.googleapis.com",
+          port: 443,
+          path: "/gmail/v1/users/me/not-a-google-operation",
+        },
+      ],
+    },
+  };
+  assert.deepEqual(
+    credentials.choices([mixedGoogleSource]).find(({ pluginId }) => pluginId === google.id)
+      ?.sources,
+    [{ id: googleSourceId, name: googleSource.name }],
+  );
+  const googleSelection = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: googleInstall.releaseSha256,
+      credentials: { account: googleSourceId },
+    },
+  };
+  const deployment = await driver.describeDeployment({
+    plugin: { catalog: "driver", pluginId: google.id },
+    selection: googleSelection,
+    connections: { account: { default: googleSource.ref } },
+  });
+  const ids = new Set(deployment.credentials.account!.default!.networkRequirementIds);
+  const gmailRules = deployment.networkRequirements.filter(
+    ({ id, match }) => ids.has(id) && match.host === "gmail.googleapis.com",
+  );
+  assert.ok(
+    gmailRules.some(
+      ({ match }) =>
+        match.requestPolicy?.type === "http" &&
+        match.requestPolicy.method === "GET" &&
+        match.requestPolicy.path === "/gmail/v1/users/me/messages",
+    ),
+  );
+  assert.ok(
+    !gmailRules.some(
+      ({ match }) =>
+        match.requestPolicy?.type === "http" &&
+        match.requestPolicy.path === "/gmail/v1/users/me/messages" &&
+        match.requestPolicy.method !== "GET",
+    ),
+  );
+  assert.ok(
+    gmailRules.every(
+      ({ match }) =>
+        match.requestPolicy?.type === "http" &&
+        !match.requestPolicy.path.endsWith("/**") &&
+        match.requestPolicy.path !== "/gmail/v1/users/me/not-a-google-operation",
+    ),
+  );
+  await credentials.validate({ [google.id]: googleSelection }, [mixedGoogleSource]);
+  const builtInTemplate = {
+    ...googleSource,
+    currentTemplate: { ...googleSource.currentTemplate, destinations: googleWorkspaceDestinations },
+  };
+  await assert.rejects(
+    () => credentials.validate({ [google.id]: googleSelection }, [builtInTemplate]),
+    /Select a ready Google Workspace account/,
+    "the built-in broad Template still includes other services whose operations cannot be enforced",
+  );
+  // A different service's literal can still be unsafe when an advertised method covers it
+  // but the reviewed operation catalog does not (DELETE on the group collection).
+  const unsafeGroup = {
+    ...googleSource,
+    currentTemplate: {
+      ...googleSource.currentTemplate,
+      destinations: [
+        { host: "admin.googleapis.com", port: 443, path: "/admin/directory/v1/groups" },
+      ],
+    },
+  };
+  await assert.rejects(
+    () => credentials.validate({ [google.id]: googleSelection }, [unsafeGroup]),
+    /Select a ready Google Workspace account/,
+  );
   // Consent v1 remains tied to Gmail and the provider's actual grant; an admin's current
   // manual Template v2 can authorize a different reviewed Google destination for that account.
   const currentAdminDestination = {
@@ -437,9 +523,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     },
     currentTemplate: {
       ...googleSource.currentTemplate,
-      destinations: [
-        { host: "docs.googleapis.com", port: 443, path: "/v1/documents/document:batchUpdate" },
-      ],
+      destinations: [{ host: "adsense.googleapis.com", port: 443, path: "/v2/accounts" }],
     },
   };
   assert.deepEqual(

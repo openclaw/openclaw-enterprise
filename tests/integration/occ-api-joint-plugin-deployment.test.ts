@@ -727,7 +727,9 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       match.requestPolicy?.type === "http" &&
       match.requestPolicy.method === "GET",
   );
-  const action = gmailGet.find(({ match }) => match.requestPolicy?.path === "/gmail/v1/users/**");
+  const action = gmailGet.find(
+    ({ match }) => match.requestPolicy?.path === "/gmail/v1/users/me/messages",
+  );
   assert.ok(action);
   assert.ok(googleAccount.networkRequirementIds.includes(action.id));
   assert.deepEqual(googleAccount.toolIds, [action.toolId]);
