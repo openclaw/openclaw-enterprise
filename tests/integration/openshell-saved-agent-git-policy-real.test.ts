@@ -2115,9 +2115,13 @@ if (savedAgentAcl === "source") {
             process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
         "Use the inert Local Setup credential with the synthetic startup model",
       );
+      // OCC_TEST_SOURCE_APP_KEY=none runs the Installation without a GitHub App (no key Secret,
+      // no key values, a Source-only registry) through the first deploy, then names the App.
+      const withoutApp = process.env.OCC_TEST_SOURCE_APP_KEY === "none";
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
         repositorySource: true,
+        repositoryAppKey: !withoutApp,
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       const source = fixture.repositorySource;
@@ -2517,6 +2521,24 @@ if (savedAgentAcl === "source") {
       );
       // AC-2 after deploy.
       await assertTokensAbsentFromWorkload(t, exec, first.target, values, "deploy");
+      if (withoutApp) {
+        // The controller and Worker started without the App key, and the deploy above read A and
+        // B and wrote B through the Source. A registry that names the App without a key refuses
+        // the next Worker start.
+        assert.ok(fixture.appLess);
+        evidence("without-app", fixture.appLess.state);
+        assert.equal(fixture.appLess.state.appKeySecret, "absent");
+        assert.ok(
+          fixture.appLess.state.ownerSecrets.every(
+            (names: readonly string[]) => !names.includes("git-fixture-app"),
+          ),
+          "SOURCE_WITHOUT_APP_NO_KEY_MOUNT",
+        );
+        const refusal = await fixture.appLess.refuseAppRegistryWithoutKey();
+        evidence("app-registry-without-key", refusal);
+        assert.equal(refusal.newWorker.ready, false, "SOURCE_APP_REGISTRY_WITHOUT_KEY_REFUSED");
+        return;
+      }
 
       // AC-1 narrowing: B read-only on a new revision, confirmed by readback; same Source value.
       const readOnly = [
