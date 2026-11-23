@@ -54,7 +54,15 @@ import {
   providerEndpointFixture,
   tlsPinnedWorkspaceSetupCode,
 } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { tenant, authContext, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
+import {
+  tenant,
+  authContext,
+  digest,
+  routedGatewayConfiguration,
+  routedRevision,
+} from "../helpers/kubernetes-routed-scenarios.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
@@ -107,18 +115,70 @@ function boxNetwork() {
   return { endpoints: [{ host: "api.openai.com", ports: [443] }] };
 }
 
+function boxOptions(network) {
+  return {
+    kubernetes: {
+      seccompProfile: "box.json",
+      nodeSelector: { "kubernetes.io/arch": "arm64" },
+      controlPlanePeer: { namespace: "control-plane", podLabels: { app: "controller" } },
+    },
+    policy: { network },
+  };
+}
+
+test("Kubernetes Compute refuses Strands revisions admitted under the other model credential mode", async (t) => {
+  const installation = createInstallationDriverConfiguration();
+  const compute = installation.drivers.compute.configuration;
+  delete compute.network.gatewayClients;
+  compute.network.gatewayTrustedProxyCidrs = routedGatewayConfiguration().trustedProxies;
+  compute.network.providerHarness = { mode: "namespace", port: 18790 };
+  compute.gatewayRouting = {
+    hostname: "agents.example.test",
+    gatewayName: "gateways",
+    gatewayNamespace: "occ-system",
+    envoyNamespace: "envoy",
+  };
+  const load = (network, id = "strands-box-sandbox") =>
+    loadInstallationFile(
+      t,
+      {
+        ...installation,
+        drivers: { ...installation.drivers, sandbox: { id, configuration: boxOptions(network) } },
+      },
+      { mode: "development" },
+    );
+
+  const ordinary = await load(boxNetwork());
+  const preview = await load({ ...boxNetwork(), experimentalOpenAiModelCredential: true });
+  await assert.rejects(load(boxNetwork(), preview.sandboxDriver.id), (error) =>
+    error.details?.some(
+      ({ path, code }) => path === "/drivers/sandbox/id" && code === "INVALID_VALUE",
+    ),
+  );
+  assert.equal(ordinary.sandboxDriver.id, "strands-box-sandbox");
+  assert.equal(preview.installation.drivers.sandbox.id, preview.sandboxDriver.id);
+
+  // The saved pin comes from the admitting installation. The receiving Compute must
+  // refuse the other mode before it reaches Kubernetes, in either direction.
+  for (const [admitting, receiving] of [
+    [preview, ordinary],
+    [ordinary, preview],
+  ]) {
+    const revision = routedRevision(admitting.computeDriver, {
+      sandboxDriverId: admitting.sandboxDriver.id,
+    });
+    await assert.rejects(receiving.computeDriver.prepareRevision(revision), {
+      message: "AgentRevision is pinned to another SandboxDriver.",
+    });
+  }
+});
+
 function renderBoxHarness(context, network) {
-  const peer = { namespace: "control-plane", podLabels: { app: "controller" } };
+  const options = boxOptions(network);
+  const peer = options.kubernetes.controlPlanePeer;
   return strandsBoxResources(
     context,
-    {
-      kubernetes: {
-        seccompProfile: "box.json",
-        nodeSelector: { "kubernetes.io/arch": "arm64" },
-        controlPlanePeer: peer,
-      },
-      policy: { network },
-    },
+    options,
     "box",
     {},
     "input-hash",
