@@ -220,12 +220,15 @@ export async function relayAgentAutomation(input: {
       },
     );
     if (id === "createAgentAutomation") {
-      const acknowledgement = asRecord(result);
-      const job = asRecord(acknowledgement?.job);
-      if (acknowledgement?.created !== true || typeof job?.id !== "string" || !job.id) {
+      const job = asRecord(result);
+      if (
+        typeof job?.id !== "string" ||
+        !job.id ||
+        typeof job.configRevision !== "string" ||
+        !job.configRevision
+      ) {
         throw unknownOutcome();
       }
-      result = job;
     }
     if (!asRecord(result)) {
       throw mutation ? unknownOutcome() : dependencyUnavailable();

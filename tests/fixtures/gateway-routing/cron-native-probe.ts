@@ -98,7 +98,7 @@ try {
   const service = await issueServiceKeyForNativeAgent({ fixture: f, namespace, agent });
   assert.equal(
     (await f.request("GET", base, { session: null, headers: { "x-api-key": service.key } })).status,
-    403,
+    401,
   );
   const csrf = await f.rawRequest("POST", base, {
     headers: { cookie: adminSession.cookie, origin: "https://untrusted.example.test" },
