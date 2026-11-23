@@ -84,7 +84,9 @@ test("a Source hold bounds its lock wait, its statements and its idle time on th
   assert.match(set.text, /set_config\('idle_in_transaction_session_timeout', \$3, true\)/);
   assert.deepEqual(set.values, ["2000ms", "5000ms", "60000ms"]);
   assert.equal(hold.held(), true);
-  await hold.release();
+  // The deadline and the Provider can release the same hold while COMMIT is in flight.
+  await Promise.all([hold.release(), hold.release()]);
+  assert.equal(clients[0]!.queries.filter(({ text }) => text === "COMMIT").length, 1);
   assert.equal(hold.held(), false);
   assert.equal(client.queries.at(-1)?.text, "COMMIT");
   assert.equal(client.released, false, "a committed hold returns its connection");

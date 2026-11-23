@@ -1,8 +1,4 @@
-/**
- * Serializes a lent credential's Provider write with its owner's replacement and retirement.
- * The owner of the material keeps a lock that those writers wait on from its state and version
- * check until the Provider write returns; the writer sends nothing once the hold has ended.
- */
+/** The material owner blocks replacement and retirement while this hold stands. */
 export interface MaterialWriteHold {
   /**
    * True until release starts or the hold limit passes; the Provider write is dispatched only
@@ -11,7 +7,7 @@ export interface MaterialWriteHold {
   held(): boolean;
   /**
    * Asks the lock's owner whether the hold still stands (for a row lock, a round trip on the
-   * holding session), and ends the hold when it does not. Called right before the write.
+   * holding session), and ends the hold when it does not. Called before dispatch and after the response.
    * Never throws.
    */
   confirm(): Promise<boolean>;

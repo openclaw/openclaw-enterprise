@@ -4542,6 +4542,7 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
     undefined,
     "cs_fixture_token",
   );
+  lentSourceHolds(f);
   assert.match(prepared.provider, /^oce-github-token-[a-f0-9]{32}$/);
   const confirmed = () =>
     f.events
@@ -4642,6 +4643,55 @@ function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
   };
 }
 
+test("native Git refuses Source material without the custody hold", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.notEqual(f.runtime.route(revision.id).state, "installed");
+
+  lentSourceHolds(f);
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+});
+
+test("native Git blocks without replay when Source custody ends during the Provider write", async (t) => {
+  const { f, revision, reconcile, activity, client } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { session, allReleased } = lentSourceHolds(f);
+  const update = client.updateProviderCredentialsConditionally!.bind(client);
+  client.updateProviderCredentialsConditionally = async (...args) => {
+    // The Gateway accepts the write, but PostgreSQL has dropped the holding session.
+    // The local deadline and synchronous guard still look valid.
+    const result = await update(...args);
+    session.alive = false;
+    return result;
+  };
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.ok(allReleased());
+  assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "write_unknown" });
+
+  session.alive = true;
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(
+    f.events.some(({ event }) => event === "worker.openshell-git-delivery-confirmed"),
+    false,
+  );
+});
+
 test("native Git writes a lent Source only after the holding session confirms its hold", async (t) => {
   const { f, revision, reconcile, activity } = await heldGit(
     t,
@@ -4741,6 +4791,7 @@ test("native Git confirms a lent Source's delivery once per Source version, not 
     undefined,
     credentialSourceId,
   );
+  lentSourceHolds(f);
   // TokenService's custody version is a random UUID; the Worker log keeps it in that shape only.
   lentVersion.value = randomUUID();
   const firstVersion = lentVersion.value;

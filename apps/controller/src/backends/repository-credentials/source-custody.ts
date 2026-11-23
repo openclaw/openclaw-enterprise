@@ -10,7 +10,7 @@ import type {
   RepositorySourceCustody,
 } from "../../drivers/repo/github/access/source-loan.ts";
 
-/** Replacement and retirement wait for a hold at most this long, and a hold waits as long for them. */
+/** Maximum wait to acquire a Source row lock. */
 const LOCK_TIMEOUT_MS = 2000;
 /** One statement on the holding session, its COMMIT included, ends here. */
 const STATEMENT_TIMEOUT_MS = 5000;
@@ -32,7 +32,7 @@ type HoldingClient = Omit<PostgresClient, "on" | "removeListener"> & {
  * TokenService custody for Source-backed native Git, as the Worker reads it. The catalog row is
  * held FOR SHARE on its own connection from the loan's checks until the Provider write returns:
  * TokenService replaces the value and OCC marks the Source `deleting` under the same row, so
- * neither can interleave with a write that is already decided. The lock pool is separate from
+ * neither can proceed while the hold stands. The lock pool is separate from
  * the store's pool, so a held row never waits on the transaction that reads it.
  *
  * The hold is bounded on both sides. The Worker ends it at the hold limit, and the session's
@@ -108,8 +108,7 @@ export function createRepositorySourceCustody(options: {
           return false;
         },
         async release() {
-          if (returned) {
-            open = false;
+          if (!open) {
             return;
           }
           open = false;
