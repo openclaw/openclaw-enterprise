@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { directGitLaunchVerifier, traceDirectGitBootstrap } from "../helpers/finite-git-agent.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { ensureOpenShellProviderProfile } from "../../apps/controller/src/backends/openshell.ts";
 import {
@@ -16,6 +17,343 @@ import {
   type OpenShellPreparedGitScope,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
+
+test("direct Git bootstrap reports missing readiness and a mismatched loaded selector", async (t) => {
+  const workspace = "acl-diag-private";
+  const sandbox = "bootstrap-test";
+  const sandboxId = "selected-sandbox-id";
+  const scope = {
+    workspace,
+    workspaceId: "workspace-id",
+    sandbox,
+    executionId: "revision-1",
+    installationId: "42",
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git", "/usr/lib/git-core/git-remote-https"],
+    nativeGit: "v1",
+    repositoryNetworkPolicy: [
+      { repository: "fixture/a", access: "read" },
+      { repository: "fixture/b", access: "write" },
+    ],
+    expectedProviders: [],
+  } satisfies OpenShellPreparedGitScope;
+  let mode:
+    | "pending"
+    | "widened"
+    | "unactivated"
+    | "unexpected-path"
+    | "extra-write"
+    | "foreign-owner"
+    | "different-command"
+    | "ready" = "pending";
+  // One change to what the Gateway reports in the ready state. The supervisor's own
+  // Provider report stays READY, so only the policy readback can refuse it.
+  let departure: {
+    readonly authored?: Record<string, unknown>;
+    readonly effective?: Record<string, unknown>;
+    readonly config?: Record<string, unknown>;
+    readonly activeVersion?: number;
+    readonly sandboxId?: string;
+    readonly networkProcess?: string;
+    readonly admission?: Record<string, unknown>;
+  } = {};
+  const generation = {
+    attachment_epoch: "installed-attachment",
+    provider_env_revision: "3",
+    config_revision: "4",
+    policy_hash: "controlled-policy-hash",
+  };
+  const filesystem = {
+    read_only: ["/usr", "/bin", "/lib", "/lib64", "/etc"],
+    read_write: ["/tmp", "/dev/null"],
+  };
+  const launch = () => ({
+    name: sandbox,
+    workspace,
+    requestId: "owned-create",
+    labels: { "openclaw.dev/git-acl-test-run": "run-owner" },
+    annotations: {},
+    serviceExposures: [],
+    spec: {
+      template: { image: "fixture-image" },
+      command: ["/bin/sh", "-c", "sleep 3600"],
+      providers: [binding.provider],
+      policy: {
+        version: 1,
+        filesystem,
+        process: { run_as_user: "1000", run_as_group: "1000" },
+        network_policies: { [rule.name]: rule, ...departure.authored },
+      },
+    },
+  });
+  const policy = () => ({
+    ...launch().spec.policy,
+    filesystem: {
+      read_only: [
+        ...filesystem.read_only,
+        "/var/log",
+        "/proc",
+        "/dev/urandom",
+        ...(mode === "unexpected-path" ? ["/other"] : []),
+      ],
+      read_write: [...filesystem.read_write, ...(mode === "extra-write" ? ["/proc"] : [])],
+    },
+  });
+  const { client } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace,
+    sandbox,
+    revisionId: scope.executionId,
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods: Record<string, (request: Record<string, unknown>) => unknown>) {
+      methods.GetSandboxProviderStatus = () => {
+        const now = { seconds: Math.floor(Date.now() / 1000) };
+        return {
+          status: {
+            state:
+              mode === "pending"
+                ? "PROVIDER_READINESS_STATE_PENDING"
+                : "PROVIDER_READINESS_STATE_READY",
+            reason:
+              mode === "pending"
+                ? "PROVIDER_READINESS_REASON_WAITING_FOR_CREDENTIALS"
+                : "PROVIDER_READINESS_REASON_UNSPECIFIED",
+            receipt: {
+              workspace,
+              provider: binding.provider,
+              desired: {
+                sandbox,
+                sandbox_id: sandboxId,
+                provider_id: binding.providerId,
+                provider_resource_version: binding.resourceVersion,
+                ...generation,
+              },
+            },
+            observed: {
+              ...generation,
+              session_id: "installed-session",
+              sequence: "1",
+              process_instance_id: "installed-process",
+              credentials_installed: mode !== "pending",
+              policy_active: true,
+              launch_environment_installed: true,
+            },
+            network_instance_id: "installed-network",
+            evaluated_time: now,
+            observed_time: now,
+          },
+        };
+      };
+      methods.GetSandboxPolicyStatus = () => ({
+        active_version: departure.activeVersion ?? 2,
+        revision: { version: 2, status: 2, policy: policy() },
+      });
+      methods.GetSandboxConfig = () => {
+        const layer = "_provider_" + binding.provider.replaceAll("-", "_");
+        return {
+          workspace,
+          version: 2,
+          policy_source: 1,
+          configuration_admitted: true,
+          configuration_instance_id: "admitted-config",
+          policy_validation_failure_mode: "fail_closed",
+          provider_attachment_epoch: generation.attachment_epoch,
+          provider_env_revision: generation.provider_env_revision,
+          config_revision: generation.config_revision,
+          policy_hash: generation.policy_hash,
+          policy: {
+            ...policy(),
+            ...departure.effective,
+            network_policies: {
+              [layer]: { name: layer },
+              ...departure.authored,
+              [rule.name]: {
+                ...rule,
+                endpoints: rule.endpoints.map((endpoint) => ({
+                  ...endpoint,
+                  provider_credentialed: true,
+                  ...(mode === "widened" && { path: "/**" }),
+                })),
+              },
+            },
+          },
+          ...departure.config,
+        };
+      };
+      methods.GetSandbox = () => ({
+        sandbox: {
+          metadata: {
+            id: departure.sandboxId ?? sandboxId,
+            name: sandbox,
+            workspace,
+            labels:
+              mode === "foreign-owner"
+                ? { "openclaw.dev/git-acl-test-run": "other-owner" }
+                : launch().labels,
+          },
+          // GetSandbox retains the authored creation policy even after stock syncs
+          // the baseline-enriched source policy at policy revision 2.
+          spec: {
+            ...launch().spec,
+            provider_attachment_epoch: generation.attachment_epoch,
+            ...(mode === "different-command" && { command: ["/bin/false"] }),
+          },
+          status: {
+            main_process_instance_id: departure.networkProcess ?? "installed-network",
+            configuration_activated: mode !== "unactivated",
+            configuration_admission: {
+              state: 2,
+              instance_id: "admitted-config",
+              policy_version: 2,
+              policy_hash: generation.policy_hash,
+              provider_env_revision: generation.provider_env_revision,
+              config_revision: generation.config_revision,
+              ...departure.admission,
+            },
+          },
+        },
+      });
+    },
+  });
+  const trace = traceDirectGitBootstrap(client);
+  const provider = new OpenShellPreparedGitProvider(trace.client, {
+    ...scope,
+    managedSandbox: true,
+  });
+  const binding = await provider.bootstrap(t.signal);
+  const rule = compileOpenShellBoundGitRule(
+    scope.repositoryNetworkPolicy,
+    binding.provider,
+    scope.binaries,
+  );
+  const request = launch();
+  const verifier = directGitLaunchVerifier(request);
+  // Mutate the caller's object after capture. The verifier remains tied to the
+  // original metadata and startup intent.
+  request.labels["openclaw.dev/git-acl-test-run"] = "changed-after-capture";
+  const observe = () => {
+    trace.reset();
+    return provider.observe(binding, sandboxId, t.signal, undefined, verifier);
+  };
+
+  assert.equal(await observe(), undefined);
+  const pending = trace.summary(binding, sandboxId, rule);
+  assert.equal(pending.provider?.reason, "PROVIDER_READINESS_REASON_WAITING_FOR_CREDENTIALS");
+  assert.equal(pending.reads.getSandboxConfig, "unread");
+
+  mode = "widened";
+  assert.equal(await observe(), undefined);
+  const widened = trace.summary(binding, sandboxId, rule);
+  assert.equal(widened.provider?.ready, true);
+  assert.equal(widened.policy?.sourceRuleMatches, true);
+  assert.equal(widened.policy?.effectiveRuleMatches, false);
+  assert.equal(widened.reads.getSandbox, "unread");
+  assert.ok(!JSON.stringify(widened).includes(workspace), "diagnostics include no wire identity");
+
+  mode = "unactivated";
+  assert.equal(await observe(), undefined);
+  const unactivated = trace.summary(binding, sandboxId, rule);
+  assert.equal(unactivated.policy?.effectiveRuleMatches, true);
+  assert.equal(unactivated.reads.getSandbox, "returned");
+  assert.equal(unactivated.sandbox?.hasActivatedConfiguration, false);
+
+  for (const refusal of [
+    "unexpected-path",
+    "extra-write",
+    "foreign-owner",
+    "different-command",
+  ] as const) {
+    mode = refusal;
+    assert.equal(await observe(), undefined, refusal);
+    const diagnostic = trace.summary(binding, sandboxId, rule);
+    assert.equal(diagnostic.policy?.effectiveRuleMatches, true, refusal);
+    assert.equal(diagnostic.reads.getSandbox, "returned", refusal);
+  }
+
+  mode = "ready";
+  const creationPolicyObserver = new OpenShellPreparedGitProvider(client, scope);
+  assert.equal(await creationPolicyObserver.observe(binding, sandboxId, t.signal), undefined);
+  const installed = await observe();
+  assert.equal(
+    installed?.credentialState,
+    "bootstrap",
+    JSON.stringify(trace.summary(binding, sandboxId, rule)),
+  );
+  const ready = trace.summary(binding, sandboxId, rule);
+  assert.equal(ready.sandbox?.configurationMatches, true);
+  assert.equal(ready.sandbox?.launchPolicyMatches, false);
+
+  const observeWith = (next: typeof departure) => {
+    departure = next;
+    // The launch verifier is bound to the launch that carries the authored rules.
+    return provider.observe(
+      binding,
+      sandboxId,
+      t.signal,
+      undefined,
+      directGitLaunchVerifier(launch()),
+    );
+  };
+  const inspected = {
+    host: "sibling.example.test",
+    port: 443,
+    protocol: "rest",
+    rules: [{ allow: { method: "GET", path: "/status" } }],
+  };
+  const { protocol: _protocol, ...uninspected } = inspected;
+  const sibling = { name: "sibling", binaries: [{ path: "/usr/bin/curl" }] };
+  const beside = (endpoint: Record<string, unknown>) => ({
+    authored: { sibling: { ...sibling, endpoints: [endpoint] } },
+  });
+  // An inspected literal destination beside the Git rule passes the readback. Each refusal
+  // below therefore follows from its one change, not from the presence of a sibling.
+  assert.equal((await observeWith(beside(inspected)))?.credentialState, "bootstrap");
+  for (const [label, next] of Object.entries({
+    // Stock can relay SQL without inspecting the stream, so the route could carry Git.
+    "an SQL relay beside the Git rule": beside({ ...inspected, protocol: "sql" }),
+    "a sibling without an inspected protocol": beside(uninspected),
+    "a sibling that skips TLS termination": beside({
+      ...inspected,
+      tls: "NETWORK_TLS_MODE_SKIP",
+    }),
+    "a wildcard sibling host": beside({ ...inspected, host: "*.example.test" }),
+    "a second GitHub host": beside({ ...inspected, host: "uploads.github.com" }),
+    "a sibling pinned to an address": beside({ ...inspected, allowed_ips: ["192.0.2.1"] }),
+    "a sibling that admits uninspected credentials": beside({
+      ...inspected,
+      allow_uninspected_credentials: true,
+    }),
+    "an authored rule under a Provider layer name": {
+      authored: {
+        _provider_authored: { ...sibling, name: "_provider_authored", endpoints: [inspected] },
+      },
+    },
+    "an effective process identity that differs from the source": {
+      effective: { process: { run_as_user: "0", run_as_group: "0" } },
+    },
+    "a Gateway-global policy source": { config: { policy_source: 2 } },
+    "a Gateway-global policy version": { config: { global_policy_version: 1 } },
+    "an effective config of another policy version": { config: { version: 3 } },
+    "a source revision that is not the active one": { activeVersion: 3 },
+    "another effective policy hash": { config: { policy_hash: "other-policy-hash" } },
+    "another Provider environment revision": { config: { provider_env_revision: "119" } },
+    "another Provider attachment": { config: { provider_attachment_epoch: "other" } },
+    "a validation mode that does not fail closed": {
+      config: { policy_validation_failure_mode: "fail_open" },
+    },
+    "a replacement Sandbox under the same name": { sandboxId: "replacement-sandbox-id" },
+    "another network supervisor process": { networkProcess: "other-network" },
+    "an admission of another policy hash": { admission: { policy_hash: "other-policy-hash" } },
+  } satisfies Record<string, typeof departure>)) {
+    await t.test(`policy readback refuses ${label}`, async () => {
+      assert.equal(await observeWith(next), undefined);
+    });
+  }
+  // No refusal is retained: the unchanged ready state passes again.
+  assert.equal((await observeWith({}))?.credentialState, "bootstrap");
+});
 
 test("the Sandbox wire policy binds exact Git routes to an endpointless Provider", async (t) => {
   const scope = {

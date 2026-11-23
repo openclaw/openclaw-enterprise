@@ -1,4 +1,3 @@
-import { restWriteRegistration } from "./openshell-git-middleware.ts";
 import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
 import type { InstalledGitMaterial } from "../repo/github/access/prepared-repository-git.ts";
 import { createHash } from "node:crypto";
@@ -33,7 +32,6 @@ export interface OpenShellOnlineGitIdentity {
 
 /** The shared request binding, attributed to one authenticated sandbox binding. */
 export type OpenShellOnlineGitBinding = GitHubRequestBinding & {
-  readonly nativeGit?: true;
   readonly sandboxId: string;
   readonly bindingId: string;
   readonly workspace: string;
@@ -65,7 +63,6 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
     request: Use,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
-    nativeGit?: true,
   ) => Promise<RepositoryGitOnlineDecision>;
 };
 
@@ -137,21 +134,9 @@ export function createOpenShellOnlineGitAuthority(
   }
   return createOpenShellOnlineHttpAuthority({
     ...options,
-    additionalRegistrationName: restWriteRegistration(options.registrationName),
-    async authorize(request, signal, registrationName) {
-      const restWrite = registrationName !== options.registrationName;
-      if (
-        restWrite &&
-        (request.target.host !== "api.github.com" || request.target.method !== "POST")
-      ) {
-        return "deny";
-      }
+    async authorize(request, signal) {
       const { sandboxId, bindingId, requestId, workspace } = request;
-      if (
-        !restWrite &&
-        options.previewDenial &&
-        HARNESS_GIT_PROBE_PREFIX.test(request.target.path)
-      ) {
+      if (options.previewDenial && HARNESS_GIT_PROBE_PREFIX.test(request.target.path)) {
         return {
           reasonCode: options.previewDenial(request) ?? "preview_challenge_refused",
         };
@@ -185,11 +170,7 @@ export function createOpenShellOnlineGitAuthority(
       if (signal.aborted) {
         return deny("aborted");
       }
-      if (
-        !validBinding(binding, request) ||
-        (binding.nativeGit === true) !== restWrite ||
-        (restWrite && (binding.scope !== "github-repository" || !binding.scopedRestWrites))
-      ) {
+      if (!validBinding(binding, request)) {
         return deny("binding_mismatch");
       }
       const outcome = await decideGitHubRequest({
@@ -221,8 +202,7 @@ export function createOpenShellOnlineGitAuthority(
             .update(Buffer.from([0]))
             .update(request.body)
             .digest("hex"),
-        authorize: (q, installed, signal) =>
-          options.authorizeOnlineRequest(q, installed, signal, binding.nativeGit),
+        authorize: (q, installed, signal) => options.authorizeOnlineRequest(q, installed, signal),
       });
       if (outcome.kind === "allowed") {
         // The RPC owner checks this exact authority deadline at its final allow callback.

@@ -24,6 +24,7 @@ import {
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationStartError,
   BrowserAuthorizationError,
   IAMAccessBindingRoleError,
@@ -946,6 +947,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     }
     return result;
   }
+  if (error instanceof CredentialDeliveryFailedError) {
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
   if (isDependencyUnavailable(error)) {
     return dependencyUnavailable();
   }
@@ -1000,7 +1004,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof AgentPrincipalAuthorizationError) {
     // The Agent's own principal lacks the grant; the caller's denial is below. The text names a
     // stored resource only when the caller sent or may read it (finding 2592).
-    return failure(403, "FORBIDDEN", capped(agentPrincipalDenialMessage(error, denied?.requested)));
+    return failure(
+      403,
+      "FORBIDDEN",
+      capped(agentPrincipalDenialMessage(error, denied?.requested, denied?.agentPrincipalRecovery)),
+    );
   }
   if (error instanceof CallerStateDeniedError) {
     // Fixed text about the caller's own account, session or job, not about a grant.

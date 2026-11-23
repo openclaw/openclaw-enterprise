@@ -1,9 +1,3 @@
-import type { compileOpenShellBoundGitRule } from "../sandbox/openshell-git-network-policy.ts";
-import {
-  nativeRestMode,
-  openShellGitMiddleware,
-  restWriteRegistration,
-} from "./openshell-git-middleware.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -35,13 +29,12 @@ interface Selection {
   readonly sandbox: OpenShellSandboxResponse;
   readonly observed: OpenShellPreparedGitInstalled;
   readonly registration: string;
-  readonly bindingId?: string | undefined;
   readonly audience: string;
   readonly modelProvider: string;
   readonly runtimeProvider: string;
   readonly sourcePolicy: Readonly<Record<string, unknown>>;
   readonly gitRule: OpenShellExpectedProviderRule["rule"];
-  readonly boundGitRule?: ReturnType<typeof compileOpenShellBoundGitRule> | undefined;
+  readonly boundGitRule?: OpenShellExpectedProviderRule["rule"] | undefined;
   readonly execution: (
     sandbox: OpenShellSandboxResponse,
     signal: AbortSignal,
@@ -129,7 +122,6 @@ export async function previewPolicyAndRecipient({
   sandbox,
   observed: o,
   registration,
-  bindingId,
   audience,
   gitRule,
   boundGitRule,
@@ -210,31 +202,15 @@ export async function previewPolicyAndRecipient({
   ) {
     return;
   }
-  const filtered = native && nativeRestMode(boundGitRule) === "write";
-  const expectedRegistration = filtered ? restWriteRegistration(registration) : registration;
-  if (filtered) {
-    if (!bindingId) {
-      return;
-    }
-    const middlewares = wirePolicy(openShellGitMiddleware(registration, bindingId, true, "write"));
-    if (
-      ![sourcePolicy, policy].every((p) =>
-        isDeepStrictEqual(wirePolicy(p.network_middlewares), middlewares),
-      )
-    ) {
-      return;
-    }
-  }
   const services = c.supervisor_middleware_services;
   const selected = Array.isArray(services)
-    ? services.filter((s) => asRecord(s)?.name === expectedRegistration)
+    ? services.filter((s) => asRecord(s)?.name === registration)
     : [];
   const service = selected.length === 1 && asRecord(selected[0]);
   // Legacy observed-only registrations omit both fields. Absence proves no mandatory
   // support: strict grants never use it, and explicit/partial values cannot fall back.
   // The recipient fingerprint below fences changes after the registration is witnessed.
   const legacyObserved =
-    !filtered &&
     !mandatory &&
     service &&
     !Object.hasOwn(service, "binding_policy") &&
@@ -249,8 +225,8 @@ export async function previewPolicyAndRecipient({
       (![2, 3].includes(service.binding_policy as number) ||
         !Array.isArray(service.bindings) ||
         service.bindings.length !== 1 ||
-        service.bindings[0] !== (filtered ? 4 : 1))) ||
-    !isDeepStrictEqual(service.http_request_methods ?? [], filtered ? ["POST"] : []) ||
+        service.bindings[0] !== 1)) ||
+    service.name !== registration ||
     service.allow_insecure_transport ||
     timeout?.seconds !== "5" ||
     timeout.nanos ||

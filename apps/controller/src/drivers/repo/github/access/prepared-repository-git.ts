@@ -1,5 +1,6 @@
 import type { RepositoryGitCustody } from "../../../../composition/repository-credentials/custody-selection.ts";
 import type {
+  AgentRevision,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
@@ -99,6 +100,8 @@ function installationRecipient(proxy: Recipient) {
 
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
+const lockRepositoryGitIssuance = `SELECT FROM occ.agents WHERE (namespace_id,id) =
+  ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`;
 
 export interface PreparedRepositorySession {
   readonly standingApprovalId?: string;
@@ -365,6 +368,13 @@ type Policy = (session: PreparedRepositorySession) => PreparedRepositoryGitSourc
 /** A native revision's token state; `quarantined` is terminal for that revision. */
 export type PreparedRepositoryGitMaterialState = "ready" | "pending" | "quarantined";
 
+/** The durable broker identity for a native repository session. */
+export type NativeRepositoryWithdrawalSession = Readonly<{
+  admissionId: string;
+  sessionId: string;
+  generation: string;
+}>;
+
 /** An ended admission is withdrawn. Incomplete recipient or material evidence is unprepared. */
 export interface RepositoryGitMaterialAbsence {
   readonly absent: "withdrawn" | "unprepared";
@@ -407,8 +417,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       active: active(sessionQuery(proxy)),
       // Fence an issuance intent against a concurrently replaced active revision. After the
       // Agent lock is acquired, store() checks live authority at a new READ COMMITTED snapshot.
-      lockIssuance: `SELECT FROM occ.agents WHERE (namespace_id,id) =
-        ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`,
+      lockIssuance: lockRepositoryGitIssuance,
       adoption,
       owns: driver
         ? repositoryGitOwnerPredicate
@@ -486,6 +495,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       grant: source.grant,
     };
     return this.transaction(async (c) => {
+      if (!this.proxy) {
+        // Use a fresh snapshot after the Agent lock so a concurrent finite
+        // removal also fences publication of a native family for its session.
+        await c.query(lockRepositoryGitIssuance, [source]);
+      }
       await c.query(
         `INSERT INTO ${families}(source_id,source,issuer,admission)
         SELECT $1, $2::jsonb, '{"kind":"worker-mounted-github-app-key"}', $3::jsonb
@@ -548,6 +562,133 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return "quarantined";
     }
     return sessions.length > 0 && sessions.every(({ ready }) => ready) ? "ready" : "pending";
+  }
+
+  /** Observe every original finite native family after the Worker proves the removal fence. */
+  async observeNativeWithdrawal(
+    revision: Readonly<Pick<AgentRevision, "id" | "namespaceId" | "agentId">>,
+    sessions: readonly NativeRepositoryWithdrawalSession[],
+  ): Promise<"disposed" | "pending" | "unsafe"> {
+    if (this.proxy || sessions.length === 0) {
+      return "unsafe";
+    }
+    const requested = new Map(sessions.map((session) => [session.admissionId, session]));
+    if (requested.size !== sessions.length) {
+      return "unsafe";
+    }
+    const { rows } = await this.transaction((c) =>
+      c.query(
+        `WITH scoped_attempts AS (
+          SELECT * FROM occ.repository_session_attempts
+          WHERE (namespace_id,agent_id,revision_id)=($1,$2,$3)
+        )
+       SELECT s.admission_id AS "admissionId", b.session_id AS "sessionId",
+         b.generation::text AS generation,
+         (f.source->>'adoption'=$4 AND f.admission->>'issuerAuthority'=$5
+           AND nullif(f.source#>>'{grant,pushRef}','') LIKE 'refs/heads/_%'
+           AND (
+             (f.source#>>'{grant,profile}'='git-ref-write'
+               AND f.source#>'{grant,pullRequestBase}' IS NULL)
+             OR (f.source#>>'{grant,profile}'='git-ref-draft-pr'
+               AND nullif(f.source#>>'{grant,pullRequestBase}','') IS NOT NULL
+               AND f.source#>>'{grant,pushRef}' <> 'refs/heads/' || (f.source#>>'{grant,pullRequestBase}'))
+           )
+           AND f.source#>>'{grant,id}'=s.cleanup_context#>>'{binding,grant,grantId}'
+           AND f.admission->'grant'=f.source->'grant'
+           AND ${repositoryGitBrokerOwnerPredicate}
+           AND (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}',
+                f.source#>>'{session,installationId}')=(s.namespace_id,s.agent_id,i.id)
+           AND f.source #> '{session,driver}'=s.cleanup_context->'driver'
+           AND f.source #> '{session,binding}'=s.cleanup_context->'binding'
+           AND NOT EXISTS (SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
+             AND (a.admission->>'issuerAuthority' IS DISTINCT FROM $5
+               OR a.admission->'grant' IS DISTINCT FROM f.admission->'grant'))
+         ) IS TRUE AS "ownerMatches",
+         NOT f.enabled AND NOT EXISTS (
+           SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
+             AND NOT ${preparedAttemptSettled("a")}) AS settled,
+         NOT EXISTS (
+           SELECT FROM ${pulls} p
+           LEFT JOIN occ.prepared_repository_git_uses u ON u.exchange_id=p.receipt_id
+             AND u.admission_id=p.admission_id AND u.attempt_id=p.attempt_id
+             AND u.material_version=p.material_version
+             AND u.request_digest_sha256=p.request_digest_sha256
+             AND u.send_start_by=p.send_start_by AND u.operation='create-draft-pull'
+           WHERE p.admission_id=s.admission_id
+             AND (
+               f.source#>>'{grant,profile}' IS DISTINCT FROM 'git-ref-draft-pr'
+               OR u.exchange_id IS NULL
+               OR p.grant_id IS DISTINCT FROM f.source#>>'{grant,id}'
+               OR p.scope->>'operationId' IS DISTINCT FROM p.operation_id::text
+               OR p.scope->>'repository' IS DISTINCT FROM f.source#>>'{grant,repository}'
+               OR p.scope->>'repositoryId' IS DISTINCT FROM f.source#>>'{grant,repositoryId}'
+               OR ('refs/heads/' || (p.scope->>'head')) IS DISTINCT FROM f.source#>>'{grant,pushRef}'
+               OR p.scope->>'base' IS DISTINCT FROM f.source#>>'{grant,pullRequestBase}'
+               OR p.scope->>'apiOrigin' IS DISTINCT FROM split_part($5,'#',1)
+               OR p.send_start_by IS NULL OR p.settled_at IS NULL
+               OR p.outcome NOT IN ('created', 'not-submitted')
+             )
+         ) AND NOT EXISTS (
+           SELECT FROM occ.prepared_repository_git_uses u
+           LEFT JOIN ${pulls} p ON p.receipt_id=u.exchange_id
+             AND p.admission_id=u.admission_id
+           WHERE u.admission_id=s.admission_id AND u.operation='create-draft-pull'
+             AND p.receipt_id IS NULL
+         ) AS "draftSettled"
+       FROM scoped_attempts s
+       JOIN occ.repository_broker_receipts b USING(admission_id)
+       JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
+       CROSS JOIN occ.installation i
+       WHERE (SELECT count(*) FROM scoped_attempts)=$6
+         AND s.live_revision_id=$3 AND s.phase='disposed' AND s.broker_protocol=3
+         AND b.state='disposed' AND b.session_id=s.session_id AND b.generation IS NOT NULL
+         AND NOT EXISTS (
+           SELECT FROM ${families} extra
+           WHERE (extra.source#>>'{session,revisionId}'=$3
+             OR extra.source#>>'{grant,isolationId}'=$3
+             OR extra.source#>>'{session,admissionId}' IN (SELECT admission_id FROM scoped_attempts))
+           AND NOT EXISTS (SELECT FROM scoped_attempts recorded
+             WHERE extra.source_id='repository-git:' || recorded.admission_id)
+         )`,
+        [
+          revision.namespaceId,
+          revision.agentId,
+          revision.id,
+          legacyAdoption,
+          this.authority,
+          requested.size,
+        ],
+      ),
+    );
+    // Both native transports share the broker session and issuer token. Require their original
+    // prepared grant and account for draft uses before retaining the runtime. The removal
+    // fence prevents a later family or permit from filling a gap in this proof.
+    const observed = rows as {
+      admissionId: string;
+      sessionId: string;
+      generation: string;
+      ownerMatches: boolean;
+      settled: boolean;
+      draftSettled: boolean;
+    }[];
+    if (
+      observed.length !== requested.size ||
+      observed.some((row) => {
+        const session = requested.get(row.admissionId);
+        return (
+          row.ownerMatches !== true ||
+          !session ||
+          row.sessionId !== session.sessionId ||
+          row.generation !== session.generation
+        );
+      })
+    ) {
+      return "unsafe";
+    }
+    if (observed.some(({ settled }) => settled !== true)) {
+      return "pending";
+    }
+    return observed.every(({ draftSettled }) => draftSettled === true) ? "disposed" : "unsafe";
   }
 
   /** This port exists only on a selected Driver. It carries no issuer, connection or maintenance authority. */
@@ -615,7 +756,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           ),
       } satisfies RepositoryGitAuthority<Allow>);
     };
-    const native = delivery("network-policy", onlineAllow).githubRepository;
     return Object.freeze({
       recipients: this.recipients,
       ...delivery(null, sendPermit),
@@ -623,12 +763,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       ...(this.proxy.policy?.observedHook && {
         observedHook: delivery("request-hook-observed", onlineAllow).githubInstallation!,
         networkPolicy: {
-          readMaterial: native!.readMaterial,
-          authorizeRest: (q, installed, signal) =>
-            q.operation === "github-rest"
-              ? native!.authorize(q, installed, signal)
-              : Promise.resolve({ kind: "denied", reason: "unavailable" }),
-        } satisfies NonNullable<ProtectedRepositoryGitAuthority["networkPolicy"]>,
+          readMaterial: delivery("network-policy", onlineAllow).githubRepository!.readMaterial,
+        },
       }),
     });
   }

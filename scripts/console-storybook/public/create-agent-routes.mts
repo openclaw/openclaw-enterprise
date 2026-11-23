@@ -20,7 +20,7 @@ export type CreatedAgent = Pick<
   | "desiredRuntimeState"
   | "createdAt"
   | "servicePrincipalId"
-> & { activeRevisionId: string | null };
+> & { activeRevisionId?: string };
 
 type ProvisioningJob = Pick<AgentProvisioningStatusWire, "workId" | "status" | "url"> & {
   requestId: string;
@@ -74,6 +74,7 @@ function isCreateInput(value: unknown): value is {
   name: string;
   initialWorkspaceFiles?: unknown;
   workspaceDefaultsId?: unknown;
+  activeRevisionId?: unknown;
 } {
   return (
     value !== null &&
@@ -91,6 +92,7 @@ function createInput(body: unknown) {
   const {
     initialWorkspaceFiles = {},
     workspaceDefaultsId: _workspaceDefaultsId,
+    activeRevisionId: _activeRevisionId,
     ...agentBody
   } = body;
   if (!isWorkspaceFiles(initialWorkspaceFiles)) {
@@ -143,7 +145,6 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
         status: "active",
         desiredRuntimeState: "stopped",
         createdAt,
-        activeRevisionId: null,
         servicePrincipalId: "identity_demo_created",
       };
       saveAgent(saved);
@@ -206,7 +207,6 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
         status: "active",
         desiredRuntimeState: "running",
         createdAt,
-        activeRevisionId: null,
         servicePrincipalId: "identity_demo_provisioned",
         ...credentialProjection,
       };

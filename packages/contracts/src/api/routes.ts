@@ -22,6 +22,7 @@ import {
 } from "./model-providers.ts";
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
+import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -618,7 +619,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rename a connection template, or create a version with new approved values",
+    summary: "Rename a connection template or create a version with updated settings",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1218,7 +1219,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "List connection templates the caller may connect in this Namespace",
+    summary: "List connection templates available in this Namespace",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1386,6 +1387,23 @@ export const occApiRoutes = [
           },
         },
       },
+    },
+  },
+  {
+    operationId: "pushAgentCredentials",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/credentials/push",
+    action: "openclaw.agents.credentials.push",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Retry delivery for selected deployed Agent credential sources",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: Type.Ref("PushAgentCredentialsBody"),
+      response: { 200: PushAgentCredentialsResponse, ...createErrors },
     },
   },
   {

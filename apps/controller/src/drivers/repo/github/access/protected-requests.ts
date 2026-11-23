@@ -6,7 +6,6 @@ import type {
   RepositoryGitOnlineDecision,
 } from "@openclaw-enterprise/contracts";
 import { decodePushedBranchRef, normalizePushRefAllowlist } from "../../access/client-contracts.ts";
-import type { ScopedRepositoryRestWrites } from "../../access/delivery.ts";
 import type { InstalledGitMaterial } from "./prepared-repository-git.ts";
 import { selectGitHubRequest } from "./routes/request-selection.ts";
 
@@ -75,7 +74,6 @@ export type GitHubRequestBinding =
     })
   | (Identity & {
       readonly scope: "github-repository";
-      readonly scopedRestWrites?: ScopedRepositoryRestWrites;
       readonly installationId: string;
       readonly apiOrigin: string;
       readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
@@ -111,32 +109,6 @@ function validPushRefPolicy(pushRef: string): boolean {
   }
 }
 
-function validScopedRestWrites(
-  scope: unknown,
-  repositories: readonly Readonly<{ repository: string }>[],
-): boolean {
-  if (
-    !scope ||
-    typeof scope !== "object" ||
-    Array.isArray(scope) ||
-    Object.keys(scope).length !== 2 ||
-    !("pullRequestRepositories" in scope) ||
-    !("issueCreationRepositories" in scope) ||
-    !Object.hasOwn(scope, "pullRequestRepositories") ||
-    !Object.hasOwn(scope, "issueCreationRepositories") ||
-    !Array.isArray(repositories) ||
-    ![...repositories].every((entry) => typeof entry?.repository === "string")
-  ) {
-    return false;
-  }
-  const selected = new Set(repositories.map((entry) => entry?.repository));
-  const validList = (list: unknown) =>
-    Array.isArray(list) &&
-    new Set(list).size === list.length &&
-    [...list].every((repository) => typeof repository === "string" && selected.has(repository));
-  return validList(scope.pullRequestRepositories) && validList(scope.issueCreationRepositories);
-}
-
 /**
  * Validates identities and scope: Git-only bindings allow a terminal wildcard in the push ref,
  * bindings with a pull request base require a concrete push ref, and scope pins check no push ref.
@@ -152,10 +124,6 @@ export function validGitHubRequestBinding(binding: GitHubRequestBinding): boolea
       binding.installed?.preparationAttemptId,
       binding.installed?.materialVersion,
     ].every((id) => typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id)) &&
-    (!("scopedRestWrites" in binding) ||
-      (binding.scope === "github-repository" &&
-        Object.hasOwn(binding, "scopedRestWrites") &&
-        validScopedRestWrites(binding.scopedRestWrites, binding.repositories))) &&
     (binding.scope !== undefined
       ? /^[1-9][0-9]{0,15}$/.test(binding.installationId) &&
         binding.apiOrigin === "https://api.github.com" &&

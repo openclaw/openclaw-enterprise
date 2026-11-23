@@ -21,8 +21,8 @@ import { extractImageFile } from "../../scripts/lib/image-file.ts";
 import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.ts";
 import {
   scopedRestFixturePermissions,
+  scopedRestIssueWriteFixturePermissions,
   startSkipperPrivateGitOrigin,
-  scopedRestWriteFixturePermissions,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { startSyntheticEgressProvider } from "../fixtures/synthetic-egress-provider.mjs";
 import { availablePort } from "./available-port.ts";
@@ -251,7 +251,7 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, issueReads?: boolean, restWrites?: "v1" | "v2", readOnlyIssues?: boolean }} [options]
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, scopedRest?: "v1" | "v2" }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -260,9 +260,8 @@ export function createOpenShellGitInstallation(
     witnessIssuedGit = false,
     allowStandingApprovals = false,
     nativeGit = false,
-    issueReads = false,
-    restWrites,
-    readOnlyIssues = false,
+    networkAcl = false,
+    scopedRest,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -271,33 +270,25 @@ export function createOpenShellGitInstallation(
       witnessIssuedGit,
       allowStandingApprovals,
       nativeGit,
-      issueReads,
-      restWrites,
-      readOnlyIssues,
+      networkAcl,
+      scopedRest,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  {
-    onSetupStep,
-    witnessIssuedGit,
-    allowStandingApprovals,
-    nativeGit,
-    issueReads,
-    restWrites,
-    readOnlyIssues,
-  },
+  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, networkAcl, scopedRest },
 ) {
+  assert.ok(!(nativeGit && networkAcl), "Select one Git ACL credential fixture");
   assert.ok(
     !nativeGit || !allowStandingApprovals,
     "Native Git requires the finite selected-repository fixture",
   );
-  assert.ok(!restWrites || issueReads);
-  assert.ok(!readOnlyIssues || restWrites === "v2", "The Issues read control requires REST v2");
-  const issueWriteAuthority = Boolean(restWrites) && !readOnlyIssues;
-  assert.ok(!issueReads || nativeGit, "Issue reads require the native selected-repository fixture");
+  assert.ok(
+    !scopedRest || nativeGit,
+    "Scoped REST requires the native selected-repository fixture",
+  );
   if (nativeGit) {
     assert.equal(process.env.OPENAI_API_KEY, "fixture-only-no-model-call");
     assert.ok(process.env.OCC_TEST_OPENAI_MODEL, "Select the model used by the startup probe");
@@ -330,6 +321,15 @@ async function installOpenShellGit(
       "this fixture qualifies stock OpenShell",
     );
   }
+  onSetupStep?.("read stock Supervisor pin");
+  // Bind the chart from the installed CLI to the pinned stock Supervisor version.
+  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
+  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  const stockVersion = parent.match(
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:(\d+\.\d+\.\d+)@sha256:[a-f0-9]{64}$/,
+  )?.[1];
+  assert.ok(stockVersion, "expected a digest-pinned stock OpenShell supervisor image");
+  const expectedChart = `helm-chart-${stockVersion}.tgz`;
   const cleanup = [];
   const stackCleanup = [];
   const measurement = (event, data) => {
@@ -371,6 +371,16 @@ async function installOpenShellGit(
   assert.equal(state.containerEngine, "docker");
   assert.match(state.cluster, /^occ-dev-first-agent-[a-f0-9]{12}$/);
   assert.match(state.dockerHost, /^unix:\/\//);
+  const chartDirectory = join(stack.directory, "openshell/chart");
+  const charts = (await readdir(chartDirectory)).filter((name) =>
+    /^helm-chart-.*\.tgz$/.test(name),
+  );
+  assert.deepEqual(
+    charts,
+    [expectedChart],
+    "expected only the stock Gateway chart packaged by occ dev",
+  );
+  const chart = join(chartDirectory, expectedChart);
   const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   // The CI reporter retains only the closed identity/digest/counter projection
@@ -537,8 +547,11 @@ async function installOpenShellGit(
     host: bridge,
     advertisedHost: originHost,
     witnessIssuedGit: nativeGit || witnessIssuedGit,
-    ...(nativeGit && { networkAcl: "issued", repository: "fixture/a" }),
-    scopedRest: issueWriteAuthority ? "writes" : issueReads,
+    ...((nativeGit || networkAcl) && {
+      networkAcl: nativeGit ? "issued" : true,
+      repository: "fixture/a",
+    }),
+    scopedRest: scopedRest ?? false,
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -620,6 +633,8 @@ async function installOpenShellGit(
   };
   const repositoryScopes = nativeGit ? origin.network?.scopes : [originScope];
   assert.ok(repositoryScopes?.length);
+  const restPermissions =
+    scopedRest === "v2" ? scopedRestIssueWriteFixturePermissions : scopedRestFixturePermissions;
   const sessionDurationSeconds = 600;
   const registry = {
     version: 1,
@@ -632,18 +647,13 @@ async function installOpenShellGit(
     repositories: repositoryScopes.map((scope) => ({
       ...scope,
       namespaces: fixtureNamespaces.map((space) => {
-        const optedIn = issueReads && space.id === namespace.id;
+        const optedIn = scopedRest !== undefined && space.id === namespace.id;
         return {
           namespaceId: space.id,
           profiles: ["github-repository"],
-          permissions: optedIn
-            ? issueWriteAuthority
-              ? scopedRestWriteFixturePermissions
-              : scopedRestFixturePermissions
-            : { metadata: "read", contents: "write" },
+          permissions: optedIn ? restPermissions : { metadata: "read", contents: "write" },
           ...(nativeGit && { nativeGit: "v1" }),
-          ...(optedIn && { scopedRest: restWrites ?? "v1" }),
-          ...(optedIn && restWrites && { nativeRestWrites: true }),
+          ...(optedIn && { scopedRest }),
           ...(allowStandingApprovals && { allowStandingApproval: true }),
         };
       }),
@@ -926,13 +936,6 @@ async function installOpenShellGit(
   // Local Setup imported the stock platform image. Bind the selected containerd
   // manifest to the config of the independently digest-pinned stock image before
   // accepting either manifest- or config-form CRI image IDs.
-  onSetupStep?.("read stock Supervisor pin");
-  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
-  assert.match(
-    parent,
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/,
-  );
   onSetupStep?.("verify stock Supervisor import");
   const image = gatewayValues.supervisor.image;
   assert.equal(image.registry, "docker.io");
@@ -992,22 +995,18 @@ async function installOpenShellGit(
     ...gatewayValues.supervisor.network,
     additionalCaConfigMapName: destinationCa.metadata.name,
   };
-  const middleware = {
-    name: "oce-prepared-git",
-    grpc_endpoint: callbacks ? callbacks.endpoint : `https://${authorityHost}:8445`,
-    tls_ca_cert_path: "/etc/openshell-git-ca/ca.crt",
-    audience: "oce-prepared-git",
-    binding_policy: "allowlist",
-    bindings: ["http_request_pre_credentials"],
-    max_payload_bytes: 4194304,
-    timeout: "5s",
-  };
-  gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = restWrites
-    ? [
-        middleware,
-        { ...middleware, name: "oce-prepared-git-rest-writes", http_request_methods: ["POST"] },
-      ]
-    : [middleware];
+  gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
+    {
+      name: "oce-prepared-git",
+      grpc_endpoint: callbacks ? callbacks.endpoint : `https://${authorityHost}:8445`,
+      tls_ca_cert_path: "/etc/openshell-git-ca/ca.crt",
+      audience: "oce-prepared-git",
+      binding_policy: "allowlist",
+      bindings: ["http_request_pre_credentials"],
+      max_payload_bytes: 4194304,
+      timeout: "5s",
+    },
+  ];
   gatewayValues.server.extraVolumes = [
     ...(gatewayValues.server.extraVolumes ?? []),
     { name: "git-authority-ca", configMap: { name: "git-fixture-ca" } },
@@ -1018,12 +1017,6 @@ async function installOpenShellGit(
   ];
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const chartDirectory = join(stack.directory, "openshell/chart");
-  const charts = (await readdir(chartDirectory)).filter((name) =>
-    /^helm-chart-.*\.tgz$/.test(name),
-  );
-  assert.equal(charts.length, 1, "expected the Gateway chart packaged by occ dev");
-  const chart = join(chartDirectory, charts[0]);
   await command(
     "helm",
     [
@@ -1775,6 +1768,8 @@ async function installOpenShellGit(
     startupModelObservations: modelProvider?.observations,
     repositoryRef: origin.repositoryRef,
     origin,
+    sandboxImage: installation.drivers.compute.configuration.images.agent,
+    originBridge: bridge,
     kube,
     gatewayBackend,
     gatewayClient,
@@ -1944,8 +1939,8 @@ process.stdout.write(JSON.stringify(await inspectObserver(process.argv[1])));`,
   assert.equal(initial.disabled, false);
   let disabled = false;
   const observedAttempts = async (action) => {
-    if (action !== "read") {
-      disabled = action === "disable";
+    if (action === "disable") {
+      disabled = true;
     }
     const receipt = await inspect(action);
     assert.equal(receipt.generation, initial.generation, "Git callback observer restarted");
@@ -1955,7 +1950,6 @@ process.stdout.write(JSON.stringify(await inspectObserver(process.argv[1])));`,
   return {
     read: () => observedAttempts("read"),
     disable: () => observedAttempts("disable"),
-    resume: () => observedAttempts("resume"),
     endpoint: `https://${name}.${platform}.svc.cluster.local:${port}`,
   };
 }

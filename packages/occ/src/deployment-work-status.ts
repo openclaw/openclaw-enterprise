@@ -75,6 +75,10 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "Waiting for harness credential initialization to finish.";
       break;
+    case "CREDENTIAL_ACTIVATION_PENDING":
+      code = attempt.code;
+      message = "Waiting for this Agent revision's credential activation to complete.";
+      break;
     case "REPOSITORY_GIT_ROUTE_PENDING":
       // Fixed copy: never the repository, grant or the gateway's answer (finding 1045).
       code = attempt.code;
@@ -388,6 +392,10 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
+    case "SANDBOX_WORKLOAD_IMMUTABLE":
+      return "The requested workload differs from the retained Sandbox’s immutable settings. Ask an administrator to restore its original resource requests, limits and other workload settings, then deploy again.";
+    case "SANDBOX_RECREATION_REQUIRED":
+      return "The retained Sandbox uses an unsupported workload configuration. Preserve its files, create a replacement Agent and restore the files before deleting the original Agent.";
     case "SANDBOX_POD_LABELS_NOT_PERMITTED":
       return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":

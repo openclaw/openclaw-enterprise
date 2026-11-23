@@ -347,6 +347,7 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
       value === "POLICY_MIDDLEWARE_VALIDATION" ||
       value === "PVC_ADMISSION_LABELS" ||
       value === "CLASS_ADMISSION_LABELS" ||
+      value === "CALLER_DRIVER_CONFIG_DISABLED" ||
       value === "RESOURCE_METADATA_FORBIDDEN" ||
       value === "UNKNOWN"
       ? value
@@ -494,9 +495,12 @@ function sanitizedEvent(
     }
     if (key === "message") {
       // Only these events keep a message: operator prose ("Stop Agent; wait") as one line, left
-      // out when it resembles a credential.
+      // out when it resembles a credential. A closed OpenShell Git route can say why (its
+      // GitHub origin is one the route never reaches).
       const text =
-        typeof value === "string" && MESSAGE_EVENTS.has(eventName)
+        typeof value === "string" &&
+        (MESSAGE_EVENTS.has(eventName) ||
+          (eventName === "worker.error" && event.code === "OPENSHELL_GIT_RECONCILIATION_REQUIRED"))
           ? loggedErrorText(value)
           : undefined;
       if (text !== undefined && text !== WITHHELD_ERROR_TEXT) {

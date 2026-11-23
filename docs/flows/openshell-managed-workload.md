@@ -75,8 +75,12 @@ carries the logical directories and an empty `workspaceMounts` list.
 `ManagedOpenShellSandbox.harnessSpec` maps those directories to bootstrap paths
 and changes environment values with explicit directory bindings.
 `OpenShellSandboxDriver.harnessSpecForLayout` adds process, network and
-Provider settings. The image bootstrap prepares retained directories for
-dedicated OpenClaw in place of `prepareNativeWorkspace`.
+Provider settings. `sandboxLaunchSpec` encodes sizing in the `template.resources`
+protobuf Struct and omits `driver_config`. `canonicalSandboxSpec` normalizes resource
+Values; `immutableWorkload` and `comparableWorkload` retain sizing in replacement
+and readback checks. Missing or changed resources fail those checks.
+The image bootstrap prepares retained directories for dedicated OpenClaw
+in place of `prepareNativeWorkspace`.
 
 ### 2. Reconcile a stopped workload
 
@@ -86,7 +90,12 @@ ownership on readback. A retry can adopt a committed config after a lost
 response. A retry for the same revision may renew its setup envelope.
 
 `reconcileHarness` verifies Namespace and Agent ownership and requires a
-confirmed stop for replacement. It rejects resource changes.
+confirmed stop for replacement. A difference in `immutableWorkload`, including
+sizing, raises `SANDBOX_WORKLOAD_IMMUTABLE` before update or start.
+Before replacing runtime Provider material or reconciling the owned Sandbox,
+`requireManagedTemplate` refuses the old caller-config layout. The worker treats
+`SandboxRevisionUnsupportedError` as permanent. See
+[recovery before upgrade](../reference/drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 `reconcilePolicy` reads the latest policy separately from the creation
 specification and checks static policy and non-Git middleware.
 For changed attachments, it clears base rules while stopped.
@@ -111,13 +120,15 @@ identity across two reads. Git verifies Provider receipts, network and superviso
 identities against [OpenShell execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
 The launch fingerprint excludes OpenShell-internal annotations.
 
-For a deployment-scoped Git grant (execution version 8), the Sandbox binds each
+For a deployment-scoped Git grant (protected execution version 9), the Sandbox binds each
 repository route to one attached Provider. Its profile supplies credentials and
 contributes zero endpoints. The Worker compares the loaded policy with the
 authored rules, the sibling Providers and the current supervisor generation.
 It binds the held launcher to that observation before selecting the finite
 credential and checks the recipient again before rotation and release. OpenShell
 authorizes Git locally. Replacing the launcher requires a new revision.
+Standalone managed credentials retain execution version 8 and use a separate
+activation path. Each revision can admit only one of these delivery modes.
 
 For an online grant after a restart, `observeHeldPreview` requires a fresh authenticated denial before
 `releasePreview` acknowledges the launcher. The original worker records release
@@ -235,6 +246,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Changelog
 
 - 2026-11-21 08:42: Require a current Workspace binding for the Gateway acknowledgment. (authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429 - 785f76cca5bf3e6fa2f836c86389016dbc6f31db)
+
+- 2026-11-20 08:09: Serialize template resources; preserve replacement checks on current main. (01a1f50f-138b-756e-be12-ada2880622e2 - 6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a)
 
 - 2026-11-19 22:19: Condense the managed workload trace. (authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268 - 0173500d9e950c1722fb6738af08f9857e44be3d)
 

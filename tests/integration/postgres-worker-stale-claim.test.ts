@@ -40,6 +40,7 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { waitFor } from "../helpers/wait-for.ts";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { observePluginTerminalRow } from "./postgres-worker-agent-revision-plugin-cases.ts";
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 
@@ -987,11 +988,7 @@ test(
     await worker.start();
 
     const terminal = await waitFor("recovered worker successful plugin warning", async () => {
-      const rows = await observerPool.query<WorkResultRow>(
-        `SELECT state, reason_code, result_data
-         FROM occ.controller_work WHERE idempotency_key = $1`,
-        [idempotencyKey],
-      );
+      const rows = await observePluginTerminalRow(observerPool, idempotencyKey);
       return rows.rows[0]?.state === "succeeded" ? rows.rows[0] : undefined;
     });
     assert.deepEqual(terminal, {

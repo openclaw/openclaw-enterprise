@@ -741,11 +741,6 @@ test("repository API credential issuance is refused while ordinary collaboration
     { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
   ];
   let scope = "github-repository";
-  let restBinding = {};
-  let registration = "online-git";
-  const writes = (pullRequestRepositories = [], issueCreationRepositories = []) => ({
-    scopedRestWrites: { pullRequestRepositories, issueCreationRepositories },
-  });
   const { client, keys } = await openShellOnlineGitWire(t, {
     budgetMs: 3000,
     lookupBinding: async () =>
@@ -754,7 +749,6 @@ test("repository API credential issuance is refused while ordinary collaboration
         : {
             ...binding,
             scope,
-            ...restBinding,
             installationId: "71",
             apiOrigin: "https://api.github.com",
             repositories,
@@ -784,208 +778,16 @@ test("repository API credential issuance is refused while ordinary collaboration
   });
   const send = (input) =>
     invoke(client, "EvaluateHttpRequest", input, token(keys, "supervisor", binding.sandboxId));
-  const evaluate = async (path, method = "POST", body, query = "") => {
+  const evaluate = async (path, method = "POST", body) => {
     const input = request(
       path,
       method,
       body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body)),
       body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
     );
-    input.middleware_name = registration;
-    input.target.query = query;
     input.target.host = "api.github.com";
     return send(input);
   };
-  await t.test("filtered registration is exclusive to native API writes", async (t) => {
-    t.after(() => {
-      registration = "online-git";
-      restBinding = {};
-    });
-    const path = "/repos/" + binding.repository + "/pulls";
-    const pull = { title: "Fix", head: "topic", base: "main" };
-    const create = (query = "") => evaluate(path, "POST", pull, query);
-    const before = approvals;
-    registration = "online-git-rest-writes";
-    assert.equal((await create()).decision, 2, "ordinary grant on filtered registration");
-    restBinding = { nativeGit: true };
-    assert.equal((await create()).decision, 2, "missing write authority");
-    restBinding = { nativeGit: true, ...writes([binding.repository]) };
-    for (const query of ["head_repo=other", "issue=3"]) {
-      const result = await create(query);
-      assert.equal(result.decision, 2, query);
-      assert.equal(result.reason_code, "request_not_allowed", query);
-      assert.equal(approvals, before, "POST query must be refused before owner authorization");
-    }
-    assert.equal((await evaluate(path, "GET")).decision, 2);
-    assert.equal((await evaluate(path, "POST", { ...pull, head: "fork:topic" })).decision, 2);
-    const git = pushRequest();
-    git.middleware_name = registration;
-    assert.equal((await send(git)).decision, 2);
-    assert.equal(approvals, before);
-    assert.equal((await create()).decision, 1);
-    registration = "online-git";
-    assert.equal((await create()).decision, 2, "native write on ordinary registration");
-    assert.equal(approvals, before + 1);
-  });
-  await t.test(
-    "scoped pull creation requires unqualified branches before consulting the owner",
-    async () => {
-      const path = "/repos/" + binding.repository + "/pulls";
-      const pull = { title: "Fix", head: "topic/fix", base: "main" };
-      const fork = { ...pull, head: "other:fix" };
-      const create = (body) => evaluate(path, "POST", body);
-      assert.equal((await create(fork)).decision, 1, "ordinary selected scope");
-      restBinding = writes([binding.repository]);
-      for (const draft of [undefined, false, true]) {
-        assert.equal((await create({ ...pull, draft })).decision, 1);
-      }
-      const before = approvals;
-      for (const body of [
-        undefined,
-        {},
-        fork,
-        { ...pull, base: undefined },
-        { ...pull, base: "other:main" },
-        { ...pull, head: "other%3Afix" },
-        { ...pull, base: "other%3amain" },
-        { ...pull, head: "other%253Afix" },
-        { ...pull, head_repo: "other" },
-        { ...pull, issue: 3 },
-      ]) {
-        assert.equal((await create(body)).reason_code, "request_not_allowed");
-      }
-      assert.equal(approvals, before);
-      restBinding = {};
-    },
-  );
-  await t.test(
-    "filtered issue creation rejects query fields before owner authorization",
-    async (t) => {
-      t.after(() => {
-        registration = "online-git";
-        restBinding = {};
-      });
-      registration = "online-git-rest-writes";
-      restBinding = { nativeGit: true, ...writes([], [binding.repository]) };
-      const path = "/repos/" + binding.repository + "/issues";
-      const issue = { title: "Fix", body: "Reproduction" };
-      const create = (query = "") => evaluate(path, "POST", issue, query);
-      const before = approvals;
-      for (const query of ["head_repo=other", "issue=3", "labels=admin", "assignee=other"]) {
-        const result = await create(query);
-        assert.equal(result.decision, 2, query);
-        assert.equal(result.reason_code, "request_not_allowed", query);
-        assert.equal(approvals, before);
-      }
-      assert.equal((await create()).decision, 1);
-      assert.equal(approvals, before + 1);
-    },
-  );
-  await t.test(
-    "scoped issue creation binds the exact collection and payload before approval",
-    async (t) => {
-      t.after(() => {
-        restBinding = {};
-        current = true;
-      });
-      const root = `/repos/${binding.repository}`;
-      const issues = `${root}/issues`;
-      const pulls = `${root}/pulls`;
-      const other = `/repos/${repositories[1].repository}/issues`;
-      const issue = { title: "Investigate a regression" };
-      const pull = { title: "Fix", head: "topic/fix", base: "main" };
-      const create = (body) => evaluate(issues, "POST", body);
-      const refused = async (path, method, body) => {
-        const before = approvals;
-        const result = await evaluate(path, method, body);
-        assert.equal(result.reason_code, "request_not_allowed", `${method} ${path}`);
-        assert.equal(approvals, before, `${method} ${path} reached the owner`);
-      };
-
-      const labeled = { ...issue, labels: ["bug"] };
-      assert.equal((await create(labeled)).decision, 1, "ordinary selected scope");
-      restBinding = writes([binding.repository]);
-      await refused(issues, "POST", issue);
-      await refused(issues, "POST", pull);
-
-      restBinding = writes([], [binding.repository]);
-      await refused(pulls, "POST", pull);
-      for (const body of [issue, { ...issue, body: "Details" }, { ...issue, body: "" }]) {
-        const before = approvals;
-        assert.equal((await create(body)).decision, 1);
-        assert.equal(approvals, before + 1);
-      }
-      assert.equal((await evaluate(other, "GET")).decision, 1);
-      restBinding = writes([binding.repository], [binding.repository]);
-      assert.equal((await evaluate(pulls, "POST", pull)).decision, 1);
-      for (const body of [
-        undefined,
-        null,
-        [],
-        {},
-        { body: "Missing title" },
-        { title: "" },
-        { title: "  " },
-        { title: 42 },
-        { ...issue, body: null },
-        labeled,
-        pull,
-      ]) {
-        await refused(issues, "POST", body);
-      }
-      for (const raw of ['{"title":', '{"title":"one","title":"two"}']) {
-        const input = request(issues, "POST", Buffer.from(raw), [
-          { name: "content-type", value: "application/json" },
-        ]);
-        input.target.host = "api.github.com";
-        const before = approvals;
-        assert.equal((await send(input)).reason_code, "request_not_allowed");
-        assert.equal(approvals, before);
-      }
-      await refused(other, "POST", issue);
-      await refused(other, "POST", pull);
-      await refused("/repos/unselected/project/issues", "POST", issue);
-      await refused(issues, "PUT", issue);
-      await refused(`${issues}/42`, "PATCH", issue);
-      await refused(`${issues}/42/comments`, "POST", pull);
-      await refused("/graphql", "POST", { query: "{ viewer { login } }" });
-      await refused(pulls, "POST", issue);
-      await refused(pulls, "POST", { ...pull, head: "fork:fix" });
-      await refused(pulls, "POST", { ...pull, issue: 42 });
-
-      current = false;
-      const before = approvals;
-      assert.equal((await create(issue)).reason_code, "access_withdrawn");
-      assert.equal(approvals, before + 1);
-    },
-  );
-  await t.test(
-    "an empty or malformed scoped write binding cannot fall back to legacy writes",
-    async (t) => {
-      t.after(() => {
-        restBinding = {};
-      });
-      const path = `/repos/${binding.repository}/pulls`;
-      const body = { title: "Fix", head: "topic/fix", base: "main" };
-      const before = approvals;
-      for (const scope of [
-        { pullRequestRepositories: [], issueCreationRepositories: [] },
-        undefined,
-        null,
-        { issueCreationRepositories: [] },
-        { pullRequestRepositories: binding.repository, issueCreationRepositories: [] },
-        { pullRequestRepositories: ["unselected/repository"], issueCreationRepositories: [] },
-        {
-          pullRequestRepositories: [binding.repository, binding.repository],
-          issueCreationRepositories: [],
-        },
-      ]) {
-        restBinding = { scopedRestWrites: scope };
-        assert.equal((await evaluate(path, "POST", body)).decision, 2);
-      }
-      assert.equal(approvals, before);
-    },
-  );
   await t.test("gh authentication discovery uses the current API grant", async () => {
     // gh auth status reads the API root after its viewer query. Refusing this discovery
     // incorrectly reports a valid installation token as invalid and prevents later commands.

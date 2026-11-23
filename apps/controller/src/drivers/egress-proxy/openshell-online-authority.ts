@@ -1,4 +1,3 @@
-import { onlineRequestImplementation } from "./openshell-git-middleware.ts";
 import { isIP } from "node:net";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
@@ -58,7 +57,6 @@ export interface OpenShellOnlineHttpAuthorityOptions {
     "issuer" | "audience" | "keyId" | "publicKey"
   >;
   readonly registrationName: string;
-  readonly additionalRegistrationName?: string;
   /**
    * Resolve exactly one current execution and admitted binding from the signed sandbox ID and
    * opaque binding ID, then check current source, grant, method and path authority. The signed
@@ -74,7 +72,6 @@ export interface OpenShellOnlineHttpAuthorityOptions {
   readonly authorize: (
     request: OpenShellOnlineHttpRequest,
     signal: AbortSignal,
-    registrationName: string,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
   /** Advertise a pinned REST-only policy set. Each binding must name a release in that set. */
@@ -248,9 +245,6 @@ export function createOpenShellOnlineHttpAuthority(
       identity.sub === options.identity.issuer &&
       identity.sandbox_id === undefined) ||
     supervisor(identity) !== undefined;
-  const acceptsRegistration = (name: unknown): name is string =>
-    typeof name === "string" &&
-    (name === options.registrationName || name === options.additionalRegistrationName);
   const acceptedBinding = (config: unknown) => {
     const profile = options.httpPolicySet;
     const id = bindingId(config, profile !== undefined);
@@ -264,6 +258,9 @@ export function createOpenShellOnlineHttpAuthority(
   };
   let pending = 0;
   const sandboxPending = new Map<string, number>();
+  // Waiting for a WebSocket frame must never consume HTTP authorization slots.
+  let pendingPreflights = 0;
+  const sandboxPreflights = new Map<string, number>();
   server.addService(service.SupervisorMiddleware!.service, {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       const description =
@@ -271,7 +268,7 @@ export function createOpenShellOnlineHttpAuthority(
         describeOpenShellMiddleware(
           call.request.gateway,
           options.identity.audience,
-          onlineRequestImplementation,
+          "online-request-authorization",
           options.httpPolicySet,
         );
       if (description) {
@@ -284,22 +281,89 @@ export function createOpenShellOnlineHttpAuthority(
       callback(null, {
         valid:
           control(claims(call)) &&
-          acceptsRegistration(call.request.middleware_name) &&
+          call.request.middleware_name === options.registrationName &&
           acceptedBinding(call.request.config),
       });
     },
     ...(options.httpPolicySet !== undefined && {
       EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
+        const startedAt = performance.now();
+        const expiresAt = startedAt + Math.min(budgetMs, Number(call.getDeadline()) - Date.now());
+        const expired = () => !(performance.now() < expiresAt);
         const sandboxId = supervisor(claims(call));
-        call.once("data", (event: Wire) => {
-          const preflight = record(event.preflight);
-          if (!sandboxId || record(preflight.context).sandbox_id !== sandboxId) {
-            call.emit("error", { code: status.PERMISSION_DENIED, message: "Supervisor required." });
-            return;
-          }
+        const denyUpgrade = () => {
           call.write({ preflight_decision: { action: 3, reason_code: "http_only" } });
           call.end();
-        });
+        };
+        const refuseIdentity = () =>
+          call.emit("error", {
+            code: status.PERMISSION_DENIED,
+            message: "Supervisor required.",
+          });
+
+        if (call.cancelled) {
+          return;
+        }
+        if (!sandboxId) {
+          refuseIdentity();
+          return;
+        }
+        const held = sandboxPreflights.get(sandboxId) ?? 0;
+        if (
+          expired() ||
+          pendingPreflights >= pendingDecisionCapacity ||
+          held >= pendingDecisionSandboxShare
+        ) {
+          denyUpgrade();
+          return;
+        }
+
+        pendingPreflights += 1;
+        sandboxPreflights.set(sandboxId, held + 1);
+        let settled = false;
+        const release = () => {
+          if (settled) {
+            return false;
+          }
+          settled = true;
+          clearTimeout(timer);
+          pendingPreflights -= 1;
+          const remaining = sandboxPreflights.get(sandboxId)! - 1;
+          if (remaining === 0) {
+            sandboxPreflights.delete(sandboxId);
+          } else {
+            sandboxPreflights.set(sandboxId, remaining);
+          }
+          call.removeListener("cancelled", release);
+          call.removeListener("error", release);
+          call.removeListener("data", onData);
+          return true;
+        };
+        const onData = (event: Wire) => {
+          if (!release() || call.cancelled) {
+            return;
+          }
+          // A delayed timer cannot make an expired frame an identity failure.
+          if (!expired() && record(record(event.preflight).context).sandbox_id !== sandboxId) {
+            refuseIdentity();
+            return;
+          }
+          denyUpgrade();
+        };
+        const timer = setTimeout(
+          () => {
+            if (release() && !call.cancelled) {
+              denyUpgrade();
+            }
+          },
+          Math.max(0, Math.ceil(expiresAt - performance.now())),
+        );
+        call.once("cancelled", release);
+        call.once("error", release);
+        call.once("data", onData);
+        if (call.cancelled) {
+          release();
+        }
       },
     }),
     EvaluateHttpRequest(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
@@ -308,7 +372,6 @@ export function createOpenShellOnlineHttpAuthority(
       const expiresAt = startedAt + Math.min(budgetMs, Number(call.getDeadline()) - Date.now());
       const expired = () => !(performance.now() < expiresAt);
       const sandboxId = supervisor(claims(call));
-      const registrationName = call.request.middleware_name;
       const request =
         sandboxId &&
         !expired() &&
@@ -321,7 +384,7 @@ export function createOpenShellOnlineHttpAuthority(
       if (
         !sandboxId ||
         !request ||
-        !acceptsRegistration(registrationName) ||
+        call.request.middleware_name !== options.registrationName ||
         (options.httpPolicySet !== undefined && !acceptedBinding(call.request.config)) ||
         pending >= pendingDecisionCapacity ||
         (sandboxPending.get(sandboxId) ?? 0) >= pendingDecisionSandboxShare ||
@@ -348,7 +411,7 @@ export function createOpenShellOnlineHttpAuthority(
         .then(() =>
           controller.signal.aborted || expired()
             ? "deny"
-            : options.authorize(request, controller.signal, registrationName),
+            : options.authorize(request, controller.signal),
         )
         .finally(() => {
           pending -= 1;

@@ -1,9 +1,3 @@
-import {
-  nativeRestMode,
-  onlineRequestImplementation,
-  openShellGitMiddleware,
-  restWriteRegistration,
-} from "./openshell-git-middleware.ts";
 import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
 import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -35,11 +29,10 @@ import {
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
-import {
-  repositoryGitRestOperations,
-  type ScopedRepositoryRestWrites,
-  type RepositoryGitDeliveryResolver,
-  type RepositoryGitDeliveryBinding,
+import { openShellGitOriginRefusal } from "../sandbox/openshell-git-network-policy.ts";
+import type {
+  RepositoryGitDeliveryResolver,
+  RepositoryGitDeliveryBinding,
 } from "../repo/access/delivery.ts";
 import {
   subtractExpiredOpenShellGit,
@@ -154,25 +147,10 @@ export function protectedOpenShellGitOwner(
               : authority.online;
       return route?.revisionId === revisionId ? owner?.readMaterial(route, signal) : undefined;
     },
-    authorizeOnlineRequest: async (request, installed, signal, networkPolicyRest) => {
+    authorizeOnlineRequest: async (request, installed, signal) => {
       const { route } = installed;
       if (!route) {
         return { kind: "denied", reason: "unavailable" };
-      }
-      if (networkPolicyRest) {
-        if (
-          !("scope" in request) ||
-          request.scope !== "github-repository" ||
-          request.operation !== "github-rest"
-        ) {
-          return { kind: "denied", reason: "unavailable" };
-        }
-        return (
-          authority.networkPolicy?.authorizeRest?.(request, { ...installed, route }, signal) ?? {
-            kind: "denied",
-            reason: "unavailable",
-          }
-        );
       }
       if ("scope" in request && request.scope === "github-repository") {
         return (
@@ -248,33 +226,6 @@ export function openShellGitRouteReadiness(
 type OpenShellGitScope = RepositoryGitDeliveryBinding & {
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
 };
-
-function scopedRestWrites(
-  { delivery, repositoryNetworkPolicy }: OpenShellGitScope,
-  repositories: ProtectedGitHubRepositoryMaterial["repositories"],
-): ScopedRepositoryRestWrites {
-  const pullRequestRepositories: string[] = [];
-  const issueCreationRepositories: string[] = [];
-  if (repositoryNetworkPolicy === undefined || !("scope" in delivery)) {
-    return { pullRequestRepositories, issueCreationRepositories };
-  }
-  const selected = new Set(repositories.map(({ repository }) => repository));
-  for (const operation of repositoryGitRestOperations(
-    repositoryNetworkPolicy,
-    delivery.scopedRest,
-  )) {
-    if (!selected.has(operation.repository)) {
-      continue;
-    }
-    if (operation.createPullRequests && delivery.permissions.pull_requests === "write") {
-      pullRequestRepositories.push(operation.repository);
-    }
-    if (operation.createIssues && delivery.permissions.issues === "write") {
-      issueCreationRepositories.push(operation.repository);
-    }
-  }
-  return { pullRequestRepositories, issueCreationRepositories };
-}
 
 interface Entry extends OpenShellGitObservationEntry {
   readonly preview: ObservedHookPreview;
@@ -358,6 +309,9 @@ const RELEASE_INTERVAL_CAP_MS = 60_000;
 /** The store closed the route at this worker's fence: another worker withdrew the revision or
  * expired its access, and the row already says why (finding 2218). */
 class OpenShellGitRouteClosedError extends OpenShellGitRouteError {}
+/** The prepared material is for a GitHub origin the OpenShell Git rules never reach; the worker
+ * log carries the message, which names the origin and the fix. */
+class OpenShellGitOriginRefusedError extends OpenShellGitRouteError {}
 
 export class OpenShellGitRouteBlockedError extends Error {
   readonly reason: OpenShellGitRouteBlockReason;
@@ -517,7 +471,8 @@ export class OpenShellGitRuntime {
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
     const native =
-      revision.executionAdmission?.version === 8 &&
+      revision.executionAdmission?.version === 9 &&
+      revision.executionAdmission.mode === "protected" &&
       revision.egressPlan?.repositoryGitAuthorization === "network-policy";
     if (
       !state ||
@@ -813,11 +768,10 @@ export class OpenShellGitRuntime {
           });
           throw new Error("OpenShell Git requires a new revision after worker restart.");
         }
-        const gateway = await read(() => this.gateway(client, workspace, signal), signal);
         const provider = gitProvider(
           client,
           workspace,
-          gateway.workspaceId,
+          await read(() => this.gateway(client, workspace, signal), signal),
           sandbox,
           revision.id,
           scope,
@@ -828,14 +782,6 @@ export class OpenShellGitRuntime {
           retainedSandbox ? true : undefined,
           workspaceRoute,
         );
-        if (
-          !gateway.validatorRegistered &&
-          nativeRestMode(provider.boundNetworkRule()) === "write"
-        ) {
-          throw new Error(
-            "OpenShell native REST writes require the registered OCE POST validator.",
-          );
-        }
         const bindingId = admittedExecutionId;
         const route = {
           revisionId: revision.id,
@@ -935,6 +881,10 @@ export class OpenShellGitRuntime {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
     const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
+    // The Sandbox Driver and the Credential Proxy derive the same answer from this rule.
+    const scopedRoutes =
+      entry.preview.native &&
+      entry.provider.boundNetworkRule()?.endpoints.some(({ host }) => host === "api.github.com");
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
@@ -984,40 +934,37 @@ export class OpenShellGitRuntime {
         this.configuration.registrationName,
         entry.bindingId,
         entry.preview.native,
-        entry.preview.native ? nativeRestMode(entry.provider.boundNetworkRule()) : undefined,
+        scopedRoutes,
       ),
     };
   }
 
   /** The gateway this route runs through: the middleware is registered and the workspace
-   * has an identity. GetSandboxConfig proves the required method filter later. */
-  private async gateway(client: OpenShellGatewayClient, workspace: string, signal: AbortSignal) {
+   * has an identity. Answers the workspace id. */
+  private async gateway(
+    client: OpenShellGatewayClient,
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<string> {
     const info = await client.getGatewayInfo?.(signal);
-    const registered = (name: string, expectedImplementation?: string) =>
-      Array.isArray(info?.extensions) &&
-      info.extensions.some((value) => {
-        const extension = asRecord(value);
+    if (
+      !Array.isArray(info?.extensions) ||
+      !info.extensions.some((value) => {
+        const extension = value as Record<string, unknown>;
         return (
-          extension?.configured_name === name &&
+          extension.configured_name === this.configuration.registrationName &&
           [4, "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE"].includes(extension.kind as string | number) &&
-          extension.protocol_major === 1 &&
-          (!expectedImplementation || extension.implementation_name === expectedImplementation)
+          extension.protocol_major === 1
         );
-      });
-    if (!registered(this.configuration.registrationName)) {
+      })
+    ) {
       throw new Error("OpenShell Git middleware is not registered with the selected gateway.");
     }
     const ws = await client.getWorkspace(workspace, signal);
     if (!ws?.id) {
       throw new Error("OpenShell Git workspace identity is unavailable.");
     }
-    return {
-      workspaceId: ws.id,
-      validatorRegistered: registered(
-        restWriteRegistration(this.configuration.registrationName),
-        `oce/${onlineRequestImplementation}`,
-      ),
-    };
+    return ws.id;
   }
 
   /** The route as this worker now holds it, written when it differs from the last write.
@@ -1477,7 +1424,6 @@ export class OpenShellGitRuntime {
       registration: this.configuration.registrationName,
       audience: this.configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
-      bindingId: entry.revision.egressPlan?.execution.executionId,
       boundGitRule: entry.preview.native ? entry.provider.boundNetworkRule() : undefined,
       modelProvider: entry.continuity.model,
       runtimeProvider: entry.continuity.runtime,
@@ -1891,7 +1837,12 @@ export class OpenShellGitRuntime {
 
   /** Closes the route for good and reports why; the entry is a tombstone from here on, in
    * this process and, unless another worker holds the route now, in the store. */
-  private block(entry: Entry, reason: OpenShellGitRouteBlockReason, reported = false): void {
+  private block(
+    entry: Entry,
+    reason: OpenShellGitRouteBlockReason,
+    reported = false,
+    message?: string,
+  ): void {
     if (entry.blocked) {
       return;
     }
@@ -1932,6 +1883,7 @@ export class OpenShellGitRuntime {
       event: "worker.error",
       code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
       reason,
+      ...(message !== undefined && { message }),
       ...this.identity(entry),
     });
   }
@@ -1988,7 +1940,12 @@ export class OpenShellGitRuntime {
     }
     let failure: OpenShellGitObservationFailure | undefined;
     if (error instanceof OpenShellGitRouteError) {
-      this.block(entry, error.reason, error instanceof OpenShellGitRouteClosedError);
+      this.block(
+        entry,
+        error.reason,
+        error instanceof OpenShellGitRouteClosedError,
+        error instanceof OpenShellGitOriginRefusedError ? error.message : undefined,
+      );
       return;
     }
     if (error instanceof OpenShellPreparedGitProviderError) {
@@ -2120,6 +2077,10 @@ export class OpenShellGitRuntime {
         );
       }
       const { binding, repository } = scope;
+      const unsupportedOrigin = openShellGitOriginRefusal(material.apiOrigin);
+      if (unsupportedOrigin) {
+        throw new OpenShellGitOriginRefusedError("material_mismatch", unsupportedOrigin);
+      }
       if (
         !isDeepStrictEqual(scope, entry.authorization) ||
         ("scope" in material
@@ -2137,8 +2098,7 @@ export class OpenShellGitRuntime {
             material.pushRef !== repository.pushRef ||
             material.pullRequestBase !== repository.pullRequestBase) ||
         material.providerInstanceId !== binding.grant.providerInstanceId ||
-        material.grantId !== binding.grant.grantId ||
-        material.apiOrigin !== "https://api.github.com"
+        material.grantId !== binding.grant.grantId
       ) {
         throw new OpenShellGitRouteError(
           "material_mismatch",
@@ -2383,7 +2343,7 @@ export class OpenShellGitRuntime {
         reason = "route_pending";
         break;
       }
-      if (entry.preview.native && nativeRestMode(entry.provider.boundNetworkRule()) !== "write") {
+      if (entry.preview.native) {
         reason = "route_pending";
         break;
       }
@@ -2459,7 +2419,7 @@ export class OpenShellGitRuntime {
         }
         return {
           sandboxId: identity.sandboxId,
-          ...(entry.preview.native && { nativeGit: true as const }),
+
           bindingId: identity.bindingId,
           workspace: identity.workspace,
           executionId: entry.revision.id,
@@ -2470,16 +2430,7 @@ export class OpenShellGitRuntime {
             ? {
                 installationId: material.installationId,
                 ...(material.scope === "github-repository"
-                  ? {
-                      scope: material.scope,
-                      repositories: material.repositories,
-                      ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
-                        scopedRestWrites: scopedRestWrites(
-                          entry.authorization,
-                          material.repositories,
-                        ),
-                      }),
-                    }
+                  ? { scope: material.scope, repositories: material.repositories }
                   : { scope: material.scope }),
               }
             : {
@@ -2718,6 +2669,32 @@ export function openShellRepositoryAccess(
       // The supervisor reload closes the node connection. Allow the Gateway to see the disconnect.
       const installed = git.materialInstalledAt(id);
       return installed === undefined ? undefined : installed + 2_000;
+    },
+  };
+}
+
+/** One policy definition, compared again by the Credential Proxy at Compute release. */
+export function openShellGitMiddleware(
+  registrationName: string,
+  bindingId: string,
+  native = false,
+  scopedRoutes = false,
+) {
+  return {
+    "oce-prepared-git": {
+      name: "oce-prepared-git",
+      middleware: registrationName,
+      config: { fields: { binding_id: { stringValue: bindingId } } },
+      on_error: "fail_closed",
+      order: 2147483647,
+      // Recipient verification pins the registered service. Stock selects middleware by host,
+      // so native delivery with any scoped API route selects no admitted GitHub host: OpenShell
+      // alone enforces issue reads, pull request reads and pull request creation.
+      endpoints: {
+        include: native
+          ? [scopedRoutes ? "deny-egress.invalid" : "api.github.com"]
+          : ["github.com", "api.github.com"],
+      },
     },
   };
 }

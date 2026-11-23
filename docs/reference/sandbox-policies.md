@@ -168,15 +168,16 @@ Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository del
 
 `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
 
-PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. The first empty list requests denial of all repositories. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []` with policy read permission.
+PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
 
 A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
 
 When a Channel needs a bound Secret, the controller checks the saved repository
 policy and the caller's Secret access before handing the value to the Channel.
-The handoff shares the lock used by permission changes. The controller releases
-the lock before waiting for the provider and checks deployment admission again
-before saving the revision.
+The handoff shares the lock used by permission changes. The controller checks
+permissions committed before it acquires the lock. It releases the lock before
+waiting for the provider and checks deployment admission again before saving the
+revision.
 
 To opt into repository policy, an Agent must have an explicit list from its
 first deployment. Ordinary Agents can keep deploying without a list.
@@ -196,8 +197,8 @@ The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/
 for a dedicated Codex Harness, an OpenAI credential source and the managed
 Gateway. The controller build must pin the inspected Gateway and Agent images
 by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
-`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both images together before
-selecting those build arguments. Leaving the arguments empty disables this
+`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both role images together, then use the
+[runtime-first controller build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). Leaving the arguments empty disables this
 placement. A first empty list can be saved. Deploying it is refused before
 launch. Stop the active revision to retire its access.
 

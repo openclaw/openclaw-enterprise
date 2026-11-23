@@ -1,12 +1,7 @@
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
-import {
-  openShellGitMiddleware,
-  nativeRestMode,
-  type NativeRestMode,
-} from "./openshell-git-middleware.ts";
-import type { OpenShellGitRuntime } from "./openshell-git-runtime.ts";
+import { openShellGitMiddleware, type OpenShellGitRuntime } from "./openshell-git-runtime.ts";
 import { repositoryGitDeliveryProfile, requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   CredentialProviderDefinition,
@@ -32,6 +27,7 @@ import {
   DependencyUnavailableError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
+  ResourceStateConflictError,
   RetryLaterError,
 } from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
@@ -214,7 +210,7 @@ export function openShellEgressConfiguration(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
   revision?: Readonly<AgentRevision>,
-  nativeRest?: NativeRestMode,
+  nativeIssueReads = false,
 ): Readonly<Record<string, unknown>> {
   const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
@@ -244,7 +240,7 @@ export function openShellEgressConfiguration(
         options.repositoryMiddlewareName,
         plan.execution.executionId,
         plan.repositoryGitAuthorization === "network-policy",
-        nativeRest,
+        nativeIssueReads,
       ),
     });
   }
@@ -298,6 +294,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
   private readonly options: OpenShellProxyOptions;
+  private readonly repositoryOriginRefusal: string | undefined;
 
   static readonly configurationSchema = {
     type: "object",
@@ -354,6 +351,8 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
+      /** Why repository.openShell cannot reach this Installation's GitHub origin, if it cannot. */
+      readonly repositoryOriginRefusal?: string | undefined;
     },
   ) {
     requireConfiguration(OpenShellLegacyEgressProxyDriver, options);
@@ -381,6 +380,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
     this.options = immutableCopy(options);
+    this.repositoryOriginRefusal = selection.repositoryOriginRefusal;
     this.sourceControl = Object.freeze({
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
@@ -470,6 +470,11 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
   protected assertRepositoryGitProfileAvailable(
     profile: RepositoryGitDeliveryProfile | undefined,
   ): void {
+    // The Installation still starts and serves Agents without repository Git; Git work is
+    // refused here, at deploy, rather than when its credential is released.
+    if (profile !== undefined && this.repositoryOriginRefusal !== undefined) {
+      throw new ResourceStateConflictError(this.repositoryOriginRefusal);
+    }
     if (
       (profile === "repository_git" || profile === "github_repository") &&
       !this.mandatoryEnforcement
@@ -536,7 +541,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
       context.plan,
       this.options,
       context.revision,
-      nativeRestMode(bound),
+      bound?.endpoints.some(({ host }) => host === "api.github.com"),
     );
     const canonicalPolicies = {
       ...asRecord(protectedConfiguration.network_policies),

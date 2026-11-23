@@ -30,6 +30,23 @@ export function openShellGitNetworkDefaults(target: OpenShellGitNetworkTarget) {
   };
 }
 
+/**
+ * The OpenShell Git rules bind only the github.com origins above. Why another prepared GitHub
+ * origin (or none) is refused, and what to do; undefined only for api.github.com. Names host and
+ * port only, never user info, a path or a query, in text the worker log keeps (no commas).
+ */
+export function openShellGitOriginRefusal(apiOrigin: string): string | undefined {
+  if (apiOrigin === "https://api.github.com") {
+    return undefined;
+  }
+  let selected = "not an https origin";
+  if (typeof apiOrigin === "string" && URL.canParse(apiOrigin)) {
+    const url = new URL(apiOrigin);
+    selected = `${url.hostname}:${url.port || (url.protocol === "http:" ? "80" : "443")}`;
+  }
+  return `repository.openShell reaches only https://github.com and https://api.github.com but repository.preparedGitHub.apiOrigin is ${selected}. Remove apiOrigin to use github.com: repository.openShell supports no other GitHub origin.`;
+}
+
 /** OpenShell imports these endpoints into the Sandbox policy when attaching the Git Provider. */
 export function openShellGitEndpoints(
   git: URL,
@@ -152,19 +169,26 @@ function scopedApiEndpoints(
     createIssues,
     createPullRequests,
     readIssues,
+    readPullRequests,
   } of repositoryGitRestOperations(policy, permissions)) {
     const rules = [];
     if (createPullRequests) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
     }
-    const path = `/repos/${repository}/issues`;
     if (createIssues) {
-      rules.push({ allow: { method: "POST", path } });
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });
     }
-    if (readIssues) {
+    for (const [resource, enabled] of [
+      ["issues", readIssues],
+      ["pulls", readPullRequests],
+    ] as const) {
+      if (!enabled) {
+        continue;
+      }
+      const path = `/repos/${repository}/${resource}`;
       rules.push({ allow: { method: "GET", path } });
       // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
-      // Enumerate positive decimal issue-number paths up to 19 digits.
+      // Enumerate positive decimal detail paths up to 19 digits.
       for (let width = 1; width <= 19; width++) {
         rules.push({ allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width - 1)}` } });
       }

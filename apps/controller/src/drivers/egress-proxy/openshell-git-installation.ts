@@ -501,7 +501,6 @@ export async function observeOpenShellGitInstallation(
       registration: configuration.registrationName,
       audience: configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
-      bindingId: entry.revision.egressPlan?.execution.executionId,
       boundGitRule: entry.preview.native ? entry.provider.boundNetworkRule() : undefined,
       modelProvider: entry.continuity.model,
       runtimeProvider: entry.continuity.runtime,

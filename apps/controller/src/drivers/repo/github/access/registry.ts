@@ -41,10 +41,10 @@ export interface GitHubRepositoryRegistration {
     permissions?: Readonly<Record<string, string>>;
     /** Select deployment-scoped native Git for this repository registration. */
     nativeGit?: "v1";
-    /** Opt into REST creation when a POST-only validator is available. */
-    nativeRestWrites?: true;
-    /** v2 includes issue creation among the operations eligible for nativeRestWrites. */
+    /** Enable the versioned REST subset when this binding also has a repository network ACL. */
     scopedRest?: "v1" | "v2";
+    /** Disable issue creation on this repository under v2. */
+    createIssues?: boolean;
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -104,13 +104,6 @@ function text(value: unknown, pattern = selectorPattern): string {
 
 function numericId(value: unknown): string {
   if (typeof value !== "string" || parseGitHubNumericId(value) === undefined) {
-    return invalid();
-  }
-  return value;
-}
-
-function scopedRestVersion(value: unknown): "v1" | "v2" {
-  if (value !== "v1" && value !== "v2") {
     return invalid();
   }
   return value;
@@ -214,8 +207,8 @@ export function validateGitHubRepositoryRegistry(
         "profiles",
         "permissions",
         "nativeGit",
-        "nativeRestWrites",
         "scopedRest",
+        "createIssues",
         "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
@@ -236,16 +229,18 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      const scopedRest = Object.hasOwn(policy, "scopedRest")
-        ? scopedRestVersion(policy.scopedRest)
-        : undefined;
       if (
-        Object.hasOwn(policy, "nativeRestWrites") &&
-        (policy.nativeRestWrites !== true || policy.nativeGit !== "v1" || !scopedRest)
+        Object.hasOwn(policy, "scopedRest") &&
+        (!selected ||
+          (policy.scopedRest !== "v1" && policy.scopedRest !== "v2") ||
+          policy.nativeGit !== "v1")
       ) {
         return invalid();
       }
-      if (scopedRest && !selected) {
+      if (
+        Object.hasOwn(policy, "createIssues") &&
+        (policy.scopedRest !== "v2" || typeof policy.createIssues !== "boolean")
+      ) {
         return invalid();
       }
       if (
@@ -312,8 +307,10 @@ export function validateGitHubRepositoryRegistry(
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
         ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
-        ...(policy.nativeRestWrites === true && { nativeRestWrites: true as const }),
-        ...(scopedRest !== undefined && { scopedRest }),
+        ...((policy.scopedRest === "v1" || policy.scopedRest === "v2") && {
+          scopedRest: policy.scopedRest,
+        }),
+        ...(policy.createIssues === false && { createIssues: false }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -413,19 +410,30 @@ const installationGrantPolicy = Object.freeze({
 } as const);
 
 function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
-  const version = policy.scopedRest;
-  if (version !== "v1" && version !== "v2") {
+  if (policy.scopedRest !== "v1" && policy.scopedRest !== "v2") {
     return undefined;
   }
-  const issues = policy.permissions?.issues;
   return {
-    version,
-    ...(policy.nativeRestWrites &&
-      policy.permissions?.pull_requests === "write" && { createPullRequests: true as const }),
-    readIssues: issues === "read" || issues === "write",
-    ...(policy.nativeRestWrites &&
-      version === "v2" &&
-      issues === "write" && { createIssues: true as const }),
+    version: policy.scopedRest,
+    ...(policy.scopedRest === "v2" &&
+      policy.createIssues !== false &&
+      policy.permissions?.issues === "write" && { createIssues: true as const }),
+    readIssues: policy.permissions?.issues === "read" || policy.permissions?.issues === "write",
+  };
+}
+
+/**
+ * Pull request routes follow the registration's `pull_requests` permission. The grant identity
+ * already covers that permission and the REST version, so these flags stay out of its hash and
+ * a binding saved before pull request routes existed remains current.
+ */
+function scopedPullRequestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
+  const pullRequests = policy.permissions?.pull_requests;
+  return {
+    ...((pullRequests === "read" || pullRequests === "write") && {
+      readPullRequests: true as const,
+    }),
+    ...(pullRequests === "write" && { createPullRequests: true as const }),
   };
 }
 
@@ -648,6 +656,12 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
+      // The credential covers every bound repository, and a pull request can name any of them
+      // in the target's fork network as its head. Creation therefore needs a saved grant on each.
+      const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
+      const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
+        ? scope.scopedRest
+        : scope.scopedRest.map(({ createPullRequests, ...rest }) => Object.freeze(rest));
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
@@ -656,7 +670,7 @@ export function createGitHubRepositoryDeliveryResolver(
           repositories: scope.repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
-          ...(nativeGit && scope.scopedRest.length > 0 && { scopedRest: scope.scopedRest }),
+          ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
         }),
       });
     }
@@ -730,7 +744,8 @@ export function resolveSelectedRepositoryScope(
   }
   const scopedRest: ({ repository: string } & NonNullable<
     ReturnType<typeof scopedRestPermissions>
-  >)[] = [];
+  > &
+    ReturnType<typeof scopedPullRequestPermissions>)[] = [];
   const nativeGitModes = new Set<"v1" | undefined>();
   let permissions: Readonly<Record<string, string>> | undefined;
   const repositories = bindings
@@ -751,7 +766,13 @@ export function resolveSelectedRepositoryScope(
       }
       const rest = scopedRestPermissions(policy);
       if (rest) {
-        scopedRest.push(Object.freeze({ repository: repo.repository, ...rest }));
+        scopedRest.push(
+          Object.freeze({
+            repository: repo.repository,
+            ...rest,
+            ...scopedPullRequestPermissions(policy),
+          }),
+        );
       }
       nativeGitModes.add(policy.nativeGit);
       permissions = policy.permissions;

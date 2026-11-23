@@ -127,6 +127,7 @@
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll): Experimental: Complete device login without returning credential material.
 - [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssessionidpoll): Experimental: Complete device login without returning credential material.
+- [`pushAgentCredentials`](../api.md#post-namespacesnamespaceidagentsagentidcredentialspush): Retry delivery for selected deployed Agent credential sources.
 - [`removeAgentStandingApproval`](../api.md#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove): Remove repository approval independently of configuration or runtime cleanup.
 - [`retryAgentProvisioning`](../api.md#post-namespacesnamespaceidagentsprovisionworkidretry): Retry failed first-time provisioning for one exact work item.
 - [`startAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizations): Experimental: Start a private device login for Agent configuration.
@@ -218,12 +219,12 @@
 - [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
 - [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections the caller can read in this Namespace.
 - [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
-- [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates the caller may connect in this Namespace.
+- [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates available in this Namespace.
 - [`completeNamespaceConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
 - [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
 - [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
 - [`createOAuthClient`](../api.md#post-oauthclients): Register an OAuth client from a connection template.
-- [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template or create a version with updated settings.
 - [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
 - [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.
 - [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.

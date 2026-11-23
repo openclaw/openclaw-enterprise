@@ -30,6 +30,7 @@ import {
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.ts";
 import { listen } from "../helpers/listen.ts";
+import { hasOrderedDurableCommands } from "../helpers/openshell-durable-command-proof.ts";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -51,6 +52,101 @@ function jsonObject(text: string) {
 type GatewayPolicyClient = Parameters<typeof assertGatewayPolicyRunSucceeded>[0];
 type GatewayPolicyOutcome = Parameters<typeof assertGatewayPolicyRunSucceeded>[1];
 type PollOnce = Parameters<typeof waitForOpenShellRevisionActivation>[0];
+
+const gatewayCommandNonces = ["gateway-first", "gateway-second"] as const;
+
+function completedRolloutCommand(nonce: string, fields: Record<string, unknown> = {}): string {
+  return (
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        item: {
+          type: "CommandExecution",
+          command: ["sh", "-c", `printf '%s' '${nonce}'`],
+          exit_code: 0,
+          aggregated_output: ` ${nonce}\n`,
+          ...fields,
+        },
+      },
+    }) + "\n"
+  );
+}
+
+test("OpenShell durable proof requires two ordered successful commands in one complete rollout", () => {
+  const [firstNonce, secondNonce] = gatewayCommandNonces;
+  const first = completedRolloutCommand(firstNonce);
+  const second = completedRolloutCommand(secondNonce);
+  const unrelated = '{"type":"session_meta","payload":{}}\n';
+  const unfinished = completedRolloutCommand(secondNonce, {
+    exit_code: null,
+    aggregated_output: null,
+  });
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+  assert.equal(provesCommands(unrelated + first + unfinished + second + '{"partial"'), true);
+  assert.equal(provesCommands(first + second.slice(0, -1)), false, "unflushed second command");
+  assert.equal(provesCommands(first + second), true, "flushed second command");
+  assert.equal(provesCommands(second + first), false, "reversed commands");
+  assert.equal([first, second].some(provesCommands), false, "commands split across files");
+  assert.equal(
+    provesCommands(first + completedRolloutCommand(secondNonce, { exit_code: 1 })),
+    false,
+    "failed second command",
+  );
+  assert.equal(
+    provesCommands(
+      first + completedRolloutCommand(secondNonce, { command: ["sh", ["-c", secondNonce]] }),
+    ),
+    false,
+    "nested argv cannot supply command evidence",
+  );
+});
+
+test("OpenShell durable proof requires exactly two distinct nonblank nonces", () => {
+  const [first, second] = gatewayCommandNonces;
+  const firstRecord = completedRolloutCommand(first);
+  const secondRecord = completedRolloutCommand(second);
+  assert.equal(hasOrderedDurableCommands("", []), false, "no nonces");
+  assert.equal(hasOrderedDurableCommands(firstRecord, [first]), false, "one nonce");
+  assert.equal(
+    hasOrderedDurableCommands(firstRecord + firstRecord, [first, first]),
+    false,
+    "duplicate nonces",
+  );
+  assert.equal(
+    hasOrderedDurableCommands(completedRolloutCommand("") + secondRecord, ["", second]),
+    false,
+    "empty nonce",
+  );
+  assert.equal(
+    hasOrderedDurableCommands(firstRecord + secondRecord + completedRolloutCommand("third"), [
+      first,
+      second,
+      "third",
+    ]),
+    false,
+    "three nonces",
+  );
+});
+
+test("OpenShell durable proof rejects corruption before proof and ignores later records", () => {
+  const pair = gatewayCommandNonces.map((nonce) => completedRolloutCommand(nonce));
+  const good = pair.join("");
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+  for (const bad of [
+    "null\n",
+    "synthetic-canary-invalid-json\n",
+    '{"type":"event_msg","payload":null}\n',
+  ]) {
+    assert.equal([bad, good].some(provesCommands), true, "corrupt sibling first");
+    assert.equal([good, bad].some(provesCommands), true, "corrupt sibling last");
+    assert.equal(provesCommands(bad + good), false, "corruption before commands");
+    assert.equal(provesCommands(pair.join(bad)), false, "corruption between commands");
+    assert.equal(provesCommands(good + bad), true, "corruption after commands");
+  }
+});
 
 test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
   const revisionId = "rev_10000000-0000-4000-8000-000000000003";
