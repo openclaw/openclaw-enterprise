@@ -49,6 +49,13 @@ export interface RepositorySourceCustody {
     session: Readonly<{ namespaceId: string; agentId: string }>,
     ref: RepositorySourceRef,
   ): Promise<boolean>;
+  /**
+   * The access the revision was deployed with, per repository: its saved repository network
+   * policy grants. Undefined when the revision or its saved policy cannot be found.
+   */
+  admitted(
+    session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>,
+  ): Promise<readonly Readonly<{ repository: string; access: "read" | "write" }>[] | undefined>;
 }
 
 const reasons = {
@@ -57,6 +64,7 @@ const reasons = {
   source_not_owned: "is not a Source of this Installation's TokenService",
   source_preset_refused: "is not a github Source",
   source_ceiling_exceeded: "no longer covers every repository of the revision",
+  source_access_exceeded: "no longer allows the access the revision was deployed with",
   operate_denied: "is not operable by the Agent principal",
   token_class_refused: "holds a token other than a fine-grained token",
   source_unreadable: "could not be read",
@@ -96,14 +104,15 @@ function loanUuid(...parts: readonly string[]): string {
 
 type LentSource = {
   readonly key: { readonly source: { readonly id: string } };
-  readonly session: Readonly<{ namespaceId: string; agentId: string }>;
+  readonly session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>;
   readonly grant: Pick<GitHubRepositorySourceGrant, "credentialSource" | "repositories">;
 };
 
 /**
  * The native material reader for a TokenService Source, in place of App token rows: no copy of
  * the value is kept in the database and no migration is needed. At each loan it rechecks the
- * Source's state, owner, preset and ceiling, the Agent principal's `operate` and the token class,
+ * Source's state, owner, preset and ceiling (repositories and the revision's deployed access),
+ * the Agent principal's `operate` and the token class,
  * then lends the value for at most 15 minutes. Ids derive from the source key, the loan window
  * and the custody version, so a replaced value is new material and the runtime rotates it in.
  * `readWarm` returns its material with the row hold, which the Provider write releases.
@@ -163,16 +172,31 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
       if (row.preset !== "github") {
         throw new RepositorySourceLoanRefusal(sourceId, "source_preset_refused");
       }
-      let ceiling: ReadonlySet<string>;
+      let ceiling: ReadonlyMap<string, "read" | "write">;
       try {
-        ceiling = new Set(
-          readSourceRepositoryCeiling(row.repositories ?? "").map(({ repository }) => repository),
+        ceiling = new Map(
+          readSourceRepositoryCeiling(row.repositories ?? "").map(({ repository, access }) => [
+            repository,
+            access,
+          ]),
         );
       } catch {
         throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
       }
       if (source.grant.repositories.some(({ repository }) => !ceiling.has(repository))) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
+      }
+      // The ceiling may have been lowered since deploy (its change is refused only while the
+      // API server's registry names the Source), so the deployed access is compared again.
+      const admitted = await custody.admitted(source.session);
+      if (
+        !admitted?.length ||
+        admitted.some(({ repository, access }) => {
+          const limit = ceiling.get(repository);
+          return limit === undefined || (limit === "read" && access !== "read");
+        })
+      ) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
       }
       if (!(await custody.operate(source.session, ref))) {
         throw new RepositorySourceLoanRefusal(sourceId, "operate_denied");

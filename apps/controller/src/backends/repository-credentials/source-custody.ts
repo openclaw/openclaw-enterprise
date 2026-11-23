@@ -199,6 +199,13 @@ export function createRepositorySourceCustody(options: {
       });
       return decision?.allowed === true;
     },
+    async admitted({ namespaceId, agentId, revisionId }) {
+      // Revisions are immutable: the saved policy is the one admitted at deploy.
+      const revision = await state.read(({ revisions }) =>
+        revisions.findRevision(namespaceId, agentId, revisionId),
+      );
+      return revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants;
+    },
   };
   return Object.freeze(custody);
 }

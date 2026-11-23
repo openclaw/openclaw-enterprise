@@ -1058,7 +1058,8 @@
         "a Source loan lends its value once under a held row, and a replaced value is new material",
         "every loan refusal releases the row, names a code, and is reported once per Source version and reason",
         "a Source loan lasts at most 15 minutes, is renewed half way, and a peer Agent's loan is unaffected",
-        "a Worker holding a loan delays replacement and retirement until its write returns"
+        "a Worker holding a loan delays replacement and retirement until its write returns",
+        "a Source loan compares the revision's deployed access with the ceiling, not only its repositories"
       ]
     },
     {
