@@ -36,12 +36,12 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-Send a unique nonsecret marker per retained chat through the approved interface.
-Privately record its Agent and location.
+Send a unique nonsecret marker to the test chat through the approved interface.
+Privately record the Agent and chat.
 
 - [Published](../../release/containers.md#prepare-and-publish) or built images with
   lowercase `@sha256:` digest from the reviewed commit with passing checks.
-- A clean checkout at the full `RELEASE_SOURCE_SHA`. Run from its root.
+- Clean checkout at the full `RELEASE_SOURCE_SHA`. Run from its root.
 - Matching [OCC CLI](../cli.md#connect-to-your-installation) at `--occ`.
   Build with `go build -trimpath -o bin/occ ./cmd/occ`.
 - [Baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and database state.
