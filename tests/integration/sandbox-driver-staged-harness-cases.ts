@@ -437,6 +437,8 @@ ${NATIVE_WORKER_ENTRYPOINT}
     host: pluginRequest.host,
     ports: pluginRequest.ports,
   };
+  const sameTuplePluginRequest = { ...pluginRequest, binary: grant.binary };
+  const duplicateModelGrant = { ...broadPluginGrant, id: "model-duplicate", binary: grant.binary };
   const unsafeRevisions: readonly { readonly reason: string; readonly revision: AgentRevision }[] =
     [
       ...[
@@ -477,6 +479,46 @@ ${NATIVE_WORKER_ENTRYPOINT}
               allowed: [
                 ...revision.credentialDeployment!.networkAccessPolicy.allowed,
                 broadPluginGrant,
+              ],
+            },
+          },
+        },
+      },
+      {
+        reason:
+          "the model grant exemption must not narrow a Plugin route on the same executable and destination",
+        revision: {
+          ...revision,
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: {
+              allowed: [
+                { binary: grant.binary, host: grant.host, ports: grant.ports },
+                sameTuplePluginRequest,
+              ],
+            },
+            injectionPolicies: [
+              revision.credentialDeployment!.injectionPolicies[0]!,
+              {
+                bindingRef: pluginBinding.bindingRef,
+                allowedRequests: [sameTuplePluginRequest],
+              },
+            ],
+          },
+        },
+      },
+      {
+        reason:
+          "only the canonical broad model grant may cover the model executable and destination",
+        revision: {
+          ...revision,
+          sandboxPolicy: driver.admitNetworkPolicy([grant, duplicateModelGrant], 1),
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: {
+              allowed: [
+                ...revision.credentialDeployment!.networkAccessPolicy.allowed,
+                duplicateModelGrant,
               ],
             },
           },

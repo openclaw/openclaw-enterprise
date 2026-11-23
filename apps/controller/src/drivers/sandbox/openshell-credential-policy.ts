@@ -270,14 +270,22 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
       }
       // The established model route replaces its saved L4 grant with one approved inference request.
       // New credential-free grants must not be silently narrowed by that replacement mechanism.
+      const model = credentialRoutes.find(
+        (candidate) =>
+          candidate.binding.consumer.kind === "model" &&
+          candidate.binary === grant.binary &&
+          candidate.host.toLowerCase() === grant.host.toLowerCase() &&
+          candidate.port === route.port,
+      );
       if (
-        !credentialRoutes.some(
-          (model) =>
-            model.binding.consumer.kind === "model" &&
-            model.binary === grant.binary &&
-            model.host.toLowerCase() === grant.host.toLowerCase() &&
-            model.port === route.port,
-        )
+        !model ||
+        (route !== model && route.binary === grant.binary) ||
+        policy.networkAccessPolicy.allowed.filter(
+          (candidate) =>
+            candidate.requestPolicy === undefined &&
+            candidate.host.toLowerCase() === model.host.toLowerCase() &&
+            candidate.ports.some(({ from, to }) => from <= model.port && model.port <= to),
+        ).length !== 1
       ) {
         credentialPolicyFailure();
       }
