@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { type IncomingHttpHeaders, type OutgoingHttpHeaders } from "node:http";
-import { request as httpsRequest } from "node:https";
+import {
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+} from "node:http";
+import { request as httpsRequest, Server as HttpsServer } from "node:https";
 import { stripTypeScriptTypes } from "node:module";
+import { text } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -17,8 +22,10 @@ import {
   memberRole,
 } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,
@@ -27,7 +34,14 @@ import {
 
 import { Check } from "typebox/value";
 import { Type, type TSchema } from "typebox";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import {
+  SandboxNetworkPolicyConfiguration,
+  type AgentRevision,
+  type ChannelCredentialReader,
+  type ProtectedRepositoryNetworkPolicyContext,
+  type RepositoryNetworkGrant,
+  type SandboxDriver,
   type Permission,
   type PermissionAction,
   type ResourceKind,
@@ -35,7 +49,16 @@ import {
   type SecretBinding,
   type SecretBindings,
 } from "../../packages/contracts/src/index.ts";
-import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  OpenClawController,
+  ResourceStateConflictError,
+  type PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
+import {
+  SandboxPolicyResponse,
+  SandboxPolicyViewResponse,
+} from "../../packages/contracts/src/api/sandbox-policy.ts";
 import {
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
@@ -53,6 +76,8 @@ import {
   type NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import contract from "../../packages/contracts/openapi/occ-api.openapi.json" with { type: "json" };
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -1207,20 +1232,54 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   assert.equal(missing.status, 404);
 });
 
+function createSecretAnswerReadRecorder(t: TestContext) {
+  const unit = new AsyncLocalStorage<symbol>();
+  let units = 0;
+  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
+  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
+    read: (work) => {
+      units += 1;
+      return unit.run(Symbol(), () => state.read(work));
+    },
+    transact: (work) => state.transact(work),
+  });
+
+  function observe(iamDriver: Fixture["iamDriver"], answer: () => Promise<string[]>) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (request.resource.kind === "secret") {
+        decisions.push({ action: request.action, unitId: unit.getStore() });
+      }
+      return authorize.call(iamDriver, request);
+    };
+    t.after(() => {
+      iamDriver.authorize = authorize;
+    });
+
+    return async () => {
+      decisions.length = 0;
+      units = 0;
+      const denied = await answer();
+      // All Secret decisions for this answer must share the same read unit.
+      const unitId = decisions[0]?.unitId;
+      assert.notEqual(unitId, undefined, "Expected a Secret decision inside a read unit");
+      assert.ok(
+        decisions.every((decision) => decision.unitId === unitId),
+        "Secret decisions must share one read unit",
+      );
+      return { denied, units, decisions: [...decisions] };
+    };
+  }
+
+  return { wrapState, observe };
+}
+
 // The answer makes one decision per readable Secret. They share one platform read unit, so the
 // native IAM Driver reads its policy once for all of them; outside a unit each would check out
 // its own database connection and policy read (finding 2473). The units the answer opens do not
 // grow with the number of Secrets.
 test("the Agent Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<boolean>();
-  let units = 0;
-  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
-    read: (work) => {
-      units += 1;
-      return unit.run(true, () => state.read(work));
-    },
-    transact: (work) => state.transact(work),
-  });
+  const { wrapState, observe } = createSecretAnswerReadRecorder(t);
   const { fixture, namespace, agent, app, bot, member } = await secretAnswerFixture(t, {
     wrapState,
   });
@@ -1235,23 +1294,7 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
     [],
   );
   editor.grant("configuration", "update", "configuration", agent.configurationId);
-  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, inUnit: unit.getStore() === true });
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  t.after(() => {
-    fixture.iamDriver.authorize = authorize;
-  });
-  const measure = async () => {
-    decisions.length = 0;
-    units = 0;
-    const denied = await editor.answer();
-    return { denied, units, decisions: [...decisions] };
-  };
+  const measure = observe(fixture.iamDriver, editor.answer);
   const few = await measure();
   // The bound Slack Secrets and the fixture's Harness authentication Secret.
   assert.equal(few.denied.length, 3);
@@ -1261,9 +1304,8 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
   }
   const many = await measure();
   assert.equal(many.denied.length, 9);
-  // Each readable Secret costs a read and an operate decision, all inside a read unit.
+  // Each readable Secret costs a read and an operate decision in the shared read unit.
   assert.equal(many.decisions.filter(({ action }) => action === "operate").length, 9);
-  assert.ok(many.decisions.every(({ inUnit }) => inUnit));
   assert.equal(many.units, few.units);
 });
 
@@ -1440,15 +1482,7 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<symbol>();
-  let units = 0;
-  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
-    read: (work) => {
-      units += 1;
-      return unit.run(Symbol(), () => state.read(work));
-    },
-    transact: (work) => state.transact(work),
-  });
+  const { wrapState, observe } = createSecretAnswerReadRecorder(t);
   const { fixture, namespace, model, bot, member } = await namespaceSecretAnswerFixture(t, {
     wrapState,
   });
@@ -1461,27 +1495,7 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, unitId: unit.getStore() });
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  t.after(() => {
-    fixture.iamDriver.authorize = authorize;
-  });
-  const measure = async () => {
-    decisions.length = 0;
-    units = 0;
-    const denied = await creator.answer();
-    // All Secret decisions for this answer must share the same read unit.
-    const unitId = decisions[0]?.unitId;
-    assert.notEqual(unitId, undefined);
-    assert.ok(decisions.every((decision) => decision.unitId === unitId));
-    return { denied, units, decisions: [...decisions] };
-  };
+  const measure = observe(fixture.iamDriver, creator.answer);
   const few = await measure();
   const expectedDenied = [model.id, bot.id];
   assert.deepEqual(few.denied, [...expectedDenied].sort());
@@ -1716,6 +1730,54 @@ test("console static routes expose only public assets and preserve API JSON fail
   const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
   assert.equal(errorBody(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
+});
+
+test("Console HTTPS ingress stops listening before it closes connections and awaits its close callback", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const origin = new URL(fixture.origin);
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
+    httpsRequest(
+      new URL("/console/", origin),
+      {
+        hostname: "127.0.0.1",
+        servername: origin.hostname,
+        headers: { host: origin.host },
+      },
+      resolve,
+    )
+      .on("error", reject)
+      .end();
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(await text(response), /src="\/console\/console\.mjs"/);
+
+  // Observe Node's listener and callback while both shutdown methods run normally.
+  const { close, closeAllConnections } = HttpsServer.prototype;
+  let listeningAtSweep: boolean | undefined;
+  let closeCallbackRan = false;
+  t.mock.method(HttpsServer.prototype, "closeAllConnections", function (this: HttpsServer) {
+    listeningAtSweep = this.listening;
+    return closeAllConnections.call(this);
+  });
+  t.mock.method(
+    HttpsServer.prototype,
+    "close",
+    function (this: HttpsServer, callback?: (error?: Error) => void) {
+      if (callback === undefined) {
+        return close.call(this);
+      }
+      return close.call(this, (error) => {
+        closeCallbackRan = true;
+        callback(error);
+      });
+    },
+  );
+
+  // The next fixture cleanup may proceed only after the HTTPS server has closed.
+  fixture.registerCleanupBeforeAppClose(() => {
+    assert.equal(listeningAtSweep, false);
+    assert.equal(closeCallbackRan, true);
+  });
 });
 
 test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {
@@ -2120,6 +2182,957 @@ test("untrusted cookie mutations do not clean up an expired session", async (t) 
   });
   assert.equal(trusted.response.status, 401, trusted.text);
   assert.equal(fixture.memoryDatabase.session.includes(expired), false);
+});
+
+async function setDesiredRepositoryPolicy(
+  controller: OpenClawController,
+  namespaceId: string,
+  agentId: string,
+  repositoryNetworkPolicy: readonly RepositoryNetworkGrant[],
+) {
+  // Use persisted policy to exercise deployment independently of first-save admission.
+  return controller.transact(async (unit) => {
+    await unit.namespaces.lockNamespace(namespaceId);
+    await unit.agents.lockAgent(namespaceId, agentId);
+    const current = await unit.sandboxPolicies.find(namespaceId, agentId);
+    assert.ok(current);
+    const saved = await unit.sandboxPolicies.save(
+      { ...current, version: current.version + 1, repositoryNetworkPolicy },
+      current.version,
+    );
+    assert.ok(saved);
+    return saved;
+  });
+}
+
+test("deployment delivers a Channel Secret only through the captured validator", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const controller = fixture.controller;
+  assert.ok(controller);
+  const namespace = await fixture.createNamespace("Channel validator identity", { ready: true });
+  const marker = `synthetic-channel-${randomUUID()}`;
+  const secret = await fixture.createSecret(namespace.id, "Channel credential", marker);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Channel validation Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    { secretBindings: { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } } },
+  );
+
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  const accepted = t.mock.fn(async (value: string) => {
+    assert.ok(value === marker, "the selected validator must receive the bound Secret");
+  });
+  const diverted = t.mock.fn(async () => {});
+  async function validate(
+    this: SlackChannelDriver,
+    _values: Readonly<Record<string, unknown>>,
+    use: ChannelCredentialReader,
+  ) {
+    assert.ok(this === channel, "the selected validator must keep its Driver receiver");
+    channel.validateCredentials = validate;
+    await use("CHANNEL_TOKEN", "channel", accepted);
+  }
+  Object.defineProperty(validate, "call", {
+    async value(
+      _driver: unknown,
+      _values: Readonly<Record<string, unknown>>,
+      use: ChannelCredentialReader,
+    ) {
+      await use("CHANNEL_TOKEN", "channel", diverted);
+    },
+  });
+  channel.validateCredentials = validate;
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+
+  const first = await fixture.request("POST", `${path}/deploy-first`, {
+    body: {
+      key: "channel-validator",
+      expectedConfigurationId: agent.configurationId,
+      expectedGeneration: 1,
+    },
+  });
+  assert.equal(first.status, 202);
+  assert.equal(
+    diverted.mock.callCount(),
+    0,
+    "the validator's own call must never receive a Secret",
+  );
+  assert.equal(accepted.mock.callCount(), 1);
+
+  // After the capability's two method checks, snapshot lookup installs an alternate validator
+  // that restores the original before Secret handoff.
+  const contractReads = [validate, validate];
+  Object.defineProperty(channel, "validateCredentials", {
+    configurable: true,
+    get() {
+      const checked = contractReads.shift();
+      if (checked !== undefined) {
+        return checked;
+      }
+      Object.defineProperty(channel, "validateCredentials", {
+        configurable: true,
+        writable: true,
+        async value(_values: Readonly<Record<string, unknown>>, use: ChannelCredentialReader) {
+          channel.validateCredentials = validate;
+          await use("CHANNEL_TOKEN", "channel", diverted);
+        },
+      });
+      return validate;
+    },
+  });
+  const later = await fixture.request("POST", `${path}/deploy`);
+  assert.equal(diverted.mock.callCount(), 0, "the alternate callback must never receive a Secret");
+  assert.equal(later.status, 202);
+  assert.equal(accepted.mock.callCount(), 2);
+});
+
+test("deploy checks repository policy authority and freezes the selected Sandbox Driver result", async (t) => {
+  const providerDefaults = { repositoryAccess: { state: "deny-all" } };
+  const deploymentSteps: string[] = [];
+  const assertSteps = (...expected: string[]) =>
+    assert.deepEqual(deploymentSteps.splice(0), expected);
+  const sandbox: SandboxDriver = {
+    id: "repository-policy-test-sandbox",
+    implementation: "test",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    networkPolicy: { wildcards: true, portRanges: true, live: true },
+    async provisionHarness() {
+      assert.fail("HTTP admission must not provision the Sandbox");
+    },
+    async cleanup() {
+      assert.fail("HTTP admission must not clean up the Sandbox");
+    },
+    admitNetworkPolicy(additions, version) {
+      return {
+        driverId: this.id,
+        implementation: this.implementation,
+        version,
+        additions,
+        defaults: {},
+      };
+    },
+    admitRepositoryNetworkPolicy(policy, base) {
+      deploymentSteps.push("admit Sandbox repository policy");
+      assert.ok(Object.isFrozen(policy.grants));
+      assert.ok(Object.isFrozen(base.defaults));
+      return policy.grants.length === 0
+        ? providerDefaults
+        : {
+            repositoryAccess: {
+              grants: policy.grants.map(({ repository, access }) => ({ repository, access })),
+            },
+          };
+    },
+    async observeNetworkPolicy() {
+      assert.fail("live repository policy application must not observe provider state");
+    },
+    async applyNetworkPolicy() {
+      assert.fail("live repository policy application must not change provider state");
+    },
+  };
+  const alternateSandbox: SandboxDriver = {
+    ...sandbox,
+    id: "alternate-repository-policy-test-sandbox",
+  };
+  const installationLimit = [{ repository: "example/approved", access: "write" }] as const;
+  const requested = [{ repository: "example/approved", access: "read" }] as const;
+  const approvedNamespaceId = `ns_${randomUUID()}`;
+  const unapprovedNamespaceId = `ns_${randomUUID()}`;
+  // Bootstrap creates the default Namespace before the two in this test.
+  const namespaceIds = [`ns_${randomUUID()}`, approvedNamespaceId, unapprovedNamespaceId];
+  // The registry must bind the two exact API IDs before the Installation starts.
+  const resourceIdPrefixes = new Map<ResourceKind, string>([
+    ["agent", "agt"],
+    ["agent_revision", "rev"],
+    ["configuration", "cfg"],
+    ["sandbox_policy", "sbp"],
+    ["secret", "sec"],
+  ]);
+  const github = {
+    id: "test-github",
+    type: "github",
+    configuration: { registryPath: "/unused/test/registry.json" },
+    drivers: { repo: "test-repository-policy" },
+  };
+  const registry = validateGitHubRepositoryRegistry(
+    {
+      version: 1,
+      backendId: github.id,
+      providerInstanceId: "test-provider",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 3600,
+      repositories: [
+        {
+          repositoryRef: "approved",
+          repositoryId: "789",
+          repository: "example/approved",
+          namespaces: [{ namespaceId: approvedNamespaceId, profiles: ["git-read"] }],
+        },
+      ],
+    },
+    github.id,
+  );
+  const namespacePolicy = new GitHubRepositoryPolicy(
+    { driverId: github.drivers.repo, backendId: github.id },
+    registry,
+    { sessionDurationSeconds: 600 },
+  );
+  const replacementPolicy = new GitHubRepositoryPolicy(
+    { driverId: "replacement-repository-policy", backendId: github.id },
+    {
+      ...registry,
+      repositories: registry.repositories.map((repository) => ({
+        ...repository,
+        namespaces: [{ namespaceId: unapprovedNamespaceId, profiles: ["git-read"] }],
+      })),
+    },
+    { sessionDurationSeconds: 600 },
+  );
+  const secretDriver = createTestSecretDriver({ id: "console-secret" });
+  const fixture = await createConsoleAppFixture(t, {
+    sandboxDriver: sandbox,
+    secretDriver,
+    nativeWorkerSupport: "custom-image",
+    createId: (kind: ResourceKind) => {
+      if (kind === "namespace") {
+        return namespaceIds.shift() ?? assert.fail("unexpected Namespace creation");
+      }
+      const prefix = resourceIdPrefixes.get(kind);
+      assert.ok(prefix, `unexpected resource kind: ${kind}`);
+      return `${prefix}_${randomUUID()}`;
+    },
+    backends: [...backendFixtures, github],
+    repositoryAdmission: { backendId: github.id, policy: namespacePolicy },
+    repositoryNetworkPolicyCeiling: installationLimit,
+    driverConfigurations: [sandbox, alternateSandbox].map((driver) => ({
+      capability: "sandbox",
+      driverId: driver.id,
+      implementation: driver.implementation,
+      definition: {
+        configurationSchema: { type: "object" },
+        configurationContributions: [SandboxNetworkPolicyConfiguration],
+        validateConfiguration: () => [],
+      },
+    })),
+  });
+  await fixture.bootstrap();
+  const controller: OpenClawController | undefined = fixture.controller;
+  assert.ok(controller);
+  controller.registerDriver(alternateSandbox);
+  controller.registerDriver(namespacePolicy);
+  controller.registerDriver(replacementPolicy);
+  controller.selectDriver("repo", namespacePolicy.id);
+  const compute = controller.selectedDriver("compute");
+  const originalAdmitRevision = compute.admitRevision?.bind(compute);
+  const originalSnapshotRuntimeInputs = compute.snapshotRuntimeInputs?.bind(compute);
+  const validatePolicy = async (context: ProtectedRepositoryNetworkPolicyContext) => {
+    deploymentSteps.push("validate policy");
+    assert.ok(Object.isFrozen(context));
+    if (
+      context.sandboxDriverId !== sandbox.id ||
+      context.sandboxPolicy?.driverId !== sandbox.id ||
+      context.sandboxPolicy.repositoryNetworkPolicy === undefined
+    ) {
+      throw new Error("Unsupported Sandbox and policy pairing.");
+    }
+  };
+  const validateProtectedRepositoryNetworkPolicy = t.mock.fn(validatePolicy);
+  const admitRevision = t.mock.fn((revision: Readonly<AgentRevision>) => {
+    deploymentSteps.push("admit revision");
+    assert.ok(Object.isFrozen(revision));
+    return originalAdmitRevision?.(revision);
+  });
+  const credentialStatus = t.mock.fn(async () => true);
+  const provisionCredentials = t.mock.fn(async () => true);
+  Object.assign(compute, {
+    validateProtectedRepositoryNetworkPolicy,
+    admitRevision,
+    snapshotRuntimeInputs(revision: Readonly<AgentRevision>) {
+      deploymentSteps.push("snapshot runtime inputs");
+      assert.ok(Object.isFrozen(revision.compute));
+      // The synthetic topology above supports ordinary ACLs. Kubernetes snapshots images
+      // only for its own supported ACL topology, protected dedicated Codex.
+      return revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+        ? originalSnapshotRuntimeInputs?.(revision)
+        : undefined;
+    },
+    requiresAgentRuntimeCredentials: true,
+    async getAgentRuntimeCredentialStatus() {
+      deploymentSteps.push("credential status");
+      return { transportConfigured: await credentialStatus() };
+    },
+    async provisionAgentRuntimeCredentials() {
+      deploymentSteps.push("credential provisioning");
+      return { transportConfigured: await provisionCredentials() };
+    },
+  });
+  const namespace = await fixture.createNamespace("Repository policy admission", { ready: true });
+  const createAgent = (namespaceId: string, name = "Policy admission Agent") =>
+    fixture.createAgent(namespaceId, name, createHarnessConfiguration("openclaw", "gpt-4.1"), {
+      executionMode: "dedicated",
+    });
+  const agent = await createAgent(namespace.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const policyPath = `${path}/sandbox-policy/networking`;
+  const readRevisions = () =>
+    controller.transact((unit) => unit.revisions.listRevisions(namespace.id, agent.id));
+  const legacy = await createAgent(namespace.id, "Legacy deployment");
+  const previous = await fixture.seedActiveAgentRevision(namespace.id, legacy.id);
+  // Ordinary admission checks credentials first; explicit policy must pass Compute first.
+  assertSteps("credential status", "admit revision", "snapshot runtime inputs");
+  const enabled = await fixture.request("PATCH", `${policyPath}/editing`, {
+    body: { enabled: true },
+  });
+  assert.equal(enabled.status, 200);
+
+  // The same request is in the Installation ceiling for both Namespaces. Only
+  // the Namespace named in the registry may reach Sandbox Driver admission.
+  const unapprovedNamespace = await fixture.createNamespace("No repository grant", { ready: true });
+  const unapprovedAgent = await createAgent(unapprovedNamespace.id);
+
+  // A Namespace reader can see their Agent's policy but cannot enumerate the
+  // Installation's repository delegation or learn a stronger access level.
+  const reader = await fixture.createNamespaceMember(
+    "repository-policy-reader",
+    unapprovedNamespace.id,
+    [
+      ["read", "agent"],
+      ["read", "sandbox_policy"],
+    ],
+  );
+  const session = await fixture.signIn(reader.credentials);
+  const unapprovedPolicy = await fixture.request(
+    "GET",
+    `/namespaces/${unapprovedNamespace.id}/agents/${unapprovedAgent.id}/sandbox-policy/networking`,
+    { session },
+  );
+  assert.equal(unapprovedPolicy.status, 200);
+  assert.deepEqual(unapprovedPolicy.data.repositoryNetworkPolicyCeiling, []);
+
+  const readPolicy = async (url: string) =>
+    checkedResponse(fixture, await fixture.request("GET", url), SandboxPolicyViewResponse).data;
+  const approvedPolicy = await readPolicy(policyPath);
+  assert.deepEqual(approvedPolicy.repositoryNetworkPolicyCeiling, requested);
+
+  // A malformed asynchronous denial must not disclose the Installation's write grant.
+  const invalidApproval = t.mock.method(namespacePolicy, "repositoryNetworkPolicyAllows", () =>
+    Promise.resolve(false),
+  );
+  assert.deepEqual((await readPolicy(policyPath)).repositoryNetworkPolicyCeiling, []);
+  invalidApproval.mock.restore();
+
+  // A formerly valid saved policy can survive a change in Namespace approval.
+  // Recheck it during deployment before persisting a revision or invoking the Driver.
+  await setDesiredRepositoryPolicy(
+    controller,
+    unapprovedNamespace.id,
+    unapprovedAgent.id,
+    requested,
+  );
+  const missingApproval = await fixture.request(
+    "POST",
+    `/namespaces/${unapprovedNamespace.id}/agents/${unapprovedAgent.id}/deploy`,
+  );
+  assertApiError(missingApproval, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(missingApproval.body),
+    /Cannot verify Namespace repository network grants/,
+  );
+  assert.deepEqual(
+    await controller.transact((unit) =>
+      unit.revisions.listRevisions(unapprovedNamespace.id, unapprovedAgent.id),
+    ),
+    [],
+  );
+  assertSteps();
+  assert.deepEqual(await readRevisions(), []);
+
+  const desired = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, []);
+  const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", {
+    namespaceId: namespace.id,
+    resourceId: desired.id,
+  });
+  const denied = await fixture.request("POST", `${path}/deploy`);
+  assertApiError(denied, 403, "FORBIDDEN");
+  assert.match(JSON.stringify(denied.body), /SandboxPolicy read/);
+  assertSteps();
+  assert.deepEqual(await readRevisions(), []);
+  liftRestriction(fixture.policy, deniedRead);
+
+  const apply = (revisionId: string, expectedVersion: number) =>
+    fixture.request("POST", `${policyPath}/apply`, { body: { revisionId, expectedVersion } });
+  // The saved deny-all policy cannot be applied to the previous, ordinary revision.
+  const enableLegacy = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${legacy.id}/sandbox-policy/networking/editing`,
+    { body: { enabled: true } },
+  );
+  assert.equal(enableLegacy.status, 200);
+  const legacyPolicy = await setDesiredRepositoryPolicy(controller, namespace.id, legacy.id, []);
+  const savedApply = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${legacy.id}/sandbox-policy/networking/apply`,
+    {
+      body: { revisionId: previous.revision.id, expectedVersion: legacyPolicy.version },
+    },
+  );
+  assertApiError(savedApply, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(savedApply.body),
+    /confirm its workload has stopped\. Applying the saved policy requires a deployment that can enforce it\./,
+  );
+
+  const deployed = await fixture.deployAgent(namespace.id, agent.id);
+  providerDefaults.repositoryAccess.state = "changed after admission";
+  const revision = (await readRevisions()).find(({ id }) => id === deployed.id);
+  assert.deepEqual(revision?.sandboxPolicy, {
+    driverId: sandbox.id,
+    implementation: sandbox.implementation,
+    version: desired.version,
+    additions: [],
+    defaults: { repositoryAccess: { state: "deny-all" } },
+    repositoryNetworkPolicy: {
+      version: 1,
+      grants: [],
+      identity: '{"version":1,"grants":[]}',
+    },
+  });
+  const policyChecks = ["admit Sandbox repository policy", "validate policy"];
+  const beforeProvisioning = [
+    ...policyChecks,
+    "admit revision",
+    "snapshot runtime inputs",
+    "credential status",
+  ];
+  assertSteps(...beforeProvisioning);
+  const denyAllContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
+  assert.deepEqual(denyAllContext?.sandboxPolicy, revision?.sandboxPolicy);
+
+  await fixture.activateRevision(namespace.id, agent.id, deployed.id);
+  checkedResponse(
+    fixture,
+    await fixture.request("PUT", policyPath, {
+      body: { expectedVersion: desired.version, additions: [] },
+    }),
+    SandboxPolicyResponse,
+  );
+  assert.deepEqual((await readPolicy(policyPath)).policy.repositoryNetworkPolicy, []);
+  const approved = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, requested);
+  // Omission keeps the desired list; both the desired and deployed lists are explicit here.
+  const activeApply = await apply(deployed.id, approved.version);
+  assertApiError(activeApply, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(activeApply.body),
+    /confirm its workload has stopped\. Applying the saved policy requires a deployment that can enforce it\./,
+  );
+  assert.deepEqual(
+    await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, agent.id)),
+    approved,
+  );
+  assert.equal((await readRevisions()).length, 1);
+
+  const repositoryDeployment = await fixture.deployAgent(namespace.id, agent.id);
+  const repositoryRevision = (await readRevisions()).find(
+    ({ id }) => id === repositoryDeployment.id,
+  );
+  assert.deepEqual(repositoryRevision?.sandboxPolicy, {
+    driverId: sandbox.id,
+    implementation: sandbox.implementation,
+    version: approved.version,
+    additions: [],
+    defaults: {
+      repositoryAccess: { grants: [{ repository: "example/approved", access: "read" }] },
+    },
+    repositoryNetworkPolicy: {
+      version: 1,
+      grants: [{ repository: "example/approved", access: "read" }],
+      identity: '{"version":1,"grants":[{"repository":"example/approved","access":"read"}]}',
+    },
+  });
+  assertSteps(...beforeProvisioning);
+  const acceptedContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
+  assert.deepEqual(acceptedContext?.sandboxPolicy, repositoryRevision?.sandboxPolicy);
+  assert.equal(acceptedContext?.sandboxDriverId, sandbox.id);
+
+  const freshAgent = await createAgent(namespace.id, "Fresh policy admission Agent");
+  const freshPath = `/namespaces/${namespace.id}/agents/${freshAgent.id}`;
+  const freshPolicyPath = `${freshPath}/sandbox-policy/networking`;
+  const freshEnabled = await fixture.request("PATCH", `${freshPolicyPath}/editing`, {
+    body: { enabled: true },
+  });
+  assert.equal(freshEnabled.status, 200);
+  const freshPolicy = await readPolicy(freshPolicyPath);
+  assert.equal(freshPolicy.repositoryNetworkPolicySaveSupported, false);
+  const freshSaved = await setDesiredRepositoryPolicy(
+    controller,
+    namespace.id,
+    freshAgent.id,
+    requested,
+  );
+  const deployFresh = (guarded = false) =>
+    guarded
+      ? fixture.request("POST", `${freshPath}/deploy-first`, {
+          body: {
+            key: "repository-policy-review",
+            expectedConfigurationId: freshAgent.configurationId,
+            expectedGeneration: 1,
+          },
+        })
+      : fixture.request("POST", `${freshPath}/deploy`);
+  const readFreshRevisions = () =>
+    controller.transact((unit) => unit.revisions.listRevisions(namespace.id, freshAgent.id));
+  // The fresh Agent has no credentials yet, so successful admission must provision them.
+  credentialStatus.mock.mockImplementation(async () => false);
+  // Each revocation is independent. Read and ordinary deployment authority remain granted.
+  for (const [action, kind, resourceId, guarded, message] of [
+    ["manage_policy", "agent", freshAgent.id, false, /Agent manage_policy/],
+    ["update", "sandbox_policy", freshSaved.id, true, /SandboxPolicy update/],
+  ] as const) {
+    const revocation = restrict(fixture.policy, action, kind, {
+      namespaceId: namespace.id,
+      resourceId,
+    });
+    const refused = await deployFresh(guarded);
+    assertApiError(refused, 403, "FORBIDDEN");
+    assert.match(JSON.stringify(refused.body), message);
+    assertSteps();
+    assert.deepEqual(await readFreshRevisions(), []);
+    liftRestriction(fixture.policy, revocation);
+  }
+
+  // The supporting Sandbox admits the exact list, but Compute must also admit this topology.
+  Object.assign(compute, { validateProtectedRepositoryNetworkPolicy: undefined });
+  const unsupportedCompute = await deployFresh();
+  assertApiError(unsupportedCompute, 409, "RESOURCE_CONFLICT");
+  assert.match(JSON.stringify(unsupportedCompute.body), /Compute Driver cannot enforce/);
+  assertSteps("admit Sandbox repository policy");
+  assert.deepEqual(await readFreshRevisions(), []);
+
+  // The same Harness and grants now use another registered Sandbox. Its policy
+  // admission succeeds, but Compute rejects the pairing asynchronously.
+  Object.assign(compute, { validateProtectedRepositoryNetworkPolicy });
+  controller.selectDriver("sandbox", alternateSandbox.id);
+  const incompatibleSandbox = await deployFresh(true);
+  assertApiError(incompatibleSandbox, 409, "RESOURCE_CONFLICT");
+  assert.match(JSON.stringify(incompatibleSandbox.body), /Compute Driver cannot enforce/);
+  const refusedContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
+  assert.equal(refusedContext?.sandboxDriverId, alternateSandbox.id);
+  assert.equal(refusedContext?.sandboxPolicy?.driverId, alternateSandbox.id);
+  assert.deepEqual(refusedContext?.harness, acceptedContext?.harness);
+  assert.deepEqual(
+    refusedContext?.sandboxPolicy?.repositoryNetworkPolicy,
+    acceptedContext?.sandboxPolicy?.repositoryNetworkPolicy,
+  );
+  assertSteps(...policyChecks);
+  assert.deepEqual(await readFreshRevisions(), []);
+
+  controller.selectDriver("sandbox", sandbox.id);
+  admitRevision.mock.mockImplementationOnce(() => {
+    deploymentSteps.push("admit revision");
+    throw new ResourceStateConflictError("Compute refused the candidate revision.");
+  });
+  const incompatibleRevision = await deployFresh(true);
+  assertApiError(incompatibleRevision, 409, "RESOURCE_CONFLICT");
+  assert.match(JSON.stringify(incompatibleRevision.body), /Compute refused the candidate revision/);
+  assertSteps(...policyChecks, "admit revision");
+  assert.deepEqual(await readFreshRevisions(), []);
+
+  // Replace the approving Repo Driver while Compute is validating that exact policy.
+  // The request must refuse before touching the fresh Agent's runtime credentials.
+  validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
+    await validatePolicy(context);
+    controller.selectDriver("repo", replacementPolicy.id);
+  });
+  const changedOwner = await deployFresh();
+  assertApiError(changedOwner, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(changedOwner.body),
+    /Drivers changed during repository network policy admission/,
+  );
+  assertSteps(...policyChecks);
+  assert.deepEqual(await readFreshRevisions(), []);
+  controller.selectDriver("repo", namespacePolicy.id);
+
+  // A Repo can revoke Namespace permission without changing its registration or method.
+  let namespaceAllowsGrant = true;
+  const allows = () => namespaceAllowsGrant;
+  Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+    configurable: true,
+    value: allows,
+  });
+  try {
+    const statusCalls = credentialStatus.mock.callCount();
+    const provisioningCalls = provisionCredentials.mock.callCount();
+    validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
+      await validatePolicy(context);
+      namespaceAllowsGrant = false;
+    });
+    const denied = await deployFresh();
+    assertApiError(denied, 409, "RESOURCE_CONFLICT");
+    assertSteps(...policyChecks);
+    assert.equal(credentialStatus.mock.callCount(), statusCalls);
+    assert.equal(provisionCredentials.mock.callCount(), provisioningCalls);
+    assert.deepEqual(await readFreshRevisions(), []);
+  } finally {
+    Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+  }
+
+  // Replacing the approving method with an accessor during Compute validation
+  // invalidates the original approval. Refuse before reading credential status.
+  const approvalGetter = t.mock.fn(() => () => true);
+  try {
+    validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
+      await validatePolicy(context);
+      Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+        configurable: true,
+        get: approvalGetter,
+      });
+    });
+    const changedMethod = await deployFresh(true);
+    assertApiError(changedMethod, 409, "RESOURCE_CONFLICT");
+    assert.match(
+      JSON.stringify(changedMethod.body),
+      /Drivers changed during repository network policy admission/,
+    );
+    assertSteps(...policyChecks);
+    assert.equal(approvalGetter.mock.callCount(), 0);
+    assert.deepEqual(await readFreshRevisions(), []);
+  } finally {
+    Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+  }
+
+  // Neither an immediate approval failure nor a getter that fails after the
+  // credential status check may expose Driver diagnostics or provision credentials.
+  for (const late of [false, true]) {
+    await t.test(late ? "approval recheck throws" : "approval throws", async (t) => {
+      const diagnostic = `synthetic repository approval failure ${randomUUID()}`;
+      const fail = () => {
+        throw new ResourceStateConflictError(diagnostic);
+      };
+      if (late) {
+        credentialStatus.mock.mockImplementationOnce(async () => {
+          Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+            configurable: true,
+            get: fail,
+          });
+          return false;
+        });
+      } else {
+        Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+          configurable: true,
+          value: fail,
+        });
+      }
+      t.after(() => {
+        Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+      });
+      const refused = await deployFresh(late);
+      assertSteps(...(late ? beforeProvisioning : []));
+      assert.deepEqual(await readFreshRevisions(), []);
+      assert.deepEqual(
+        await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, freshAgent.id)),
+        freshSaved,
+      );
+      const { error } = checkedResponse(fixture, refused, ErrorResponse, 409);
+      assert.equal(error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        error.message,
+        late
+          ? "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying."
+          : "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
+      );
+      assert.ok(!JSON.stringify(refused.body).includes(diagnostic));
+    });
+  }
+
+  // An asynchronous Driver cannot grant repository access, even if it resolves
+  // to true. Its rejection must stay within this request's refusal path.
+  for (const approve of [async () => true, async () => Promise.reject(new Error("refused"))]) {
+    Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+      configurable: true,
+      value: () => approve() as unknown as boolean,
+    });
+    try {
+      const refused = await deployFresh();
+      assertApiError(refused, 409, "RESOURCE_CONFLICT");
+      assert.match(
+        JSON.stringify(refused.body),
+        /Cannot verify Namespace repository network grants/,
+      );
+      assertSteps();
+      assert.deepEqual(await readFreshRevisions(), []);
+    } finally {
+      Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+    }
+  }
+
+  // Each awaited credential operation can invalidate the approved topology.
+  // Refuse before the next effect even though the earlier Compute checks passed.
+  const beforeWrite = [...beforeProvisioning, "credential provisioning"];
+  for (const [operation, configured, expectedSteps] of [
+    [credentialStatus, false, beforeProvisioning],
+    [provisionCredentials, true, beforeWrite],
+  ] as const) {
+    operation.mock.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      controller.selectDriver("sandbox", alternateSandbox.id);
+      return configured;
+    });
+    const changedSandbox = await deployFresh();
+    assertApiError(changedSandbox, 409, "RESOURCE_CONFLICT");
+    assert.match(
+      JSON.stringify(changedSandbox.body),
+      /Drivers changed during repository network policy admission/,
+    );
+    assertSteps(...expectedSteps);
+    assert.deepEqual(await readFreshRevisions(), []);
+    controller.selectDriver("sandbox", sandbox.id);
+  }
+
+  // With the original selection and the same permissions, the first deploy can write.
+  const confirmed = await fixture.deployAgent(namespace.id, freshAgent.id);
+  assertSteps(...beforeWrite);
+  const freshRevisions = await readFreshRevisions();
+  assert.deepEqual(
+    freshRevisions.map(({ id }) => id),
+    [confirmed.id],
+  );
+  assert.deepEqual(freshRevisions[0]?.sandboxPolicy?.repositoryNetworkPolicy?.grants, requested);
+
+  await t.test(
+    "Channel provider receives a bound Secret only after scoped policy admission",
+    async (channelTest) => {
+      const token = await fixture.createSecret(
+        namespace.id,
+        "Channel credential",
+        "synthetic-channel-value",
+      );
+      const createBoundAgent = (name: string) =>
+        fixture.createAgent(namespace.id, name, createHarnessConfiguration("openclaw", "gpt-4.1"), {
+          executionMode: "dedicated",
+          secretBindings: { CHANNEL_TOKEN: { source: token.ref, delivery: { type: "env" } } },
+        });
+      const bound = await createBoundAgent("Scoped Agent with a Channel");
+      const unscoped = await createBoundAgent("Unscoped Agent with a Channel");
+      const boundPath = `/namespaces/${namespace.id}/agents/${bound.id}`;
+      const unscopedPath = `/namespaces/${namespace.id}/agents/${unscoped.id}`;
+      const intent = {
+        key: "scoped-channel",
+        expectedConfigurationId: bound.configurationId,
+        expectedGeneration: 1,
+      };
+      await setDesiredRepositoryPolicy(controller, namespace.id, bound.id, requested);
+      const channel = new SlackChannelDriver(async () =>
+        assert.fail("Unexpected real provider call"),
+      );
+      const provider = t.mock.fn(async () => {});
+      const channelRefusals: unknown[] = [];
+      channel.validateCredentials = async (_values, use) => {
+        try {
+          await use("CHANNEL_TOKEN", "channel", provider);
+        } catch (error) {
+          channelRefusals.push(error);
+          throw error;
+        }
+      };
+      controller.registerDriver(channel);
+      controller.selectDriver("channel", channel.id);
+      const deployBound = (guarded: boolean) =>
+        guarded
+          ? fixture.request("POST", boundPath + "/deploy-first", { body: intent })
+          : fixture.request("POST", boundPath + "/deploy");
+      const readIamGrants = () =>
+        controller.transact(async (unit) => ({
+          roles: await unit.iamPolicy.listRoles(namespace.id),
+          bindings: await unit.iamPolicy.listAccessBindings(namespace.id),
+        }));
+      const beforeIam = await readIamGrants();
+      const expectRefusal = async (guarded: boolean, status: number, code: string) => {
+        const credentialStatusCalls = credentialStatus.mock.callCount();
+        const provisionCalls = provisionCredentials.mock.callCount();
+        const reply = await deployBound(guarded);
+        assertApiError(reply, status, code);
+        assert.equal(provider.mock.callCount(), 0);
+        assert.equal(credentialStatus.mock.callCount(), credentialStatusCalls);
+        assert.equal(provisionCredentials.mock.callCount(), provisionCalls);
+        assert.deepEqual(
+          await controller.transact((unit) => unit.revisions.listRevisions(namespace.id, bound.id)),
+          [],
+        );
+        assert.deepEqual(await readIamGrants(), beforeIam);
+        return reply;
+      };
+
+      // Prove the error crossed the bound Secret reader after the Secret backend opened it.
+      // A failure in an earlier preflight could give the same HTTP response.
+      const privateDiagnostic = "private gateway location hidden from deploy logs";
+      const validateGatewaySettings = t.mock.fn(() => {});
+      Object.assign(compute, { validateGatewaySettings });
+      const warn = t.mock.method(fixture.app.log, "warn");
+      try {
+        for (const guarded of [false, true]) {
+          const route = guarded ? "/deploy-first" : "/deploy";
+          await channelTest.test(
+            `${route} preserves a sanitized bound Secret policy preview outage`,
+            async () => {
+              const previousSecretOperations = secretDriver.calls.length;
+              const previousRefusals = channelRefusals.length;
+              const previousCalls = warn.mock.callCount();
+              validateGatewaySettings.mock.mockImplementationOnce(() => {
+                throw new DependencyUnavailableError(privateDiagnostic);
+              });
+              const reply = await expectRefusal(guarded, 503, "DEPENDENCY_UNAVAILABLE");
+              assert.deepEqual(
+                secretDriver.calls
+                  .slice(previousSecretOperations)
+                  .filter((call) => call.operation === "withValue")
+                  .map(({ secret }) => secret.id),
+                [token.id],
+              );
+              const refusals = channelRefusals.slice(previousRefusals);
+              assert.equal(refusals.length, 1);
+              const [refusal] = refusals;
+              assert.ok(refusal instanceof DependencyUnavailableError);
+              assert.equal(
+                refusal.message,
+                "A required dependency was unavailable during repository policy admission.",
+              );
+              const warnings = warn.mock.calls
+                .slice(previousCalls)
+                .map(({ arguments: args }) => args);
+              const logged = JSON.stringify(warnings);
+              assert.ok(logged.includes("http.dependency_unavailable"));
+              assert.ok(logged.includes(reply.headers.get("x-request-id") ?? "missing request ID"));
+              assert.ok(
+                !logged.includes(privateDiagnostic),
+                "private Driver message reached request logs",
+              );
+              assert.ok(!JSON.stringify(reply.body).includes(privateDiagnostic));
+            },
+          );
+        }
+      } finally {
+        warn.mock.restore();
+      }
+
+      validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async () => {
+        throw new Error("unsupported topology");
+      });
+      const incompatibleTopology = await expectRefusal(false, 409, "RESOURCE_CONFLICT");
+      assert.match(JSON.stringify(incompatibleTopology.body), /Compute Driver cannot enforce/);
+      admitRevision.mock.mockImplementationOnce(() => {
+        throw new ResourceStateConflictError(privateDiagnostic);
+      });
+      const unexpectedConflict = await expectRefusal(false, 409, "RESOURCE_CONFLICT");
+      assert.ok(!JSON.stringify(unexpectedConflict.body).includes(privateDiagnostic));
+      Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+        value: () => false,
+        configurable: true,
+      });
+      try {
+        await expectRefusal(true, 409, "RESOURCE_CONFLICT");
+      } finally {
+        Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+      }
+      const denied = restrict(fixture.policy, "operate", "secret", {
+        namespaceId: namespace.id,
+        resourceId: token.id,
+      });
+      const legacyDenied = await fixture.request("POST", unscopedPath + "/deploy");
+      assertApiError(legacyDenied, 403, "FORBIDDEN");
+      await expectRefusal(true, 403, "FORBIDDEN");
+      liftRestriction(fixture.policy, denied);
+
+      const first = await deployBound(true);
+      assert.equal(first.status, 202);
+      assert.equal(provider.mock.callCount(), 1);
+      // Receipt replay must bypass a later Channel outage and return the original result.
+      const refuseUse = restrict(fixture.policy, "operate", "secret", {
+        namespaceId: namespace.id,
+        resourceId: token.id,
+      });
+      try {
+        const replay = await deployBound(true);
+        assert.equal(replay.status, 202);
+        assert.deepEqual(replay.data, first.data);
+        assert.equal(provider.mock.callCount(), 1);
+      } finally {
+        liftRestriction(fixture.policy, refuseUse);
+      }
+
+      // The Channel provider may see the Secret. Its thrown error is never an admission error.
+      provider.mock.mockImplementationOnce(async () => {
+        throw new DependencyUnavailableError("private Channel provider request detail");
+      });
+      const legacyFailure = await fixture.request("POST", unscopedPath + "/deploy");
+      assertApiError(legacyFailure, 503, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+      assert.equal(provider.mock.callCount(), 2);
+      assert.deepEqual(
+        await controller.transact((unit) =>
+          unit.revisions.listRevisions(namespace.id, unscoped.id),
+        ),
+        [],
+      );
+
+      // Once a legacy revision exists, scoped admission still sends the operator recovery.
+      const legacyRevision = await fixture.deployAgent(namespace.id, unscoped.id);
+      await setDesiredRepositoryPolicy(controller, namespace.id, unscoped.id, requested);
+      const unscopedHistory = await fixture.request("POST", unscopedPath + "/deploy");
+      assertApiError(unscopedHistory, 409, "RESOURCE_CONFLICT");
+      assert.match(JSON.stringify(unscopedHistory.body), /Create a new Agent/);
+      assert.equal(provider.mock.callCount(), 3);
+      const revisions = await controller.transact((unit) =>
+        unit.revisions.listRevisions(namespace.id, unscoped.id),
+      );
+      assert.deepEqual(
+        revisions.map(({ id }) => id),
+        [legacyRevision.id],
+      );
+    },
+  );
+});
+
+test("deploy refuses an explicit repository policy without a supported Sandbox Driver or delegation", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const controller: OpenClawController | undefined = fixture.controller;
+  assert.ok(controller);
+  const namespace = await fixture.createNamespace("Unavailable repository policy", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unsupported policy Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const deploy = () =>
+    fixture.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
+  for (const { requested, code, path } of [
+    { requested: [], code: "INVALID_VALUE", path: "/repositoryNetworkPolicy" },
+    {
+      requested: [
+        { repository: "example/project", access: "read" } satisfies RepositoryNetworkGrant,
+      ],
+      code: "OUTSIDE_CEILING",
+      path: "/repositoryNetworkPolicy/0",
+    },
+  ]) {
+    await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, requested);
+    const refused = await deploy();
+    assertApiError(refused, 409, "RESOURCE_CONFLICT");
+    const { error } = errorBody(JSON.stringify(refused.body));
+    assert.equal(error.details?.[0]?.code, code);
+    assert.equal(error.details?.[0]?.path, path);
+    assert.deepEqual(
+      await controller.transact((unit) => unit.revisions.listRevisions(namespace.id, agent.id)),
+      [],
+    );
+  }
 });
 
 test("public Agent revisions return the selected binding without private credential resolution metadata", async (t) => {

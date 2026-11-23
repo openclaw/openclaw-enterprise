@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { caAndLeaf } from "./certificates.mjs";
+import { caAndLeaf } from "./certificates.ts";
 
 const execute = promisify(execFile);
 

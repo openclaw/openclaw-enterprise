@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
+import { chartTooling, helmTemplate } from "../helpers/production-chart.ts";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -33,7 +33,7 @@ function baseInput(overrides = {}) {
       controllerImage: `registry.example.invalid/openclaw-enterprise/controller@sha256:${digestA}`,
       authBaseUrl: "https://console.oce.example.internal",
       adminEmail: "admin@example.invalid",
-      bootstrapPasswordClaimName: "occ-bootstrap-admin-password",
+      bootstrapCredentialsSecretName: "occ-bootstrap-credentials",
       apiClients: [{ namespace: "operator-tools", podLabels: { app: "occ-operator" } }],
       databaseCidrs: ["192.0.2.10/32"],
       clusterCidrs: ["192.0.2.11/32"],
@@ -57,7 +57,8 @@ function baseInput(overrides = {}) {
       transportSecretPrefix: "openclaw-agent-transport",
     },
     channels: {
-      managedSlackProxy: true,
+      managedEgress: true,
+      excludedCidrs: ["10.0.0.0/8", "192.0.2.11/32"],
     },
     ...overrides,
   };
@@ -80,29 +81,15 @@ function codexInput(overrides = {}) {
   };
 }
 
-function render(
-  profile,
-  input,
-  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
-  root = repository,
-  dnsServer,
-) {
+function render(profile, input, directory = fileTemporaryDirectory(`oce-profile-${profile}-`)) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
-  const dnsPreload = join(directory, "dns-preload.mjs");
-  if (dnsServer !== undefined) {
-    writeFileSync(
-      dnsPreload,
-      `import dns from "node:dns/promises"; dns.setServers([${JSON.stringify(dnsServer)}]);\n`,
-    );
-  }
   let summary;
   try {
     summary = execFileSync(
       process.execPath,
       [
-        ...(dnsServer === undefined ? [] : ["--import", dnsPreload]),
-        "scripts/render-installation-profile.mjs",
+        "scripts/render-installation-profile.ts",
         "--profile",
         profile,
         "--input",
@@ -110,7 +97,7 @@ function render(
         "--out-dir",
         directory,
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: repository, encoding: "utf8" },
     );
   } catch (error) {
     error.profileRendererOutput = `${error.stdout ?? ""}${error.stderr ?? ""}`;

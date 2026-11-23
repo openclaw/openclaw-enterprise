@@ -3,14 +3,18 @@ import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
-import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
+import {
+  createOpenShellGitDenial,
+  gitRemovalDenialCategory,
+  gitRemovalDenialCommand,
+} from "../helpers/openshell-git-denial.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
@@ -29,8 +33,14 @@ test(
         after: t.after.bind(t),
         diagnostic: t.diagnostic.bind(t),
       } as TestContext;
-      const fixture = await createOpenShellGitInstallation(context, { witnessIssuedGit: true });
+      const fixture = await createOpenShellGitInstallation(context, {
+        witnessIssuedGit: true,
+        onSetupStep: (step) => {
+          phase = step;
+        },
+      });
       const { origin, gatewayClient, workspace, checkpoint } = fixture;
+      phase = "deploy finite Agent";
       const a = await deployFiniteAgent(context, fixture);
       const remaining = () => {
         context.signal.throwIfAborted();
@@ -46,6 +56,7 @@ test(
         remaining();
         assert.deepEqual((await a.readExecution()).identity, a.original.identity);
       };
+      phase = "discover Git executable";
       const execute = createManagedWorkloadExec(context, {
         backend: fixture.gatewayBackend,
         gatewayClient,
@@ -181,15 +192,9 @@ test(
         const startedAt = Date.now();
         // The command returns only a fixed category. Missing Git, success, or a
         // generic transport error without supplier evidence cannot pass this case.
-        const result = await execute(a.target, [
-          "sh",
-          "-ceu",
-          "set +e; error=$(" +
-            git +
-            ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
-        ]);
+        const result = await execute(a.target, gitRemovalDenialCommand(git));
         const endedAt = Date.now();
-        const category = result.stdout.toString("utf8");
+        const category = gitRemovalDenialCategory(result);
         if (category === "signed") {
           assert.equal(postDetach, false, "completed detach must refuse before HTTP");
           const fresh = await observeUntil(
@@ -213,7 +218,6 @@ test(
             workerUid: signedBefore.workerUid,
           });
         } else {
-          assert.equal(category, "transport");
           const markerHost = `git-retention-${randomUUID()}.invalid`;
           await execute(a.target, [
             "node",

@@ -9,15 +9,15 @@ import { Worker } from "node:worker_threads";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
-import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
   controlRequest,
   createLoopbackServiceConfiguration,
   gatewayRequest,
-} from "../fixtures/repository-credentials/service.mjs";
-import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.ts";
 import test from "node:test";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
@@ -294,7 +294,15 @@ test(
       { "x-admission-id": admissionId },
     );
     assert.equal(opened.status, 201);
-    const sessionId = opened.body.session.sessionId;
+    const { body } = opened;
+    assert.ok(body !== null && typeof body === "object");
+    assert.ok("session" in body && body.session !== null && typeof body.session === "object");
+    assert.ok("sessionId" in body.session && typeof body.session.sessionId === "string");
+    assert.ok("bearer" in body && typeof body.bearer === "string");
+    const {
+      session: { sessionId },
+      bearer,
+    } = body;
     await f.state.transact(async (u) =>
       assert.ok(
         await u.repositorySessions.advanceAttempt({
@@ -317,12 +325,11 @@ test(
       ).rows[0].n;
     const get = () =>
       gatewayRequest(
-        { config, listeners, tls: f.gh.tls, opened: opened.body },
+        { config, listeners, tls: f.gh.tls, opened: { bearer } },
         "/fixture/repository.git/info/refs?service=git-upload-pack",
         {
           headers: {
-            authorization:
-              "Basic " + Buffer.from("gateway-session:" + opened.body.bearer).toString("base64"),
+            authorization: "Basic " + Buffer.from("gateway-session:" + bearer).toString("base64"),
           },
         },
       );
@@ -338,7 +345,9 @@ test(
       new URL("../fixtures/prepared-standing-withdraw-worker.ts", import.meta.url),
       { workerData: { approval, admissionId, shared } },
     );
-    resources.after(() => worker.terminate());
+    resources.after(async () => {
+      await worker.terminate();
+    });
     assert.deepEqual(await once(worker, "message"), ["ready"]);
     const workerExit = once(worker, "exit");
     let observedGate = 0;

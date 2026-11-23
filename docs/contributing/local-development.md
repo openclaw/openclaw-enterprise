@@ -24,14 +24,17 @@ before changing shared dependencies or hook configuration.
 - [Local Setup](../guides/quickstart.md) starts the local Kubernetes platform and
   leads to deploying an Agent.
 - [Local Kubernetes development](../guides/deploy/local-kubernetes-development.md)
-  covers the contributor profile and health checks. Once it is running, use the
-  [edit and rebuild loop](../guides/deploy/local-kubernetes-development.md#rebuild-after-a-source-edit)
-  to reload the API, worker, or console without resetting PostgreSQL or the
-  Kubernetes cluster. The console is served by the controller.
+  covers the contributor profile and health checks. Rebuilding deletes the local
+  cluster and its PostgreSQL data. Use the
+  [rebuild procedure](../guides/deploy/local-kubernetes-development.md#rebuild-after-a-source-edit)
+  only for a disposable installation. For persistent Helm installations on k3d,
+  follow the [upgrade checklist](../guides/deploy/upgrade-checklist.md), then the
+  [image upgrade procedure](../guides/deploy/local-k3d-image-upgrade.md). The
+  console is served by the controller.
 - [Testing](../testing/README.md) covers isolated PostgreSQL, Docker, Kubernetes,
   and browser checks. Use the environment required by the behavior you changed.
 - [OpenShell tests](../testing/openshell.md#start-a-reusable-development-environment)
-  provide an owned, reusable v0.1.8 cluster for Sandbox Driver development and
+  provide an owned, reusable v0.1.9 cluster for Sandbox Driver development and
   its real model and containment proof. It is separate from the normal
   fail-closed OpenShell development profile and does not make OpenShell a
   supported production Agent runtime.
@@ -44,11 +47,11 @@ The SHA identifies the base commit; an image also includes local source edits.
 Building a controller requires a Git checkout. Selecting an existing controller
 image keeps that image's metadata.
 
-For a standalone controller build, use the same helper. Replace the base image
-with the approved immutable Node image for your environment:
+To build a standalone controller image, supply the approved immutable Node
+image for your environment.
 
 ```bash
-node scripts/build-controller.mjs docker --target runtime \
+node scripts/build-controller.ts docker --target runtime \
   --build-arg NODE_BASE_IMAGE='<approved-node-image@sha256:digest>' \
   --tag openclaw-enterprise-controller:development
 ```

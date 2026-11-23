@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-13
-last_updated_session: authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4
+updated: 2026-11-22
+last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
 ---
 
 # Console Agent creation
@@ -18,7 +18,7 @@ user-visible behavior.
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the
   form (`renderAgentForm`) and submits it.
-- `apps/controller/src/console/agents/plugin-fields.mjs:createPluginFields` and
+- `apps/controller/src/console/agents/plugin-fields.mts:createPluginFields` and
   `agents/repositories.mts:createRepositoryFields` supply the plugin and repository fields.
 - A signed-in caller with Namespace Agent `create`; each write is authorized again.
 
@@ -66,7 +66,23 @@ list does the same, and **Use Preset** refuses it. A permission reread, a refuse
 inline Secret create reads the answer again. A failed read keeps the last answer, or marks
 none before any answer.
 
+`secret-picker.mts:bindSecret` waits for the permission answer. During a model Secret
+choice, `renderAgentForm` blocks submission. A provider or authentication method change
+calls `clearModelCredential`, which clears the choice and its hint. A late answer cannot
+restore that choice or replace a newer one. Accepting a choice marks the draft as edited.
+
 ### 2. Choose a model and starter Configuration
+
+`create.mts:updateModelConfiguration` preserves authored `plugins.allow` and
+`plugins.deny` while changing Codex runtime wiring. Missing and empty allowlists
+remain unrestricted. An explicit `plugins.entries.codex.enabled: false` survives
+a round trip. Dedicated Codex enables the plugin at startup if the draft passes
+admission. Returning to OpenClaw through the Harness selector or model JSON restores
+the original disabled entry when the projected entry is unchanged. Operator edits
+and deletions to the Dedicated projection of an originally disabled native Codex
+entry survive the switch. The form uses the existing server preflight and
+provisioning admission. A refusal leaves the editable
+Configuration unchanged. See [runtime admission](../../reference/harness-execution.md#native-runtime-selection).
 
 `create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
@@ -78,7 +94,7 @@ sets the button label, visibility, and required input; the toggle moves focus.
 Returning preserves credentials and unrelated Configuration. Saved Configuration
 and pending requests lock the toggle.
 
-If a change needs to update `plugins.allow` for Codex and the field is malformed,
+If Codex model, provider or Harness controls encounter malformed `plugins.allow`,
 the form keeps the JSON as typed and focuses **Configuration JSON**. Use an
 array of strings or remove the field. A refused model selection, provider change,
 or Harness change keeps the last applied model, provider, Harness, and execution
@@ -117,15 +133,14 @@ discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILA
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
-After authorizing the capability read, `packages/occ/src/index.ts:capabilities`
-checks the selected Credential Proxy's profile without repository access. A
-confirmed repository-only refusal adds `repositoryAccessRequired` to both
-capability responses. An unavailable registration leaves it absent.
-`create.mts:renderAgentForm` explains this requirement until the repository
-selection has approved access and pauses immediate provisioning. It still allows ordinary drafts.
-Deployment admission checks the selected profile and repository grants again.
+The credential catalog includes ordinary Gateway sources even when a Git Proxy
+is selected. Repository access remains optional in the form. An ordinary Gateway
+source without protected sources or repository bindings needs no Proxy admission.
+Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
+
+`apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
@@ -165,8 +180,22 @@ it sent, and the Agent name, Namespace and Configuration. Before granting creden
 reads that Agent and confirms its service principal matches the create response. A mismatch
 stops the grant; **Retry credential access** reads the saved Agent again without recreating it.
 An unrecognized success leaves the outcome unknown and blocks another create.
+On an ordinary Agent POST `403`, `create.mts:agentSaveAccessReason` compares
+the complete API denial with the request. It checks Agent create in this Namespace,
+Configuration read on the saved ID, and Configuration update for browser setup.
+It names Secret operate or ServiceAccount read for the selected Harness reference,
+or CredentialSource operate for a submitted source. An unnamed Secret refusal
+identifies the permission alone. Other denials stay generic. Members can ask an
+Installation administrator to check access. Administrators can review grants and
+IAM Restrictions. The alert keeps the request ID. Once access changes, a manual
+**Create Agent** retry in this draft reuses the Configuration.
+**Cancel** warns that the saved Configuration remains and a fresh draft can save
+another. An uncertain Agent write stays locked.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
+After a known registration refusal, empty checks retain the refusal and the saved Secret.
+They do not retry writes. A confirmed validation refusal unlocks source correction;
+other known refusals keep the same registration for an explicit **Create Agent** retry.
 If the Console times out waiting for validation, it stops before the save step,
 keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
@@ -183,7 +212,7 @@ no IAM request and opens the saved draft: the member's
 After a refused Installation read, **Your access** shows whether Agent `create`
 is allowed, refused, or unchecked. When allowed,
 `create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
-`packages/occ/src/index.ts:getNamespaceAgentCapabilities` checks
+`packages/occ/src/installation-capabilities.ts:getNamespaceAgentCapabilities` checks
 [Agent `create` on the requested collection](../../reference/authorization.md#authorization-decisions)
 before resolving that Namespace by ID. The API returns `403` on denial and `404`
 if an authorized request names a missing Namespace. The lookup needs no
@@ -209,8 +238,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Debugging and Verification
 
-- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.ts`, and
-  `console-agent-repositories.test.ts` exercise the form against the real controller.
+- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.ts`,
+  `console-agent-repositories.test.ts`, and `console-create-agent-member.test.ts`
+  exercise the form against the real controller.
 - A refused write shows the API's reason and a request ID; inspect saved
   Configuration and Agent IDs before retrying.
 
@@ -226,9 +256,20 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
+- 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-18 10:15: Preserve authored `plugins.allow`, `plugins.deny` and an explicitly disabled native Codex entry across Harness switches, including unfinished JSON recovery. (authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f - 27aa612d2bafd819c734942d59125084a6c658eb)
+
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 
+- 2026-11-12 19:08: Limit the Proxy bypass to Agents with ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
+
+- 2026-11-12 18:36: Preserve credential registration refusals across empty status checks. (authoring-run/e0dff858-3588-44ee-9ffa-b67c8dd4dfe5 - 4478a18a7)
+
 - 2026-11-12 16:13: Trace Agent create authorization, Namespace lookup, and browser-access capability discovery. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-10 13:36: Show a confirmed repository-only Credential Proxy requirement before provisioning. (authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1 - 07c2a00c82e8a10635533eb1a27b110b52b90f14)
 - 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

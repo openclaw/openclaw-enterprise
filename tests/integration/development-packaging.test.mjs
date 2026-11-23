@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.mjs";
+import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.ts";
 
 import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -18,7 +18,7 @@ function volumeMounts(service) {
   });
 }
 
-test("development packaging isolates bootstrap service key output to the bootstrap service", async () => {
+test("development packaging isolates precreated credential inputs to the bootstrap service", async () => {
   const configuration = composeConfiguration();
   const { bootstrap, controller, migrate, worker } = configuration.services;
   assert.ok(bootstrap);
@@ -29,11 +29,32 @@ test("development packaging isolates bootstrap service key output to the bootstr
   assert.deepEqual(bootstrap.command, ["scripts/bootstrap-installation.mjs"]);
   assert.equal(bootstrap.environment.NODE_ENV, "development");
   assert.equal(
-    bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE,
-    "/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
+    bootstrap.environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE,
+    "/run/secrets/admin-password",
+  );
+  assert.equal(
+    bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+    "/run/secrets/admin-service-key",
+  );
+  const secretName = (secret) => (typeof secret === "string" ? secret : secret.source);
+  assert.deepEqual(bootstrap.secrets.map(secretName).sort(), [
+    "bootstrap-admin-password",
+    "bootstrap-admin-service-key",
+  ]);
+  assert.deepEqual(bootstrap.secrets.map(({ target }) => target).sort(), [
+    "admin-password",
+    "admin-service-key",
+  ]);
+  assert.equal(
+    configuration.secrets["bootstrap-admin-password"].file,
+    "/tmp/occ-packaging-admin-password",
+  );
+  assert.equal(
+    configuration.secrets["bootstrap-admin-service-key"].file,
+    "/tmp/occ-packaging-admin-service-key",
   );
   assert.equal(bootstrap.environment.OPENCLAW_DEV_EMAIL, "admin@openclaw.local");
-  assert.equal(bootstrap.environment.OPENCLAW_DEV_PASSWORD, "openclaw-development-password");
+  assert.equal(bootstrap.environment.OPENCLAW_DEV_PASSWORD, undefined);
   assert.equal(bootstrap.environment.OPENCLAW_DEV_INSTALLATION_NAME, "OpenClaw Local Development");
   assert.equal(controller.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, undefined);
   assert.equal(controller.environment.OPENCLAW_DEV_EMAIL, undefined);
@@ -48,20 +69,28 @@ test("development packaging isolates bootstrap service key output to the bootstr
   assert.equal(bootstrap.depends_on.migrate.condition, "service_completed_successfully");
   assert.equal(bootstrap.depends_on.migrate.required ?? true, true);
 
-  assert.ok(Object.hasOwn(configuration.volumes, "occ_bootstrap_data"));
-  const bootstrapMounts = volumeMounts(bootstrap).filter(
-    ({ target }) => target === "/var/lib/openclaw/bootstrap",
-  );
-  assert.equal(bootstrapMounts.length, 1);
-  assert.equal(bootstrapMounts[0].source, "occ_bootstrap_data");
-  assert.equal(bootstrapMounts[0].type ?? "volume", "volume");
-  assert.equal(bootstrapMounts[0].read_only ?? false, false);
-  for (const service of [controller, migrate, worker]) {
+  assert.equal(Object.hasOwn(configuration.volumes, "occ_bootstrap_data"), false);
+  for (const service of Object.values(configuration.services)) {
+    assert.equal(service.environment?.OCC_BOOTSTRAP_PASSWORD_FILE, undefined);
+    assert.equal(service.environment?.OCC_BOOTSTRAP_SERVICE_KEY_FILE, undefined);
     assert.ok(
-      volumeMounts(service).every(({ source, target }) => {
-        return source !== "occ_bootstrap_data" && target !== "/var/lib/openclaw/bootstrap";
-      }),
+      volumeMounts(service).every(
+        ({ source, target }) =>
+          source !== "occ_bootstrap_data" && target !== "/var/lib/openclaw/bootstrap",
+      ),
     );
+    if (service !== bootstrap) {
+      assert.equal(service.environment?.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE, undefined);
+      assert.equal(service.environment?.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, undefined);
+      assert.ok(
+        (service.secrets ?? []).every(
+          (secret) =>
+            !["bootstrap-admin-password", "bootstrap-admin-service-key"].includes(
+              secretName(secret),
+            ),
+        ),
+      );
+    }
   }
 });
 

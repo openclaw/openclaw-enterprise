@@ -13,7 +13,7 @@ async function deliveredImages(t: TestContext) {
     throw new Error("both delivered isolation images are required");
   }
   const { qualifyIsolation } =
-    await import("../fixtures/repository-credentials-isolation/harness.mjs");
+    await import("../fixtures/repository-credentials-isolation/harness.ts");
   return { qualifyIsolation, serviceImage, clientImage };
 }
 

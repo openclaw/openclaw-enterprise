@@ -34,9 +34,9 @@ rendering and applying the routing resources.
 
 ## Install routing prerequisites
 
-Install cert-manager and Envoy Gateway as described in [private routing prerequisites](workspace-routing.md#requirements). The local launcher pins cert-manager 1.18.4 and Envoy Gateway 1.6.7 in `internal/occdev/gateway_k3d.go`; use those versions for the matching local workflow. Verify their download checksums against that source. Wait for their controller Deployments to become available.
+Download the cert-manager and Envoy Gateway versions pinned in the [Kubernetes launcher](../../../internal/occdev/gateway_k3d.go). Verify both original downloads against its SHA-256 values before installation. Install cert-manager as described in [private routing prerequisites](workspace-routing.md#requirements). Wait for its required CRDs to be `Established` and its controller rollouts to complete.
 
-K3s owns its Gateway API CRDs. Wait for `gatewayclasses`, `gateways`, `httproutes` and `referencegrants` under `gateway.networking.k8s.io` to be Established. Remove only those Gateway API CRDs from the Envoy installation manifest before server-side application; retain Envoy's own CRDs. Do not overwrite K3s-owned schemas with an older controller bundle.
+K3s owns its Gateway API CRDs. Wait for `gatewayclasses`, `gateways`, `httproutes` and `referencegrants` under `gateway.networking.k8s.io` to be `Established`. In a private copy of the verified Envoy manifest, omit every complete `CustomResourceDefinition` document whose `metadata.name` ends in `.gateway.networking.k8s.io`. Keep all other documents intact, including Envoy's CRDs. Inspect and apply only the filtered file server-side. Wait for Envoy's required CRDs to be `Established` and its controller rollout to complete. Stop if verification, filtering or readiness fails.
 
 Create `oce-system` and a GatewayClass named `eg` with `spec.controllerName: gateway.envoyproxy.io/gatewayclass-controller`. Wait for the GatewayClass's `Accepted` condition. Create the private routing key once:
 
@@ -52,17 +52,17 @@ For an existing Secret, follow [key rotation](workspace-routing.md#rotate-the-se
 
 ## Render only the routing resources
 
-Create protected `routing-values.yaml` with the following shape. Replace every bracketed value with the actual installation value. The chart validates complete control-plane values during rendering, even when `--show-only` selects routing; the bootstrap, API, database and cluster fields below do not install those services in Kubernetes.
+Create protected `routing-values.yaml` with the following shape. Replace every bracketed value with the actual installation value. Use the owned cluster's `state.json` fields `browserOrigin` for the Console HTTPS origin, including its port, and `nativeAdminDomain` for the Agent domain. The chart requires both even when native administration is disabled. The chart validates complete control-plane values during rendering, even when `--show-only` selects routing; the bootstrap, API, database and cluster fields below do not install those services in Kubernetes.
 
 ```yaml
 images:
   controller: "<approved matching controller image>@sha256:<digest>"
 auth:
-  baseUrl: http://127.0.0.1:3000 # Use the actual published OCC port.
+  baseUrl: "<browserOrigin>"
 bootstrap:
   adminEmail: "<existing development administrator email>"
-  password:
-    claimName: bootstrap-password
+  credentials:
+    secretName: occ-bootstrap-credentials
 api:
   clients:
     - namespace: envoy-gateway-system
@@ -74,6 +74,9 @@ cluster:
   cidrs: ["<k3d node IP>/32"]
   port: 6443
 agentNativeAdmin:
+  enabled: false
+  domain: "<nativeAdminDomain>"
+channelEgress:
   enabled: false
 gatewayRouting:
   enabled: true
@@ -88,16 +91,26 @@ gatewayRouting:
     - "<k3d node IP>/32"
 ```
 
-Render and inspect the resource kinds before applying. There must be no OCC Deployment or PostgreSQL workload in this output:
+List only the remote source addresses. The chart refuses a `/0` prefix; see the [routing reference](../../reference/gateway-routing.md#routing-configuration).
+
+Render the routing file.
 
 ```bash
 helm template openclaw-enterprise deploy/helm/openclaw-enterprise \
   --namespace oce-system -f "$HYBRID_STATE/routing-values.yaml" \
   --show-only templates/gateway-routing.yaml > "$HYBRID_STATE/routing.yaml"
+cat "$HYBRID_STATE/routing.yaml"
+```
+
+Stop if Helm failed or the file is empty or stale. Inspect the output. It must contain only Issuer, Certificate, EnvoyProxy, Gateway, SecurityPolicy and NetworkPolicy resources. Stop if it contains any other kind, an OCC Deployment or a PostgreSQL workload.
+
+```bash
 kubectl --context "$HYBRID_CONTEXT" apply -f "$HYBRID_STATE/routing.yaml"
 kubectl --context "$HYBRID_CONTEXT" -n oce-system wait \
   --for=condition=Programmed gateway/openclaw-enterprise-agent-gateways --timeout=180s
 ```
+
+Stop if apply or wait fails.
 
 Inspect the generated EnvoyProxy's `spec.provider.kubernetes.envoyService.name`, then read that Service in `envoy-gateway-system`. Record the `nodePort` belonging to port 443. Read the generated root Certificate in `oce-system`; copy only its Secret's `tls.crt` to `gateway-ca.crt` in the private state directory. The root Secret name ends in `-root`, not `-root-ca`. Do not copy or expose `tls.key`.
 
@@ -134,9 +147,9 @@ docker compose -f "$HYBRID_STATE/compose.yaml" -p "$HYBRID_PROJECT" \
   up -d --no-deps --force-recreate controller worker-kubernetes
 ```
 
-Create a new Namespace through OCC after it recovers. Its normal provisioning installs the routing-aware policies. Do not patch an earlier Namespace's policies by hand and count that as the ordinary workflow. Confirm both standard Presets in the new Namespace, then [create and deploy](../../reference/console/create-and-deploy.md) each Agent. Dedicated Codex must complete native node enrollment and a [real model turn](../operate/model-verification.md); deployment acceptance alone is insufficient.
+Immediately reinspect `controller` and `worker-kubernetes` on `<project>_development`. If their permitted addresses changed, replace the stale `/32` entries in `gatewayRouting.remoteNodeCidrs` in `routing-values.yaml`, retaining the node peer. Repeat the routing render, inspection, apply and wait above. Stop if any step fails.
 
-Recheck the exact `/32` routing peers after container recreation. Update `routing-values.yaml` and reapply the routing template if the Docker addresses changed.
+Create a new Namespace through OCC after it recovers. Its normal provisioning installs the routing-aware policies. Do not patch an earlier Namespace's policies by hand and count that as the ordinary workflow. Confirm both standard Presets in the new Namespace, then [create and deploy](../../reference/console/create-and-deploy.md) each Agent. Dedicated Codex must complete native node enrollment and a [real model turn](../operate/model-verification.md); deployment acceptance alone is insufficient.
 
 ## Add repository and Slack services
 
@@ -144,11 +157,15 @@ For repositories, use the [standalone credential service](../repository-credenti
 
 Kubernetes consumers still require the [exact repository-service peer](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Expose the Compose broker through a namespace-scoped Service and a TCP relay Pod in `oce-system`. The relay forwards encrypted bytes to the exact broker container IP and port; it receives no keys or bearer material. Use the Service DNS name in the broker certificate and `publicOrigin`. Apply default-deny policies, permit only the selected Agent namespaces to the relay port, and permit the relay only to the broker's `/32` and HTTPS port. Configure `network.repositoryCredentials` with that exact namespace and relay Pod selector. Register the repository Backend and Agent binding through the [normal repository workflow](../repository-credentials.md#create-and-deploy-an-agent).
 
-For Slack, run the bundled `apps/controller/src/slack-proxy.mjs` in a private container on the same owned Docker network, with no host-published port. Set both `runtime.channels.proxyUrl` in the Installation and `OCC_CHANNEL_DIRECTORY_PROXY_URL` on the Compose API to its exact literal IPv4 endpoint. Restart `controller` and `worker-kubernetes`, then deploy the Slack Agent. Follow [both proxy checks](../integrations/slack.md#configure-both-slack-proxies). Embedded OpenClaw does not support external channel credentials in this topology; use dedicated Codex for this supported Slack path.
+Slack channel egress requires the Kubernetes-only control plane: the reserved
+OCC listener admits authorized API Pods. This Compose control-plane topology has
+no such grant. Use the [Kubernetes installation](kubernetes.md) and configure
+[managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md).
+Direct provider fallback is not supported.
 
 ## Verify and recover
 
-The development console remains at its loopback HTTP URL. This profile does not provide the Kubernetes-only shared-session native-admin browser domain. For native access, use the [optional loopback gateway password](production-tui.md) and a local forward to the exact Agent gateway. A browser needs a trusted local HTTPS endpoint, its exact origin in `gateway.controlUi.allowedOrigins`, and that gateway password. Use a local TLS relay and import only its public CA; do not disable browser certificate verification. In the native connection screen, **Change** opens the credential field, then **Connect** authenticates the optional password.
+Open the Console URL printed by the launcher (`browserOrigin` from `state.json` followed by `/console/`). Shared-session native administration is disabled for this Compose profile. For native access, use the [optional loopback gateway password](production-tui.md) and a local forward to the exact Agent gateway. A browser needs a trusted local HTTPS endpoint, its exact origin in `gateway.controlUi.allowedOrigins`, and that gateway password. Use a local TLS relay and import only its public CA; do not disable browser certificate verification. In the native connection screen, **Change** opens the credential field, then **Connect** authenticates the optional password.
 
 Clone repositories under the Agent's persistent workspace, not `/tmp`: the runtime's temporary volume has a 64 MiB size limit and exceeding it evicts the Pod. A shallow clone avoids downloading unnecessary history.
 

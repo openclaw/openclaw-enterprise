@@ -9,7 +9,7 @@ import {
   runnerArtifactPaths,
   runRunnerSync,
   writeJson,
-  writeRunnerManifest,
+  writeRunnerLaneFiles,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
 
@@ -40,16 +40,15 @@ interface PreparationDiagnostics {
 
 test("invalid prepared defaults keep bounded cleanup and its failure without starting a child", async (t) => {
   const root = await createRunnerFixture(t);
-  const files = ["clean", "failed-cleanup"].map((name) => `tests/integration/${name}.test.mjs`);
-  for (const file of files) {
-    await writeFile(join(root, file), 'throw new Error("child must not start");\n');
-  }
-  await writeRunnerManifest(root, {
-    lanes: { "invalid-defaults": { files: files.map((path) => ({ path })) } },
-  });
+  await writeRunnerLaneFiles(
+    root,
+    "invalid-defaults",
+    ["clean", "failed-cleanup"],
+    'throw new Error("child must not start");\n',
+  );
   // Invalid defaults must still leave the runner responsible for both owned paths.
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     `
 import { writeFile, rm } from "node:fs/promises";
 export async function prepareFile({ file }) {
@@ -86,7 +85,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
   const root = await createRunnerFixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "prepare");
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { writeFile } from "node:fs/promises";',
       "export async function prepareFile({ file, statePath }) {",
@@ -105,22 +104,12 @@ test("run records a preparation failure's redacted message in the diagnostics re
       "",
     ].join("\n"),
   );
-  for (const name of ["broken", "fine"]) {
-    await writeFile(
-      join(root, `tests/integration/${name}.test.mjs`),
-      'import test from "node:test";\ntest("runs", () => {});\n',
-    );
-  }
-  await writeRunnerManifest(root, {
-    lanes: {
-      prepare: {
-        files: [
-          { path: "tests/integration/broken.test.mjs" },
-          { path: "tests/integration/fine.test.mjs" },
-        ],
-      },
-    },
-  });
+  await writeRunnerLaneFiles(
+    root,
+    "prepare",
+    ["broken", "fine"],
+    'import test from "node:test";\ntest("runs", () => {});\n',
+  );
 
   const result = runRunnerSync(laneArgs(root, "prepare", statePath, resultsPath));
 
@@ -145,7 +134,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
     record.error.message,
     "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE] [env:OCC_TEST_SELECTED_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
   );
-  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:7:\d+\)/);
+  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.ts:7:\d+\)/);
 });
 
 interface PreparationCommandDetails {
@@ -248,7 +237,7 @@ for (const scenario of [
     };
     await writeJson(join(root, "scripts/ci/preparation-error.json"), payload);
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       `
 import { readFile } from "node:fs/promises";
 export async function prepareFile() {

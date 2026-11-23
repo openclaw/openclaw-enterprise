@@ -12,6 +12,19 @@ function isWorkspaceResource(value: unknown): value is WorkspaceResource {
   return typeof metadata?.name === "string";
 }
 
+// Rendering runs the quickstart's real jq program, so cases that read the chart
+// skip without jq on PATH, as Helm-rendered profile cases do without Helm.
+function jqSkipReason(): false | string {
+  try {
+    execFileSync("jq", ["--version"], { stdio: "ignore" });
+    return false;
+  } catch {
+    return "Install jq on PATH to render the quickstart workspace chart.";
+  }
+}
+
+export const openShellWorkspaceChartSkip = jqSkipReason();
+
 const installation = fileURLToPath(
   new URL("../../docs/snippets/openshell-quickstart/kubernetes/installation.jq", import.meta.url),
 );

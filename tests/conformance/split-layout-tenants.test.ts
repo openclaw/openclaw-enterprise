@@ -8,15 +8,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { listen } from "../helpers/listen.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {
   createTenantReaderFixture,
   tenantRequest as request,
-} from "../helpers/tenant-reader-app.mjs";
+} from "../helpers/tenant-reader-app.ts";
 import {
   BUNDLE_FORMAT,
   checkImport,
@@ -90,7 +90,7 @@ async function createFixture() {
     baseUrl: "https://console.oce.localhost",
     fetchImpl: asAdministrator(fixture),
   });
-  const controller: unknown = fixture.controller;
+  const controller = fixture.controller;
   assert.ok(controller instanceof OpenClawController);
   return { ...fixture, api, controller };
 }
@@ -101,9 +101,24 @@ function asAdministrator(fixture: BaseFixture) {
     fixture.app.fetch(
       new Request(url, {
         ...init,
-        headers: authenticatedHeaders(fixture.session(fixture.administrator), init.headers),
+        headers: authenticatedHeaders(
+          fixture.app.defaultSession,
+          Object.fromEntries(new Headers(init.headers)),
+        ),
       }),
     );
+}
+
+function countedAdministratorApi(fixture: BaseFixture) {
+  let requests = 0;
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    fetchImpl(url, init) {
+      requests += 1;
+      return asAdministrator(fixture)(url, init);
+    },
+  });
+  return { api, requestCount: () => requests };
 }
 
 async function created(
@@ -275,20 +290,13 @@ test("export reads every tenant resource the import needs, without Secret values
     } else {
       delete selected.configurations[0]!.values;
     }
-    let calls = 0;
-    const api = createOccApi({
-      baseUrl: "https://console.oce.localhost",
-      fetchImpl(url, init) {
-        calls += 1;
-        return asAdministrator(fixture)(url, init);
-      },
-    });
+    const { api, requestCount } = countedAdministratorApi(fixture);
     await assert.rejects(discardTenants(api, incomplete), /unreadable|configurations\[\]\.values/u);
     await assert.rejects(
       importTenants(api, incomplete, { "team-a": { "model-key": "synthetic-value" } }),
       /unreadable|configurations\[\]\.values/u,
     );
-    assert.equal(calls, 0);
+    assert.equal(requestCount(), 0);
   }
 
   const invalidPermissions: unknown[] = [
@@ -395,14 +403,7 @@ test("export reads every tenant resource the import needs, without Secret values
 
     // A saved bundle must fail before touching the old tenant or attempting
     // any destination writes, even when unread workspace files are accepted.
-    let calls = 0;
-    const api = createOccApi({
-      baseUrl: "https://console.oce.localhost",
-      fetchImpl(url, init) {
-        calls += 1;
-        return asAdministrator(fixture)(url, init);
-      },
-    });
+    const { api, requestCount } = countedAdministratorApi(fixture);
     await assert.rejects(
       discardTenants(api, incomplete, {
         allowUnreadWorkspaceFiles: true,
@@ -418,7 +419,7 @@ test("export reads every tenant resource the import needs, without Secret values
       }),
       diagnostic,
     );
-    assert.equal(calls, 0);
+    assert.equal(requestCount(), 0);
   }
 
   // These are valid wire-contract bundle inputs; NativeIAM need not generate these IDs.
@@ -594,9 +595,11 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   const third = await importTenants(fixture.api, bundle, values, { ...options, state: saved });
   assert.equal(third.complete, true);
   assert.equal(JSON.stringify(saved.ids), before);
-  assert.equal((await request(fixture.app, `${base}/agents`)).payload.data.length, 1);
-
-  assert.equal((await request(fixture.app, `${base}/service-accounts`)).payload.data.length, 1);
+  assert.equal(resources((await request(fixture.app, `${base}/agents`)).payload.data).length, 1);
+  assert.equal(
+    resources((await request(fixture.app, `${base}/service-accounts`)).payload.data).length,
+    1,
+  );
   for (const original of [preset, legacyPreset]) {
     const restored = createdResource(
       (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`)).payload.data,
@@ -617,7 +620,7 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.equal(resumed.ids[seeded.agent.servicePrincipalId], agent.servicePrincipalId);
   assert.ok(bindings.some(({ id }) => id === resumed.ids[seeded.binding.id]));
   assert.equal(
-    (await request(fixture.app, `${base}/iam/access-bindings`)).payload.data.length,
+    resources((await request(fixture.app, `${base}/iam/access-bindings`)).payload.data).length,
     bindingCount,
   );
 
@@ -1037,15 +1040,8 @@ test("import refuses overlapping tenant destinations before changing the map or 
   for (const skip of [[], ["source-b"]]) {
     const map: SavedState = { ids: {}, deployed: [] };
     const before = structuredClone(map);
-    let calls = 0;
     let saves = 0;
-    const api = createOccApi({
-      baseUrl: "https://console.oce.localhost",
-      fetchImpl(url, init) {
-        calls += 1;
-        return asAdministrator(fixture)(url, init);
-      },
-    });
+    const { api, requestCount } = countedAdministratorApi(fixture);
     await assert.rejects(
       importTenants(
         api,
@@ -1062,7 +1058,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
         },
       ),
       (error: unknown) => {
-        assert.equal(calls, 0);
+        assert.equal(requestCount(), 0);
         assert.equal(saves, 0);
         assert.ok(error instanceof Error);
         assert.match(error.message, /duplicate|repeated/iu);
@@ -1147,19 +1143,12 @@ test("import refuses overlapping tenant destinations before changing the map or 
       deployed: [],
     };
     const unchanged = structuredClone(invalidState);
-    let requests = 0;
-    const api = createOccApi({
-      baseUrl: "https://console.oce.localhost",
-      fetchImpl(url, init) {
-        requests += 1;
-        return asAdministrator(fixture)(url, init);
-      },
-    });
+    const { api, requestCount } = countedAdministratorApi(fixture);
     await assert.rejects(
       importTenants(api, bundle, {}, { ...options, state: invalidState, names: {} }),
       /ID map \(--map\)\.ids: (expected nonempty string values|invalid resource ID)/u,
     );
-    assert.equal(requests, 0);
+    assert.equal(requestCount(), 0);
     assert.equal(saves, 0);
     assert.deepEqual(invalidState, unchanged);
   }
@@ -1643,16 +1632,13 @@ test("command redacts malformed private JSON before issuing requests", async (t)
   const fixture = await createFixture();
   const bundle = await exportTenants(fixture.api);
   const files = {
-    bundle: join(directory, "bundle.json"),
-    "service-key file": join(directory, "key.json"),
-    "Secret-values file": join(directory, "values.json"),
-    "ID map": join(directory, "map.json"),
-  };
-  const contents = {
-    bundle,
-    "service-key file": { data: { key: "synthetic-service-key" } },
-    "Secret-values file": {},
-    "ID map": { ids: {}, deployed: [] },
+    bundle: { path: join(directory, "bundle.json"), contents: bundle },
+    "service-key file": {
+      path: join(directory, "key.json"),
+      contents: { data: { key: "synthetic-service-key" } },
+    },
+    "Secret-values file": { path: join(directory, "values.json"), contents: {} },
+    "ID map": { path: join(directory, "map.json"), contents: { ids: {}, deployed: [] } },
   };
   let requests = 0;
   const server = createServer((_request, response) => {
@@ -1664,15 +1650,14 @@ test("command redacts malformed private JSON before issuing requests", async (t)
   assert.ok(address && typeof address !== "string");
   const command = fileURLToPath(new URL("../../scripts/split-layout-tenants.ts", import.meta.url));
   const marker = "SYNTHETIC_PRIVATE_VALUE";
-  for (const [label, path] of Object.entries(files)) {
-    for (const [name, value] of Object.entries(contents)) {
-      const file = files[name as keyof typeof files];
-      writeFileSync(file, JSON.stringify(value));
+  for (const [label, { path }] of Object.entries(files)) {
+    for (const file of Object.values(files)) {
+      writeFileSync(file.path, JSON.stringify(file.contents));
     }
     // Native JSON syntax errors can quote this text. Exercise the shipped
     // executable's stderr handler, rather than only rejecting inside main().
     writeFileSync(path, marker);
-    const before = readFileSync(files["ID map"], "utf8");
+    const before = readFileSync(files["ID map"].path, "utf8");
     await assert.rejects(
       promisify(execFile)(
         process.execPath,
@@ -1680,18 +1665,18 @@ test("command redacts malformed private JSON before issuing requests", async (t)
           command,
           "import",
           "--bundle",
-          files.bundle,
+          files.bundle.path,
           "--secret-values",
-          files["Secret-values file"],
+          files["Secret-values file"].path,
           "--map",
-          files["ID map"],
+          files["ID map"].path,
           "--no-deploy",
         ],
         {
           env: {
             ...process.env,
             OCC_URL: `http://127.0.0.1:${address.port}`,
-            OCC_SERVICE_KEY_FILE: files["service-key file"],
+            OCC_SERVICE_KEY_FILE: files["service-key file"].path,
           },
         },
       ),
@@ -1705,8 +1690,8 @@ test("command redacts malformed private JSON before issuing requests", async (t)
       },
     );
     assert.equal(requests, 0);
-    assert.equal(readFileSync(files["ID map"], "utf8"), before);
-    assert.equal(existsSync(`${files["ID map"]}.partial`), false);
+    assert.equal(readFileSync(files["ID map"].path, "utf8"), before);
+    assert.equal(existsSync(`${files["ID map"].path}.partial`), false);
   }
 });
 
@@ -2013,15 +1998,8 @@ test("import refuses ambiguous source identities before requests or map saves", 
     await t.test(label, async () => {
       const state: SavedState = { ids: { ...initialIds }, deployed: [] };
       const before = structuredClone(state);
-      let requests = 0;
       let saves = 0;
-      const api = createOccApi({
-        baseUrl: "https://console.oce.localhost",
-        fetchImpl(url, init) {
-          requests += 1;
-          return asAdministrator(fixture)(url, init);
-        },
-      });
+      const { api, requestCount } = countedAdministratorApi(fixture);
       // One flat entry cannot describe both a Namespace and a Role destination.
       // Even a valid Namespace mapping would otherwise silently skip Role creation.
       await assert.rejects(
@@ -2040,7 +2018,7 @@ test("import refuses ambiguous source identities before requests or map saves", 
         ),
         /source IDs overlap/u,
       );
-      assert.equal(requests, 0);
+      assert.equal(requestCount(), 0);
       assert.equal(saves, 0);
       assert.deepEqual(state, before);
       assert.deepEqual(
@@ -2065,20 +2043,13 @@ test("discard refuses identity collisions before deleting restorable resources",
   );
   const bundle = await exportTenants(fixture.api);
   bundle.namespaces = bundle.namespaces.filter(({ id }) => id === source.id);
-  let requests = 0;
-  const api = createOccApi({
-    baseUrl: "https://console.oce.localhost",
-    fetchImpl(url, init) {
-      requests += 1;
-      return asAdministrator(fixture)(url, init);
-    },
-  });
+  const { api, requestCount } = countedAdministratorApi(fixture);
   // Discard must not destroy valid source data the automatic importer cannot represent.
   await assert.rejects(
     discardTenants(api, bundle, { timeoutMs: 0, intervalMs: 0, sleep: noSleep }),
     /source IDs overlap/u,
   );
-  assert.equal(requests, 0);
+  assert.equal(requestCount(), 0);
   const role = createdResource(
     (await fixture.api.expect("GET", `/namespaces/${source.id}/iam/roles/${source.id}`)).data,
   );
@@ -2119,15 +2090,8 @@ test("resumed imports retain identity ownership for skipped tenants", async () =
     deployed: [],
   };
   const before = structuredClone(state);
-  let requests = 0;
   let saves = 0;
-  const api = createOccApi({
-    baseUrl: "https://console.oce.localhost",
-    fetchImpl(url, init) {
-      requests += 1;
-      return asAdministrator(fixture)(url, init);
-    },
-  });
+  const { api, requestCount } = countedAdministratorApi(fixture);
   await assert.rejects(
     importTenants(
       api,
@@ -2145,7 +2109,7 @@ test("resumed imports retain identity ownership for skipped tenants", async () =
     ),
     /source IDs overlap/u,
   );
-  assert.equal(requests, 0);
+  assert.equal(requestCount(), 0);
   assert.equal(saves, 0);
   assert.deepEqual(state, before);
   assert.deepEqual(

@@ -7,7 +7,7 @@ import { inspect } from "node:util";
 import test, { type TestContext } from "node:test";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const reporterMessageLimit = 16_384;
 
@@ -22,16 +22,11 @@ const fakeDocker = await writeCommand(
 // The helper reads both at import.
 process.env.OCC_DOCKER_BIN = fakeDocker;
 process.env.OCC_TEST_RUNTIME_IMAGE = "localhost/oce/runtime:failure-output-test";
-const {
-  containerLogTail,
-  failureTail,
-  gatewayReadinessReport,
-  listGatewayPlugins,
-  runDocker,
-  runGatewaySmoke,
-  waitForDockerLog,
-  waitForGatewayReady,
-} = await import("../helpers/runtime-image-startup.mjs");
+const { failureTail, runDocker, waitForDockerLog } =
+  await import("../helpers/runtime-image-docker.ts");
+const { containerLogTail, gatewayReadinessReport, listGatewayPlugins, waitForGatewayReady } =
+  await import("../helpers/runtime-image-gateway-observations.ts");
+const { runGatewaySmoke } = await import("../helpers/runtime-image-startup.ts");
 const { followContainer } = await import("../helpers/docker-follow.ts");
 
 async function expectFailure<T>(operation: Promise<T>, message: string): Promise<Error> {

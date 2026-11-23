@@ -24,16 +24,19 @@ exists, a qualified operator must establish ownership and Helm revision. Inspect
 latest manifest, pre/post-delete hooks, policies and effects, and every live
 object Helm can delete. Confirm unchanged release and object UIDs and exclude
 other writers. Run `helm uninstall demo -n oce-observability-demo --wait --timeout 5m`
-once, or skip it if the release is confirmed absent. Reconcile failure or
-interruption without retrying; verify the release and resources are gone.
+once only if you have verified that the demo release is `demo` in the
+`oce-observability-demo` namespace. If either name differs, stop, retain the
+backup, and reconcile the mismatch. Skip the command if that release is
+confirmed absent. Reconcile failure or interruption without retrying. Verify
+the release and resources are gone.
 
 Delete separately created or leftover resources through the Kubernetes API with
 UID preconditions, only after proving creation, current UID and no references.
 Check namespace UID, contents, finalizers and dependencies before deleting it;
 retain anything unproved. Restart only with an owned, clean namespace and
-unreserved release name. If either cannot be reconciled, use fresh names and
-retain the backup. Otherwise, after verified cleanup, confirm `$OBS_FILES` names
-the setup directory, delete it, and unset it.
+unreserved release name. If either cannot be reconciled, stop and retain the
+backup. After verified cleanup, confirm `$OBS_FILES` names the setup directory,
+delete it, and unset it.
 
 ## Refresh a renamed Loki address
 

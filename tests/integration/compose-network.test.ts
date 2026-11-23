@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { selectComposeSubnet } from "../helpers/compose-network.mjs";
+import { selectComposeSubnet } from "../helpers/compose-network.ts";
 import { writeFirstAgentCliFixture } from "../helpers/ci-runner-fixture.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 function inventory(subnets: string[]) {
   return subnets.map((Subnet) => JSON.stringify([{ Subnet }])).join("\n") + "\n";

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-12
-last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Service API Keys Flow
@@ -16,8 +16,10 @@ Namespace reader from issuance through `GET /namespaces/:namespaceId` to
 revocation. It stops at the OCC resource response or the credential's deletion
 and audit result; provisioning IAM identities and Agent workload credentials
 remain separate lifecycles. Fresh native-IAM bootstrap provisions the initial
-service administrator and calls the same key helper, delivering its response to
-protected storage rather than an HTTP issuance response. That separate entry and
+service administrator and registers an operator-supplied key through
+`apps/controller/src/auth/index.ts:registerBootstrapServiceKey`. A separate auth
+instance uses the plugin's supported generation extension; normal issuance
+continues to generate keys. Bootstrap emits only non-secret attempt IDs. That separate entry and
 commit boundary is traced in the [bootstrap flow](local-password-authentication.md).
 
 Better Auth owns key material and persistence. The selected IAM Driver owns
@@ -37,7 +39,8 @@ optional Namespace at issuance, but it does not snapshot or grant permissions.
 - `POST /api/auth/service-keys`: a human session or Installation-scoped service
   key with current IAM `administer` on the bootstrapped Installation names an
   existing principal in its exact scope.
-  [apps/controller/src/index.ts:requireInstallationAdmin](../../apps/controller/src/index.ts).
+  [Installation authorization](../../apps/controller/src/index.ts) and
+  [HTTP schema](../../apps/controller/src/http/auth-schemas.ts).
 - `GET /namespaces/:namespaceId` with `x-api-key`: a stored, unexpired key
   authenticates the service identity before IAM evaluates the resource request.
   [apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify](../../apps/controller/src/auth/index.ts).
@@ -51,7 +54,7 @@ Driver. Native IAM requires an existing ServicePrincipal, Role, and
 AccessBinding; issuance creates none of them. For Namespace automation, an
 administrator creates the ServicePrincipal through `POST
 /namespaces/:namespaceId/iam/service-principals`
-([`createIAMServicePrincipal`](../../packages/occ/src/index.ts)), which writes a
+([`createIAMServicePrincipal`](../../packages/occ/src/iam-policy-operations.ts)), which writes a
 non-Agent `iam_identities` row under the Namespace lock with no grant and audits
 `openclaw.iam.service_principals.create` in the same transaction. Request fields and lifetime
 limits are defined in the [authentication reference](../reference/authentication/service-api-keys.md#issuance)
@@ -146,7 +149,12 @@ The controller records storage exceptions from the composed Better Auth adapter
 for the active key verification. A failed key read, usage update, or expiry
 deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
 invalid key. Each concurrent verification retains its own failure state. Better
-Auth still owns key hashing, validity, expiry, and revocation decisions.
+Auth still owns key hashing, validity, expiry, and revocation decisions. Its log
+calls go to the structured log: a refused key is one INFO
+`authentication.request-refused` line with its `reasonCode`, `requestId`, method
+and route, never the key; other library errors log `authentication.library-error`
+at ERROR with the failed `operation` and a code or class name, never the library's
+message. A revoked key is deleted, so it logs `INVALID_API_KEY` like an unknown one.
 
 `resolveIdentity` looks up the verified service-principal ID through the selected
 IAM Driver. The controller returns `403` for a missing identity, Agent ownership,
@@ -162,7 +170,7 @@ The audit records `create` on the requested Agent collection with
 ### 4. Authorize the exact read with current IAM policy
 
 [apps/controller/src/index.ts:perform](../../apps/controller/src/index.ts);
-[packages/occ/src/index.ts:OpenClawController.getNamespace](../../packages/occ/src/index.ts);
+[packages/occ/src/namespace-operations.ts:getNamespace](../../packages/occ/src/namespace-operations.ts);
 [packages/iam/src/index.ts:NativeIAMDriver.authorize](../../packages/iam/src/index.ts).
 
 `perform` passes the resolved service-principal ID and requested Namespace to
@@ -225,7 +233,7 @@ schedule rotation.
   the prepared `postgres-auth` lane. It checks a closed authentication pool, a
   failed key-use update, and isolation from a concurrent successful verification.
   Invalid, expired, and revoked keys retain `401`; State and IAM remain healthy.
-- [IAM conformance](../../tests/conformance/iam.test.mjs) verifies identity lookup.
+- [IAM conformance](../../tests/conformance/iam.test.ts) verifies identity lookup.
   Run `pnpm openapi:check` to check that the OpenAPI contract, HTTP API reference,
   and API cheat sheet remain current with the controller routes.
 - Investigate `401` as credential rejection and `403` as identity, scope, or
@@ -251,6 +259,11 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-18 04:25: Trace the request, method, route pattern and operation on auth library refusal and error lines. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
+
+- 2026-11-16 09:39: Distinguish bootstrap key registration from ordinary generated issuance. (pi/01a1e4f4-3138-71b5-b224-7ecf7ed57406 - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-12 16:13: Trace the audit target for a cross-Namespace Agent capability denial. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 

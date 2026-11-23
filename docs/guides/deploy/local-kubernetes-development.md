@@ -6,7 +6,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 ## Start the profile
 
 [Install Linux tools](local-kubernetes-tools.md): Node.js satisfying `engines.node` in `package.json`, repository-pinned pnpm, the Go version from `go.mod`, k3d,
-kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
+kubectl, Helm, yq v4, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
 K3s requires the `cpuset` cgroup controller, which systemd does not delegate to
@@ -87,8 +87,9 @@ other published ports must differ. k3d publishes ports at creation; changes
 require `dev-down` and fresh `dev-up`.
 
 The persistent realm attaches `alice` to the existing administrator through
-[OIDC](oidc-sign-in.md), makes passwords recovery-only, and disables
-[Agent native administration](../../reference/agent-native-admin.md). OpenShell
+[OIDC](oidc-sign-in.md), makes passwords recovery-only, and keeps
+[Agent native administration](../../reference/agent-native-admin.md) enabled.
+OpenShell
 is unsupported; password-only remains the default.
 
 Import `browser-ca.crt` and `gateway-ca.crt` into your browser; add the printed
@@ -117,8 +118,10 @@ OCC, and its worker run in Compose; Agents run in k3d. This profile includes bot
 and the same Codex seccomp preparation, but not the Kubernetes-only browser
 endpoint, private workspace routing, or repository service. Dedicated Codex
 requires [hybrid private routing](local-compose-kubernetes.md), configured
-before creating Agent Namespaces; that page also covers Compose repository and
-Slack service connections.
+before creating Agent Namespaces. That page also covers Compose repository
+connections. Channel egress is unavailable in this hybrid profile because Compose
+OCC has no API Pod grant. Use the Kubernetes-only profile for
+[Slack channel egress](../integrations/slack.md#configure-managed-channel-egress).
 
 If the K3s channel lookup fails or times out, follow
 [local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-fails).
@@ -131,7 +134,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.8`, Agent Sandbox,
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.9`, Agent Sandbox,
 cert-manager, and Envoy Gateway assets. PostgreSQL, the central OpenShell Gateway,
 and OCE run in `oce-system`; Agent Sandbox runs in `agent-sandbox-system`.
 Tenant Workspaces, Sandboxes, and Agent Pods use OCC-owned `oce-*` Namespaces.
@@ -191,76 +194,34 @@ requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
 5 GiB with initial workspace files; size the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
-## Require both proxies before enabling Slack
+<a id="require-both-proxies-before-enabling-slack"></a>
 
-For a Slack-enabled local installation, complete [both Slack proxy paths](../integrations/slack.md#configure-both-slack-proxies)
-before creating or deploying the Agent. The launcher neither provisions these
-proxies nor configures their URLs.
+## Configure Slack channel egress
 
-Provision the reviewed proxy on the owned k3d container network (no
-host-published listener needed) or at another private address reachable from the
-API and dedicated gateway Pods. Do not use host loopback: `127.0.0.1` inside a
-Pod is that Pod. Restrict its source access to this cluster's actual traffic,
-accounting for node source NAT.
+Fresh Kubernetes-only startup checks dependencies and configures
+[channel egress](channel-egress.md#local-development) for either sandbox before Helm installation.
 
-Back up both generated files in the private state directory, then update them:
+Existing releases need [current inputs](local-k3d-image-upgrade.md#apply-installation-changes),
+the original backup and installed images. Before retrying or deploying Agents,
+reconcile Helm status, history and values, the decoded live Installation key's
+SHA-256, and API and worker rollout checksums and readiness against the intended
+revision. Fresh profiles may lack checksum annotations. Keep Secret contents private.
+Do not rerun `dev-up`, recreate bootstrap storage or delete the cluster.
 
-- `installation.yaml`: set `drivers.compute.configuration.runtime.channels.proxyUrl`
-  for gateway Slack messaging.
-- `helm-values.json`: set `api.channelDirectoryProxyUrl` for Console user and
-  channel lookup. Kubernetes-only mode runs the production API, where lookup
-  stays disabled without this setting.
+For legacy chart-managed proxies, follow
+[Envoy channel egress](one-off-upgrades.md#envoy-channel-egress). If the upgrade
+is interrupted, reconcile the original operation journal against actual cluster
+state before resuming with [Recover and verify](one-off-upgrades.md#recover-and-verify).
+Do not automatically repeat an operation with an unknown outcome. The upgrade
+deploys the recorded Agents. After it succeeds, verify
+[Console directory lookup and Gateway Socket Mode](../integrations/slack.md#configure-managed-channel-egress)
+without another deployment.
 
-Apply the edits to the existing release as shown below. Use the chart
-source matching the installed controller, retain its image references and other
-protected inputs, and plan a maintenance window if Agents are running. Confirm
-the release and namespace; the values below are launcher defaults. The checksum
-rolls the API and worker even when only the Installation document changed. After
-an [in-place image upgrade](local-k3d-image-upgrade.md#apply-installation-changes),
-`helm-values.json` still names the bring-up images: make both edits in that
-page's recovered `INSTALLATION` and `VALUES` and apply them with
-[apply other Installation changes](production-upgrade.md#apply-other-installation-changes) instead.
-
-```bash
-set -euo pipefail
-umask 077
-export OCC_SLACK_STATE='<existing private state directory>'
-export OCC_SLACK_CONTEXT='<context printed by scripts/dev-up>'
-export OCC_SLACK_NAMESPACE='oce-system'
-export OCC_SLACK_RELEASE='openclaw-enterprise'
-
-node --input-type=module <<'NODE'
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-const root = process.env.OCC_SLACK_STATE;
-const path = join(root, 'helm-values.json');
-const values = JSON.parse(readFileSync(path, 'utf8'));
-values.controlPlane ??= {};
-values.controlPlane.installationChecksum = createHash('sha256')
-  .update(readFileSync(join(root, 'installation.yaml'))).digest('hex');
-writeFileSync(path, JSON.stringify(values, null, 2) + '\n');
-const document = readFileSync(join(root, 'installation.yaml')).toString('base64');
-writeFileSync(join(root, 'installation-secret-patch.json'),
-  JSON.stringify({ data: { 'installation.yaml': document } }));
-NODE
-
-kubectl --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --context "$OCC_SLACK_CONTEXT" \
-  -n "$OCC_SLACK_NAMESPACE" patch secret occ-installation-startup \
-  --type merge --patch-file "$OCC_SLACK_STATE/installation-secret-patch.json"
-rm "$OCC_SLACK_STATE/installation-secret-patch.json"
-
-helm upgrade "$OCC_SLACK_RELEASE" deploy/helm/openclaw-enterprise \
-  --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --kube-context "$OCC_SLACK_CONTEXT" \
-  --namespace "$OCC_SLACK_NAMESPACE" -f "$OCC_SLACK_STATE/helm-values.json" \
-  --wait --timeout 5m
-```
-
-Do not rerun `dev-up`, recreate bootstrap storage, or delete the cluster to apply
-this configuration. After OCC recovers, deploy a new version for each affected
-running Slack Agent so its gateway receives the new proxy and network policy.
-Verify directory search and gateway Socket Mode using the
-[Slack checks](../integrations/slack.md#configure-both-slack-proxies).
+For a separate Installation change, follow
+[Installation recovery](production-installation-changes.md) if the outcome is
+uncertain. If the change leaves affected running Slack Agents on their previous
+configuration, deploy new versions to update the Gateway proxy and network policy.
+Verify Slack afterward.
 
 ## Verify the local boundary
 
@@ -313,21 +274,24 @@ production deployment guide.
 To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).
 
-To prove OpenShell setup and cleanup in a separate fresh cluster, stop the
-reusable environment, install the test dependencies from the trusted repository
-root, and run:
+To pause a reusable Kubernetes-only stack, verify ownership and the cluster name
+on the recorded engine endpoint. Use `k3d cluster stop <name>` and later
+`k3d cluster start <name>` on that endpoint to
+[preserve storage across restarts](#preserve-storage-across-restarts). `dev-down`
+deletes the cluster, local storage and private state.
 
-```bash
-pnpm install --frozen-lockfile
-OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
-  node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
-```
+Use a separate disposable cluster with authorized OpenAI model access, sandboxed
+Chromium and certutil. Follow [OpenShell test setup and cleanup](../../testing/openshell.md#test-setup-and-cleanup)
+from the trusted repository root. The helper-owned Kubernetes-only test inherits
+your environment and selects fresh state, a unique cluster name and free ports.
+Keep the separate-stack requirements above. Do not assume pausing releases the
+bridge subnet or stops Compose.
 
 The selected real test must pass without a skip. It verifies the Helm-installed
 OCE control plane and PostgreSQL Pods, bootstrap and new Namespace Workspace
-reconciliation, immutable image registration, and owned-cluster cleanup, but
-creates no Agent and performs no model turn; for that credentialed proof, follow
-the [Kubernetes model-turn procedure](../../testing/kubernetes.md#kubernetes-model-turns-and-secrets).
+reconciliation, immutable image registration and owned-cluster cleanup. It also
+creates an Agent and checks a real model reply using an OIDC fixture. The fixture
+does not qualify a live OIDC provider.
 
 ## Configure workspace storage on single-node k3d
 
@@ -436,6 +400,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.8` remains fail-closed for unsupported Secret and
+- The OpenShell development profile remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

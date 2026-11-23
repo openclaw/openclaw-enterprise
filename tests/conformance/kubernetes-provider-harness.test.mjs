@@ -9,12 +9,11 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
-import { waitFor } from "../helpers/qa-utils.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { waitFor } from "../helpers/qa-wait.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { listen } from "../helpers/listen.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -24,6 +23,21 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
 import {
+  checkProviderEndpointRequirements,
+  checkProviderExactPeers,
+  checkProviderInvalidEvidence,
+  checkProviderLegacyPolicyActivation,
+  checkProviderMalformedActivation,
+  checkProviderPreparationStatus,
+  heldFailure,
+  invalidProviderEvidence,
+  statusScenarios,
+  transportScenarios,
+  withoutCause,
+} from "./kubernetes-provider-observation-cases.ts";
+import { containerProgram } from "./kubernetes-workload-program-cases.ts";
+import {
+  WORKSPACE_DEFAULTS_ID,
   admitLoggingConfiguration,
   preparedGitHubSourceFromRoute,
 } from "../../packages/contracts/src/index.ts";
@@ -39,25 +53,11 @@ import {
   providerEndpointFixture,
   tlsPinnedWorkspaceSetupCode,
 } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
-import {
-  tenant,
-  authContext,
-  digest,
-  selectorMatches,
-} from "../helpers/kubernetes-routed-scenarios.mjs";
+import { tenant, authContext, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
 const providerWorkspaceRoot = "/sandbox/enterprise";
-const heldFailure = {
-  component: "agent",
-  check: "model-probe",
-  checkedAt: "2026-10-08T13:00:00.000Z",
-  code: "MODEL_PROBE_FAILED",
-  cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-};
-const { cause: _cause, ...withoutCause } = heldFailure;
 const expectedRevision = ({ revision }) => ({
   namespaceId: tenant.id,
   agentId: revision.agentId,
@@ -84,79 +84,98 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 
 const openAiStaticProvider = createOpenAiStaticProvider();
 
-test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
-  const fixture = providerEndpointFixture({
-    revisionOverrides: {
-      plugins: {
-        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
-        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
-      },
-    },
-  });
-  const {
-    driver,
-    revision,
-    read,
-    gatewayName,
-    gatewayNamespace,
-    provisions,
-    endpoints,
-    setupRequests,
-  } = fixture;
-  const expected = expectedRevision(fixture);
-  // The Agent Gateway must be available to mint node setup material. Its first
-  // fail-closed template cannot justify creating the provider-owned Harness.
-  fixture.observePods([]);
-  assert.deepEqual(await fixture.prepare(), {
-    ...expected,
-    ready: false,
-  });
-  assert.equal(provisions.length, 0);
-  assert.equal(endpoints.length, 0);
-  const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
-  assert.ok(bootstrapGateway);
-  // This Gateway must issue the setup needed to create the Harness. Waiting for
-  // the Harness's ordinary peer status here would deadlock first deployment.
-  const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
-  assert.equal(
-    gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
-    "true",
-  );
-  assert.equal(
-    gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
-    false,
-  );
-  assert.notEqual(
-    bootstrapGateway.spec.template.spec.containers[0].env.find(
-      ({ name }) => name === "APP_SERVER_URL",
-    ).value,
-    providerUrl,
-  );
-
-  // Once the Gateway is serving, its Agent-owned setup Secret lets Compute
-  // render the final provider request and transition to the OpenShell endpoint.
-  fixture.setGatewayServing();
-  fixture.observePods([]);
-  assert.deepEqual(await fixture.prepare(), {
-    ...expected,
-    ready: false,
-  });
-  assert.deepEqual(setupRequests, [
-    {
-      url: driver.getGatewayEndpoint(revision),
-      // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
-      nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
-    },
-  ]);
-  assert.equal(provisions.length, 1);
-  assert.equal(endpoints.length, 1);
-  assert.equal(
-    provisions[0].requirements.environment.some(
-      ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
-    ),
-    false,
-  );
+test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
+  const fixture = providerEndpointFixture();
+  fixture.sandbox.implementation = "strands-box";
+  fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
+  await preparedEndpoint(fixture);
+  const command = fixture.provisions.at(-1).requirements.command;
+  const evaluation = command.lastIndexOf("-e");
+  assert.ok(evaluation >= 0);
+  const launcher = containerProgram({ args: command.slice(evaluation + 1) });
+  assert.match(launcher, /Native hook storage must be private/u);
 });
+
+for (const implementation of ["openshell", "strands-box"]) {
+  test(
+    implementation + " bootstraps the first Gateway with managed plugins and requests node setup",
+    async () => {
+      const fixture = providerEndpointFixture({
+        revisionOverrides: {
+          plugins: {
+            driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+            plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+          },
+        },
+      });
+      fixture.sandbox.implementation = implementation;
+      fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
+      const {
+        driver,
+        revision,
+        read,
+        gatewayName,
+        gatewayNamespace,
+        provisions,
+        endpoints,
+        setupRequests,
+      } = fixture;
+      const expected = expectedRevision(fixture);
+      // The Agent Gateway must be available to mint node setup material. Its first
+      // fail-closed template cannot justify creating the provider-owned Harness.
+      fixture.observePods([]);
+      assert.deepEqual(await fixture.prepare(), {
+        ...expected,
+        ready: false,
+      });
+      assert.equal(provisions.length, 0);
+      assert.equal(endpoints.length, 0);
+      const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
+      assert.ok(bootstrapGateway);
+      // This Gateway must issue the setup needed to create the Harness. Waiting for
+      // the Harness's ordinary peer status here would deadlock first deployment.
+      const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
+      assert.equal(
+        gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+        "true",
+      );
+      assert.equal(
+        gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+        false,
+      );
+      assert.notEqual(
+        bootstrapGateway.spec.template.spec.containers[0].env.find(
+          ({ name }) => name === "APP_SERVER_URL",
+        ).value,
+        providerUrl,
+      );
+
+      // Once the Gateway is serving, its Agent-owned setup Secret lets Compute
+      // render the final provider request and transition to the OpenShell endpoint.
+      fixture.setGatewayServing();
+      fixture.observePods([]);
+      assert.deepEqual(await fixture.prepare(), {
+        ...expected,
+        ready: false,
+      });
+      assert.deepEqual(setupRequests, [
+        {
+          url: driver.getGatewayEndpoint(revision),
+          // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
+          nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
+        },
+      ]);
+      assert.equal(provisions.length, 1);
+      assert.equal(endpoints.length, 1);
+      assert.equal(
+        provisions[0].requirements.environment.some(
+          ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
+        ),
+        false,
+      );
+    },
+  );
+}
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
   const fixture = await endpointWithGateway();
@@ -166,7 +185,12 @@ test("provider Harness endpoint preparation re-observes the same revision across
     { name: "starting Pod is not ready", pods: [starting], ready: false },
     { name: "ambiguous Pods are not ready", pods: [ready, starting], ready: false },
     { name: "unique ready Pod becomes ready", pods: [ready], ready: true },
-    { name: "Ready back to Starting clears readiness", pods: [starting], ready: false },
+    {
+      name: "maintenance observes a Ready Pod returning to Starting",
+      pods: [starting],
+      ready: false,
+      existingHarnessOnly: true,
+    },
   ];
   // Keep the same Driver and revision: reconciliation must neither cache a false
   // result forever nor retain true after the workload becomes unready again.
@@ -176,10 +200,16 @@ test("provider Harness endpoint preparation re-observes the same revision across
       const endpointsBefore = fixture.endpoints.length;
       const hooksBefore = fixture.hooks.length;
       fixture.observePods(stage.pods);
-      assert.deepEqual(await fixture.prepare(), {
+      const dispatch = stage.existingHarnessOnly
+        ? { ...authContext(fixture.revision), existingHarnessOnly: true }
+        : undefined;
+      assert.deepEqual(await fixture.prepare(undefined, dispatch), {
         ...expectedRevision(fixture),
         ready: stage.ready,
       });
+      const provision = fixture.provisions.at(-1);
+      assert.equal(provision.existingHarnessOnly, stage.existingHarnessOnly);
+      assert.equal(Object.hasOwn(provision.requirements, "existingHarnessOnly"), false);
       assert.deepEqual(fixture.hooks.slice(hooksBefore), ["start"]);
       assert.equal(fixture.provisions.length, provisionsBefore + 1);
       assert.equal(fixture.endpoints.length, endpointsBefore + 1);
@@ -187,400 +217,43 @@ test("provider Harness endpoint preparation re-observes the same revision across
   }
 });
 
-test("provider Harness endpoint writes transport and runtime requirements", async () => {
-  let endpointWorkspaceRoot = providerWorkspaceRoot;
-  const providerHome = "/private/provider-home";
-  const providerHookDirectory = `${providerHome}/.oce-native-hooks`;
-  const fixture = providerEndpointFixture({
-    harnessEndpoint: async () => ({ url: providerUrl, workspaceRoot: endpointWorkspaceRoot }),
-  });
-  const { driver, revision, provisions } = fixture;
-  // Keep the admitted private workspace intact while the separate Gateway uses
-  // its own writable path. The main entry takes precedence over defaults.
-  revision.configuration = admitLoggingConfiguration(
-    {
-      ...revision.configuration,
-      agents: {
-        defaults: { ...revision.configuration.agents.defaults, workspace: providerWorkspaceRoot },
-        entries: { Main: { workspace: providerWorkspaceRoot } },
-      },
-    },
-    "info",
-  );
-  const admittedAgents = structuredClone(revision.configuration.agents);
-  fixture.sandbox.harnessHome = providerHome;
-  let workspaceValidated = false;
-  fixture.sandbox.validateWorkspaceSetup = (harness, configuration) => {
-    assert.equal(harness.id, revision.harness.id);
-    assert.equal(configuration.agents.defaults.model, "codex/gpt-5");
-    workspaceValidated = true;
-  };
-  driver.validateWorkspaceSetup(revision.harness, revision.configuration, fixture.sandbox.id);
-  assert.equal(workspaceValidated, true);
-  workspaceValidated = false;
-  const context = {
-    ...authContext(revision),
-    workspaceSetup: {
-      id: "provider-workspace-setup",
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      files: { "USER.md": "private provider workspace profile" },
-      completed: false,
-    },
-  };
-  await preparedEndpoint(fixture, context);
-  const { requirements } = provisions[0];
-  assert.deepEqual(requirements.labels, fixture.labels);
-  assert.deepEqual(
-    requirements.environment.find(({ name }) => name === "APP_TOKEN_SHA"),
-    {
-      name: "APP_TOKEN_SHA",
-      value: createHash("sha256").update("test-transport").digest("hex"),
-    },
-  );
-  assert.equal(
-    requirements.environment.some(({ name }) => name === "APP_SERVER_TOKEN"),
-    false,
-  );
-  assert.equal(JSON.stringify(requirements).includes("test-transport"), false);
-  assert.deepEqual(
-    requirements.environment.find(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE"),
-    {
-      name: "OPENCLAW_NODE_SETUP_CODE",
-      valueFrom: {
-        secretKeyRef: {
-          name: driver.workspaceNodeName(revision),
-          key: "setupCode",
-        },
-      },
-    },
-  );
-  const gatewayPod = fixture.gateway().spec.template.spec;
-  const gatewayContainer = gatewayPod.containers[0];
-  assert.equal(
-    gatewayContainer.env.find(({ name }) => name === "APP_SERVER_URL").value,
+test("provider Harness endpoint writes transport and runtime requirements", () =>
+  checkProviderEndpointRequirements(
+    providerEndpointFixture,
+    preparedEndpoint,
+    admitLoggingConfiguration,
     providerUrl,
-  );
-  assert.equal(
-    gatewayContainer.env.find(({ name }) => name === "OPENCLAW_REMOTE_WORKSPACE_ROOT").value,
     providerWorkspaceRoot,
-  );
-  assert.equal(
-    gatewayContainer.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_DIR").value,
-    "/home/node/workspace",
-  );
-  const gatewayDocument = () => {
-    const configurationName = fixture
-      .gateway()
-      .spec.template.spec.volumes.find(({ name }) => name === "openclaw-configuration")
-      .configMap.name;
-    return JSON.parse(
-      fixture.read("ConfigMap", configurationName, fixture.gatewayNamespace).data["openclaw.json"],
-    );
-  };
-  assert.equal(gatewayDocument().agents.defaults.workspace, "/home/node/workspace");
-  assert.equal(gatewayDocument().agents.entries.Main.workspace, "/home/node/workspace");
-  assert.deepEqual(revision.configuration.agents, admittedAgents);
-  assert.deepEqual(provisions[0].revision.configuration.agents, admittedAgents);
-  const renderedHookDirectory = () =>
-    gatewayDocument().plugins.entries.codex.config.appServer.nativeHookRelay.credentialDirectory;
-  assert.equal(renderedHookDirectory(), providerHookDirectory);
-  assert.equal(workspaceValidated, true);
-  assert.deepEqual(gatewayPod.hostAliases, [
-    { ip: "10.43.0.50", hostnames: ["tenant--sandbox.openshell.localhost"] },
-  ]);
-  assert.deepEqual(
-    requirements.files.map(({ name, environmentVariable }) => ({
-      name,
-      environmentVariable,
-    })),
-    [
-      {
-        name: "runtime.json",
-        environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
-      },
-      {
-        name: "config.toml",
-        environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
-      },
-    ],
-  );
-  assert.deepEqual(JSON.parse(requirements.files[0].content), {
-    kind: "codex",
-    selections: {},
-    modelEndpoint: { baseUrl: "https://api.openai.com/v1", modelProvider: "openai-compatible" },
-  });
-  await fixture.activate(undefined, context);
-  assert.equal(renderedHookDirectory(), providerHookDirectory);
-  // The endpoint must keep private relay material outside its file-transfer workspace.
-  for (const invalidWorkspace of [
-    providerHome,
-    providerHookDirectory,
-    `${providerHookDirectory}/files`,
-    "/",
-  ]) {
-    endpointWorkspaceRoot = invalidWorkspace;
-    for (const lifecycle of ["prepare", "activate"]) {
-      await assert.rejects(
-        fixture[lifecycle](undefined, context),
-        /native hook credential directory/,
-      );
-      assert.equal(renderedHookDirectory(), providerHookDirectory);
-    }
-  }
-  const privateSetup = {
-    id: context.workspaceSetup.id,
-    secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
-  };
-  assert.deepEqual(requirements.workspaceSetup, privateSetup);
-  assert.deepEqual(fixture.endpoints.at(-1).requirements.workspaceSetup, privateSetup);
-  assert.equal(
-    JSON.stringify(fixture.endpoints).includes(context.workspaceSetup.files["USER.md"]),
-    false,
-  );
-});
+    (fixture, configuration, harnessHome) => {
+      fixture.revision.configuration = configuration;
+      fixture.sandbox.harnessHome = harnessHome;
+    },
+  ));
 
-test("provider Harness endpoint admits only exact node and provider peers", async () => {
-  const fixture = await preparedEndpoint();
-  const { revision, namespace, read, writes, provisions, peerLookups, gatewayNamespace } = fixture;
-  const workspaceNodePolicy = read("NetworkPolicy", "allow-node-gateway");
-  assert.equal(
-    selectorMatches(workspaceNodePolicy.spec.podSelector, provisions[0].requirements.labels),
-    true,
-    "the provider-fenced Harness must retain exact workspace-node Gateway egress",
-  );
-  // The supervisor's egress is OpenShell's own (egress to every destination);
-  // Compute writes no supervisor-selecting policy (finding 1127).
-  assert.equal(
-    read("NetworkPolicy", `allow-workspace-node-gateway-${digest(revision.agentId)}`, namespace),
-    undefined,
-  );
-  const gatewayNodePolicy = read(
-    "NetworkPolicy",
-    `allow-gateway-workspace-node-${digest(revision.agentId)}`,
-    gatewayNamespace,
-  );
-  // Only this revision's own supervisor, never every supervisor in the namespace.
-  assert.deepEqual(gatewayNodePolicy.spec.ingress, [
-    {
-      from: [
-        {
-          namespaceSelector: {
-            matchLabels: { "kubernetes.io/metadata.name": namespace },
-          },
-          podSelector: { matchLabels: supervisorPeerLabels(revision.id) },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: 8080 }],
-    },
-  ]);
-  // Before the Sandbox existed the policy admitted no relay at all; the policy is
-  // re-applied right after provisioning, before the workspace node is awaited.
-  const workspaceNodeWrites = writes.filter(
-    ({ metadata }) => metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
-  );
-  assert.deepEqual(workspaceNodeWrites[0].spec.ingress, []);
-  assert.ok(fixture.policiesAtHarnessObservation.length > 0);
-  for (const policy of fixture.policiesAtHarnessObservation) {
-    assert.deepEqual(
-      policy.spec.ingress,
-      gatewayNodePolicy.spec.ingress,
-      "the exact node policy must exist before every provider Pod observation",
-    );
-  }
-  for (const policies of fixture.provisioningPolicies) {
-    assert.equal(
-      policies.some(
-        ({ metadata }) => metadata.name === `allow-agent-auth-${digest(revision.agentId)}`,
-      ),
-      false,
-      "provider-fenced Harnesses receive no Compute authentication egress",
-    );
-    assert.equal(
-      policies.some(
-        ({ metadata }) => metadata.name === `allow-agent-runtime-${digest(revision.agentId)}`,
-      ),
-      false,
-      "provider-owned transport does not grant direct ingress to the Harness",
-    );
-  }
-  assert.ok(peerLookups.every((id) => id === revision.id));
-  const agentServiceName = `agent-${digest(revision.agentId)}`;
-  assert.equal(
-    read("Service", agentServiceName).spec.selector["app.kubernetes.io/name"],
-    `${agentServiceName}-inactive`,
-  );
-});
+test("provider Harness endpoint admits only exact node and provider peers", async () =>
+  checkProviderExactPeers(await preparedEndpoint()));
 
-test("provider Harness malformed Pod stops preparation and cannot write activation", async () => {
-  const fixture = await preparedEndpoint();
-  const { hooks, writes } = fixture;
-  fixture.observePods([fixture.pod("ready"), null]);
-  await assert.rejects(fixture.prepare(), /invalid or incomplete/);
-  assert.deepEqual(hooks.slice(-2), ["start", "stop"]);
-  const writesBeforeActivation = writes.length;
-  await assert.rejects(fixture.activate(), /invalid or incomplete/);
-  assert.equal(writes.length, writesBeforeActivation);
-});
+test("provider Harness malformed Pod stops preparation and cannot write activation", async () =>
+  checkProviderMalformedActivation(await preparedEndpoint()));
 
-test("provider Harness activation replaces broad legacy peers and deletes obsolete policies with UID preconditions", async () => {
-  const fixture = await preparedEndpoint();
-  const {
-    driver,
-    revision,
-    namespace,
-    objects,
-    key,
-    read,
-    save,
-    clients,
-    endpoints,
-    gatewayNamespace,
-  } = fixture;
-  const agentServiceName = `agent-${digest(revision.agentId)}`;
-  // Finding 861, reverse switch: a plain dedicated predecessor's Harness grant is
-  // not one this revision writes, so activation deletes it and keeps the pair.
-  const plainRuntime = driver
-    .agentNetworkPolicies(
-      { ...revision, id: "plain-predecessor", sandboxDriverId: undefined },
-      { name: namespace, plane: "execution" },
-    )
-    .map(({ resource }) => resource)
-    .find(({ metadata }) => metadata.name === `allow-agent-runtime-${digest(revision.agentId)}`);
-  save({ ...plainRuntime, metadata: { ...plainRuntime.metadata, uid: "plain-runtime-uid" } });
-  const deletedPolicies = [];
-  clients.networking.deleteNamespacedNetworkPolicy = async ({ name, namespace: target, body }) => {
-    assert.equal(body.preconditions.uid, read("NetworkPolicy", name, target).metadata.uid);
-    deletedPolicies.push(name);
-    objects.delete(key("NetworkPolicy", name, target));
-  };
-  // Upgrade: an earlier controller's pair admitted every supervisor Pod in the
-  // namespace. Activation replaces the ingress half and deletes the egress half.
-  const legacySupervisor = { "openshell.ai/boundary-role": "supervisor" };
-  const legacyIngressName = `allow-gateway-workspace-node-${digest(revision.agentId)}`;
-  const legacyIngress = read("NetworkPolicy", legacyIngressName);
-  save({
-    ...legacyIngress,
-    spec: {
-      ...legacyIngress.spec,
-      ingress: [
-        {
-          from: [
-            {
-              namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": namespace } },
-              podSelector: { matchLabels: legacySupervisor },
-            },
-          ],
-          ports: [{ protocol: "TCP", port: 8080 }],
-        },
-      ],
-    },
-  });
-  const legacyEgress = driver.manifest(
-    "networking.k8s.io/v1",
-    "NetworkPolicy",
-    `allow-workspace-node-gateway-${digest(revision.agentId)}`,
-    { namespaceId: tenant.id, agentId: revision.agentId },
-    { name: namespace, plane: "execution" },
-  );
-  save({
-    ...legacyEgress,
-    metadata: { ...legacyEgress.metadata, uid: "legacy-egress-uid" },
-    spec: {
-      podSelector: { matchLabels: legacySupervisor },
-      policyTypes: ["Egress"],
-      egress: [{ ports: [{ protocol: "TCP", port: 8080 }] }],
-    },
-  });
-  fixture.observePods([fixture.pod("ready")]);
-  await fixture.activate();
-  assert.equal(endpoints.length, 2);
-  assert.deepEqual(deletedPolicies, [legacyEgress.metadata.name, plainRuntime.metadata.name]);
-  assert.equal(read("NetworkPolicy", legacyEgress.metadata.name), undefined);
-  assert.deepEqual(read("NetworkPolicy", legacyIngressName).spec.ingress[0].from[0].podSelector, {
-    matchLabels: supervisorPeerLabels(revision.id),
-  });
-  assert.equal(
-    read("Service", agentServiceName).spec.selector["app.kubernetes.io/name"],
-    `${agentServiceName}-inactive`,
-  );
-  const gatewayPolicy = read(
-    "NetworkPolicy",
-    `allow-gateway-agent-${digest(revision.agentId)}`,
-    gatewayNamespace,
-  );
-  assert.deepEqual(gatewayPolicy.spec.egress, [
-    {
-      to: [
-        {
-          namespaceSelector: {
-            matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
-          },
-          podSelector: { matchLabels: { app: "openshell-gateway" } },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: 8080 }],
-    },
-  ]);
-});
+test("provider Harness activation replaces broad legacy peers and deletes obsolete policies with UID preconditions", async () =>
+  checkProviderLegacyPolicyActivation(await preparedEndpoint(), {
+    agentNetworkPolicies: (driver, revision, namespace) =>
+      driver.agentNetworkPolicies(revision, namespace),
+    manifest: (driver, apiVersion, kind, name, ownership, namespace) =>
+      driver.manifest(apiVersion, kind, name, ownership, namespace),
+  }));
 
-const transportScenarios = [
-  { name: "serving transport", answer: { state: "serving" }, outcome: { ready: true } },
-  { name: "starting transport", answer: { state: "starting" }, outcome: { ready: false } },
-  {
-    name: "held model failure",
-    answer: { state: "failed", runtimeFailure: heldFailure },
-    outcome: { ready: false, runtimeFailure: heldFailure },
-  },
-];
-const statusScenarios = [
-  ...transportScenarios,
-  {
-    name: "redacted provider cause",
-    answer: {
-      state: "failed",
-      runtimeFailure: { ...heldFailure, cause: { kind: "PROVIDER_TEXT", detail: "key sk-123" } },
-    },
-    outcome: { ready: false, runtimeFailure: withoutCause },
-  },
-];
 for (const scenario of statusScenarios) {
   test(`provider Harness preparation observes ${scenario.name}`, async () => {
     const fixture = await endpointWithGateway();
-    const { revision } = fixture;
-    const observations = [];
-    fixture.sandbox.harnessStatus = async (context) => {
-      observations.push(context);
-      return scenario.answer;
-    };
-    fixture.observePods([fixture.pod("ready")]);
-    assert.deepEqual(await fixture.prepare(), {
-      ...expectedRevision(fixture),
-      ...scenario.outcome,
-    });
-    assert.equal(observations.length, 1);
-    assert.equal(observations[0].transportToken, "test-transport");
-    assert.equal(observations[0].revision, revision);
-    assert.deepEqual(observations[0].requirements.labels, fixture.labels);
+    await checkProviderPreparationStatus(fixture, scenario, expectedRevision(fixture));
   });
 }
 
-for (const scenario of [
-  { name: "missing evidence", runtimeFailure: undefined },
-  { name: "null evidence", runtimeFailure: null },
-  { name: "string evidence", runtimeFailure: "MODEL_PROBE_FAILED" },
-  { name: "invalid code", runtimeFailure: { ...heldFailure, code: "not a code" } },
-  { name: "invalid timestamp", runtimeFailure: { ...heldFailure, checkedAt: "yesterday" } },
-]) {
+for (const scenario of invalidProviderEvidence) {
   test(`provider Harness rejects ${scenario.name}`, async () => {
-    const fixture = await endpointWithGateway();
-    fixture.observePods([fixture.pod("ready")]);
-    fixture.sandbox.harnessStatus = async () => ({
-      state: "failed",
-      runtimeFailure: scenario.runtimeFailure,
-    });
-    await assert.rejects(fixture.prepare(), /Runtime failure status returned invalid data/);
-    assert.deepEqual(fixture.hooks.slice(-2), ["start", "stop"]);
+    await checkProviderInvalidEvidence(await endpointWithGateway(), scenario);
   });
 }
 
@@ -616,6 +289,24 @@ test("provider Harness reads a supervisor's held failure while its workspace nod
     });
   }
   assert.equal(observations.length, 3);
+});
+
+test("Strands reports a held workspace through its diagnostic Service before Pod readiness", async () => {
+  const fixture = providerEndpointFixture();
+  fixture.sandbox.implementation = "strands-box";
+  fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
+  await endpointWithGateway(fixture);
+  fixture.observePods([fixture.pod("starting", "False")]);
+  const runtimeFailure = { ...withoutCause, check: "workspace-baseline", code: "UNAVAILABLE" };
+  fixture.sandbox.harnessStatus = async ({ transportToken }) => {
+    assert.equal(transportToken, "test-transport");
+    return { state: "failed", runtimeFailure };
+  };
+  assert.deepEqual(await fixture.prepare(), {
+    ...expectedRevision(fixture),
+    ready: false,
+    runtimeFailure,
+  });
 });
 
 test("provider Harness unready Pod prevents transport status observation", async () => {
@@ -865,7 +556,11 @@ test("provider Harness verified endpoint trust is projected before rollout and i
   for (const caPath of [undefined, untrusted.rootCertificatePath]) {
     await assert.rejects(probe(caPath), {
       code: 1,
-      stderr: /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY/,
+      // A different CA with the same issuer name can fail signature verification directly.
+      stderr:
+        caPath === undefined
+          ? /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY/
+          : /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|CERT_SIGNATURE_FAILURE/,
     });
   }
   await assert.rejects(probe(projectedPath, `wss://127.0.0.1:${providerPort}/`), {
@@ -1488,7 +1183,7 @@ test("provider Harness protected execution is released only on current signed in
       const admission = driver.admitRevision(protectedRevision);
       assert.match(
         admission,
-        /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+        /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
       );
       const admitted = {
         ...protectedRevision,
@@ -1498,7 +1193,9 @@ test("provider Harness protected execution is released only on current signed in
         ...admitted,
         compute: {
           ...admitted.compute,
-          admission: admission.replace("openshell-codex-launch:v1:", ""),
+          admission: admission
+            .replace("http-chat:v1:", "")
+            .replace("openshell-codex-launch:v1:", ""),
         },
       };
       const pod = fixture.pod("protected-revision");
@@ -1513,12 +1210,28 @@ test("provider Harness protected execution is released only on current signed in
           : originalList(request);
       observation = installed;
       current = true;
+      const baselineObjects = structuredClone(objects);
+      const restoreObjects = () => {
+        objects.clear();
+        for (const [key, resource] of baselineObjects) {
+          objects.set(key, structuredClone(resource));
+        }
+      };
       try {
         for (const [target, disabled] of [
           [admitted, true],
           [alreadyAdmitted, true],
           [protectedRevision, false],
         ]) {
+          // These rows represent separate admission histories. Do not reinterpret a
+          // ConfigMap rendered for new HTTP defaults as an older immutable revision.
+          restoreObjects();
+          const gatewayName = `gateway-${digest(target.agentId)}-rev-${digest(target.id)}`;
+          for (const [key, resource] of objects) {
+            if (resource.kind === "ConfigMap" && resource.metadata.name === gatewayName) {
+              objects.delete(key);
+            }
+          }
           const hashes = [];
           const captureCommand = async ({ requirements }) => {
             hashes.push(
@@ -1534,21 +1247,23 @@ test("provider Harness protected execution is released only on current signed in
               (error) => error === released,
             );
           }
-          // SHA-256 of prepare and activate argv at 61c73c99 with Node 24.22.1.
+          // SHA-256 of prepare and activate argv with Node 24.22.1; the prepare
+          // argv embeds the startup schema thresholds, so it moves with the pin.
           assert.deepEqual(
             hashes,
             disabled
               ? [
-                  "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
+                  "e38d4be7e9e75516db4873af61295dca90bd2f2ea4d7ef00e6704a662ec92ad7",
                   "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
                 ]
               : [
-                  "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
+                  "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
                   "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
                 ],
           );
         }
       } finally {
+        restoreObjects();
         core.listNamespacedPod = originalList;
         sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;
@@ -1649,4 +1364,39 @@ test("provider Harness protected execution is released only on current signed in
       }
     },
   );
+});
+
+test("provider-owned storage uses API observation without a Harness claim", async () => {
+  const fixture = providerEndpointFixture();
+  fixture.sandbox.workspaceStorage = "provider";
+  fixture.sandbox.observeHarness = async () => ({ state: "running" });
+  // API responses are controlled inputs here. Assertions cover Compute's rendered
+  // resources, not real OpenShell lifecycle, Kubernetes RBAC, or network enforcement.
+  await endpointWithGateway(fixture);
+  assert.deepEqual(await fixture.prepare(), { ...expectedRevision(fixture), ready: true });
+  const { requirements } = fixture.provisions[0];
+  assert.deepEqual(requirements.workspaceMounts, []);
+  assert.deepEqual(requirements.retainedDirectories, [
+    {
+      purpose: "workspace",
+      name: "workspace",
+      path: "/home/node/workspace",
+      environment: "OPENCLAW_WORKSPACE_DIR",
+    },
+    {
+      purpose: "generated-images",
+      name: "generated-images",
+      path: "/home/node/.codex/generated_images",
+    },
+    { purpose: "sessions", name: "codex-sessions", path: "/home/node/.codex/sessions" },
+    {
+      purpose: "node-state",
+      name: fixture.driver.workspaceNodeName(fixture.revision),
+      path: "/home/node/.openclaw-node",
+      environment: "OPENCLAW_NODE_STATE_DIR",
+    },
+  ]);
+  const claims = fixture.writes.filter(({ kind }) => kind === "PersistentVolumeClaim");
+  assert.ok(claims.length > 0, "Gateway private storage remains Kubernetes-owned");
+  assert.ok(claims.every(({ metadata }) => !metadata.name.startsWith("harness-workspace-")));
 });

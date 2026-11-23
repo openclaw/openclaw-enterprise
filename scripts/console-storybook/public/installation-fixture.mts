@@ -18,7 +18,6 @@ type InstallationScenario = {
   nativeWorkerSupport?: false | NonNullable<InstallationCapabilities["nativeWorkers"]>["support"];
   openclawExecutionModes?: NonNullable<InstallationCapabilities["openclaw"]>["executionModes"];
   openclawSettingRefusal?: string;
-  repositoryAccessRequired?: true;
   sandboxDriverUnavailable?: boolean;
   credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
   pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
@@ -154,10 +153,10 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
           ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
           additionalProperties: false,
           properties: {
+            integrationMode: { type: "string", enum: ["service", "legacy"], default: "legacy" },
             gateway: {
               type: "object",
               properties: {
-                workspaceMode: { type: "string" },
                 operatorWorkspaceResources: { type: "array", writeOnly: true },
               },
             },
@@ -167,8 +166,8 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
           ? {}
           : {
               startupConfiguration: {
+                integrationMode: "legacy",
                 gateway: {
-                  workspaceMode: "operator",
                   operatorWorkspaceResources: "[redacted]",
                 },
               },
@@ -212,7 +211,6 @@ export function installationFixture(
     createdAt,
     capabilities: {
       ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
-      ...(scenario.repositoryAccessRequired ? { repositoryAccessRequired: true } : {}),
       ...(scenario.unsupportedProvisioning === true
         ? {}
         : { agentProvisioning: { executionModes: ["dedicated"] } }),

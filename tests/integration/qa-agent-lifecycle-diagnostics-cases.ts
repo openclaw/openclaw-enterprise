@@ -31,7 +31,7 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
   test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
     const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
-    const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+    const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
     // An invented 48-character registered value. Runtime text that OCC shortened could keep
     // part of it, which whole-value redaction cannot match.
     const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
@@ -266,8 +266,8 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
   });
 
   test("a QA Agent stop timeout names the remaining Pods and keeps redacted platform logs", async () => {
-    const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
-    const { stopQaAgent, describeStopObservation } = await import("../helpers/qa-repository.mjs");
+    const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
+    const { stopQaAgent, describeStopObservation } = await import("../helpers/qa-repository.ts");
     registerQaSecret("stop-fixture-service-key");
     const agent: AgentFixture = { id: "agent-1", namespaceId: "namespace-1" };
     const pod = {
@@ -557,13 +557,14 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
     const { GATEWAY_STOP_TIMEOUT_MS } =
       await import("../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts");
     const { stopQaAgent, QA_STOP_TIMEOUT_MS, QA_SLOW_STOP_MS } =
-      await import("../helpers/qa-repository.mjs");
+      await import("../helpers/qa-repository.ts");
     // The worker's own Gateway wait (grace plus one request) fits, with room for the
     // Harness and the API; the old 300 s default did not.
     assert.ok(QA_STOP_TIMEOUT_MS >= GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000);
     assert.ok(QA_STOP_TIMEOUT_MS > 300_000);
     assert.equal(QA_SLOW_STOP_MS, 60_000);
 
+    // Kubernetes can report a disappeared container without a termination time while the Pod drains.
     const gateway = {
       metadata: {
         namespace: "oce-agent-4",
@@ -571,7 +572,18 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
         deletionTimestamp: "2026-10-11T07:23:42Z",
         labels: { "openclaw.dev/agent": "agent-4", "openclaw.dev/workload-role": "gateway" },
       },
-      status: { phase: "Running" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          {
+            name: "gateway",
+            restartCount: 1,
+            lastState: {
+              terminated: { reason: "ContainerStatusUnknown", exitCode: 137, finishedAt: null },
+            },
+          },
+        ],
+      },
     };
     // A fake clock for both the slow-stop threshold and the timeout, and no sleep between
     // reads: each GET advances the clock by the next step; the last step's read finds
@@ -751,4 +763,71 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
     // It timed out on its first read, at the bound: the timeout is no longer than the bound.
     assert.equal(clock, bound);
   });
+}
+
+export async function runQaWaitDiagnosticCase(): Promise<void> {
+  const { waitFor } = await import("../helpers/qa-wait.ts");
+  let observations = 0;
+  let last: { observation: number; pods: string[] } | undefined;
+  // Advance through the deadline on the second observation.
+  let clock = 0;
+  await assert.rejects(
+    waitFor(
+      "fake condition",
+      async () => {
+        observations += 1;
+        assert.ok(observations < 100, "the wait follows the fake clock");
+        clock += 100;
+        last = { observation: observations, pods: ["runtime-0"] };
+        return false;
+      },
+      200,
+      { describe: () => JSON.stringify(last), interval: 0, now: () => clock },
+    ),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        'Timed out: fake condition; last observation: {"observation":2,"pods":["runtime-0"]}',
+      );
+      return true;
+    },
+  );
+  assert.equal(observations, 2, "the timeout ends the wait after the deadline observation");
+
+  // The next observation can succeed even when its timer wakes at the deadline.
+  let clockReads = 0;
+  let readinessReads = 0;
+  const ready = { pod: "runtime-0" };
+  assert.equal(
+    await waitFor(
+      "ready at the deadline",
+      () => (++readinessReads === 2 ? ready : undefined),
+      100,
+      { interval: 0, now: () => (clockReads++ < 2 ? 0 : 100) },
+    ),
+    ready,
+  );
+  assert.equal(readinessReads, 2);
+
+  // Without `describe` the message is unchanged; a failing `describe` keeps the timeout.
+  await assert.rejects(
+    waitFor("plain condition", async () => false, 10, { interval: 5 }),
+    (error) => error instanceof Error && error.message === "Timed out: plain condition",
+  );
+  await assert.rejects(
+    waitFor("broken describe", async () => false, 10, {
+      interval: 5,
+      describe: () => {
+        throw new Error("no state");
+      },
+    }),
+    (error) =>
+      error instanceof Error &&
+      error.message === "Timed out: broken describe; last observation unavailable (no state)",
+  );
+  assert.equal(
+    await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
+    "value",
+  );
 }
