@@ -3,6 +3,7 @@ import {
   isGitHubRepositoryPermissions,
   parseGitHubNumericId,
   type GitHubRepositoryGrant,
+  type GitHubRepositorySourceGrant,
 } from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -102,16 +103,6 @@ export function requireGitHubApp(registry: GitHubRepositoryRegistry): {
   return { appId: registry.appId, installationId: registry.githubInstallationId };
 }
 
-/**
- * Delivery from a TokenService Source is not built yet. Every App-only consumer that meets a
- * Source-backed grant refuses it with this error instead of issuing an App credential for it.
- */
-export class RepositorySourceDeliveryUnavailableError extends Error {
-  constructor() {
-    super("repository-source-delivery-unavailable");
-    this.name = "RepositorySourceDeliveryUnavailableError";
-  }
-}
 const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
 const repositoryPattern = createRepositorySlugPattern();
 
@@ -696,12 +687,6 @@ export function createGitHubRepositoryDeliveryResolver(
     }
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
-      if (scope.credential.kind === "credential_source") {
-        // TODO(repository token Source delivery, part B): return a delivery that names
-        // scope.credential and lend the Source through its own Provider. Until then a
-        // Source-backed revision gets no credential, never the App's.
-        throw new RepositorySourceDeliveryUnavailableError();
-      }
       const savedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (savedPolicy !== undefined && scope.mixedNativeGit) {
         throw new Error("selected-repository-native-git-differs");
@@ -711,6 +696,22 @@ export function createGitHubRepositoryDeliveryResolver(
         throw new Error(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
+      }
+      if (scope.credential.kind === "credential_source") {
+        // A Source is lent to its own endpointless Provider; it has no route but native Git.
+        if (!nativeGit) {
+          throw new Error("A repository token Source requires native Git with a network policy.");
+        }
+        return Object.freeze({
+          binding: state.bindings[0]!,
+          delivery: Object.freeze({
+            scope: "github-repository" as const,
+            credentialSource: scope.credential.sourceId,
+            repositories: scope.repositories,
+            permissions: scope.permissions,
+            nativeGit: "v1" as const,
+          }),
+        });
       }
       // The credential covers every bound repository, and a pull request can name any of them
       // in the target's fork network as its head. Creation therefore needs a saved grant on each.
@@ -772,11 +773,18 @@ export function resolveSelectedRepositoryGrant(
   namespaceId: string,
   revisionId: string,
   bindings: readonly AdmittedRepositoryBinding[],
-): GitHubRepositoryGrant {
+): GitHubRepositoryGrant | GitHubRepositorySourceGrant {
   const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
   if (scope.credential.kind === "credential_source") {
-    // TODO(repository token Source delivery, part B): lend the Source; the App never issues it.
-    throw new RepositorySourceDeliveryUnavailableError();
+    // Lent from the Source at each loan; the App never issues it.
+    return Object.freeze({
+      id: bindings[0]!.grant.grantId,
+      isolationId: revisionId,
+      credentialSource: Object.freeze({ namespaceId, sourceId: scope.credential.sourceId }),
+      profile: "github-repository",
+      repositories: scope.repositories,
+      permissions: scope.permissions,
+    });
   }
   return Object.freeze({
     id: bindings[0]!.grant.grantId,

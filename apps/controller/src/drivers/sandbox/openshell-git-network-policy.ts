@@ -8,8 +8,25 @@ import {
 } from "./openshell-gateway-client.ts";
 
 export type OpenShellGitNetworkTarget =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+  | {
+      readonly repository: string;
+      readonly installationId?: never;
+      readonly credentialSource?: never;
+    }
+  | {
+      readonly repository?: never;
+      readonly installationId: string;
+      readonly credentialSource?: never;
+    }
+  /** A TokenService Source: native Git only, so its Provider never carries endpoints. */
+  | {
+      readonly repository?: never;
+      readonly installationId?: never;
+      readonly credentialSource: string;
+    };
+
+/** The installation or Source Provider a bound rule names; the name is derived, never chosen. */
+const boundGitProviderPattern = /^oce-github-(?:installation|token)-[a-f0-9]{32}$/;
 
 const binaries = Object.freeze([
   "/usr/bin/git",
@@ -53,6 +70,9 @@ export function openShellGitEndpoints(
   api: URL,
   target: OpenShellGitNetworkTarget,
 ): readonly OpenShellProviderProfileEndpoint[] {
+  if (target.credentialSource !== undefined) {
+    return [];
+  }
   return target.installationId
     ? [
         {
@@ -209,8 +229,8 @@ export function compileOpenShellBoundGitRule(
   binaries: readonly string[],
   scopedRest?: readonly OpenShellScopedRestGrant[],
 ) {
-  if (typeof provider !== "string" || !/^oce-github-installation-[a-f0-9]{32}$/.test(provider)) {
-    throw new Error("Expected an installation Git Provider.");
+  if (typeof provider !== "string" || !boundGitProviderPattern.test(provider)) {
+    throw new Error("Expected an installation or Source Git Provider.");
   }
   if (!Array.isArray(binaries) || binaries.length === 0) {
     throw new Error("Expected exact Git transport binary paths.");

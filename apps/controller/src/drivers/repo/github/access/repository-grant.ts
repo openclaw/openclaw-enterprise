@@ -9,6 +9,14 @@ export interface GitHubRepositoryGrant {
   readonly permissions: Readonly<Record<string, string>>;
 }
 
+/** The same repository set, held by a same-Namespace TokenService Source instead of the App. */
+export interface GitHubRepositorySourceGrant extends Omit<
+  GitHubRepositoryGrant,
+  "appId" | "installationId"
+> {
+  readonly credentialSource: Readonly<{ namespaceId: string; sourceId: string }>;
+}
+
 const repositoryPermissions = new Set([
   "actions",
   "administration",

@@ -212,6 +212,9 @@ async function verify() {
     "installation-read-preflight",
     [binding],
   );
+  if ("credentialSource" in grant) {
+    throw new Error("This check reads through the GitHub App; the registration names a Source.");
+  }
   const scope = prepareProviderScope("https://api.github.com", grant);
   const ca = issuerCaPath ? readFileSync(issuerCaPath) : undefined;
   const bytes = readFileSync("/etc/openclaw/prepared-repository/private-key.pem");

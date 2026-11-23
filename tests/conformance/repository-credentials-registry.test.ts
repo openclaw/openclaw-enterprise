@@ -870,13 +870,11 @@ test("a changed Source selection is a changed grant, so earlier revisions go sta
   assert.notEqual(rebound?.grant.grantId, binding.grant.grantId);
 });
 
-test("until Source delivery exists, a Source-backed revision gets no credential, never the App's", () => {
-  const input = sourceRegistryInput();
-  // The App is present too: the refusal must not fall back to it.
-  Object.assign(input, { appId: "12345", githubInstallationId: "67890" });
-  const registry = validateGitHubRepositoryRegistry(input);
-  const bindings = sourceBindings(registry, ["token"]);
-  const revision = {
+function sourceRevision(
+  bindings: readonly unknown[],
+  grants?: readonly { repository: string; access: "read" | "write" }[],
+) {
+  return {
     id: "rev_source",
     namespaceId: "namespace-a",
     repositoryCredentials: {
@@ -884,16 +882,40 @@ test("until Source delivery exists, a Source-backed revision gets no credential,
       deadlineWallMs: Date.now() + 3_600_000,
       bindings,
     },
-    sandboxPolicy: {
-      repositoryNetworkPolicy: { grants: [{ repository: "fixture/token", access: "write" }] },
-    },
+    ...(grants && { sandboxPolicy: { repositoryNetworkPolicy: { grants } } }),
   } as unknown as AgentRevision;
-  assert.throws(
-    () => createGitHubRepositoryDeliveryResolver(registry)(revision),
-    /repository-source-delivery-unavailable/,
+}
+
+test("a Source-backed revision is delivered from its Source, never from the App", () => {
+  const input = sourceRegistryInput();
+  // The App is present too: the Source registration must not fall back to it.
+  Object.assign(input, { appId: "12345", githubInstallationId: "67890" });
+  const registry = validateGitHubRepositoryRegistry(input);
+  const bindings = sourceBindings(registry, ["token"]);
+  const resolved = createGitHubRepositoryDeliveryResolver(registry)(
+    sourceRevision(bindings, [{ repository: "fixture/token", access: "write" }]),
   );
+  assert.deepEqual(resolved.delivery, {
+    scope: "github-repository",
+    credentialSource: "cs_repository_token",
+    repositories: [{ repositoryId: "101", repository: "fixture/token" }],
+    permissions: { metadata: "read", contents: "write" },
+    nativeGit: "v1",
+  });
+  assert.equal("installationId" in resolved.delivery, false);
+  const grant = resolveSelectedRepositoryGrant(registry, "namespace-a", "rev_source", bindings);
+  assert.deepEqual(grant, {
+    id: bindings[0]!.grant.grantId,
+    isolationId: "rev_source",
+    credentialSource: { namespaceId: "namespace-a", sourceId: "cs_repository_token" },
+    profile: "github-repository",
+    repositories: [{ repositoryId: "101", repository: "fixture/token" }],
+    permissions: { metadata: "read", contents: "write" },
+  });
+  assert.equal("appId" in grant || "installationId" in grant, false);
+  // A Source has no route but native Git: without a saved network policy it gets nothing.
   assert.throws(
-    () => resolveSelectedRepositoryGrant(registry, "namespace-a", "rev_source", bindings),
-    /repository-source-delivery-unavailable/,
+    () => createGitHubRepositoryDeliveryResolver(registry)(sourceRevision(bindings)),
+    /requires native Git with a network policy/,
   );
 });

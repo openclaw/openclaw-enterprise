@@ -13,7 +13,10 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
-import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  openShellInstallationGitProviderPrefix,
+  openShellSourceGitProviderPrefix,
+} from "./openshell-repository-git-evidence.ts";
 import {
   openShellExpectedProviderRule,
   verifyOpenShellRepositoryPolicy,
@@ -57,6 +60,9 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkTarget & {
   readonly managedSandbox?: true;
   readonly workspaceRoute?: InspectedWorkspaceNodeRoute;
 };
+
+/** The longest a TokenService Source's value is lent to its Provider (the provisional bound). */
+export const repositorySourceLoanMaximumMs = 900_000;
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
 export interface OpenShellPreparedGitToken {
@@ -227,13 +233,19 @@ export class OpenShellPreparedGitProvider {
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
       !scope.executionId ||
-      (scope.installationId !== undefined
-        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+      (scope.credentialSource !== undefined
+        ? !/^cs_[A-Za-z0-9._-]{1,125}$/.test(scope.credentialSource) ||
+          scope.installationId !== undefined ||
           scope.repository !== undefined ||
           scope.apiOrigin !== "https://api.github.com" ||
           scope.gitOrigin !== "https://github.com"
-        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
-          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
+        : scope.installationId !== undefined
+          ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+            scope.repository !== undefined ||
+            scope.apiOrigin !== "https://api.github.com" ||
+            scope.gitOrigin !== "https://github.com"
+          : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
+            scope.repository.split("/").some((part) => part === "." || part === "..")) ||
       scope.binaries.length === 0 ||
       scope.binaries.some(
         (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
@@ -241,9 +253,12 @@ export class OpenShellPreparedGitProvider {
     ) {
       refuse();
     }
+    // Native Git binds an installation or a Source Provider; a Source has no other route.
     if (
-      scope.nativeGit !== undefined &&
-      (scope.nativeGit !== "v1" || scope.installationId === undefined)
+      (scope.nativeGit !== undefined &&
+        (scope.nativeGit !== "v1" ||
+          (scope.installationId === undefined && scope.credentialSource === undefined))) ||
+      (scope.credentialSource !== undefined && scope.nativeGit !== "v1")
     ) {
       refuse();
     }
@@ -267,7 +282,11 @@ export class OpenShellPreparedGitProvider {
           scope.workspaceId,
           scope.sandbox,
           scope.executionId,
-          scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
+          scope.credentialSource !== undefined
+            ? ["github-token-source", scope.credentialSource]
+            : scope.installationId
+              ? ["github-installation", scope.installationId]
+              : scope.repository,
           git.origin,
           api.origin,
           scope.binaries,
@@ -280,9 +299,12 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    const prefix = scope.installationId
-      ? openShellInstallationGitProviderPrefix
-      : REPOSITORY_PROVIDER_PREFIX;
+    const prefix =
+      scope.credentialSource !== undefined
+        ? openShellSourceGitProviderPrefix
+        : scope.installationId
+          ? openShellInstallationGitProviderPrefix
+          : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
@@ -315,7 +337,9 @@ export class OpenShellPreparedGitProvider {
       token.value.includes("openshell:resolve:") ||
       !Number.isFinite(expires) ||
       remaining <= 0 ||
-      remaining > 3_600_000 ||
+      // A Source's loan is the revocation bound, so it is shorter than an App token's hour.
+      remaining >
+        (this.scope.credentialSource !== undefined ? repositorySourceLoanMaximumMs : 3_600_000) ||
       new Date(expires).toISOString().replace(".000Z", "Z") !==
         token.expiresAt.replace(".000Z", "Z")
     ) {
@@ -972,11 +996,19 @@ export class OpenShellPreparedGitProvider {
 
   async rotate(
     previous: OpenShellPreparedGitBinding,
-    release: () => Promise<(OpenShellPreparedGitToken & { isCurrent?: () => boolean }) | undefined>,
+    release: () => Promise<
+      | (OpenShellPreparedGitToken & {
+          isCurrent?: () => boolean;
+          /** Ends the material owner's hold once the write has returned or was never sent. */
+          settle?: () => Promise<void>;
+        })
+      | undefined
+    >,
     signal: AbortSignal,
   ): Promise<OpenShellPreparedGitBinding | undefined> {
     previous = Object.freeze({ ...previous });
     let phase: "reading" | "release" | "writing" = "reading";
+    let settle: (() => Promise<void>) | undefined;
     try {
       if (!this.owns(previous) || !this.client.updateProviderCredentialsConditionally) {
         refuse();
@@ -1003,6 +1035,7 @@ export class OpenShellPreparedGitProvider {
       }
       phase = "release";
       const token = await release();
+      settle = token?.settle;
       phase = "reading";
       if (!token || signal.aborted) {
         return;
@@ -1073,6 +1106,8 @@ export class OpenShellPreparedGitProvider {
         phase === "writing" ? "unknown" : "refused",
         phase === "writing" ? undefined : readFailure(error, signal),
       );
+    } finally {
+      await settle?.();
     }
   }
 }
@@ -1084,7 +1119,8 @@ function preparedGitName(name: string, owner: string | undefined): boolean {
     owner !== undefined &&
     /^[0-9a-f]{48}$/.test(owner) &&
     (name === REPOSITORY_PROVIDER_PREFIX + hash ||
-      name === openShellInstallationGitProviderPrefix + hash)
+      name === openShellInstallationGitProviderPrefix + hash ||
+      name === openShellSourceGitProviderPrefix + hash)
   );
 }
 
