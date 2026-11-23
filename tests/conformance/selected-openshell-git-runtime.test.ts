@@ -4601,6 +4601,8 @@ function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
     alive: true,
     /** Runs after a confirmed round trip, before the runtime's next step. */
     afterConfirm: (_hold: { open: boolean }) => {},
+    /** Runs after each held read, before the runtime sees the material. */
+    afterRead: () => {},
   };
   const read = f.owner.readOpenShellMaterial.bind(f.owner);
   f.owner.readOpenShellMaterial = (async (...args: Parameters<typeof read>) => {
@@ -4610,6 +4612,7 @@ function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
     }
     const hold = { open: true, confirms: 0, releases: 0 };
     holds.push(hold);
+    session.afterRead();
     return withWriteHold(
       { ...material },
       {
@@ -4661,6 +4664,44 @@ test("native Git writes a lent Source only after the holding session confirms it
   await reconcile();
   assert.equal(activity.updates, 1);
   assert.equal(f.runtime.route(revision.id).state, "installed");
+});
+
+test("native Git releases a lent Source's hold on every path that writes nothing", async (t) => {
+  const { f, reconcile, activity, setExclusiveGitRecipient } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { holds, session, allReleased } = lentSourceHolds(f);
+  // The Sandbox stops having the Provider to itself after the read inside the rotation.
+  const rotations = f.calls.rotate;
+  session.afterRead = () => {
+    if (f.calls.rotate > rotations) {
+      setExclusiveGitRecipient(false);
+    }
+  };
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.equal(f.calls.rotate, rotations + 1, "the pass read under a hold inside the rotation");
+  assert.ok(allReleased(), "a recipient refusal releases the hold");
+  session.afterRead = () => {};
+  setExclusiveGitRecipient(true);
+
+  // Another Worker takes the route between the held read and the last fence check.
+  const fenced = f.runtime["fenced"].bind(f.runtime);
+  f.runtime["fenced"] = (async (...args: Parameters<typeof fenced>) => {
+    if (holds.at(-1)?.open) {
+      throw new Error("the route moved to another Worker");
+    }
+    return fenced(...args);
+  }) as typeof fenced;
+  const before = holds.length;
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.ok(holds.length > before);
+  assert.ok(allReleased(), "a failed fence check releases the hold");
 });
 
 test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {
