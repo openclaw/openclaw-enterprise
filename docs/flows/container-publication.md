@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: "2026-11-19 18:56"
-last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
+updated: "2026-11-23 01:11"
+last_updated_session: "authoring-run/815d54c2-4420-4421-8561-9b92e61353c1"
 ---
 
 # Container publication flow
@@ -233,8 +233,8 @@ child manifests.
 After both source tags verify, ordinary publication copies each sealed archive to
 `latest` or the selected custom alias, then checks both source and alias digests.
 The custom alias replaces `latest` for that dispatch; recovery does not move an
-alias. The two aliases are updated separately, so a failed run can leave them on
-different digests. The receipt is written only after both verify.
+alias. Aliases update separately. Failure can leave one on the previous build.
+The receipt follows verification of both aliases.
 
 Package metadata must report the expected name and public visibility. Reported
 repository linkage must match the public Enterprise repository. Omitted linkage
@@ -294,9 +294,14 @@ owns package-write access and coordination.
   registry index identity is stable; the second run must retain the existing
   source tag. Mutable external package inputs can still produce a legitimate
   conflict, which remains fail-closed.
-- Use `docker buildx imagetools inspect` on both the source tag and selected alias.
-  Require Linux amd64 and arm64 plus the receipt's index digest. Startup checks
-  do not establish native ARM64 performance, cluster behavior, or model turns.
+- Inspect each image's source tag and selected alias with `docker buildx imagetools inspect`.
+  Require Linux amd64 and arm64. Compare both index digests with the digest recorded
+  for that image in the publication receipt.
+  After alias failure, compare tags with `digest` from its verified original
+  `metadata.json` for the same trusted run and attempt.
+  [Use verified digest references](../release/containers.md#prepare-and-publish)
+  until publication updates both aliases. Startup checks do not establish native
+  ARM64 performance, cluster behavior, or model turns.
 
 ## Related docs
 
@@ -308,6 +313,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 01:11: Correct alias digest verification. (authoring-run/815d54c2-4420-4421-8561-9b92e61353c1 - b4f0775e12dcd79f2ee4724d8b73baeda139f6db)
 
 - 2026-11-19 18:56: Remove the custom Node build and worker-termination patch; use stock Node from the pinned bases. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
 
