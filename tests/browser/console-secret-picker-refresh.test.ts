@@ -716,7 +716,7 @@ test("Create Agent discards a pending model Secret even after switching provider
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
   const key = page.getByLabel("API key Secret", { exact: true });
@@ -754,7 +754,7 @@ test("Create Agent waits for the replacement model Secret before validating", as
   const second = await fixture.createSecret(namespace.id, "Second choice", "synthetic-second");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
   const key = page.getByLabel("API key Secret", { exact: true });
@@ -814,7 +814,7 @@ test("a late Secret refusal cannot replace the current authentication method's c
   const permission = `${fixture.origin}/namespaces/${namespace.id}/permissions/secrets`;
   const held = await holdRequests(t, page, permission, { once: true });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   const requests = apiRequests(page, fixture.origin);
   await selectSecret(page, "API key Secret", denied);
   await held.requested;
