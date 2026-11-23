@@ -5,7 +5,6 @@ import type {
   CredentialInjectionPolicy,
   CredentialDeploymentConfiguration,
   CredentialDeploymentRef,
-  DeploymentRequestMatch,
   CredentialDeploymentContext,
   CredentialSourceReference,
   ResolvedCredential,
@@ -31,6 +30,10 @@ import {
   sameOpenShellPolicy,
 } from "../sandbox/openshell-policy.ts";
 import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
+import {
+  openShellCredentialPathsOverlap,
+  type OpenShellCredentialRoute,
+} from "../sandbox/openshell-credential-policy.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
 const GRPC_FAILED_PRECONDITION = 9;
@@ -71,7 +74,7 @@ function deliveryOwnership(source: CredentialSourceReference): Record<string, st
 
 function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProfile {
   if (
-    binding.consumer.kind !== "model" ||
+    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
     binding.projection.presentation !== "bearer" ||
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.projection.environment)
   ) {
@@ -466,35 +469,31 @@ export function assertOpenShellDeploymentContext(
   }
 }
 
-export function assertOpenShellInjectionPolicy(
-  policies: readonly CredentialInjectionPolicy[],
-  bindingRef?: string,
-): DeploymentRequestMatch {
-  const injection = policies[0];
-  if (
-    policies.length !== 1 ||
-    !injection?.bindingRef ||
-    (bindingRef !== undefined && injection.bindingRef !== bindingRef) ||
-    injection.allowedRequests.length !== 1
-  ) {
-    refuse();
-  }
-  const request = injection.allowedRequests[0]!;
-  if (
-    !request.binary ||
-    !/^[a-z0-9.-]+$/i.test(request.host) ||
-    request.ports.length !== 1 ||
-    request.ports[0]!.from !== request.ports[0]!.to ||
-    request.ports[0]!.from < 1 ||
-    request.ports[0]!.from > 65535 ||
-    request.requestPolicy?.type !== "http" ||
-    request.requestPolicy.method !== "POST" ||
-    !request.requestPolicy.path.startsWith("/") ||
-    request.requestPolicy.path.includes("*")
-  ) {
-    refuse();
-  }
-  return request;
+function withoutDisjointPaths(
+  networks: Record<string, unknown>,
+  path: string,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(networks).map(([name, value]) => {
+      const rule = asRecord(value);
+      if (!rule || !Array.isArray(rule.endpoints)) {
+        return [name, value];
+      }
+      return [
+        name,
+        {
+          ...rule,
+          endpoints: rule.endpoints.filter((endpoint) => {
+            const endpointPath = asRecord(endpoint)?.path;
+            return (
+              typeof endpointPath !== "string" ||
+              openShellCredentialPathsOverlap(endpointPath, path)
+            );
+          }),
+        },
+      ];
+    }),
+  );
 }
 
 // TODO(native policy): require leaf-only executable rules (#4943) and Bearer-only
@@ -503,16 +502,14 @@ export function assertOpenShellInjectionPolicy(
 export function openShellPushedPolicyMatches(
   source: unknown,
   effective: unknown,
-  request: DeploymentRequestMatch,
-  provider: string,
+  routes: readonly OpenShellCredentialRoute[],
 ): boolean {
   const sourceNetworks = asRecord(asRecord(source)?.network_policies);
   const networks = asRecord(asRecord(effective)?.network_policies);
-  const port = request.ports[0]?.from;
-  if (!sourceNetworks || !networks || !port || request.requestPolicy?.type !== "http") {
+  if (!sourceNetworks || !networks || routes.length === 0) {
     return false;
   }
-  let matched: string | undefined;
+  const matched = new Map<OpenShellCredentialRoute, string>();
   for (const [name, value] of Object.entries(networks)) {
     const rule = asRecord(value);
     if (!rule) {
@@ -526,22 +523,29 @@ export function openShellPushedPolicyMatches(
     }
     for (const value of rule.endpoints) {
       const endpoint = asRecord(value);
-      const host = typeof endpoint?.host === "string" ? endpoint.host.toLowerCase() : "";
+      const binding = asRecord(endpoint?.credential_binding);
+      if (!binding) {
+        continue;
+      }
       const ports =
         Array.isArray(endpoint?.ports) && endpoint.ports.length
           ? endpoint.ports
           : typeof endpoint?.port === "number" && endpoint.port > 0
             ? [endpoint.port]
             : [];
-      const binding = asRecord(endpoint?.credential_binding);
-      if (binding?.provider !== provider) {
-        continue;
-      }
+      const route = routes.find(
+        (candidate) =>
+          candidate.provider === binding.provider &&
+          typeof endpoint?.host === "string" &&
+          candidate.host.toLowerCase() === endpoint.host.toLowerCase() &&
+          candidate.path === endpoint.path &&
+          sameOpenShellPolicy(rule.binaries, [{ path: candidate.binary }]) &&
+          sameOpenShellPolicy(ports, [candidate.port]),
+      );
       if (
-        matched !== undefined ||
         !endpoint ||
-        host !== request.host.toLowerCase() ||
-        !sameOpenShellPolicy(rule.binaries, [{ path: request.binary }]) ||
+        !route ||
+        matched.has(route) ||
         rule.name !== name ||
         rule.endpoints.length !== 1 ||
         !sameOpenShellPolicy(sourceNetworks[name], {
@@ -559,26 +563,29 @@ export function openShellPushedPolicyMatches(
                 : endpoint.enforcement,
           },
           {
-            host: request.host,
-            ports: [port],
+            host: route.host,
+            path: route.path,
+            ports: [route.port],
             protocol: "rest",
             enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-            rules: [
-              { allow: { method: request.requestPolicy.method, path: request.requestPolicy.path } },
-            ],
-            credential_binding: { provider },
+            rules: route.rules,
+            credential_binding: { provider: route.provider },
             provider_credentialed: true,
           },
         )
       ) {
         return false;
       }
-      matched = name;
+      matched.set(route, name);
     }
   }
+  const names = [...matched.values()];
   return (
-    matched !== undefined &&
-    !openShellNetworkRouteMayOverlap(networks, { host: request.host, port }, [matched])
+    matched.size === routes.length &&
+    routes.every(
+      (route) =>
+        !openShellNetworkRouteMayOverlap(withoutDisjointPaths(networks, route.path), route, names),
+    )
   );
 }
 
@@ -592,11 +599,10 @@ export function assertOpenShellPushedBinding(
     context.revision.executionAdmission.version !== 8 ||
     context.revision.executionAdmission.mode !== "standalone" ||
     !admitted ||
-    admitted.bindings.length !== 1 ||
-    !isDeepStrictEqual(admitted.bindings[0], binding) ||
+    !admitted.bindings.some((candidate) => isDeepStrictEqual(candidate, binding)) ||
     !isDeepStrictEqual(admitted.injectionPolicies, policies) ||
     !binding.bindingRef ||
-    binding.consumer.kind !== "model" ||
+    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
     binding.sourceRef.kind !== "credential_source" ||
     !binding.sourceRef.id ||
     binding.sourceRef.namespaceId !== context.namespace.id ||
@@ -605,7 +611,6 @@ export function assertOpenShellPushedBinding(
   ) {
     refuse();
   }
-  assertOpenShellInjectionPolicy(policies, binding.bindingRef);
 }
 
 export function assertOpenShellDeploymentRef(

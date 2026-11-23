@@ -2,7 +2,7 @@ import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
-import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
+import { supportsOpenShellCredentialDeployment } from "./openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -231,11 +231,11 @@ export function installationControllerOptions(
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
   | "modelCredentialPreset"
-  | "supportsModelCredentialDeployment"
+  | "supportsCredentialDeployment"
 > {
   return {
     modelCredentialPreset: resolveModelCredentialPreset,
-    supportsModelCredentialDeployment: supportsOpenShellModelCredentialDeployment,
+    supportsCredentialDeployment: supportsOpenShellCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],

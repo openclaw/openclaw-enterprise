@@ -652,6 +652,215 @@ function dedicatedFirstDeployFixture({
   };
 }
 
+test("staged Compute prepares Plugin-only and mixed HTTP credential projections", async () => {
+  // This exercises Compute with an admitted policy and controlled Drivers. It does not prove
+  // that the Agent API can admit a Plugin Source or that OpenShell enforces the request.
+  const google = managedGoogleInstall;
+  const slot = Object.keys(google.credentials)[0];
+  const pluginSource = {
+    id: "cs_staged_google",
+    namespaceId: tenant.id,
+    name: "Google credential",
+    ownerCapability: "token_service",
+    tokenServiceInstanceId: "tokens",
+    type: "static",
+    config: {},
+    secrets: {},
+    state: "ready",
+    createdAt: tenant.createdAt,
+  };
+  const pluginGrant = {
+    id: "google-egress",
+    binary: google.binaryPath,
+    host: "gmail.googleapis.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const pluginRequest = {
+    binary: pluginGrant.binary,
+    host: pluginGrant.host,
+    ports: pluginGrant.ports,
+    requestPolicy: { type: "http", method: "GET", path: "/gmail/v1/users/**" },
+  };
+  const pluginBinding = {
+    bindingRef: "google-default",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: pluginSource.id },
+    consumer: { kind: "plugin", pluginId: google.id, requirement: slot, connection: "default" },
+    projection: {
+      environment: google.credentials[slot].delivery.env,
+      presentation: "bearer",
+    },
+  };
+  const stagedAuth = {
+    method: "credential_source",
+    sourceId: "cs_staged_model",
+    tokenServiceInstanceId: "tokens",
+    sourceType: "static",
+  };
+  const modelGrant = {
+    id: "model-egress",
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const modelBinding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: stagedAuth.sourceId },
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  for (const mixed of [false, true]) {
+    let target;
+    let prepared;
+    const bindings = mixed ? [pluginBinding, modelBinding] : [pluginBinding];
+    const grants = mixed ? [pluginGrant, modelGrant] : [pluginGrant];
+    const projections = bindings.map((binding) => ({
+      bindingRef: binding.bindingRef,
+      environment: binding.projection.environment,
+      placeholder: { kind: "proxy", value: `controlled-${mixed}-${binding.bindingRef}` },
+    }));
+    const sandbox = {
+      ...nativeSandboxIdentity(),
+      async provisionHarness() {
+        assert.fail("staged deployment must use the idle Sandbox path");
+      },
+      async provisionStagedHarness({ revision }) {
+        target = {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          sandboxId: mixed ? "mixed-sandbox" : "plugin-sandbox",
+        };
+        return target;
+      },
+      async workspaceNodePeerLabels({ revision }) {
+        return target ? supervisorPeerLabels(revision.id) : undefined;
+      },
+      async observeNetworkPolicy() {
+        return { state: "applied", matches: true };
+      },
+      async prepareStagedHarness(_context, received) {
+        prepared = received;
+      },
+      async activateStagedHarness() {},
+      async harnessStatus() {
+        return { state: "starting" };
+      },
+    };
+    const proxy = {
+      id: sandbox.id,
+      implementation: sandbox.implementation,
+      capability: "credential_proxy_delivery",
+      async deployProxy() {
+        return {};
+      },
+      async configureDeployment() {
+        assert.fail("Worker owns credential configuration");
+      },
+      async getDeploymentStatus() {
+        return { state: "ready" };
+      },
+      async removeDeployment() {},
+    };
+    const registration = {
+      ref: {
+        id: sandbox.id,
+        implementation: sandbox.implementation,
+        configurationId: "a".repeat(64),
+      },
+      require(capability) {
+        return capability === "sandbox" ? sandbox : proxy;
+      },
+    };
+    const harnessAuth = mixed ? stagedAuth : apiKeyAuth;
+    const modelSource = {
+      ...pluginSource,
+      id: stagedAuth.sourceId,
+      config: { provider_preset: "openai" },
+    };
+    const context = {
+      ...(mixed ? { harnessAuth } : authContext({ harnessAuth })),
+      credentialSources: mixed ? [pluginSource, modelSource] : [pluginSource],
+      async configureCredentialDeployment(configuration) {
+        assert.deepEqual(configuration.targetRef, target);
+        return { credentialProjections: projections };
+      },
+    };
+    const fixture = dedicatedFirstDeployFixture({
+      sandboxDriver: sandbox,
+      credentialDeliveryRegistration: registration,
+      context,
+      revision: {
+        ...nativeSandboxRevision(sandbox.id),
+        agentId: mixed ? "agent-mixed" : "agent-plugin",
+        harnessAuth,
+        credentialSources: [
+          { sourceId: pluginSource.id, sourceType: "static", tokenServiceInstanceId: "tokens" },
+          ...(mixed
+            ? [
+                {
+                  sourceId: stagedAuth.sourceId,
+                  sourceType: "static",
+                  tokenServiceInstanceId: "tokens",
+                },
+              ]
+            : []),
+        ],
+        plugins: {
+          driver: { id: "openclaw-plugin", implementation: "occ/openclaw-plugin" },
+          plugins: {
+            [google.id]: {
+              enabled: true,
+              driverPolicy: {
+                releaseSha256: google.releaseSha256,
+                credentials: { [slot]: pluginSource.id },
+              },
+            },
+          },
+        },
+        sandboxPolicy: {
+          driverId: sandbox.id,
+          implementation: sandbox.implementation,
+          version: 1,
+          defaults: {},
+          additions: grants,
+        },
+        executionAdmission: { version: 8, mode: "standalone" },
+        credentialDeployment: {
+          proxyDriverId: proxy.id,
+          driver: registration.ref,
+          networkAccessPolicy: {
+            allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
+          },
+          bindings,
+          injectionPolicies: [
+            { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest] },
+            ...(mixed
+              ? [
+                  {
+                    bindingRef: modelBinding.bindingRef,
+                    allowedRequests: [
+                      {
+                        binary: modelGrant.binary,
+                        host: modelGrant.host,
+                        ports: modelGrant.ports,
+                        requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+                      },
+                    ],
+                  },
+                ]
+              : []),
+          ],
+        },
+      },
+    });
+    await fixture.prepare();
+    fixture.markReady(fixture.gatewayName);
+    const result = await fixture.prepare();
+    assert.equal(result.preparedForCredentialActivation, true);
+    assert.deepEqual(prepared, projections);
+  }
+});
+
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
   // The real Compute path uses controlled Sandbox and Proxy Drivers; these observations do not
   // establish native Provider readiness, Kubernetes behavior, or a real Harness execution.

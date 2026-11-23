@@ -145,6 +145,9 @@ async function fixture(t: TestContext) {
   const state = {
     profile: undefined as Wire | undefined,
     provider: undefined as Provider | undefined,
+    additionalProfiles: new Map<string, Wire>(),
+    additionalProviders: new Map<string, Provider>(),
+    additionalProviderStatuses: new Map<string, Wire>(),
     creates: [] as Wire[],
     updates: [] as Wire[],
     attaches: [] as Wire[],
@@ -178,6 +181,10 @@ async function fixture(t: TestContext) {
       | "detach-race",
     detachOnNextSandboxRead: false,
   };
+  const providerFor = (name: string) =>
+    state.provider?.metadata.name === name ? state.provider : state.additionalProviders.get(name);
+  const profileFor = (name: string) =>
+    state.profile?.id === name ? state.profile : state.additionalProfiles.get(name);
   const liveSandbox = (name: string) =>
     sandboxes.find(
       (candidate) =>
@@ -233,11 +240,12 @@ async function fixture(t: TestContext) {
         },
       };
     },
-    GetProvider: () => {
+    GetProvider: (input) => {
       if (state.attachMode === "detach-race" && state.attaches.length > 0) {
         state.detachOnNextSandboxRead = true;
       }
-      return state.provider && { provider: state.provider };
+      const provider = providerFor(String(input.name));
+      return provider && { provider };
     },
     DetachSandboxProvider: (input) => {
       state.detaches.push(input);
@@ -313,31 +321,47 @@ async function fixture(t: TestContext) {
           },
         );
       }
-      assert.equal(state.provider?.metadata.name, name);
-      state.provider = undefined;
+      assert.ok(providerFor(name));
+      if (state.provider?.metadata.name === name) {
+        state.provider = undefined;
+      } else {
+        state.additionalProviders.delete(name);
+      }
       return { outcome: "DELETION_OUTCOME_COMPLETED" };
     },
     DeleteProviderProfile: (input) => {
       state.profileDeletes.push(input);
-      assert.equal(state.provider, undefined);
-      assert.equal(state.profile?.id, input.id);
-      state.profile = undefined;
+      const id = String(input.id);
+      assert.equal(providerFor(id), undefined);
+      assert.ok(profileFor(id));
+      if (state.profile?.id === id) {
+        state.profile = undefined;
+      } else {
+        state.additionalProfiles.delete(id);
+      }
       return { outcome: "DELETION_OUTCOME_COMPLETED" };
     },
-    GetProviderProfile: () => state.profile && { profile: state.profile },
+    GetProviderProfile: (input) => {
+      const profile = profileFor(String(input.id));
+      return profile && { profile };
+    },
     GetSandboxConfig: () => state.config,
     GetSandboxPolicyStatus: () => state.policyStatus,
     GetSandboxProviderStatus: (input) => {
       state.statusReads.push(input);
-      if (!state.providerStatus) {
+      const status =
+        input.provider === state.provider?.metadata.name
+          ? state.providerStatus
+          : state.additionalProviderStatuses.get(String(input.provider));
+      if (!status) {
         return undefined;
       }
       if (input.receipt_id !== undefined) {
-        if (input.receipt_id !== record(state.providerStatus.receipt).receipt_id) {
+        if (input.receipt_id !== record(status.receipt).receipt_id) {
           return undefined;
         }
-        const status = structuredClone(state.providerStatus);
-        if (status.state === "PROVIDER_READINESS_STATE_PENDING") {
+        const received = structuredClone(status);
+        if (received.state === "PROVIDER_READINESS_STATE_PENDING") {
           if (state.updateReadiness === "converge") {
             // The Gateway first reports PENDING; the controlled supervisor then installs v2.
             advanceProviderEnvironment();
@@ -345,32 +369,34 @@ async function fixture(t: TestContext) {
             setImmediate(() => state.abortOnPending?.());
           }
         }
-        return { status };
+        return { status: received };
       }
       // A provider-only query creates a new Gateway-owned OBSERVE receipt.
       const receiptId = randomUUID();
-      const receipt = record(state.providerStatus.receipt);
+      const receipt = record(status.receipt);
       receipt.receipt_id = receiptId;
       receipt.mutation_id = receiptId;
       receipt.kind = "PROVIDER_MUTATION_KIND_OBSERVE";
-      if (state.providerStatus.operation) {
-        record(state.providerStatus.operation).operation_id = receiptId;
+      if (status.operation) {
+        record(status.operation).operation_id = receiptId;
       }
-      return { status: state.providerStatus };
+      return { status };
     },
     ImportProviderProfiles: (input) => {
       const profiles = input.profiles as Wire[];
-      state.profile = {
-        ...record(profiles[0]?.profile),
-        resource_version: "1",
-      };
+      const profile: Wire = { ...record(profiles[0]?.profile), resource_version: "1" };
+      if (!state.profile) {
+        state.profile = profile;
+      } else {
+        state.additionalProfiles.set(String(profile.id), profile);
+      }
       return { imported: true };
     },
     CreateProvider: (input) => {
       const supplied = record(input.provider);
       const metadata = record(supplied.metadata);
       state.creates.push(input);
-      state.provider = {
+      const provider: Provider = {
         metadata: {
           ...metadata,
           id: state.creates.length === 1 ? "f1d7e6c5-1b2a-4c3d-8e9f-102938475602" : randomUUID(),
@@ -383,11 +409,16 @@ async function fixture(t: TestContext) {
         profile_workspace: String(supplied.profile_workspace),
         config: supplied.config as Record<string, string>,
       };
+      if (!state.provider) {
+        state.provider = provider;
+      } else {
+        state.additionalProviders.set(provider.metadata.name, provider);
+      }
       if (state.createMode === "stale-winner") {
-        state.provider.config = { oce_source_version: "source-v0" };
+        provider.config = { oce_source_version: "source-v0" };
         throw Object.assign(new Error("already exists"), { code: grpc.status.ALREADY_EXISTS });
       }
-      return { provider: state.provider };
+      return { provider };
     },
     UpdateProvider: (input) => {
       state.updates.push(input);
@@ -490,15 +521,16 @@ async function fixture(t: TestContext) {
         });
       }
       const provider = String(input.provider);
-      assert.ok(state.provider);
-      const providerId = state.provider.metadata.id;
-      const providerResourceVersion = state.provider.metadata.resource_version;
+      const attachedProvider = providerFor(provider);
+      assert.ok(attachedProvider);
+      const providerId = attachedProvider.metadata.id;
+      const providerResourceVersion = attachedProvider.metadata.resource_version;
       const mutationId = randomUUID();
       target.spec.providers.push(provider);
       target.spec.provider_attachment_epoch = mutationId;
       target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
       if (state.attachMode === "provider-race") {
-        state.provider.metadata.resource_version = "8";
+        attachedProvider.metadata.resource_version = "8";
       }
       const receipt = {
         receipt_id: randomUUID(),
@@ -684,6 +716,7 @@ async function fixture(t: TestContext) {
     const time = { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 };
     const endpoint = {
       host: request.host,
+      path: request.requestPolicy.path,
       ports: [443],
       protocol: "rest",
       enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
@@ -879,6 +912,233 @@ test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider wi
   assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("native Proxy configures a Plugin-only HTTP binding and refuses MCP before Source resolution", async (t) => {
+  const f = await fixture(t);
+  const plugin = {
+    ...binding,
+    bindingRef: "plugin-api",
+    consumer: { kind: "plugin" as const, pluginId: "http", requirement: "api", connection: "one" },
+    projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
+  };
+  const pluginRequest = {
+    ...request,
+    requestPolicy: { type: "http" as const, method: "GET", path: "/api" },
+  };
+  const policy = { bindingRef: plugin.bindingRef, allowedRequests: [pluginRequest] };
+  const context: CredentialDeploymentContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      credentialDeployment: {
+        ...f.context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [pluginRequest] },
+        bindings: [plugin],
+        injectionPolicies: [policy],
+      },
+    },
+  };
+  const mcp = {
+    ...pluginRequest,
+    requestPolicy: {
+      type: "mcp" as const,
+      method: "tools/call",
+      toolName: "example",
+      path: "/api",
+    },
+  };
+  const mcpPolicy = { bindingRef: plugin.bindingRef, allowedRequests: [mcp] };
+  const mcpContext: CredentialDeploymentContext = {
+    ...context,
+    revision: {
+      ...context.revision,
+      credentialDeployment: {
+        ...context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [mcp] },
+        injectionPolicies: [mcpPolicy],
+      },
+    },
+  };
+  await assert.rejects(
+    f.proxy.configureDeployment(mcpContext, {
+      ...configuration,
+      bindings: [{ binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential }],
+      injectionPolicies: [mcpPolicy],
+    }),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.resolutions(), 0);
+  assert.equal(f.state.creates.length, 0);
+  const configured = await f.proxy.configureDeployment(context, {
+    ...configuration,
+    bindings: [{ binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential }],
+    injectionPolicies: [policy],
+  });
+  assert.deepEqual(configured.credentialProjections, [
+    {
+      bindingRef: plugin.bindingRef,
+      environment: "PLUGIN_API_KEY",
+      placeholder: { kind: "runtime" },
+    },
+  ]);
+  assert.equal(f.resolutions(), 1);
+});
+
+test("native Proxy delivers multiple HTTP consumers using one Provider per Source and verifies every loaded route", async (t) => {
+  const f = await fixture(t);
+  const shared = {
+    ...binding,
+    bindingRef: "plugin-shared",
+    consumer: {
+      kind: "plugin" as const,
+      pluginId: "shared",
+      requirement: "api",
+      connection: "one",
+    },
+  };
+  const plugin = {
+    ...binding,
+    sourceRef: { ...binding.sourceRef, id: "source-plugin" },
+    bindingRef: "plugin-api",
+    consumer: { kind: "plugin" as const, pluginId: "http", requirement: "api", connection: "two" },
+    projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
+  };
+  const pluginRequest = {
+    ...request,
+    host: request.host,
+    requestPolicy: { type: "http" as const, method: "GET", path: "/api/**" },
+  };
+  const discoveryRequest = {
+    ...pluginRequest,
+    requestPolicy: { type: "http" as const, method: "GET", path: "/discovery" },
+  };
+  const policies = [
+    injection,
+    { bindingRef: shared.bindingRef, allowedRequests: [request] },
+    { bindingRef: plugin.bindingRef, allowedRequests: [pluginRequest] },
+  ];
+  const context: CredentialDeploymentContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      credentialDeployment: {
+        ...f.context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [request, pluginRequest, discoveryRequest] },
+        bindings: [binding, shared, plugin],
+        injectionPolicies: policies,
+      },
+    },
+  };
+  let pluginResolutions = 0;
+  const configured = await f.proxy.configureDeployment(context, {
+    ...configuration,
+    bindings: [
+      f.suppliedBinding,
+      { binding: shared, resolveCredential: f.suppliedBinding.resolveCredential },
+      {
+        binding: plugin,
+        resolveCredential: async () => {
+          pluginResolutions++;
+          return { credential: "synthetic-plugin", version: "plugin-v1" };
+        },
+      },
+    ],
+    injectionPolicies: policies,
+  });
+  assert.deepEqual(
+    configured.credentialProjections,
+    [binding, shared, plugin].map((current) => ({
+      bindingRef: current.bindingRef,
+      environment: current.projection.environment,
+      placeholder: { kind: "runtime" },
+    })),
+  );
+  assert.equal(f.resolutions(), 1, "the shared Source is resolved only once");
+  assert.equal(pluginResolutions, 1);
+  assert.equal(f.state.creates.length, 2);
+  assert.equal(f.state.attaches.length, 2);
+
+  // The controlled Gateway source/effective policy and supervisor receipts stand in for native readback.
+  const evidence = f.observeServing();
+  const pluginProvider = [...f.state.additionalProviders.values()][0]!;
+  record(evidence.policy.network_policies).plugin = {
+    name: "plugin",
+    binaries: [{ path: pluginRequest.binary }],
+    endpoints: [
+      {
+        host: pluginRequest.host,
+        path: "/api/**",
+        ports: [443],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        rules: [
+          { allow: { method: "GET", path: "/api" } },
+          { allow: { method: "GET", path: "/api/**" } },
+        ],
+        credential_binding: { provider: pluginProvider.metadata.name },
+        provider_credentialed: true,
+      },
+    ],
+  };
+  record(evidence.policy.network_policies).discovery = {
+    name: "discovery",
+    binaries: [{ path: pluginRequest.binary }],
+    endpoints: [
+      {
+        host: pluginRequest.host,
+        path: "/discovery",
+        ports: [443],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        rules: [{ allow: { method: "GET", path: "/discovery" } }],
+      },
+    ],
+  };
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
+  const pluginStatus = structuredClone(f.state.providerStatus!);
+  const receipt = record(pluginStatus.receipt);
+  receipt.provider = pluginProvider.metadata.name;
+  Object.assign(record(receipt.desired), {
+    provider_id: pluginProvider.metadata.id,
+    provider_resource_version: pluginProvider.metadata.resource_version,
+  });
+  f.state.additionalProviderStatuses.set(pluginProvider.metadata.name, pluginStatus);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+  const discoveryEndpoint = (
+    record(record(evidence.policy.network_policies).discovery).endpoints as Wire[]
+  )[0]!;
+  discoveryEndpoint.path = "/api/unrestricted";
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+  discoveryEndpoint.path = "/discovery";
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
+  Reflect.deleteProperty(record(evidence.policy.network_policies), "plugin");
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+
+  // Removing one binding must retain a Provider still needed by another binding on this Sandbox.
+  await f.proxy.removeDeployment(context, {
+    targetRef: configuration.targetRef,
+    bindingRefs: [binding.bindingRef],
+  });
+  assert.equal(f.state.detaches.length, 0);
+  f.sandbox.spec.policy = { network_policies: {} };
+  f.state.config!.policy = { network_policies: {} };
+  await f.proxy.removeDeployment(context, {
+    targetRef: configuration.targetRef,
+    bindingRefs: [binding.bindingRef, shared.bindingRef, plugin.bindingRef],
+  });
+  assert.equal(f.state.detaches.length, 2);
+  assert.equal(f.state.deletes.length, 2);
 });
 
 test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {

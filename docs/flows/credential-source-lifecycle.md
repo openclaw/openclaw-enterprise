@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-22
-last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
+updated: 2026-11-23
+last_updated_session: authoring-run/e1b79e98-189c-4036-9eec-f550acf642b9
 ---
 
 # Credential source lifecycle flow
@@ -55,9 +55,9 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevisionWorkloads`, `apps/controller/src/worker.ts:configureCredentialDeployment`, `apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`
 
-Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to the exact Source, confirms its TokenService instance, and gives Credential Proxy a resolver limited to that Source.
+Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to each Source, confirms its TokenService instance, and gives Credential Proxy a resolver limited to the admitted Sources.
 
-The OpenShell Proxy resolves the credential and version from TokenService only when it creates an absent OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating its credential, then attaches the Provider to the Sandbox. If a new attachment fails, Proxy attempts to delete its owned Provider and profile; OpenShell refuses Provider deletion while another Sandbox is attached. The Harness receives a placeholder. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
+The OpenShell Proxy resolves the credential and version from TokenService only when it creates an absent OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating its credential, then attaches the Provider to the Sandbox. If a new attachment fails, Proxy attempts to delete its owned Provider and profile; OpenShell refuses Provider deletion while another Sandbox is attached. For each binding, the Harness receives a fresh Sandbox placeholder. The native pair can compile multiple model and HTTP Plugin bindings, but the ordinary Agent workflow still needs Plugin admission and pinned Template authority. OpenShell does not enforce HTTPS-only substitution; the [status table](../reference/credential-sources.md#implementation-status) records this accepted limit. MCP requests are refused. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
 
 ### 4. Activate and stop the Agent
 
@@ -103,6 +103,8 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 13:39: Describe native aggregate HTTP Plugin delivery and its admission proof boundary. (authoring-run/e1b79e98-189c-4036-9eec-f550acf642b9 - 44e86dc26055e434c3690e8601c66d52e6ef0968)
 
 - 2026-11-22 14:53: Combine the credential workflow with committed Source delivery updates and controlled caller proof. (authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf - ad9964a9b2975199780000000c6ada2a2e8b376a)
 

@@ -46,7 +46,7 @@ import {
 registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
 
 test(
-  "OpenShell stages without running the Harness and activates with fresh provider placeholders",
+  "OpenShell stages model and HTTP Plugin routes before activating with fresh Provider placeholders",
   verifyStagedHarnessActivation,
 );
 
