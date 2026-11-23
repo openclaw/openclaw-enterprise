@@ -110,6 +110,10 @@ Mode arguments require the production-prefixed `db:migrate:production` command.
 If the loader refuses an older image before migration, select an image that
 supports the required mode.
 
+For a first Helm install, leave the database history empty. The chart’s
+initialization Job applies migrations with `--expect-empty`, even when
+`database.upgradeMigration` is `separate`. Do not apply SQL manually before that Job.
+
 For Kubernetes, choose one mode before creating the
 [maintenance Job](auth-maintenance.md#run-the-command). To inspect recognized history without applying SQL:
 
@@ -119,20 +123,40 @@ MIGRATION_ARGS="$(jq -nc \
   '["-e",$program,"--","--check"]')" || { unset MIGRATION_ARGS; false; }
 ```
 
-To apply authorized pending SQL:
-
-```sh
-MIGRATION_ARGS="$(jq -nc \
-  --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
-  '["-e",$program,"--"]')" || { unset MIGRATION_ARGS; false; }
-```
-
-To require completed history without applying SQL:
+Use `--require-current` for a read-only check that requires completed history
+without checking the Installation ID.
 
 ```sh
 MIGRATION_ARGS="$(jq -nc \
   --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
   '["-e",$program,"--","--require-current"]')" || { unset MIGRATION_ARGS; false; }
+```
+
+For an existing Installation, confirm [manual migration eligibility](#deploy-the-database)
+before applying SQL. Set `UPGRADE_EVIDENCE` to the original protected evidence directory.
+Stop if either argument selection fails. Both modes check the saved Installation ID
+under the migration lock. Select the guarded apply arguments.
+
+```sh
+unset MIGRATION_ARGS
+MIGRATION_ARGS="$(
+  id="$(cat -- "${UPGRADE_EVIDENCE:?Select the original protected evidence directory}/installation-id")" || exit 1
+  jq -nc --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
+    --arg id "${id:?Missing saved Installation ID}" \
+    '["-e",$program,"--","--apply-for-installation",$id]'
+)" || { unset MIGRATION_ARGS; false; }
+```
+
+Select the guarded verification arguments.
+
+```sh
+unset MIGRATION_ARGS
+MIGRATION_ARGS="$(
+  id="$(cat -- "${UPGRADE_EVIDENCE:?Select the original protected evidence directory}/installation-id")" || exit 1
+  jq -nc --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
+    --arg id "${id:?Missing saved Installation ID}" \
+    '["-e",$program,"--","--require-current-for-installation",$id]'
+)" || { unset MIGRATION_ARGS; false; }
 ```
 
 In the Job's original unquoted `<<EOF` heredoc, replace its `args:` line with
@@ -150,26 +174,42 @@ extra separator fails before migration.
 
 ## Deploy the database
 
-Use this procedure for a handoff with no tool-managed migration Job journal.
+Use this manual procedure only after the original separate upgrade exits **3**.
+Require its intact protected evidence, including `database-migration-handoff.json` and
+`installation-id`. Confirm that no managed migration attempt occurred and no manual
+apply remains unresolved. Stop if evidence is missing.
+
+If an earlier attempt has uncertain effects, stop. Preserve its logs and evidence,
+confirm its Job and Pods are terminal, and reconcile the outcome with the database
+history. Do not replay SQL.
+
+If manual apply already succeeded, finish any outstanding log capture and cleanup
+in step 1 for the original Job and its Pods. Then continue with step 2.
 
 1. Keep the maintenance window active and both writers stopped. Assign `MIGRATION_ARGS`
-   for apply, then create the maintenance Job with the selected immutable candidate image,
-   this database's migrator credential and CA, and the guarded `args:` line above. Wait for
-   completion, save the logs, delete the Job, and wait for its Pods to stop. If the
-   outcome is uncertain, retain those logs and confirm the Job and Pods are terminal.
-2. Assign `MIGRATION_ARGS` for `--require-current` and create a new Job against the
-   same image and database. Proceed only after exit zero and `migration.checked`
+   for `--apply-for-installation`, then create the maintenance Job with the selected
+   immutable candidate image, this database's migrator credential and CA, and the guarded
+   `args:` line above. After confirmed completion, save the logs, delete the Job, and wait
+   for its Pods to stop.
+2. Assign `MIGRATION_ARGS` for `--require-current-for-installation` and create a new Job
+   against the same image and database. Proceed only after exit zero and `migration.checked`
    with history `completed`. Delete the check Job and
    wait for its Pods to stop. Use these migration checks, not the sign-in procedure's
    `status` command, and keep writers stopped.
-3. Repeat the upgrade command with `--resume --migration-history-checked` and the original
-   evidence directory. The helper rechecks both stopped Deployments’ UIDs, generations and
-   replica counts. Investigate any change. The Helm hook verifies the full candidate history
-   before bootstrap and service replacement. The helper verifies rollout and OCC access.
+3. Resume through the original entry point with the original evidence directory and
+   candidate options. For the CLI, use the
+   [`occ installation upgrade resume` example](#apply-and-verify-the-prepared-migration)
+   with the original profile. For `scripts/upgrade-production`, use its `resume` operation
+   with the original `--profile`, `--evidence-dir` and candidate options, and pass
+   `--migration-history-checked` after `--`. For `scripts/upgrade-production-images`,
+   repeat the original command with `--resume --migration-history-checked`. The helper
+   rechecks both stopped Deployments’ UIDs, generations and replica counts. Investigate
+   any change. The Helm hook verifies the full candidate history before bootstrap and
+   service replacement. The helper verifies rollout and OCC access.
 
-The migration advisory lock serializes migrators. The operator keeps other writers,
-autoscalers and deployment clients stopped across both steps. Freeze the target database
-and its connection Secret through verification. A Helm rollback cannot
+The migration advisory lock serializes migrators. Until resume finishes, keep other
+writers, autoscalers and deployment clients stopped. Keep the database target, migrator
+Secret and any database CA Secret unchanged throughout. A Helm rollback cannot
 reverse committed SQL. Keep the old services stopped after migration unless a separately
 qualified recovery restores their matching database. The selected mode persists in Helm
 values until a reviewed candidate selects `hook`.
