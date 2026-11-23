@@ -12,6 +12,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -63,6 +64,7 @@ function assertRefused(response, field, message, label = field) {
  * @param {import("node:test").TestContext} t
  * @param {{
  *   toolSources?: boolean,
+ *   tokenService?: boolean,
  *   persistedIam?: boolean,
  *   gateway?: import("../../packages/contracts/src/index.ts").OpenShellBackendConfiguration,
  *   modelProvider?: { protocol: "openai-responses", baseUrl: string },
@@ -73,6 +75,7 @@ async function fixture(
   t,
   {
     toolSources = false,
+    tokenService = false,
     persistedIam = false,
     gateway = { endpoint: "http://127.0.0.1:1" },
     modelProvider,
@@ -154,13 +157,35 @@ async function fixture(
     },
   };
   const secretDriver = createTestSecretDriver();
+  /** @type {import("../../packages/occ/src/index.ts").PlatformStateStore | undefined} */
+  let platformState;
   const app = await createConsoleAppFixture(t, {
     now: () => new Date(now),
     ...(persistedIam ? { provisionedPeople: [] } : {}),
     computeDriver,
     secretDriver,
+    wrapState: (state) => (platformState = state),
   });
   await app.bootstrap();
+  let tokenServiceOwner;
+  let tokenServiceInstanceId;
+  if (tokenService) {
+    // The real OCC TokenService over the test Secret Driver's Installation-private store.
+    assert.ok(platformState);
+    tokenServiceInstanceId = await app.controller.activateTokenServiceInstance(
+      "occ-token-service",
+      randomUUID(),
+    );
+    tokenServiceOwner = new OCCTokenServiceDriver(
+      "occ-token-service",
+      app.controller.installation.id,
+      secretDriver.installationSecrets,
+      tokenServiceInstanceId,
+      platformState,
+    );
+    app.controller.registerDriver(tokenServiceOwner);
+    app.controller.selectDriver("token_service", tokenServiceOwner.id);
+  }
   app.controller.registerDriver(driver);
   app.controller.selectDriver("credential_gateway", driver.id);
   if (toolSources) {
@@ -181,6 +206,8 @@ async function fixture(
   return {
     ...app,
     driver,
+    tokenServiceOwner,
+    tokenServiceInstanceId,
     client,
     providers,
     profiles,
@@ -395,6 +422,249 @@ test("managed Source requests fail closed without an owner and preserve Gateway 
       },
     ],
   );
+});
+
+// Synthetic values only: each is a documented class prefix, built from parts, plus filler.
+const fakeToken = (...prefix) => prefix.join("_") + "_" + "x".repeat(36);
+const FINE_GRAINED = fakeToken("github", "pat");
+const REFUSED_CLASSES = {
+  classic: fakeToken("ghp"),
+  oauth: fakeToken("gho"),
+  "app-user": fakeToken("ghu"),
+  "app-installation": fakeToken("ghs"),
+  unknown: "synthetic-repository-material",
+};
+const CLASS_REFUSAL =
+  "A github credential source accepts only a fine-grained personal access token.";
+
+/**
+ * A request refused on one member of a managed Source body: HTTP 400 naming only that field.
+ * @param {{status: number, body: any}} response
+ * @param {string} path
+ * @param {string} [message]
+ */
+function assertManagedRefused(response, path, message) {
+  assert.equal(response.status, 400, JSON.stringify(response.body));
+  assert.equal(response.body.error.code, "INVALID_REQUEST");
+  assert.deepEqual(response.body.error.details, [{ path, code: "INVALID_VALUE" }]);
+  if (message !== undefined) {
+    assert.equal(response.body.error.message, message);
+  }
+}
+
+/** A github Source registration body with a valid ceiling unless `config` replaces it. */
+function githubSourceBody(token, config = { repositories: "octo/app:write" }, name = "Repo token") {
+  return {
+    name,
+    type: "static",
+    config: { provider_preset: "github", ...config },
+    secret: { token },
+  };
+}
+
+test("a github Source holds only a fine-grained token and an explicit repository ceiling", async (t) => {
+  const f = await fixture(t, { tokenService: true });
+  const values = [FINE_GRAINED, ...Object.values(REFUSED_CLASSES)];
+  const leaks = (body) => values.some((value) => JSON.stringify(body).includes(value));
+
+  // Every class other than fine-grained is refused before custody, without echoing the value.
+  for (const [tokenClass, token] of Object.entries(REFUSED_CLASSES)) {
+    const refused = await f.request("POST", f.path, { body: githubSourceBody(token) });
+    assertManagedRefused(refused, "/secret/token", CLASS_REFUSAL);
+    assert.equal(leaks(refused.body), false, tokenClass);
+  }
+  // The ceiling is required, well-formed and free of duplicates; only github carries one.
+  for (const [repositories, label] of [
+    [undefined, "missing"],
+    ["octo/app", "no access"],
+    ["octo/app:admin", "unknown access"],
+    ["octo/App:write", "not canonical"],
+    ["octo/app.git:read", ".git suffix"],
+    ["octo/app:read,octo/app:write", "duplicate"],
+    ["octo/app:read,", "empty entry"],
+  ]) {
+    const config = repositories === undefined ? {} : { repositories };
+    const refused = await f.request("POST", f.path, {
+      body: githubSourceBody(FINE_GRAINED, config),
+    });
+    assertManagedRefused(refused, "/config/repositories");
+    assert.equal(leaks(refused.body), false, label);
+  }
+  const modelWithCeiling = await f.request("POST", f.path, {
+    body: {
+      name: "Model key",
+      type: "static",
+      config: { provider_preset: "openai", repositories: "octo/app:read" },
+      secret: { opaque: "synthetic-model-material" },
+    },
+  });
+  assertManagedRefused(
+    modelWithCeiling,
+    "/config/repositories",
+    "Only a github credential source has a repository ceiling.",
+  );
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
+
+  // The accepted Source returns its canonical ceiling as metadata; the value stays write-only.
+  const created = await f.request("POST", f.path, {
+    body: githubSourceBody(FINE_GRAINED, { repositories: "octo/web:read,octo/app:write" }),
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const expectedConfig = {
+    provider_preset: "github",
+    repositories: "octo/app:write,octo/web:read",
+  };
+  assert.deepEqual(created.data.config, expectedConfig);
+  assert.deepEqual(created.data.secrets, {});
+  assert.equal(created.data.ownerCapability, "token_service");
+  const sourcePath = `${f.path}/${created.data.id}`;
+  const read = await f.request("GET", sourcePath);
+  assert.deepEqual(read.data.config, expectedConfig);
+  assert.equal(leaks(created.body) || leaks(read.body), false);
+  const identity = {
+    sourceRef: { kind: "credential_source", namespaceId: f.namespace.id, id: created.data.id },
+    tokenServiceInstanceId: f.tokenServiceInstanceId,
+  };
+  const custody = () => f.tokenServiceOwner.resolveCredential(identity, AbortSignal.timeout(5000));
+  const first = await custody();
+  assert.equal(first.credential, FINE_GRAINED);
+
+  // Replacement applies the same class check; a refused value never reaches custody.
+  for (const token of Object.values(REFUSED_CLASSES)) {
+    const refused = await f.request("PATCH", sourcePath, { body: { secret: { token } } });
+    assertManagedRefused(refused, "/secret/token", CLASS_REFUSAL);
+    assert.equal(leaks(refused.body), false);
+  }
+  assert.equal((await custody()).version, first.version);
+  const replacement = fakeToken("github", "pat", "replacement");
+  const replaced = await f.request("PATCH", sourcePath, {
+    body: { config: expectedConfig, secret: { token: replacement } },
+  });
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  assert.deepEqual(replaced.data.config, expectedConfig);
+  assert.equal(JSON.stringify(replaced.body).includes(replacement), false);
+  const second = await custody();
+  assert.equal(second.credential, replacement);
+  assert.notEqual(second.version, first.version);
+
+  // The ceiling changes alone while unbound; the preset is fixed at registration.
+  const narrowed = await f.request("PATCH", sourcePath, {
+    body: { config: { provider_preset: "github", repositories: "octo/app:read" } },
+  });
+  assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+  assert.deepEqual(narrowed.data.config, {
+    provider_preset: "github",
+    repositories: "octo/app:read",
+  });
+  for (const body of [
+    {
+      config: { provider_preset: "github", repositories: "octo/app:write" },
+      secret: { token: replacement },
+    },
+    { config: { provider_preset: "openai" } },
+    { config: {} },
+  ]) {
+    const refused = await f.request("PATCH", sourcePath, { body });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  }
+  assertManagedRefused(
+    await f.request("PATCH", sourcePath, {
+      body: { config: { provider_preset: "github", repositories: "octo/app:read,octo/app:read" } },
+    }),
+    "/config/repositories",
+  );
+  assert.equal((await custody()).version, second.version);
+  assert.deepEqual((await f.request("GET", sourcePath)).data.config, narrowed.data.config);
+
+  // A model Source cannot become a github Source: its stored value never passed the class check.
+  const model = await f.request("POST", f.path, {
+    body: {
+      name: "Model key",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: "synthetic-model-material" },
+    },
+  });
+  assert.equal(model.status, 201, JSON.stringify(model.body));
+  const promoted = await f.request("PATCH", `${f.path}/${model.data.id}`, {
+    body: { config: { provider_preset: "github", repositories: "octo/app:read" } },
+  });
+  assert.equal(promoted.status, 409, JSON.stringify(promoted.body));
+  assert.deepEqual((await f.request("GET", `${f.path}/${model.data.id}`)).data.config, {
+    provider_preset: "openai",
+  });
+
+  // The ceiling is Namespace-owned: another Namespace's path neither reads nor changes it.
+  const other = await f.createNamespace("credential-other", { ready: true });
+  const foreignPath = `/namespaces/${other.id}/credential-sources/${created.data.id}`;
+  assert.equal((await f.request("GET", foreignPath)).status, 404);
+  const foreign = await f.request("PATCH", foreignPath, {
+    body: { config: { provider_preset: "github", repositories: "octo/app:write" } },
+  });
+  assert.equal(foreign.status, 404);
+  assert.deepEqual((await f.request("GET", sourcePath)).data.config, narrowed.data.config);
+
+  // Retirement uses the existing managed flow and erases custody.
+  assert.equal((await f.request("DELETE", sourcePath)).status, 204);
+  await assert.rejects(custody(), { message: "The credential source is unavailable." });
+
+  // The existing Source audit records each phase and never the value.
+  const actions = f.auditSink.events
+    .filter((event) => event.resource?.id === created.data.id)
+    .map((event) => event.action);
+  for (const action of [
+    "openclaw.credential_sources.create",
+    "openclaw.credential_sources.update.started",
+    "openclaw.credential_sources.update",
+    "openclaw.credential_sources.delete.started",
+    "openclaw.credential_sources.delete",
+  ]) {
+    assert.ok(actions.includes(action), action);
+  }
+  assert.equal(
+    leaks(f.auditSink.events) || JSON.stringify(f.auditSink.events).includes(replacement),
+    false,
+  );
+});
+
+test("an Agent cannot list or authenticate its Harness with a github Source", async (t) => {
+  const f = await fixture(t, { tokenService: true });
+  const configuration = await f.createConfiguration(
+    f.namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5"),
+  );
+  const agentBody = (sourceId, name) => ({
+    name,
+    configurationId: configuration.id,
+    harnessAuth: { method: "credential_source", sourceId },
+    credentialSources: [{ sourceId }],
+  });
+  const agents = `/namespaces/${f.namespace.id}/agents`;
+  const github = await f.request("POST", f.path, { body: githubSourceBody(FINE_GRAINED) });
+  assert.equal(github.status, 201, JSON.stringify(github.body));
+  // A repository token is not a model credential, so saving it as the Harness Source fails early.
+  const refused = await f.request("POST", agents, {
+    body: agentBody(github.data.id, "Repo Agent"),
+  });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(
+    refused.body.error.message,
+    "This credential source holds a repository token, not a model credential; an Agent cannot list it or use it for its Harness.",
+  );
+  assert.deepEqual((await f.request("GET", agents)).data, []);
+
+  // The same save with a model Source is unchanged.
+  const model = await f.request("POST", f.path, {
+    body: {
+      name: "Model key",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: "synthetic-model-material" },
+    },
+  });
+  assert.equal(model.status, 201, JSON.stringify(model.body));
+  const saved = await f.request("POST", agents, { body: agentBody(model.data.id, "Model Agent") });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
 });
 
 test("credential source deletion identifies its registration fence without parsing the message", async (t) => {
