@@ -95,10 +95,12 @@ repositories remain denied. See [Known limits](#known-limits) for indirect effec
 
 #### API action restrictions
 
-On a repository's selected native Namespace registration, optional `apiActions`
-can narrow the routes already eligible under Namespace permissions and the
-Agent's saved grant. Use exactly one of `allow` or `deny` with an array of
-unique action IDs:
+A native repository can have two independent `apiActions` filters. Set one on
+the Namespace registration to restrict every Agent. Set one on the Agent's
+[saved grant](../sandbox-policies.md#repository-network-policy) to restrict
+only that Agent on that repository. Both must permit a route already eligible
+under the permissions and saved access level. Each filter takes one `allow`
+or `deny` list of unique action IDs.
 
 | Action ID              | Direct GitHub routes                      |
 | ---------------------- | ----------------------------------------- |

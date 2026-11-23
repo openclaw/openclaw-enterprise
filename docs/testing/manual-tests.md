@@ -31,8 +31,9 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
   ```
 
   The suite selects `issues` for native Issues write. For the deny control, run
-  the file directly with `issue-controls` (B uses
-  `apiActions: { deny: ["issues:create"] }`, with Issues write fixed). Replace
+  the file directly with `issue-controls`. B's Agent grant denies `issues:create`
+  despite Issues write. C's Namespace denies all API routes despite an
+  Agent allow for that action. Replace
   it with `reads` for Issues read only. Keep legacy callback calibration on an unfiltered Namespace.
 
   ```bash
