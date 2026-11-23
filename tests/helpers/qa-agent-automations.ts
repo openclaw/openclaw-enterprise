@@ -100,8 +100,14 @@ export async function verifyQaAgentAutomations(
       reviewedOpenClawSourceMatches: requirements.reviewedOpenClawSourceMatches,
       codexMetadataPresent: requirements.codexMetadataPresent,
       podIdentityMatches: requirements.podIdentityMatches,
-      selectedIndexDigest: requirements.selectedIndexDigest,
+      sourceRevision: requirements.sourceRevision,
+      scheduledPlatform: requirements.scheduledPlatform,
+      selectedSourceDigestInput: requirements.selectedSourceDigestInput,
+      selectedAgentRoleDigest: requirements.selectedAgentRoleDigest,
+      installedPlatformManifestDigest: requirements.installedPlatformManifestDigest,
+      installedConfigDigest: requirements.installedConfigDigest,
       observedImageDigest: requirements.observedImageDigest,
+      inspectedRunningConfigDigest: requirements.inspectedRunningConfigDigest,
       disabled: requirements.disabled,
     });
     retirement.confirmed = false;

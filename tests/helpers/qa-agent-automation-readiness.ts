@@ -22,6 +22,37 @@ type NativeJob = {
 type Response = { status: number; data?: unknown; errorCode?: string | undefined };
 type PendingReservation = { id: string; configRevision: string };
 
+type FailurePhase =
+  | "initial-readiness"
+  | "native-inventory"
+  | "pending-reservations"
+  | "peer-effects"
+  | "occ-bindings"
+  | "stock-pause"
+  | "stop"
+  | "resident-readiness"
+  | "pod-readiness"
+  | "admission"
+  | "continue"
+  | "recovery-readiness"
+  | "requirements-after-recovery"
+  | "stock-restore"
+  | "evidence-write"
+  | "cleanup"
+  | "unknown";
+
+function readinessFailure(phase: FailurePhase, errors: unknown[]): AggregateError {
+  return new AggregateError(errors, "Codex readiness proof failed; first phase: " + phase + ".");
+}
+
+async function initialPhase<T>(phase: FailurePhase, operation: () => T | Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw readinessFailure(phase, [error]);
+  }
+}
+
 export type QaCodexReadinessCallbacks = {
   nativeJobs: () => Promise<NativeJob[]>;
   setStockEnabled: (job: NativeJob, enabled: boolean) => Promise<string>;
@@ -274,17 +305,32 @@ export async function verifyQaCodexAutomationReadinessRefusal(
   agent: Agent,
   callbacks: QaCodexReadinessCallbacks,
 ): Promise<void> {
-  assert.equal(agent.preset, "Codex");
-  const initialPod = await f.pod(agent, "agent");
-  const identity = podIdentity(initialPod, agent);
-  assert.equal(readinessState(initialPod), "ready");
-  const originalJobs = await stockBaseline(f, callbacks);
-  const baselinePeerCalls = await callbacks.peerCalls();
-  const baselinePending = await callbacks.pendingReservations();
-  const baselineManagedJobs = await callbacks.managedJobs();
-  assert.ok(baselineManagedJobs === 0, "readiness refusal must precede every OCC binding");
-  assert.equal(baselinePending.length, 0, "readiness refusal must precede every reservation");
+  const identity = await initialPhase("initial-readiness", async () => {
+    assert.equal(agent.preset, "Codex");
+    const initialPod = await f.pod(agent, "agent");
+    const selected = podIdentity(initialPod, agent);
+    assert.equal(readinessState(initialPod), "ready");
+    return selected;
+  });
+  const originalJobs = await initialPhase("native-inventory", () => stockBaseline(f, callbacks));
+  const baselinePeerCalls = await initialPhase("peer-effects", () => callbacks.peerCalls());
+  const baselinePending = await initialPhase("pending-reservations", async () => {
+    const pending = await callbacks.pendingReservations();
+    assert.equal(pending.length, 0, "readiness refusal must precede every reservation");
+    return pending;
+  });
+  const baselineManagedJobs = await initialPhase("occ-bindings", async () => {
+    const count = await callbacks.managedJobs();
+    assert.ok(count === 0, "readiness refusal must precede every OCC binding");
+    return count;
+  });
   const failures: unknown[] = [];
+  let phase: FailurePhase = "unknown";
+  let firstFailurePhase: FailurePhase | undefined;
+  function fail(error: unknown, selectedPhase: FailurePhase = phase): void {
+    firstFailurePhase ??= selectedPhase;
+    failures.push(error);
+  }
   const controlPath = "/tmp/oce-qa-codex-readiness-" + randomUUID() + ".json";
   let pauseAttempted = false;
   let stockPaused = false;
@@ -312,9 +358,12 @@ export async function verifyQaCodexAutomationReadinessRefusal(
   try {
     // Pause the exact native system task once. Native disable cancels queued
     // work and fences final dispatch. An uncertain update is never replayed.
+    phase = "stock-pause";
     pauseAttempted = true;
     const pausedRevision = await callbacks.setStockEnabled(originalJobs[0]!, false);
+    phase = "native-inventory";
     const pausedJobs = await callbacks.nativeJobs();
+    phase = "stock-pause";
     assertStockJob(pausedJobs, false);
     assert.ok(pausedJobs[0]!.id === originalJobs[0]!.id, "the stock task identity changed");
     assert.ok(
@@ -329,19 +378,23 @@ export async function verifyQaCodexAutomationReadinessRefusal(
     );
     baselineJobs = pausedJobs;
     stockPaused = true;
+    phase = "pending-reservations";
     assert.ok(
       isDeepStrictEqual(await callbacks.pendingReservations(), baselinePending),
       "native isolation changed OCC reservations",
     );
+    phase = "peer-effects";
     assert.ok(
       (await callbacks.peerCalls()) === baselinePeerCalls,
       "native isolation changed MCP effects",
     );
     // Suspend only the native child. The resident status server and the real
     // Kubernetes readiness probe remain active, so this models transport loss.
+    phase = "native-inventory";
     const jobsBeforeStop = await callbacks.nativeJobs();
     assertSameNativeJobs(jobsBeforeStop, baselineJobs, "native jobs changed before suspension");
     assertStockJob(jobsBeforeStop, false);
+    phase = "stop";
     stopAttempted = true;
     const control = await exec(f, identity, processProgram, {
       action: "stop",
@@ -350,6 +403,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
     });
     assert.ok(control.stopped === true && control.deadlineEnforced === true);
     stopped = true;
+    phase = "resident-readiness";
     await f.waitFor(
       "resident Codex readiness failure",
       async () => {
@@ -364,6 +418,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
       },
       30_000,
     );
+    phase = "pod-readiness";
     await f.waitFor(
       "exact Codex Agent Pod unready",
       async () => {
@@ -373,6 +428,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
       30_000,
     );
     // This is one real API mutation attempt. An uncertain response is never replayed.
+    phase = "admission";
     let response: Response;
     try {
       postAttempted = true;
@@ -383,16 +439,17 @@ export async function verifyQaCodexAutomationReadinessRefusal(
     unexpectedResponse = response.status === 201;
     denied = response.status === 503 && response.errorCode === "DEPENDENCY_UNAVAILABLE";
     assert.equal(denied, true, "unready dedicated execution must refuse automation admission");
+    phase = "pending-reservations";
     assert.ok(
       isDeepStrictEqual(await callbacks.pendingReservations(), baselinePending),
       "refusal must not write an OCC reservation",
     );
   } catch (error) {
+    fail(error);
     if (pauseAttempted && !stockPaused) {
       pauseOutcomeObserved = await observeUncertainStock(callbacks, originalJobs[0]!);
       quarantined = true;
     }
-    failures.push(error);
   } finally {
     if (stopAttempted) {
       // A failed admission must not be allowed to dispatch when the native
@@ -407,7 +464,10 @@ export async function verifyQaCodexAutomationReadinessRefusal(
         );
         nativeSafe = true;
       } catch {
-        failures.push(new Error("Native job inventory is unsafe or unavailable before recovery."));
+        fail(
+          new Error("Native job inventory is unsafe or unavailable before recovery."),
+          "native-inventory",
+        );
       }
       try {
         const pending = await callbacks.pendingReservations();
@@ -419,13 +479,17 @@ export async function verifyQaCodexAutomationReadinessRefusal(
           try {
             await callbacks.cancelPending(added[0]!);
           } catch {
-            failures.push(
+            fail(
               new Error("Pending reservation cancellation outcome is unknown; do not replay it."),
+              "cleanup",
             );
           }
         }
       } catch {
-        failures.push(new Error("Pending reservation inventory could not be safely reconciled."));
+        fail(
+          new Error("Pending reservation inventory could not be safely reconciled."),
+          "pending-reservations",
+        );
       }
       try {
         assertSameNativeJobs(
@@ -435,7 +499,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
         );
         nativeInventoryUnchanged = true;
       } catch {
-        failures.push(new Error("Native job inventory changed before recovery."));
+        fail(new Error("Native job inventory changed before recovery."), "native-inventory");
       }
       try {
         assert.ok(
@@ -444,13 +508,16 @@ export async function verifyQaCodexAutomationReadinessRefusal(
         );
         pendingUnchanged = true;
       } catch {
-        failures.push(new Error("Pending reservation inventory changed before recovery."));
+        fail(
+          new Error("Pending reservation inventory changed before recovery."),
+          "pending-reservations",
+        );
       }
       try {
         assert.equal(await callbacks.peerCalls(), baselinePeerCalls);
         peerCallsUnchanged = true;
       } catch {
-        failures.push(new Error("MCP peer effects changed before recovery."));
+        fail(new Error("MCP peer effects changed before recovery."), "peer-effects");
       }
       if (
         unexpectedResponse ||
@@ -461,12 +528,15 @@ export async function verifyQaCodexAutomationReadinessRefusal(
         // Do not resume into an unknown or possibly active job. The disposable
         // fixture must destroy this task Pod, which also kills the stopped child.
         quarantined = true;
-        failures.push(
+        fail(
           new Error("Codex execution remains quarantined for disposable fixture teardown."),
+          "cleanup",
         );
       } else {
         try {
+          phase = "continue";
           await getPod(f, agent, identity);
+          phase = "native-inventory";
           const jobsBeforeContinue = await callbacks.nativeJobs();
           assertSameNativeJobs(
             jobsBeforeContinue,
@@ -475,6 +545,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
           );
           assertStockJob(jobsBeforeContinue, false);
           stockPausedBeforeContinuation = true;
+          phase = "continue";
           const continued = await exec(f, identity, processProgram, {
             action: "continue",
             controlPath,
@@ -482,6 +553,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
           assert.ok(continued.deadlineEnforced === true, "the Pod-local deadline is required");
           continuationDeadlineEnforced = true;
           if (continued.continued === true) {
+            phase = "recovery-readiness";
             await f.waitFor(
               "same Codex Agent Pod recovered",
               async () => readinessState(await getPod(f, agent, identity)) === "ready",
@@ -493,7 +565,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
           }
         } catch {
           quarantined = true;
-          failures.push(
+          fail(
             new Error(
               "The disposable Codex fixture is quarantined because safe recovery was not proved.",
             ),
@@ -506,7 +578,10 @@ export async function verifyQaCodexAutomationReadinessRefusal(
     try {
       await callbacks.readRequirements();
     } catch {
-      failures.push(new Error("Recovered native automation requirements could not be verified."));
+      fail(
+        new Error("Recovered native automation requirements could not be verified."),
+        "requirements-after-recovery",
+      );
     }
   }
   if (postAttempted && recovered) {
@@ -519,7 +594,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
       nativeInventoryUnchanged = true;
     } catch {
       nativeInventoryUnchanged = false;
-      failures.push(new Error("Readiness refusal left a changed native inventory."));
+      fail(new Error("Readiness refusal left a changed native inventory."), "native-inventory");
     }
     try {
       assert.ok(
@@ -529,20 +604,23 @@ export async function verifyQaCodexAutomationReadinessRefusal(
       pendingUnchanged = true;
     } catch {
       pendingUnchanged = false;
-      failures.push(new Error("Readiness refusal left a changed pending reservation inventory."));
+      fail(
+        new Error("Readiness refusal left a changed pending reservation inventory."),
+        "pending-reservations",
+      );
     }
     try {
       assert.equal(await callbacks.peerCalls(), baselinePeerCalls);
       peerCallsUnchanged = true;
     } catch {
       peerCallsUnchanged = false;
-      failures.push(new Error("Readiness refusal changed the MCP peer effects."));
+      fail(new Error("Readiness refusal changed the MCP peer effects."), "peer-effects");
     }
     try {
       assert.ok((await callbacks.managedJobs()) === baselineManagedJobs);
       managedJobsUnchanged = true;
     } catch {
-      failures.push(new Error("Readiness refusal changed OCC bindings."));
+      fail(new Error("Readiness refusal changed OCC bindings."), "occ-bindings");
     }
   }
   if (
@@ -554,6 +632,7 @@ export async function verifyQaCodexAutomationReadinessRefusal(
     managedJobsUnchanged
   ) {
     try {
+      phase = "stock-restore";
       assert.ok(
         originalJobs[0]!.nextRunAtMs !== null &&
           originalJobs[0]!.nextRunAtMs > Date.now() + restoredStockSafetyMs,
@@ -563,7 +642,9 @@ export async function verifyQaCodexAutomationReadinessRefusal(
       // The native token covers the complete stored definition and authority.
       restoreAttempted = true;
       const restoredRevision = await callbacks.setStockEnabled(baselineJobs[0]!, true);
+      phase = "native-inventory";
       const restoredJobs = await callbacks.nativeJobs();
+      phase = "stock-restore";
       assertStockJob(restoredJobs, true);
       assert.ok(
         restoredJobs[0]!.nextRunAtMs !== null &&
@@ -586,14 +667,17 @@ export async function verifyQaCodexAutomationReadinessRefusal(
         "the restored stock task execution identity changed",
       );
       stockRestored = true;
+      phase = "peer-effects";
       assert.ok(
         (await callbacks.peerCalls()) === baselinePeerCalls,
         "stock restoration changed MCP effects",
       );
+      phase = "pending-reservations";
       assert.ok(
         isDeepStrictEqual(await callbacks.pendingReservations(), baselinePending),
         "stock restoration changed OCC reservations",
       );
+      phase = "occ-bindings";
       assert.ok(
         (await callbacks.managedJobs()) === baselineManagedJobs,
         "stock restoration changed OCC bindings",
@@ -601,24 +685,24 @@ export async function verifyQaCodexAutomationReadinessRefusal(
     } catch {
       if (restoreAttempted && !stockRestored) {
         restoreOutcomeObserved = await observeUncertainStock(callbacks, originalJobs[0]!);
-        failures.push(new Error("Native stock task restoration is uncertain; do not replay it."));
+        fail(new Error("Native stock task restoration is uncertain; do not replay it."));
       } else if (stockRestored) {
-        failures.push(new Error("Post-restoration ownership or effect verification failed."));
+        fail(new Error("Post-restoration ownership or effect verification failed."));
       } else {
-        failures.push(
-          new Error("The stock task cannot be restored within the safe matrix horizon."),
-        );
+        fail(new Error("The stock task cannot be restored within the safe matrix horizon."));
       }
       quarantined = true;
     }
   }
   if (pauseAttempted && !stockRestored && !quarantined) {
     quarantined = true;
-    failures.push(
+    fail(
       new Error("The disposable Codex fixture requires teardown without native restoration."),
+      "cleanup",
     );
   }
   const receipt = {
+    firstFailurePhase: firstFailurePhase ?? null,
     revisionId: identity.revisionId,
     podUidHash: createHash("sha256").update(identity.uid).digest("hex"),
     imageIdHash: createHash("sha256").update(identity.imageId).digest("hex"),
@@ -661,12 +745,9 @@ export async function verifyQaCodexAutomationReadinessRefusal(
   try {
     await f.record("automations-" + agent.id + "-readiness-refusal", receipt);
   } catch {
-    failures.push(new Error("Readiness refusal evidence could not be recorded."));
+    fail(new Error("Readiness refusal evidence could not be recorded."), "evidence-write");
   }
-  if (failures.length === 1) {
-    throw failures[0];
-  }
-  if (failures.length > 1) {
-    throw new AggregateError(failures, "Codex readiness refusal or recovery failed.");
+  if (failures.length > 0) {
+    throw readinessFailure(firstFailurePhase ?? "unknown", failures);
   }
 }

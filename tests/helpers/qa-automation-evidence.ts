@@ -243,6 +243,208 @@ async function observe(f: Fixture, agent: Agent, role: "gateway" | "agent", body
   return value;
 }
 
+const imageDigestPattern = /^sha256:[a-f0-9]{64}$/u;
+function immutableImageDigest(reference: unknown, reason: string): string {
+  assert.ok(typeof reference === "string", reason);
+  const digest = reference.match(/@(sha256:[a-f0-9]{64})$/u)?.[1];
+  assert.ok(digest && imageDigestPattern.test(digest), reason);
+  return digest;
+}
+
+function imageCommandEnvironment(f: Fixture): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    "PATH",
+    "HOME",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "XDG_RUNTIME_DIR",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+  ]);
+  return Object.fromEntries(Object.entries(f.env).filter(([name]) => allowed.has(name)));
+}
+
+function fixtureNode(f: Fixture, nodeName: string): void {
+  assert.ok(
+    nodeName.startsWith("k3d-" + f.cluster + "-") && /-(?:server|agent)-[0-9]+$/u.test(nodeName),
+    "the scheduled node must belong to the QA fixture",
+  );
+}
+
+// Keep OCI bytes inside the scheduled node and exact Agent container. The parser
+// hashes each blob before it extracts only the identity facts needed by this proof.
+const imageMetadataProgram = String.raw`
+const fs=require("node:fs"),crypto=require("node:crypto");
+try {
+  const [digest,platform,revision]=process.argv.slice(1),chunks=[];let total=0;
+  const part=Buffer.alloc(65536);for(;;){const count=fs.readSync(0,part,0,part.length,null);if(!count)break;
+    total+=count;if(total>4194304)throw new Error("metadata limit");chunks.push(Buffer.from(part.subarray(0,count)));}
+  const bytes=Buffer.concat(chunks);if("sha256:"+crypto.createHash("sha256").update(bytes).digest("hex")!==digest)throw new Error("digest mismatch");
+  const value=JSON.parse(bytes.toString("utf8")),valid=/^sha256:[a-f0-9]{64}$/;
+  const [os,architecture]=platform.split("/");let result;
+  if(["application/vnd.oci.image.index.v1+json","application/vnd.docker.distribution.manifest.list.v2+json"].includes(value.mediaType)){
+    if(!Array.isArray(value.manifests))throw new Error("index unavailable");
+    const matches=value.manifests.filter(item=>item?.platform?.os===os&&item.platform.architecture===architecture);
+    if(matches.length!==1||!valid.test(matches[0].digest))throw new Error("platform unavailable");
+    result={kind:"index",manifestDigest:matches[0].digest};
+  }else if(["application/vnd.oci.image.manifest.v1+json","application/vnd.docker.distribution.manifest.v2+json"].includes(value.mediaType)){
+    if(!valid.test(value.config?.digest))throw new Error("config unavailable");result={kind:"manifest",configDigest:value.config.digest};
+  }else{
+    if(value.os!==os||value.architecture!==architecture||value.config?.Labels?.["org.opencontainers.image.revision"]!==revision)throw new Error("config identity unavailable");
+    result={kind:"config",platformMatches:true,sourceRevisionMatches:true};
+  }
+  process.stdout.write(JSON.stringify(result));
+}catch{process.stderr.write("image metadata unavailable");process.exitCode=1;}
+`;
+
+async function imageMetadata(
+  f: Fixture,
+  nodeName: string,
+  containerID: string,
+  digest: string,
+  platform: string,
+  sourceRevision: string,
+) {
+  fixtureNode(f, nodeName);
+  const id = /^containerd:\/\/([a-f0-9]{64})$/u.exec(containerID)?.[1];
+  assert.ok(
+    id && imageDigestPattern.test(digest),
+    "the exact fixture container and image digest are required",
+  );
+  const output = String(
+    await f.run(
+      "docker",
+      [
+        "exec",
+        nodeName,
+        "sh",
+        "-ec",
+        'set -o pipefail; ctr -n k8s.io content get "$1" | crictl exec -i "$2" node -e "$3" "$1" "$4" "$5"',
+        "verify-agent-image",
+        digest,
+        id,
+        imageMetadataProgram,
+        platform,
+        sourceRevision,
+      ],
+      {
+        env: imageCommandEnvironment(f),
+        timeout: 15_000,
+        maxBuffer: 16 * 1024,
+        privateFailureOutput: true,
+      },
+    ),
+  );
+  const result = asRecord(JSON.parse(output));
+  assert.ok(result, "the installed image metadata proof must be an object");
+  return result;
+}
+
+async function installedRoleImage(
+  f: Fixture,
+  nodeName: string,
+  containerID: string,
+  roleDigest: string,
+  platform: string,
+) {
+  const sourceRevision = String(
+    await f.run("git", ["rev-parse", "HEAD"], {
+      env: imageCommandEnvironment(f),
+      timeout: 15_000,
+      privateFailureOutput: true,
+    }),
+  ).trim();
+  assert.ok(/^[a-f0-9]{40}$/u.test(sourceRevision), "the QA source revision must be exact");
+  const root = await imageMetadata(f, nodeName, containerID, roleDigest, platform, sourceRevision);
+  let manifestDigest = roleDigest;
+  let manifest = root;
+  if (root.kind === "index") {
+    assert.ok(
+      typeof root.manifestDigest === "string" && imageDigestPattern.test(root.manifestDigest),
+      "the installed Agent index must select one scheduled platform image",
+    );
+    manifestDigest = root.manifestDigest;
+    manifest = await imageMetadata(
+      f,
+      nodeName,
+      containerID,
+      manifestDigest,
+      platform,
+      sourceRevision,
+    );
+  }
+  assert.ok(
+    manifest.kind === "manifest" &&
+      typeof manifest.configDigest === "string" &&
+      imageDigestPattern.test(manifest.configDigest),
+    "the installed Agent platform image must name a config digest",
+  );
+  const configDigest = manifest.configDigest;
+  const config = await imageMetadata(
+    f,
+    nodeName,
+    containerID,
+    configDigest,
+    platform,
+    sourceRevision,
+  );
+  assert.ok(
+    config.kind === "config" &&
+      config.platformMatches === true &&
+      config.sourceRevisionMatches === true,
+    "the installed Agent config must match the scheduled platform and exact QA source",
+  );
+  return { sourceRevision, manifestDigest, configDigest };
+}
+
+async function scheduledPlatform(
+  f: Fixture,
+  pod: unknown,
+): Promise<{ nodeName: string; platform: string }> {
+  const nodeName = asRecord(asRecord(pod)?.spec)?.nodeName;
+  assert.ok(typeof nodeName === "string" && nodeName.length > 0, "the Agent Pod must be scheduled");
+  const node = asRecord(JSON.parse(await f.kubectl("get", "node", nodeName, "-o", "json")));
+  const metadata = asRecord(node?.metadata);
+  const status = asRecord(node?.status);
+  const info = asRecord(status?.nodeInfo);
+  assert.ok(
+    metadata?.name === nodeName &&
+      typeof metadata.uid === "string" &&
+      info?.operatingSystem === "linux" &&
+      (info.architecture === "amd64" || info.architecture === "arm64"),
+    "the scheduled Agent node must expose a supported exact platform",
+  );
+  return { nodeName, platform: "linux/" + info.architecture };
+}
+
+async function runningConfigDigest(
+  f: Fixture,
+  nodeName: string,
+  containerID: string,
+  podUID: string,
+): Promise<string> {
+  const id = /^containerd:\/\/([a-f0-9]{64})$/u.exec(containerID)?.[1];
+  fixtureNode(f, nodeName);
+  assert.ok(id, "the exact fixture containerd container is required");
+  const fields =
+    '{{.status.id}}{{" "}}{{index .status.labels "io.kubernetes.pod.uid"}}{{" "}}{{if .status.imageId}}{{.status.imageId}}{{else}}{{.info.config.image.image}}{{end}}';
+  const output = String(
+    await f.run(
+      "docker",
+      ["exec", nodeName, "crictl", "inspect", "--output=go-template", "--template", fields, id],
+      { env: imageCommandEnvironment(f), timeout: 15_000, privateFailureOutput: true },
+    ),
+  );
+  const [actualID, actualUID, digest] = output.trim().split(/ +/u);
+  assert.ok(
+    actualID === id && actualUID === podUID && digest && imageDigestPattern.test(digest),
+    "the runtime must inspect the exact scheduled Agent container",
+  );
+  return digest;
+}
+
 /** Read the managed native feature requirements in the exact dedicated Agent Pod. */
 export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent) {
   assert.equal(agent.preset, "Codex");
@@ -259,26 +461,64 @@ export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent
       typeof container.image === "string" &&
       typeof status.imageID === "string" &&
       typeof status.containerID === "string" &&
-      status.containerID.length > 0,
+      status.containerID.length > 0 &&
+      before.status.phase === "Running" &&
+      status.ready === true &&
+      typeof before.metadata.uid === "string" &&
+      before.metadata.labels["openclaw.dev/agent"] === agent.id &&
+      before.metadata.labels["openclaw.dev/workload-role"] === "agent" &&
+      before.metadata.labels["openclaw.dev/revision"] === agent.revision.id,
+    "the exact dedicated Agent Pod and container must be ready",
   );
-  const selectedImage = process.env.OCC_TEST_QA_RUNTIME_IMAGE;
-  if (selectedImage !== undefined) {
-    assert.equal(
-      container.image,
-      selectedImage,
-      "the Agent Pod must select the exact QA runtime index",
+  // This is the launcher input, not proof that the independently selected Agent role descends from it.
+  const selectedSource = process.env.OCC_TEST_QA_RUNTIME_IMAGE;
+  const selectedSourceDigestInput =
+    selectedSource === undefined
+      ? null
+      : immutableImageDigest(selectedSource, "the selected QA runtime source must be immutable");
+  const { nodeName, platform } = await scheduledPlatform(f, before);
+  const compute = asRecord(
+    asRecord(asRecord(asRecord(asRecord(f)?.configuration)?.drivers)?.compute)?.configuration,
+  );
+  const roleImage = asRecord(compute?.images)?.agent;
+  const selectedAgentRoleDigest = immutableImageDigest(
+    roleImage,
+    "the dedicated Agent role image must be immutable",
+  );
+  assert.ok(
+    container.image === roleImage,
+    "the Agent Pod must select its configured Compute role image",
+  );
+  const image = await installedRoleImage(
+    f,
+    nodeName,
+    status.containerID,
+    selectedAgentRoleDigest,
+    platform,
+  );
+  const observedImageDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/u)?.[0];
+  assert.ok(observedImageDigest, "the observed Agent image identity must be immutable");
+  let inspectedRunningConfigDigest: string | null = null;
+  if (
+    observedImageDigest === selectedAgentRoleDigest &&
+    selectedAgentRoleDigest !== image.manifestDigest
+  ) {
+    inspectedRunningConfigDigest = await runningConfigDigest(
+      f,
+      nodeName,
+      status.containerID,
+      before.metadata.uid,
+    );
+    assert.ok(
+      inspectedRunningConfigDigest === image.configDigest,
+      "the running Agent container must use the selected platform config",
+    );
+  } else {
+    assert.ok(
+      observedImageDigest === image.manifestDigest || observedImageDigest === image.configDigest,
+      "the observed Agent image must match the installed platform manifest or config",
     );
   }
-  const indexDigest = container.image.match(/@sha256:([a-f0-9]{64})$/u)?.[1];
-  const observedDigest = status.imageID.match(/sha256:([a-f0-9]{64})$/u)?.[1];
-  assert.ok(
-    indexDigest && observedDigest,
-    "the selected index and observed image identity must be immutable",
-  );
-  // An OCI index and its platform child have different digests. This observation
-  // does not prove their relationship or the exact Codex binary identity; a separate
-  // candidate platform receipt must establish those facts.
-  assert.equal(before.metadata.labels["openclaw.dev/revision"], agent.revision.id);
   const result = await f.execRole(agent, "agent", [
     "node",
     "-e",
@@ -295,21 +535,27 @@ export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent
     "requirements must come from the selected Agent Pod",
   );
   const after = await f.pod(agent, "agent");
-  assert.equal(
-    after.metadata.uid,
-    before.metadata.uid,
-    "the Agent Pod must not change during observation",
+  assert.ok(
+    after.metadata.uid === before.metadata.uid &&
+      after.metadata.labels["openclaw.dev/agent"] === agent.id &&
+      after.metadata.labels["openclaw.dev/workload-role"] === "agent" &&
+      after.metadata.labels["openclaw.dev/revision"] === agent.revision.id &&
+      after.spec.nodeName === nodeName,
+    "the exact Agent Pod, revision and scheduled node must remain",
   );
-  assert.equal(after.metadata.labels["openclaw.dev/revision"], agent.revision.id);
   const afterContainer = after.spec.containers.find(
     (value: { name: string }) => value.name === "agent",
   );
   const afterStatus = after.status.containerStatuses.find(
     (value: { name: string }) => value.name === "agent",
   );
-  assert.equal(afterContainer?.image, container.image);
-  assert.equal(afterStatus?.imageID, status.imageID);
-  assert.equal(afterStatus?.containerID, status.containerID);
+  assert.ok(
+    afterContainer?.image === container.image &&
+      afterStatus?.imageID === status.imageID &&
+      afterStatus?.containerID === status.containerID &&
+      afterStatus?.ready === true,
+    "the exact Agent container and image must remain",
+  );
   const value = asRecord(JSON.parse(result.stdout));
   assert.ok(value);
   assert.equal(value.markerRequired, true);
@@ -329,8 +575,14 @@ export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent
     codexMetadataPresent: value.codexMetadataPresent,
     disabled: value.disabled,
     podIdentityMatches: true,
-    selectedIndexDigest: `sha256:${indexDigest}`,
-    observedImageDigest: `sha256:${observedDigest}`,
+    sourceRevision: image.sourceRevision,
+    scheduledPlatform: platform,
+    selectedSourceDigestInput,
+    selectedAgentRoleDigest,
+    installedPlatformManifestDigest: image.manifestDigest,
+    installedConfigDigest: image.configDigest,
+    observedImageDigest,
+    inspectedRunningConfigDigest,
   };
 }
 
