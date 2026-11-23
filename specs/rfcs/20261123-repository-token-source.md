@@ -9,7 +9,7 @@ author: freeqaz
 - **ID:** RFC-20261123-repository-token-source
 - **Created:** 2026-11-23
 - **Last updated:** 2026-11-23
-- **RFC PR:** Draft pull request, link pending
+- **RFC PR:** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149)
 - **Related:** [Issue #6993](https://github.com/openclaw/openclaw-enterprise/issues/6993), [Per-Agent repository network policy](20261119-repository-network-policy.md), [credential source ownership](0023-egress-proxy-credential-lifecycle/credential-source-ownership.md), [managed static Sources](../../docs/reference/credential-sources/managed-static.md), [native Git delivery](../../docs/reference/repository-credentials/openshell-git.md)
 
 <a id="problem-and-decision"></a>
