@@ -1,4 +1,5 @@
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
+import type { AgentRuntimePodStatus } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -25,6 +26,7 @@ import {
   assertReturnedAgents,
   assertRunningController,
   measureUpgradeAvailability,
+  readGatewayContinuity,
   rehearsalMigrationProbeArgs,
   returnedDatabaseConnections,
   returnedAgentSnapshot,
@@ -153,6 +155,132 @@ async function scratch(t: TestContext) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+const continuityIdentity = {
+  namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+  agentId: "agt_00000000-0000-4000-8000-000000000002",
+  revisionId: "rev_00000000-0000-4000-8000-000000000003",
+};
+
+function workloadStatus(
+  role: AgentRuntimePodStatus["role"],
+  uid: string,
+  restartCount: number,
+): AgentRuntimePodStatus {
+  return {
+    uid,
+    name: `${role}-${uid}`,
+    role,
+    cluster: "control",
+    phase: "Running",
+    ready: true,
+    createdAt: null,
+    containers: [
+      {
+        name: role,
+        state: "running",
+        ready: true,
+        restartCount,
+        reason: null,
+        startedAt: null,
+        lastTermination: null,
+      },
+    ],
+    events: [],
+  };
+}
+
+function continuityReceipt(...pods: AgentRuntimePodStatus[]) {
+  return {
+    ...continuityIdentity,
+    runtime: { revisionId: continuityIdentity.revisionId, pods },
+  };
+}
+
+async function continuityEvidence(t: TestContext, ...otherPods: AgentRuntimePodStatus[]) {
+  const directory = await scratch(t);
+  const write = (filename: string, receipt: unknown) =>
+    writeFile(join(directory, filename), JSON.stringify(receipt), { mode: 0o600 });
+  const before = (receipt: unknown) => write("agent-continuity.json", receipt);
+  await before(continuityReceipt(...otherPods, workloadStatus("gateway", "original", 2)));
+  return {
+    read: () => readGatewayContinuity(directory, continuityIdentity),
+    before,
+    after: (receipt: unknown) => write("agent-continuity-after.json", receipt),
+  };
+}
+
+test("controller upgrade continuity reports gateway counts per Pod and permits replacement", async (t) => {
+  const agent = workloadStatus("agent", "harness", 9);
+  const evidence = await continuityEvidence(t, agent);
+  const original = workloadStatus("gateway", "original", 3);
+  await evidence.after(continuityReceipt(agent, original));
+  assert.deepEqual(await evidence.read(), {
+    podReplaced: false,
+    gatewayRestartCountBefore: 2,
+    gatewayRestartCountAfter: 3,
+  });
+
+  // A retired Gateway and a separate Harness workload cannot supply the live Gateway count.
+  const retired = { ...original, phase: "Failed", ready: false };
+  const replacement = workloadStatus("gateway", "replacement", 0);
+  await evidence.after(continuityReceipt(agent, retired, replacement));
+  assert.deepEqual(await evidence.read(), {
+    podReplaced: true,
+    gatewayRestartCountBefore: 2,
+    gatewayRestartCountAfter: 0,
+  });
+
+  const container = replacement.containers[0];
+  assert.ok(container);
+  await evidence.after(
+    continuityReceipt(agent, {
+      ...replacement,
+      containers: [{ ...container, state: "unknown", ready: false }],
+    }),
+  );
+  assert.deepEqual(await evidence.read(), {
+    podReplaced: true,
+    gatewayRestartCountBefore: 2,
+    gatewayRestartCountAfter: null,
+  });
+});
+
+test("controller upgrade continuity rejects stale Agent identity at either observation", async (t) => {
+  const evidence = await continuityEvidence(t);
+  const receipt = continuityReceipt(workloadStatus("gateway", "original", 2));
+  const staleRevision = "rev_00000000-0000-4000-8000-000000000004";
+  for (const stale of [
+    { ...receipt, namespaceId: "ns_00000000-0000-4000-8000-000000000005" },
+    { ...receipt, agentId: "agt_00000000-0000-4000-8000-000000000006" },
+    { ...receipt, revisionId: staleRevision },
+    { ...receipt, runtime: { ...receipt.runtime, revisionId: staleRevision } },
+  ]) {
+    await evidence.after(stale);
+    await assert.rejects(evidence.read(), {
+      message:
+        "Agent continuity after the controller upgrade: receipt identity does not match the selected Agent revision",
+    });
+  }
+  await evidence.after(receipt);
+  await evidence.before({ ...receipt, revisionId: staleRevision });
+  await assert.rejects(evidence.read(), {
+    message:
+      "Agent continuity before the controller upgrade: receipt identity does not match the selected Agent revision",
+  });
+});
+
+test("controller upgrade continuity requires an unambiguous live Gateway Pod", async (t) => {
+  const evidence = await continuityEvidence(t);
+  const first = workloadStatus("gateway", "first", 0);
+  for (const pods of [
+    [{ ...first, phase: "Succeeded", ready: false }],
+    [first, workloadStatus("gateway", "second", 0)],
+  ]) {
+    await evidence.after(continuityReceipt(...pods));
+    await assert.rejects(evidence.read(), /expected exactly one live Gateway Pod/u);
+  }
+});
 
 test("return migration probe replaces the exact historical loader with the guarded current loader", async (t) => {
   // Unmodified loader from the c0b09b2e and 4835e8bf charts.
@@ -1057,6 +1185,7 @@ test(
           maxStartGapMs: number;
           tailGapMs: number;
           complete: boolean;
+          responseSummary: { successful: number; unsuccessful: number };
         }
       | undefined;
     // Exercise the real HTTPS helper while the action succeeds despite failed
@@ -1107,6 +1236,8 @@ test(
         actionStartedAtRequest: [false, true, true, true, true, true, true, true, true],
       },
     );
+    assert.equal(evidence.responseSummary.successful, 3);
+    assert.equal(evidence.responseSummary.unsuccessful, 6);
     assert.equal(evidence.samples[0]?.requestId, requestId);
     assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
     assert.equal(evidence.samples[0]?.upstreamSocketReused, true);
@@ -1188,7 +1319,7 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
           now = 4_610;
           t.mock.timers.setTime(1_000);
           resumed.resolve();
-          break;
+          return { status: 503, body: { error: "Service unavailable" } };
         case 3:
           now = 5_610;
           settled.resolve("complete");
@@ -1246,6 +1377,14 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   assert.equal(evidence.complete, true);
   assert.ok(evidence.samples[1].finishedAt < evidence.samples[1].startedAt);
   assert.equal(evidence.samples[1].elapsedMs, 3_250);
+  // The longest interval spans the 503 and a backward jump in wall-clock time.
+  assert.deepEqual(evidence.responseSummary, {
+    successful: 3,
+    unsuccessful: 1,
+    unsuccessfulBeforeFirstSuccess: 0,
+    unsuccessfulAfterLastSuccess: 0,
+    maxSuccessfulResponseIntervalMs: 5_500,
+  });
 
   // Even zero elapsed time has the initial opportunity. The closed endpoint
   // includes a slot exactly at settlement; neither may create a fake sample.
@@ -1253,9 +1392,14 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   const runtimeReceiptName = "runtime-api-availability.json";
   const runtimePath = join(directory, runtimeReceiptName);
   for (const duration of [0, 1_000]) {
+    const statuses = duration === 0 ? [503, 503] : [503, 200];
     await assert.rejects(
       measureUpgradeAvailability(
-        async () => ({ status: 200, body: { data: { id: "original-installation" } } }),
+        async () => {
+          const status = statuses.shift();
+          assert.ok(status !== undefined);
+          return { status, body: { data: { id: "original-installation" } } };
+        },
         "original-installation",
         directory,
         () => {
@@ -1277,19 +1421,32 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
       failed.samples.map((sample: { phase: string }) => sample.phase),
       ["before", "after"],
     );
+    assert.deepEqual(failed.responseSummary, {
+      successful: duration === 0 ? 0 : 1,
+      unsuccessful: duration === 0 ? 2 : 1,
+      unsuccessfulBeforeFirstSuccess: duration === 0 ? null : 1,
+      unsuccessfulAfterLastSuccess: duration === 0 ? null : 0,
+      maxSuccessfulResponseIntervalMs: null,
+    });
   }
 
   // A failed return retains its outage observation and leaves both earlier
   // receipts intact, even when the final authenticated read succeeds.
   const runtimeBytes = await readFile(runtimePath);
   const restoreFailure = new Error("archive restore failed");
-  const statuses = [200, 503, 200];
+  const responses = [
+    { status: 200, durationMs: 100 },
+    { status: 503, durationMs: 199.75 },
+    { status: 200, durationMs: 300.5 },
+  ];
   let returnPhaseRecord: object | undefined;
   await assert.rejects(
     measureUpgradeAvailability(
       async () => {
-        const status = statuses.shift();
-        assert.ok(status !== undefined);
+        const response = responses.shift();
+        assert.ok(response);
+        const { status, durationMs } = response;
+        now += durationMs;
         return { status, body: { data: { id: "original-installation" } } };
       },
       "original-installation",
@@ -1325,6 +1482,14 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
       ["after", 200, "ok"],
     ],
   );
+  // Using the recorded durations estimates finishes at 100 and 600.75 ms.
+  assert.deepEqual(returnEvidence.responseSummary, {
+    successful: 2,
+    unsuccessful: 1,
+    unsuccessfulBeforeFirstSuccess: 0,
+    unsuccessfulAfterLastSuccess: 0,
+    maxSuccessfulResponseIntervalMs: 501,
+  });
   assert.deepEqual(await readFile(controllerPath), controllerBytes);
   assert.deepEqual(await readFile(runtimePath), runtimeBytes);
 
@@ -1426,6 +1591,7 @@ test(
           throughOffsetMs: number;
           cadence: { complete: boolean; probedSlots: number };
           guardedResume?: { startOffsetMs: number; endOffsetMs?: number };
+          responseSummary: unknown;
           samples: { phase: string; outcome: string }[];
         }
       | undefined;
@@ -1459,6 +1625,13 @@ test(
     assert.ok(persisted.guardedResume.startOffsetMs <= completedThrough);
     assert.ok(!("endOffsetMs" in persisted.guardedResume));
     assert.equal(persisted.samples.length, 2);
+    assert.deepEqual(persisted.responseSummary, {
+      successful: 1,
+      unsuccessful: 1,
+      unsuccessfulBeforeFirstSuccess: 0,
+      unsuccessfulAfterLastSuccess: 1,
+      maxSuccessfulResponseIntervalMs: null,
+    });
     assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
     assert.equal(persisted.samples[0]?.phase, "before");
     assert.equal(persisted.samples[0]?.outcome, "ok");
