@@ -58,8 +58,8 @@ import {
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
+  AGENT_CREATE_ACCESS_CHECK,
   ACCESS_TAB_UNAVAILABLE,
-  AGENT_CREATE_RESTRICTED,
   AGENT_DELETE_DENIED,
   AGENT_STOP_AND_DELETE_DENIED,
   AGENT_STOP_DENIED,
@@ -1113,19 +1113,18 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
   await page.getByRole("heading", { name: "Restricted Agent" }).waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).waitFor();
-  // The Agents list and Create Agent name the Restriction and who lifts it, not an administrator
-  // to ask: she is one (finding D759).
+  // The advisory permission result tells the administrator which access to check.
   await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   const create = page.getByRole("button", {
     name: "Create Agent",
     exact: true,
-    description: AGENT_CREATE_RESTRICTED,
+    description: AGENT_CREATE_ACCESS_CHECK,
   });
   await create.waitFor();
   assert.equal(await create.isDisabled(), true);
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  await page.getByRole("status").getByText(AGENT_CREATE_RESTRICTED, { exact: true }).waitFor();
+  await page.getByRole("status").getByText(AGENT_CREATE_ACCESS_CHECK, { exact: true }).waitFor();
   assert.deepEqual(
     authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends|iam)\./),
     [],
@@ -4447,18 +4446,23 @@ test("Agents list row actions explain missing access and still report a refused 
     "the row's note line fits",
   );
   assert.equal(await note.getAttribute("title"), bothDenied);
-  assert.equal(
-    await stop.evaluate((node) => {
-      const id = node.getAttribute("aria-describedby")?.split(" ")[0];
-      if (id === undefined) {
-        throw new Error("Missing description ID");
-      }
-      return globalThis.document.getElementById(id)?.textContent;
-    }),
-    bothDenied,
+
+  // On a narrow desktop the table scrolls to the icons. Their full descriptions
+  // must stay inside the table even when the actions column is off screen.
+  await page.setViewportSize({ width: 800, height: 844 });
+  await row.getByRole("link", { name: "Guarded Agent", exact: true }).focus();
+  assert.ok(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    "unavailable actions do not widen the page",
   );
-  assert.equal(await stop.isDisabled(), true);
-  assert.equal(await remove.isDisabled(), true);
+  for (const action of [stop, remove]) {
+    await expectReachableReason(page, action, bothDenied);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+  }
+  assert.ok(await page.locator(".table-scroll").evaluate((node) => node.scrollLeft > 0));
+  assert.equal(await page.evaluate(() => globalThis.scrollX), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
   // An operate grant shows after Refresh: Stop becomes available while Delete stays explained.

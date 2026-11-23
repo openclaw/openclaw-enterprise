@@ -1,3 +1,4 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isSecretHarnessAuth,
   normalizeSecretBindings,
@@ -5,7 +6,6 @@ import {
   type ConfigurationDriver,
   type ConfigurationValidationOptions,
   type HarnessAuthBinding,
-  type Namespace,
   type OpenClawConfigurationDocument,
   type ResourceRef,
   type Secret,
@@ -85,11 +85,6 @@ interface ConfigurationOperationsDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly registerRollback: ControllerTransactions["registerRollback"];
-  readonly lockNamespaceForPolicyDelete: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<Readonly<Namespace>>;
   readonly guardProvisioningConfiguration: (
     state: PlatformReadView,
     namespaceId: string,
@@ -106,11 +101,7 @@ interface ConfigurationOperationsDependencies {
     secretBindings: SecretBindings,
   ) => void;
   readonly ownedSecretDriver: SecretOperations["ownedSecretDriver"];
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly nextIdentifier: (kind: "configuration") => string;
   readonly timestamp: () => string;
 }
@@ -257,7 +248,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
         createdAt: configuration.createdAt,
       });
-      await deps.bindCreator(state, principalId, {
+      await deps.iamPolicy.bindCreator(state, principalId, {
         kind: "configuration",
         id: metadata.id,
         namespaceId: namespace.id,
@@ -455,7 +446,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
   ): Promise<readonly RemovedAccessBinding[]> {
     configurationIdentity(namespaceId, configurationId);
     return transact(async (state) => {
-      const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
+      const namespace = await deps.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "configuration",
         id: configurationId,
         namespaceId,

@@ -34,8 +34,9 @@ OpenShell integrations ([operator](openshell-sandbox.md) or experimental
 OpenClaw Harness Pods. Internal execution classes share `occ/kubernetes`;
 Compute keeps other resources. Dedicated native OpenClaw requires a selected
 SandboxDriver that provisions the Harness and declares networking, filesystem, and
-process containment. Stock OpenShell cannot provide required credential and
-workload-identity projections; Agent deployment with OpenShell remains unsupported.
+process containment. OpenShell rejects Kubernetes Secret environment projection and
+projected Agent identity. Use a supported credential delivery path and disable
+ServicePrincipal credential projection; see [OpenShell qualification](openshell-sandbox.md#workload-identity).
 
 HTTP chat defaults on for new single-cluster runtime revisions and uses a
 private exact-POST route with trusted-proxy chat authority. Explicit opt-out
@@ -66,14 +67,15 @@ Harness configuration selects the Agent's execution topology:
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
   Service DNS and the paired node for workspace operations. Codex accepts an
-  Agent-scoped model API key or a managed ChatGPT service-account credential,
-  and permits `openai/` or `codex/` models.
+  Agent-scoped API key, a managed ChatGPT account credential, or a supported
+  Credential Source, and permits `openai/` or `codex/` models.
 - **Dedicated native OpenClaw:** The gateway and paired OpenClaw Harness run in
   separate Pods with separate ServiceAccounts. Compute issues a node-only setup
   credential through the gateway and stores the resulting device identity on the
   Harness workspace claim. The node host supervises the remote worker, which owns
-  the agent loop, model inference, and coding tools. Only the Harness receives the
-  model API key. Compute makes its generated `dedicated-native` worker-inference
+  the agent loop, model inference, and coding tools. With direct Secret delivery,
+  only the Harness receives the model API key. With managed delivery, it receives a
+  placeholder and the paired Proxy injects the credential. Compute makes its generated `dedicated-native` worker-inference
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
@@ -98,7 +100,7 @@ Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-p
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
 retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
-absent.
+absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source; the [OpenShell Proxy](credential-proxy.md) retires its delivery copy after the last binding is removed.
 
 ### Plugin startup status
 
@@ -169,9 +171,9 @@ the resolved namespace carries the Agent ID, Agent revision ID, and `agent` work
 labels used by the active Service selector, plus all supplied Harness
 requirement labels, and reports `Ready=True`. Zero candidates, multiple live
 candidates (including one Ready and one unready), or a single unready candidate
-leave preparation at `ready: false` and prevent activation. Pods with a valid
-deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
-role do not count.
+leave preparation at `ready: false`. Pods with a valid deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or role do not count.
+
+For managed credential delivery, Compute prepares an idle Sandbox and reports `preparedForCredentialActivation` only after the network policy matches, the Credential Proxy reports ready, and the Sandbox has fresh launch inputs. Worker selects the Agent revision and authorizes the Credential Source before Compute activates the Harness. Compute keeps the authenticated Gateway operator route available during node enrollment. It publishes user chat and delegated browser routes only after it verifies the runtime and workspace node. See [Credential Source implementation status](../credential-sources.md#implementation-status) for current limits. Other unready revisions cannot activate.
 
 Malformed or incomplete Pod lists, invalid identities or conditions, duplicate
 condition types, contradictory Harness labels, and pagination with more results

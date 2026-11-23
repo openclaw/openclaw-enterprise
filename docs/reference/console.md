@@ -66,8 +66,9 @@ destination heading; **Open navigation** opens the mobile drawer. The drawer
 scrolls independently and keeps the page behind it in place until it closes.
 
 Click an Agent name or an open area of its row to open its details. Version links
-and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
-the Agent name and press Enter.
+and Stop or Delete buttons keep their separate actions. In **Search Agents**, Enter opens a single match.
+Down Arrow focuses the first name. Use Up and Down to browse, Enter to open, or
+Escape to return to search. Escape in search clears the query.
 An individual Agent header uses **Agent details** until an authorized read supplies its name.
 
 While a Namespace provisions, the Agents list checks its status every ten seconds.
@@ -133,6 +134,8 @@ Creation needs collection `secret:create`; replacement and deletion need exact
 The API authorizes each operation; a refusal disables the submitted action.
 Names are fixed, values remain unreadable, and entered material is never saved
 in browser storage. Consumer counts retain read-permission and truncation limits.
+On return, the Console can restore the library search for the same session and
+Namespace. **Refresh** clears it.
 
 Follow [Manage Secrets in the console](../guides/console/secrets.md) for procedures,
 replacement delivery, deletion effects, and uncertain-write recovery.

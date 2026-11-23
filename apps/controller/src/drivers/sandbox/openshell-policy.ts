@@ -1,9 +1,66 @@
 import { isDeepStrictEqual } from "node:util";
-import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, numericLastLabel, sha256Hex } from "@openclaw-enterprise/utils";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant, SandboxPolicySnapshot } from "@openclaw-enterprise/contracts";
 
 export const AGENT_POLICY_PREFIX = "oce-agent-";
+
+/** Unknown native selectors or numeric destinations cannot be proved disjoint. */
+function openShellHostMayOverlap(candidate: string, host: string): boolean {
+  const selector = candidate.toLowerCase().replace(/\.$/, "");
+  const target = host.toLowerCase().replace(/\.$/, "");
+  const wildcard = /^\*{1,2}\.[a-z0-9.-]+$/.test(selector);
+  return (
+    (!wildcard && !/^[a-z0-9.-]+$/.test(selector)) ||
+    numericLastLabel(selector) ||
+    selector === target ||
+    (wildcard && target.endsWith(selector.slice(selector.indexOf("."))))
+  );
+}
+
+/** OpenShell allowances compose, so another route must be provably disjoint. */
+export function openShellNetworkRouteMayOverlap(
+  policies: unknown,
+  target: { readonly host: string; readonly port: number },
+  exactRoutes: readonly string[] = [],
+): boolean {
+  const network = asRecord(policies);
+  if (!network) {
+    return true;
+  }
+  for (const [name, value] of Object.entries(network)) {
+    if (exactRoutes.includes(name)) {
+      continue;
+    }
+    const rule = asRecord(value);
+    if (!rule) {
+      return true;
+    }
+    const endpoints = rule.endpoints;
+    if (endpoints === undefined) {
+      continue;
+    }
+    if (!Array.isArray(endpoints)) {
+      return true;
+    }
+    for (const value of endpoints) {
+      const endpoint = asRecord(value);
+      if (typeof endpoint?.host !== "string") {
+        return true;
+      }
+      const ports =
+        Array.isArray(endpoint.ports) && endpoint.ports.length
+          ? endpoint.ports
+          : typeof endpoint.port === "number" && endpoint.port > 0
+            ? [endpoint.port]
+            : [target.port];
+      if (ports.includes(target.port) && openShellHostMayOverlap(endpoint.host, target.host)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 export function openShellAgentNetworkRules(additions: readonly SandboxNetworkGrant[]) {
   validateSandboxNetworkGrants(additions);

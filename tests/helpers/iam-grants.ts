@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
+import { hash } from "node:crypto";
 import { Check } from "typebox/value";
 import {
+  CONFIGURED_IAM_ID_PREFIXES,
   IAMPermissionSchema,
   type AccessBinding,
   type Permission,
   type Restriction,
   type Role,
 } from "../../packages/contracts/src/index.ts";
-import type { NativeIAMState } from "../../packages/iam/src/index.ts";
+import {
+  validatePersistedNativeIAMState,
+  type NativeIAMState,
+} from "../../packages/iam/src/index.ts";
 
 export type ActionsByKind = Partial<
   Record<Permission["resourceKind"], readonly Permission["action"][]>
@@ -24,6 +29,7 @@ type GrantOptions = Omit<BindingOptions, "roleId"> & {
   bindingId?: string | undefined;
   permissions: readonly Permission[] | ActionsByKind;
 };
+type ConfiguredNamespaceRole = { name: string; namespaceId: string; permissions: ActionsByKind };
 type RestrictionOptions = {
   id?: string | undefined;
   namespaceId?: string | undefined;
@@ -83,6 +89,34 @@ export function grantRole(
   policy.roles.push(role);
   const binding = bindRole(policy, subjectId, { id: bindingId, roleId: id, namespaceId, resource });
   return { role, binding };
+}
+
+/** Binds a configured Installation Role to a member's Group in exactly one Namespace. */
+export function grantConfiguredNamespaceRole(
+  policy: MutableIAMState,
+  subjectId: string,
+  { name, namespaceId, permissions }: ConfiguredNamespaceRole,
+): FixtureRole {
+  const groupId = `${CONFIGURED_IAM_ID_PREFIXES.group}${name}`;
+  const role = {
+    id: `${CONFIGURED_IAM_ID_PREFIXES.role}${name}`,
+    name,
+    permissions: permissionsFor(permissions),
+  };
+  // OCC identifies a configured binding by its Group, Role, and resolved Namespace ID.
+  const bindingKey = hash("sha256", JSON.stringify([name, name, namespaceId])).slice(0, 32);
+  policy.roles.push(role);
+  policy.groups.push({ id: groupId, name });
+  policy.memberships.push({ groupId, principalId: subjectId });
+  policy.bindings.push({
+    id: `${CONFIGURED_IAM_ID_PREFIXES.binding}${bindingKey}`,
+    namespaceId,
+    roleId: role.id,
+    subjectKind: "group",
+    subjectId: groupId,
+  });
+  validatePersistedNativeIAMState(policy);
+  return role;
 }
 
 /** Appends a deny Restriction scoped to the supplied Namespace and resource, if any. */

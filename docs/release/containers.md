@@ -264,8 +264,7 @@ on `main` with:
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
 
-Native preparations that ran smoke inside `Prepare` jobs are unsupported by the
-current recovery gate. They require fresh full qualification, which does not
+Runs that tested runtime startup only inside the `Prepare` jobs are ineligible for recovery. They require fresh full qualification, which does not
 reconstruct their original bytes.
 
 Review the original digests and current public package settings before dispatch.

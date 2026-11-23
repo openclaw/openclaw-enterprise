@@ -1,3 +1,9 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import {
+  storedSecretBindings,
+  rejectCrossNamespaceSecretSources,
+} from "./configuration-operations.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
   isName,
   normalizeInitialWorkspaceFiles,
@@ -7,7 +13,6 @@ import {
   type BackendRef,
   type Configuration,
   type ConfigurationDriver,
-  type CredentialSource,
   type HarnessAuthBinding,
   type HarnessExecutionMode,
   type InitialWorkspaceFiles,
@@ -112,19 +117,12 @@ interface AgentDraftDependencies {
     AgentCredentialAccess,
     "authorizeBoundCredentialSources" | "authorizeAgentCredentialSources"
   >;
-  readonly isManagedTokenServiceSource: (source: Readonly<CredentialSource> | undefined) => boolean;
-  readonly bindings: (value: unknown) => SecretBindings;
   readonly authorizeBindings: (
     state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
     bindings: SecretBindings,
   ) => Promise<unknown>;
-  readonly rejectCrossNamespaceSecretSources: (
-    namespaceId: string,
-    bindings: SecretBindings | undefined,
-    harnessAuth: HarnessAuthBinding | null | undefined,
-  ) => void;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly validateConfigurationContent: (
     values: OpenClawConfigurationDocument,
@@ -148,11 +146,7 @@ interface AgentDraftDependencies {
     principalId: string,
     policy: Awaited<ReturnType<PlatformReadView["sandboxPolicies"]["find"]>>,
   ) => Promise<void>;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly nextAgentId: () => string;
   readonly timestamp: () => string;
 }
@@ -389,7 +383,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespace.id,
         existingConfiguration.id,
       );
-      dependencies.rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
+      rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
       await dependencies.harnessAuth.authorizeHarnessAuthSource(
         state,
         principalId,
@@ -408,7 +402,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         state,
         principalId,
         namespace.id,
-        dependencies.bindings(existingConfiguration.secretBindings),
+        storedSecretBindings(existingConfiguration.secretBindings),
       );
       const configuration =
         configurationPreparation === undefined
@@ -537,7 +531,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
             );
       // The form saves the Configuration first, so its content rules answer first, in
       // createConfiguration's order.
-      dependencies.rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
+      rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
       const configurationDriver = dependencies.configurationDriver();
       // Use one unsaved Configuration for Driver admission and Agent topology checks.
       const configuration: Configuration = Object.freeze({
@@ -556,7 +550,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         pluginApprovers,
         () => values,
       );
-      dependencies.rejectCrossNamespaceSecretSources(
+      rejectCrossNamespaceSecretSources(
         namespace.id,
         undefined,
         harnessAuth === null || "source" in harnessAuth ? harnessAuth : null,
@@ -663,7 +657,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         agent.credentialSources ?? [],
       );
       if (requestedAuth !== undefined) {
-        dependencies.rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
+        rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
         await dependencies.harnessAuth.authorizeHarnessAuthSource(
           state,
           principalId,
@@ -699,7 +693,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
             namespace.id,
             previousAuth.sourceId,
           );
-          if (dependencies.isManagedTokenServiceSource(source)) {
+          if (isManagedTokenServiceSource(source)) {
             throw new ResourceStateConflictError(
               "This TokenService source must remain the selected Harness authentication source.",
             );
@@ -710,7 +704,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
       // Configuration write (or naming another Configuration) can replace them, so loosening this
       // would not unblock the Agent. SecretBindingDriverError names that fix.
-      const secretBindings = dependencies.bindings(configuration.secretBindings);
+      const secretBindings = storedSecretBindings(configuration.secretBindings);
       await dependencies.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
       const selections = plugins ?? agent.plugins;

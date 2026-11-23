@@ -38,6 +38,28 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
+### Native Git delivery
+
+A Namespace registration can select `nativeGit: "v1"` with the finite
+`github-repository` profile. Select it consistently across the Agent's bindings.
+Deployment also requires a saved [repository policy](../sandbox-policies.md#repository-network-policy)
+and a Compute Driver that admits the placement. Omitting the policy retains
+online authorization. Existing ref, draft and standing grants retain their own profiles.
+
+Before enabling `nativeGit: "v1"`, finish replacing incompatible Workers. An old
+Worker can consume a scoped deployment job attempt before refusing its marked
+revision. The repository policy reference covers recovery and the restriction on
+adopting previously deployed legacy Agents.
+
+OpenShell matches discovery and upload-pack for each read grant. Write also
+permits receive-pack. The Sandbox binds each repository path to a credential
+held by the Gateway. This selection grants Git only.
+
+Before installing or renewing the credential, OCE checks that the expected
+Sandbox is the Provider's sole recipient and the workspace has no additional
+members. Operators must retain exclusive control of workspace, Sandbox and
+Provider writes for this delivery mode.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |

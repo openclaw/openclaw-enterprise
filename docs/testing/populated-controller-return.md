@@ -79,15 +79,14 @@ Job. Kubernetes finishes the real initialization while Helm remains pending.
 The test terminates and reaps that client, checks the committed PostgreSQL
 history with the candidate's migrator, and runs the supported
 `--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
-The baseline selects an unused documentation-range directory proxy; the candidate
-clears it. Recovery must first refuse the retained egress NetworkPolicy, then
-refuse the retained API environment entry. The fixture explicitly reconciles
-those two removals with UID/resource-version guards while writers remain stopped,
-then retries the same recovery command. Product recovery performs no deletion.
 Recovery must advance exactly one revision without replacing the completed
 initializer Job or Pod or changing the committed migration history. The test
 does not edit Helm storage or disable hooks. If Helm finishes before the
 interruption, the rehearsal fails rather than claiming recovery coverage.
+
+After the candidate acknowledges the new Agent, the previous image’s migrator
+must report completed history on the candidate database. If this check fails,
+the rehearsal stops before the return measurement or writer shutdown.
 
 The archive taken before the upgrade
 must omit the candidate's acknowledged draft. The archive taken after the write
@@ -100,10 +99,16 @@ of the Installation.
 
 See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by
-the test. The forward upgrade records authenticated HTTPS `GET /installation`
-samples before, during, and after the upgrade, including a failed upgrade. Each
-request has a five-second deadline. Requests run serially on a nominal one-second
-cadence during the upgrade, with at least one second between actual starts.
+the test.
+
+The test samples authenticated HTTPS `GET /installation` before, during, and after
+the forward upgrade and the return to the previous version, including when either
+action fails. The return window starts before the candidate writers stop and covers
+archive restoration, the migration compatibility check, and Helm rollback through
+Installation verification. The anonymous-access and saved Agent checks run
+separately after the return window. Each request has a five-second deadline. During
+each action, requests run serially on a nominal one-second cadence, with at least
+one second between actual starts.
 Slow requests, evidence writes, and late timer wakes can leave slots unprobed;
 the sampler does not replay those slots. The evidence includes timestamps,
 request durations, received HTTP status even for invalid response bodies,
@@ -125,11 +130,12 @@ Response bodies and credentials are omitted. If recording fails, the test report
 the write failure alongside any upgrade failure, preserving the upgrade as the
 primary cause.
 
-Each completed observation also updates `forward-api-availability.json` in that
-same directory by atomic replacement. If the runner stops, this file retains the
+Each completed observation also updates the corresponding
+`forward-api-availability.json` or `return-api-availability.json` file in the
+private evidence directory by atomic replacement. If the runner stops, this file retains the
 last saved observations. `upgradeSucceeded: null` means the action has not been
 recorded as finished; do not infer success or recovery from an incomplete file.
-A final boolean records whether the upgrade action succeeded, independently of
+A final boolean records whether the measured action succeeded, independently of
 the observed HTTP results. Process interruption does not add an `after` sample.
 This protects completed writes against process termination, not host or disk loss.
 
@@ -137,7 +143,7 @@ In receipt version 2, `nominalIntervalMs` replaces the old sleep interval
 (`intervalAfterResponseMs` is null). Compare `cadence.probedSlots` with
 `cadence.scheduledSlots` to see how many one-second opportunities received a
 completed first attempt. `unprobedSlots` counts the remainder. Slot 0 begins
-when the helper invokes the upgrade. Each `during` sample records the slot
+when the helper invokes the action. Each `during` sample records the slot
 in which it started and its delay within that slot. Boundary reads have no slot.
 An HTTP error or timeout still counts as a probe.
 
@@ -147,9 +153,28 @@ the interval between starts. `maxStartGapMs` includes the boundary reads.
 All offsets use the same monotonic clock. Wall-clock timestamps support log
 correlation.
 
+In the forward receipt, `guardedResume.startOffsetMs` marks the start of the
+resume attempt after the migration history check. It includes the fixture's
+cluster, database and release checks before the command runs.
+`guardedResume.endOffsetMs` marks when the attempt finishes, even on failure.
+A checkpoint can omit the end offset or the whole interval. Missing timing cannot establish
+whether the command ran or succeeded. Compare this interval with probe times
+to locate overlapping failures. Timing alone cannot establish their cause.
+
+For each window, use `responseSummary` to report `successful` and `unsuccessful`
+observation counts, `unsuccessfulBeforeFirstSuccess`,
+`unsuccessfulAfterLastSuccess`, and `maxSuccessfulResponseIntervalMs`. The
+before and after counts are `null` when no observation succeeded. The maximum
+interval estimates the longest gap between consecutive successful responses, in
+whole milliseconds. It is `null` with fewer than two successes.
+
+For older schema v2 receipts without `responseSummary`, use `samples`. Count
+outcomes other than `ok` as unsuccessful and estimate each successful finish
+with `startOffsetMs + elapsedMs`.
+
 An interrupted receipt covers completed observations through `throughOffsetMs`.
 An open slot can still receive a probe. On settlement, `cadence.endOffsetMs`
-records when the helper observed the upgrade finish, including an exact slot
+records when the helper observed the action finish, including an exact slot
 boundary. The last in-flight request and the final read can finish later.
 The final file write and time after the last response are outside coverage.
 
@@ -169,6 +194,48 @@ compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
 
+## Qualify distinct controller and runtime images
+
+For this separate test, use the [ordinary TUI upgrade inputs](kubernetes.md#run-an-isolated-upgrade-qualification-lane).
+Unset the sign-in, controller return and online migration rehearsal flags. From
+the repository root, run the following in a shell you can reuse for cleanup.
+The last command checks that one fresh proof records both upgrades and the final
+handoff, in order.
+
+```sh
+run_dir="$(mktemp -d)" && (
+  node --env-file="$TEST_ENV_FILE" --input-type=module-typescript -e '
+    for (const role of ["CONTROLLER", "RUNTIME"]) {
+      const key = `OCC_TEST_PRODUCTION_UPGRADE_${role}_IMAGE`;
+      if (!process.env[key]?.trim()) throw new Error(`Missing ${key}`);
+    }' || exit
+  node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" || exit
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
+    --state "$run_dir/state.json" --results "$run_dir/results.json" || exit
+  set -- "$run_dir"/oce-production-tui-*/proof.json
+  test "$#" -eq 1 && test -f "$1" || exit 1
+  jq -es '
+    ["Independent controller upgrade retained Agent revisions",
+     "Independent runtime image upgrade and fresh model reply",
+     "Final production setup attachable"] as $required |
+    length == 1 and ([.[0].rows[].row | select(. as $r | $required | index($r))] == $required)
+  ' "$1"
+)
+```
+
+Require exit zero and `true`. [Retain the private observations](#retain-ordinary-upgrade-observations).
+After either outcome, save the image mapping and clean up if state exists.
+
+```sh
+if [ -n "$run_dir" ] && [ -f "$run_dir/state.json" ]; then
+  install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
+  node scripts/ci/cleanup.ts --state "$run_dir/state.json"
+fi
+```
+
+Keep the environment file and run directory private. Retain state if cleanup fails. Local
+imports can change digests. This lane cannot qualify registry deployment or live EKS.
+
 ## Retain ordinary upgrade observations
 
 The [ordinary TUI upgrade lane](kubernetes.md#run-an-isolated-upgrade-qualification-lane) samples authenticated `GET /installation` through the operator Pod’s
@@ -176,6 +243,8 @@ HTTPS proxy. The runtime window starts before the deliberate interruption and
 includes the checks while both controllers are stopped and the single resume.
 Its success flag covers that sequence. Later fleet checks and model replies have
 their own results. Both receipts use the sample outcomes and cadence described above.
+
+In the distinct-image production TUI upgrade test, the independent controller-only phase selects the primary running Agent using `--verify-agent` and `--verify-agent-namespace`. It compares `agent-continuity.json` and `agent-continuity-after.json` to verify that the Agent remains in the same namespace with the same identity and saved active revision. The test reports whether the Gateway Pod was replaced and records the Gateway container’s restart count (`null` if unknown) before and after the upgrade. A healthy Pod replacement is allowed. The two observations cannot establish uninterrupted service during the upgrade.
 
 The ordinary controller upgrade also writes `controller-api-endpoints.json`.
 This read-only observer surrounds the unchanged HTTP sampler. It binds the API
@@ -210,7 +279,7 @@ In the fresh `run_dir` from the lane command, retain each available receipt befo
 the test never reached has no receipt. An interrupted phase can leave a partial one.
 
 ```sh
-for receipt in forward-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
+for receipt in forward-api-availability.json return-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
   for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
     if [ -f "$source" ]; then
       install -m 600 "$source" "$run_dir/$receipt" || exit 1

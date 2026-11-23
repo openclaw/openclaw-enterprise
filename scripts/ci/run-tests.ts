@@ -64,6 +64,8 @@ import {
 } from "./runner-preparation.ts";
 import { jobCancelling, killDescendants, runNode, type NodeResult } from "./runner-process.ts";
 import {
+  nativeProofCaseFailed,
+  nativeProofFailureStage,
   readFileEvidence,
   validateExpectedTests,
   type FileEvidence,
@@ -100,6 +102,7 @@ function emptyFileResult(path: string, issues: RunnerIssue[]) {
     tests,
     issues,
     cleanup: null,
+    [nativeProofCaseFailed]: false,
   };
 }
 
@@ -549,6 +552,7 @@ async function runFile(
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
     ...(openShellReplacement ? { openShellReplacement } : {}),
+    [nativeProofCaseFailed]: evidence[nativeProofCaseFailed],
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -663,6 +667,18 @@ async function runLane(
           process.stderr.write(
             `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
           );
+          const proofStage =
+            result[nativeProofCaseFailed] &&
+            result.cleanup?.status === "passed" &&
+            result.issues.every(
+              ({ code, status }) => code === "expected-test-not-passed" && status === "failed",
+            ) &&
+            nativeProofFailureStage(result.tests);
+          if (proofStage) {
+            process.stderr.write(
+              `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${proofStage}.\n`,
+            );
+          }
         }
       }
       process.stderr.write(
