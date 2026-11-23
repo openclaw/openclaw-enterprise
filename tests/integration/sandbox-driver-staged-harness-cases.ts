@@ -9,10 +9,7 @@ import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
-import {
-  compileOpenShellCredentialPolicy,
-  openShellCredentialProviderName,
-} from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
+import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import {
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -141,25 +138,79 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
 }
 
-export async function verifyStagedGooglePolicy(): Promise<void> {
+export async function verifyStagedHarnessActivation(t: TestContext): Promise<void> {
+  const directory = await temporaryDirectory(t, "staged-harness-");
+  const marker = join(directory, "harness.json");
+  const fresh = "openshell:resolve:env:v2_OPENAI_API_KEY";
+  const freshPlugin = "openshell:resolve:env:v2_GOG_ACCESS_TOKEN";
   const gateway = workspaceGatewayClient();
   const configuration = openShellWorkspaceHarnessConfiguration();
-  const driver = openShellDriver(gateway, configuration);
+  const driver = openShellDriver(gateway, {
+    ...configuration,
+    policy: {
+      ...configuration.policy,
+      networkPolicies: [
+        ...configuration.policy.networkPolicies.map((rule) => ({
+          ...rule,
+          binaries: [{ path: "/usr/local/bin/node" }],
+          endpoints: [
+            { host: "api.openai.com", ports: [443, 9443] },
+            { host: "status.example.test", ports: [443] },
+          ],
+        })),
+        {
+          name: "docs-egress",
+          endpoints: [{ host: "docs.example.test", ports: [443] }],
+          binaries: [{ path: "/usr/bin/curl" }],
+        },
+      ],
+    },
+  });
   const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
   fixture.requirements.credentialAttachments = [];
-  const sourceRef = (id: string) => ({
-    kind: "credential_source" as const,
-    namespaceId: fixture.revision.namespaceId,
-    id,
+  fixture.requirements.environment.push({ name: "MARKER", value: marker });
+  // Keep the real native worker program in the rendered launch command. The controlled
+  // entrypoint records activation first, instead of requiring a complete OpenClaw runtime.
+  fixture.requirements.command = harnessRuntimeCommand(`(() => {
+require("node:fs").writeFileSync(process.env.MARKER, JSON.stringify({ credential: process.env.OPENAI_API_KEY, pluginCredential: process.env.GOG_ACCESS_TOKEN }));
+setInterval(() => {}, 1000);
+return;
+${NATIVE_WORKER_ENTRYPOINT}
+})();`);
+  const modelSourceId = "cs_fixture";
+  const base = completeSandboxRevision(fixture.revision, {
+    method: "credential_source",
+    sourceId: modelSourceId,
+    sourceType: "static",
+    tokenServiceInstanceId: "tokens",
   });
-  const model: DeploymentCredentialBinding = {
+  const grant = {
+    id: "model",
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [
+      { from: 443, to: 443 },
+      { from: 8443, to: 8443 },
+    ],
+  };
+  const request = {
+    binary: grant.binary,
+    host: grant.host,
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  };
+  const binding = {
     bindingRef: "model",
-    sourceRef: sourceRef("cs_model"),
-    consumer: { kind: "model", providerId: "openai" },
-    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+    sourceRef: {
+      kind: "credential_source" as const,
+      namespaceId: base.namespaceId,
+      id: modelSourceId,
+    },
+    consumer: { kind: "model" as const, providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
   };
   const google = managedGoogleInstall;
-  const googleSource = sourceRef("cs_google");
+  const googleSource = { ...binding.sourceRef, id: "cs_google" };
   const selection = {
     enabled: true,
     driverPolicy: {
@@ -187,7 +238,7 @@ export async function verifyStagedGooglePolicy(): Promise<void> {
   const discovery = description.networkRequirements
     .filter(({ id }) => !account.networkRequirementIds.includes(id))
     .map(({ match }) => match);
-  const plugin: DeploymentCredentialBinding = {
+  const pluginBinding: DeploymentCredentialBinding = {
     bindingRef: JSON.stringify(["plugin", google.id, "account", "default"]),
     sourceRef: account.sourceRef,
     consumer: {
@@ -198,36 +249,20 @@ export async function verifyStagedGooglePolicy(): Promise<void> {
     },
     projection: account.projection,
   };
-  const grant = {
-    id: "model",
-    binary: "/usr/local/bin/node",
-    host: "api.openai.com",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const modelRequest = {
-    binary: grant.binary,
-    host: grant.host,
-    ports: grant.ports,
-    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  const pluginSource = {
+    sourceId: pluginBinding.sourceRef.id,
+    sourceType: "oauth2-refresh-token" as const,
+    tokenServiceInstanceId: "tokens",
   };
   const revision: AgentRevision = {
-    ...completeSandboxRevision(fixture.revision, {
-      method: "credential_source",
-      sourceId: model.sourceRef.id,
-      sourceType: "static",
-      tokenServiceInstanceId: "tokens",
-    }),
+    ...base,
     plugins: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       plugins: { [google.id]: selection },
     },
     credentialSources: [
-      { sourceId: model.sourceRef.id, sourceType: "static", tokenServiceInstanceId: "tokens" },
-      {
-        sourceId: googleSource.id,
-        sourceType: "oauth2-refresh-token",
-        tokenServiceInstanceId: "tokens",
-      },
+      { sourceId: modelSourceId, sourceType: "static", tokenServiceInstanceId: "tokens" },
+      pluginSource,
     ],
     executionAdmission: { version: 8, mode: "standalone" },
     sandboxPolicy: driver.admitNetworkPolicy([grant], 1),
@@ -245,253 +280,13 @@ export async function verifyStagedGooglePolicy(): Promise<void> {
           ...discovery,
         ],
       },
-      bindings: [model, plugin],
-      injectionPolicies: [
-        { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
-        { bindingRef: plugin.bindingRef, allowedRequests: [googleRequest] },
-      ],
-    },
-  };
-  const context = { ...fixture.context, revision, requirements: fixture.requirements };
-  let creations = 0;
-  gateway.createSandbox = async (request) => {
-    creations++;
-    const sandbox = storedSandbox(request, {
-      id: "sandbox-fixture",
-      resourceVersion: "1",
-      serviceUrls: {},
-    });
-    gateway.sandboxes.set(sandbox.name, sandbox);
-    return sandbox;
-  };
-  await driver.ensureNamespace(context);
-  const target = await driver.provisionStagedHarness(context);
-  const sandbox = [...gateway.sandboxes.values()].find(({ id }) => id === target.sandboxId);
-  assert.ok(sandbox);
-  const spec = sandbox.spec!;
-  const baseline = spec.policy as { network_middlewares?: Record<string, unknown> };
-  assert.deepEqual(
-    baseline.network_middlewares ?? {},
-    {},
-    "the staged Sandbox has no legacy guard",
-  );
-
-  // The controlled Gateway reflects the Proxy attachments that precede policy apply.
-  const routes = compileOpenShellCredentialPolicy(revision.credentialDeployment!).credentialRoutes;
-  const googleRoute = routes.find(({ binding }) => binding.bindingRef === plugin.bindingRef);
-  assert.ok(googleRoute);
-  gateway.sandboxes.set(sandbox.name, {
-    ...sandbox,
-    resourceVersion: "2",
-    spec: { ...spec, providers: [...new Set(routes.map(({ provider }) => provider))] },
-  });
-  let updates = 0;
-  gateway.updatePolicy = async (request) => {
-    assert.equal(request.workspace, sandbox.workspace);
-    assert.equal(request.sandbox, sandbox.name);
-    const current = gateway.sandboxes.get(request.sandbox)!;
-    assert.equal(request.expectedResourceVersion, current.resourceVersion);
-    updates++;
-    gateway.sandboxes.set(request.sandbox, {
-      ...current,
-      resourceVersion: "3",
-      spec: { ...current.spec!, policy: request.policy },
-    });
-  };
-
-  // Recover after attachment but before policy apply. Compute uses the current
-  // observation to update the existing Sandbox before releasing the Harness.
-  const resumed = openShellDriver(gateway, configuration);
-  const snapshot = revision.sandboxPolicy!;
-  const observed = await resumed.observeNetworkPolicy(context, snapshot);
-  assert.equal(observed.resourceVersion, "2");
-  assert.equal(observed.state, "applied");
-  assert.equal(observed.matches, false, "the attached Sandbox still has the idle policy");
-  await resumed.applyNetworkPolicy(context, {
-    snapshot,
-    expectedProviderVersion: observed.resourceVersion,
-    operationId: revision.id,
-  });
-  const installed = await resumed.observeNetworkPolicy(context, snapshot);
-  assert.equal(installed.resourceVersion, "3");
-  assert.equal(installed.state, "applied");
-  assert.equal(installed.matches, true);
-  assert.equal(creations, 1);
-  assert.equal(updates, 1);
-  const recovered = gateway.sandboxes.get(sandbox.name)!;
-  assert.equal(recovered.id, target.sandboxId);
-  const applied = recovered.spec!.policy as {
-    network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
-  };
-  const endpoint = Object.values(applied.network_policies)
-    .flatMap(({ endpoints }) => endpoints)
-    .find(({ host, path }) => host === googleRequest.host && path === "/calendar/v3/colors");
-  assert.deepEqual(endpoint?.credential_binding, { provider: googleRoute.provider });
-  assert.deepEqual(endpoint?.rules, [{ allow: { method: "GET", path: "/calendar/v3/colors" } }]);
-}
-
-export async function verifyStagedHarnessActivation(t: TestContext): Promise<void> {
-  const directory = await temporaryDirectory(t, "staged-harness-");
-  const marker = join(directory, "harness.json");
-  const fresh = "openshell:resolve:env:v2_OPENAI_API_KEY";
-  const freshPlugin = "openshell:resolve:env:v2_PLUGIN_API_KEY";
-  const gateway = workspaceGatewayClient();
-  const configuration = openShellWorkspaceHarnessConfiguration();
-  const driver = openShellDriver(gateway, {
-    ...configuration,
-    policy: {
-      ...configuration.policy,
-      networkPolicies: [
-        ...configuration.policy.networkPolicies.map((rule) => ({
-          ...rule,
-          endpoints: [
-            { host: "api.openai.com", ports: [443, 9443] },
-            { host: "status.example.test", ports: [443] },
-          ],
-        })),
-        {
-          name: "docs-egress",
-          endpoints: [{ host: "docs.example.test", ports: [443] }],
-          binaries: [{ path: "/usr/bin/curl" }],
-        },
-      ],
-    },
-  });
-  const fixture = runtimeSandboxFixture(driver);
-  fixture.requirements.credentialAttachments = [];
-  fixture.requirements.environment.push(
-    { name: "CODEX_SESSIONS_DIR", value: "/home/node/.codex/sessions" },
-    { name: "MARKER", value: marker },
-  );
-  // Keep the real native worker program in the rendered launch command. The controlled
-  // entrypoint records activation first, instead of requiring a complete OpenClaw runtime.
-  fixture.requirements.command = harnessRuntimeCommand(`(() => {
-require("node:fs").writeFileSync(process.env.MARKER, JSON.stringify({ credential: process.env.OPENAI_API_KEY, pluginCredential: process.env.PLUGIN_API_KEY }));
-setInterval(() => {}, 1000);
-return;
-${NATIVE_WORKER_ENTRYPOINT}
-})();`);
-  const modelSourceId = "cs_fixture";
-  const base = completeSandboxRevision(fixture.revision, {
-    method: "credential_source",
-    sourceId: modelSourceId,
-    sourceType: "static",
-    tokenServiceInstanceId: "tokens",
-  });
-  const grant = {
-    id: "model",
-    binary: "/app/bin/model-client",
-    host: "api.openai.com",
-    ports: [
-      { from: 443, to: 443 },
-      { from: 8443, to: 8443 },
-    ],
-  };
-  const request = {
-    binary: grant.binary,
-    host: grant.host,
-    ports: [{ from: 443, to: 443 }],
-    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
-  };
-  const binding = {
-    bindingRef: "model",
-    sourceRef: {
-      kind: "credential_source" as const,
-      namespaceId: base.namespaceId,
-      id: modelSourceId,
-    },
-    consumer: { kind: "model" as const, providerId: "openai" },
-    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
-  };
-  // The Plugin has a separate Source and disjoint routes on the model's HTTPS destination.
-  const pluginRequest = {
-    binary: "/app/bin/plugin-client",
-    host: grant.host,
-    ports: [{ from: 443, to: 443 }],
-    requestPolicy: { type: "http" as const, method: "GET", path: "/plugins/accounts/**" },
-  };
-  const profileRequest = {
-    ...pluginRequest,
-    requestPolicy: { type: "http" as const, method: "POST", path: "/plugins/accounts/profile" },
-  };
-  const discoveryRequest = {
-    ...pluginRequest,
-    requestPolicy: { type: "http" as const, method: "GET", path: "/discovery" },
-  };
-  const pluginBinding = {
-    bindingRef: "plugin-account",
-    sourceRef: { ...binding.sourceRef, id: "cs_plugin" },
-    consumer: {
-      kind: "plugin" as const,
-      pluginId: "example",
-      requirement: "account",
-      connection: "default",
-    },
-    projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
-  };
-  const revision: AgentRevision = {
-    ...base,
-    credentialSources: [
-      { sourceId: modelSourceId, sourceType: "static", tokenServiceInstanceId: "tokens" },
-      {
-        sourceId: pluginBinding.sourceRef.id,
-        sourceType: "static",
-        tokenServiceInstanceId: "tokens",
-      },
-    ],
-    executionAdmission: { version: 8, mode: "standalone" },
-    sandboxPolicy: driver.admitNetworkPolicy([grant], 1),
-    credentialDeployment: {
-      driver: {
-        id: driver.id,
-        implementation: driver.implementation,
-        configurationId: "a".repeat(64),
-      },
-      proxyDriverId: driver.id,
-      networkAccessPolicy: {
-        allowed: [
-          { binary: grant.binary, host: grant.host, ports: grant.ports },
-          pluginRequest,
-          profileRequest,
-          discoveryRequest,
-        ],
-      },
       bindings: [binding, pluginBinding],
       injectionPolicies: [
         { bindingRef: binding.bindingRef, allowedRequests: [request] },
-        { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest, profileRequest] },
+        { bindingRef: pluginBinding.bindingRef, allowedRequests: [googleRequest] },
       ],
     },
   };
-  // Neither different methods nor executables can separate Source resolution on overlapping paths.
-  assert.throws(
-    () =>
-      compileOpenShellCredentialPolicy({
-        ...revision.credentialDeployment!,
-        networkAccessPolicy: {
-          allowed: [
-            ...revision.credentialDeployment!.networkAccessPolicy.allowed,
-            {
-              ...pluginRequest,
-              requestPolicy: { type: "http", method: "GET", path: "/v1/responses" },
-            },
-          ],
-        },
-        injectionPolicies: [
-          revision.credentialDeployment!.injectionPolicies[0]!,
-          {
-            bindingRef: pluginBinding.bindingRef,
-            allowedRequests: [
-              {
-                ...pluginRequest,
-                requestPolicy: { type: "http", method: "GET", path: "/v1/responses" },
-              },
-            ],
-          },
-        ],
-      }),
-    /staged native credential policy is unsupported/,
-  );
   const context = { ...fixture.context, revision, requirements: fixture.requirements };
   const setup = {
     id: "staged-initial-workspace",
@@ -570,6 +365,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
       id: "sandbox-fixture",
       resourceVersion: "1",
       phase: "SANDBOX_PHASE_PROVISIONING",
+      serviceUrls: {},
     });
     gateway.sandboxes.set(request.name, record);
     await waitFor(
@@ -605,7 +401,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
         ...request.environment,
         HOME: directory,
         OPENAI_API_KEY: fresh,
-        PLUGIN_API_KEY: freshPlugin,
+        GOG_ACCESS_TOKEN: freshPlugin,
       },
       input: request.stdin,
       stdio: ["pipe", "ignore", "ignore"],
@@ -632,57 +428,46 @@ ${NATIVE_WORKER_ENTRYPOINT}
     backend: backendFor(gateway),
     sandbox: driver,
   });
-  const otherPluginRequest = {
-    ...pluginRequest,
-    requestPolicy: { type: "http" as const, method: "GET", path: "/plugins/other" },
-  };
-  const sharedBinding = {
-    ...pluginBinding,
-    bindingRef: "plugin-other-account",
-    consumer: { ...pluginBinding.consumer, requirement: "other-account" },
-  };
   const broadPluginGrant = {
     id: "plugin-broad",
-    binary: pluginRequest.binary,
-    host: pluginRequest.host,
-    ports: pluginRequest.ports,
+    binary: googleRequest.binary,
+    host: googleRequest.host,
+    ports: googleRequest.ports,
   };
-  const sameTuplePluginRequest = { ...pluginRequest, binary: grant.binary };
-  const installedDefaultPluginRequest = { ...pluginRequest, host: "docs.example.test" };
-  const duplicateModelGrant = { ...broadPluginGrant, id: "model-duplicate", binary: grant.binary };
+  const sameTuplePluginRequest = { ...googleRequest, binary: grant.binary, host: grant.host };
+  const conflictingRequest = {
+    ...googleRequest,
+    host: grant.host,
+    requestPolicy: { type: "http" as const, method: "GET", path: "/v1/responses" },
+  };
+  const installedDefaultPluginRequest = { ...googleRequest, host: "docs.example.test" };
+  const duplicateModelGrant = { ...grant, id: "model-duplicate" };
   const unsafeRevisions: readonly { readonly reason: string; readonly revision: AgentRevision }[] =
     [
-      ...[
-        {
-          binding: sharedBinding,
-          request: otherPluginRequest,
-          reason: "two bindings cannot share one credential environment",
-        },
-        {
-          binding: {
-            ...sharedBinding,
-            projection: { ...sharedBinding.projection, environment: "PLUGIN_OTHER_API_KEY" },
-          },
-          request: pluginRequest,
-          reason: "distinct projections cannot share an overlapping credential path",
-        },
-      ].map(({ binding, request, reason }) => ({
-        reason,
+      {
+        reason: "two consumers cannot share one credential environment",
         revision: {
           ...revision,
           credentialDeployment: {
             ...revision.credentialDeployment!,
-            networkAccessPolicy: {
-              allowed: [...revision.credentialDeployment!.networkAccessPolicy.allowed, request],
-            },
-            bindings: [...revision.credentialDeployment!.bindings, binding],
+            bindings: [binding, { ...pluginBinding, projection: binding.projection }],
+          },
+        },
+      },
+      {
+        reason: "the native Source resolver cannot separate HTTP methods on the same path",
+        revision: {
+          ...revision,
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: { allowed: [request, conflictingRequest] },
             injectionPolicies: [
-              ...revision.credentialDeployment!.injectionPolicies,
-              { bindingRef: binding.bindingRef, allowedRequests: [request] },
+              revision.credentialDeployment!.injectionPolicies[0]!,
+              { bindingRef: pluginBinding.bindingRef, allowedRequests: [conflictingRequest] },
             ],
           },
         },
-      })),
+      },
       {
         reason: "a Plugin route cannot narrow installed network access for another executable",
         revision: {
@@ -786,17 +571,11 @@ ${NATIVE_WORKER_ENTRYPOINT}
     assert.deepEqual(events, [], "unsupported policy must not mutate the native runtime");
   }
   // The delivery pair qualifies policies independently of the launcher's Secret support.
-  const pluginOnlyRequests = [pluginRequest, profileRequest].map((request) => ({
-    ...request,
-    host: "plugin.example.test",
-  }));
   const pluginOnly = {
     ...revision.credentialDeployment!,
-    networkAccessPolicy: { allowed: pluginOnlyRequests },
+    networkAccessPolicy: { allowed: [googleRequest] },
     bindings: [pluginBinding],
-    injectionPolicies: [
-      { bindingRef: pluginBinding.bindingRef, allowedRequests: pluginOnlyRequests },
-    ],
+    injectionPolicies: [{ bindingRef: pluginBinding.bindingRef, allowedRequests: [googleRequest] }],
   };
   assert.equal(
     supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: pluginOnly }),
@@ -812,6 +591,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
           source: { kind: "secret", namespaceId: revision.namespaceId, id: "sec_model" },
           secretDriverId: "secrets",
         },
+        credentialSources: [pluginSource],
         credentialDeployment: pluginOnly,
       },
       requirements: {
@@ -842,6 +622,11 @@ ${NATIVE_WORKER_ENTRYPOINT}
   );
   const target = await driver.provisionStagedHarness(context);
   assert.equal(target.sandboxId, "sandbox-fixture");
+  // The next worker may find the idle Sandbox if creation succeeded before Compute
+  // recorded its identity. It must adopt that exact Sandbox before any Provider attachment.
+  const recovered = await driver.provisionStagedHarness(context);
+  assert.deepEqual(recovered, target);
+  assert.deepEqual(events, ["create-idle"]);
   assert.equal(
     [...gateway.sandboxes.values()][0]!.annotations["openclaw.dev/configuration-id"],
     revision.configurationId,
@@ -849,7 +634,9 @@ ${NATIVE_WORKER_ENTRYPOINT}
   );
   const sourcePolicy = [...gateway.sandboxes.values()][0]!.spec!.policy as {
     network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
+    network_middlewares?: Record<string, unknown>;
   };
+  assert.deepEqual(sourcePolicy.network_middlewares ?? {}, {});
   assert.equal(sourcePolicy.network_policies["oce-agent-model"], undefined);
   assert.deepEqual(
     sourcePolicy.network_policies["model-egress"]!.endpoints.map(({ host, ports }) => ({
@@ -950,38 +737,26 @@ ${NATIVE_WORKER_ENTRYPOINT}
     ({ endpoints }) => endpoints,
   );
   assert.deepEqual(
-    compiledEndpoints.find((endpoint) => endpoint.path === "/plugins/accounts/**"),
+    compiledEndpoints.find((endpoint) => endpoint.path === "/calendar/v3/colors"),
     {
-      host: grant.host,
+      host: googleRequest.host,
       ports: [443],
-      path: "/plugins/accounts/**",
+      path: "/calendar/v3/colors",
       protocol: "rest",
       enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-      rules: [
-        { allow: { method: "GET", path: "/plugins/accounts" } },
-        { allow: { method: "GET", path: "/plugins/accounts/**" } },
-      ],
+      rules: [{ allow: { method: "GET", path: "/calendar/v3/colors" } }],
       credential_binding: { provider: pluginProvider },
     },
   );
   assert.deepEqual(
-    compiledEndpoints.find((endpoint) => endpoint.path === "/plugins/accounts/profile")?.rules,
-    [
-      { allow: { method: "POST", path: "/plugins/accounts/profile" } },
-      { allow: { method: "GET", path: "/plugins/accounts" } },
-      { allow: { method: "GET", path: "/plugins/accounts/**" } },
-    ],
-    "the more specific endpoint must retain the ancestor subtree's permitted GET requests",
-  );
-  assert.deepEqual(
-    compiledEndpoints.find((endpoint) => endpoint.path === "/discovery"),
+    compiledEndpoints.find((endpoint) => endpoint.path === "/discovery/v1/apis/calendar/v3/rest"),
     {
-      host: grant.host,
+      host: "www.googleapis.com",
       ports: [443],
-      path: "/discovery",
+      path: "/discovery/v1/apis/calendar/v3/rest",
       protocol: "rest",
       enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-      rules: [{ allow: { method: "GET", path: "/discovery" } }],
+      rules: [{ allow: { method: "GET", path: "/discovery/v1/apis/calendar/v3/rest" } }],
     },
     "public discovery must not receive a Source binding",
   );
@@ -1001,7 +776,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
     },
     {
       bindingRef: pluginBinding.bindingRef,
-      environment: "PLUGIN_API_KEY",
+      environment: pluginBinding.projection.environment,
       placeholder: { kind: "runtime" as const },
     },
   ];
@@ -1032,9 +807,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
   const activePolicy = structuredClone(policyRevision);
   const retainedNetworks = Object.fromEntries(
     Object.entries(activePolicy.network_policies).filter(([, { endpoints }]) =>
-      endpoints.every(
-        ({ path }) => path !== "/plugins/accounts/**" && path !== "/plugins/accounts/profile",
-      ),
+      endpoints.every(({ path }) => path !== "/calendar/v3/colors"),
     ),
   );
   const activeVersion = policyVersion;

@@ -1,6 +1,5 @@
 import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
 import {
-  verifyStagedGooglePolicy,
   verifyStagedHarnessActivation,
   verifyStagedModelPolicyObservation,
 } from "./sandbox-driver-staged-harness-cases.ts";
@@ -55,12 +54,7 @@ test(
 );
 
 test(
-  "OpenShell resumes staged Google policy on an attached Sandbox without a legacy guard",
-  verifyStagedGooglePolicy,
-);
-
-test(
-  "OpenShell stages model and HTTP Plugin routes before activating with fresh Provider placeholders",
+  "OpenShell adopts an idle Sandbox and activates with model and Google Provider placeholders",
   verifyStagedHarnessActivation,
 );
 
