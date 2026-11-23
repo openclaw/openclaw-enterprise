@@ -11121,7 +11121,7 @@ Update a Source through its recorded owner
 
 **UpdateTokenServiceSourceBody**
 
-Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed. The github preset cannot be added or removed after registration; a github Source's repositories change only separately from material and while the Source is unbound.
+Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed. The github preset cannot be added or removed after registration. A github Source's config update must repeat repositories with the preset; its repositories change only separately from material and while the Source is unbound.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
