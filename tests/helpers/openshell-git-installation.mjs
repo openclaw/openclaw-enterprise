@@ -896,26 +896,29 @@ async function installOpenShellGit(
     { timeout: 190_000 },
   );
 
-  const callbacks = nativeGit
-    ? await installGitCallbackObserver({
-        kube,
-        apply,
-        configMap,
-        privateSecret,
-        metadata,
-        platform,
-        authorityHost,
-        clients,
-        controllerImage: values.images.controller,
-        ca: tls.ca,
-        certificate: tls.observer,
-        source: await readFile(
-          join(root, "tests/fixtures/openshell-git-callback-proxy.ts"),
-          "utf8",
-        ),
-        eventually,
-      })
-    : undefined;
+  const installCallbacks = async () =>
+    nativeGit
+      ? installGitCallbackObserver({
+          kube,
+          apply,
+          configMap,
+          privateSecret,
+          metadata,
+          platform,
+          authorityHost,
+          clients,
+          controllerImage: values.images.controller,
+          ca: tls.ca,
+          certificate: tls.observer,
+          source: await readFile(
+            join(root, "tests/fixtures/openshell-git-callback-proxy.ts"),
+            "utf8",
+          ),
+          eventually,
+        })
+      : undefined;
+  // The Source upgrade below rolls the Worker, so that path installs the observer after it.
+  let callbacks = repositorySource ? undefined : await installCallbacks();
 
   // Register after enabling repository.openShell: Git configuration must not divert model
   // registration into the Git-only Proxy. All installed Git journeys use this fresh source.
@@ -1016,6 +1019,7 @@ async function installOpenShellGit(
       { timeout: 190_000 },
     );
     repositorySourceState = { id: created.id, path: sourcePath, value, index, fake };
+    callbacks = await installCallbacks();
   }
 
   // Local Setup imported the stock platform image. Bind the selected containerd
