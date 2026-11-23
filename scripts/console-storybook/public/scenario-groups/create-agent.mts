@@ -288,6 +288,19 @@ function ordinarySaveRefused(permission: "Secret operate" | "Configuration read"
 }
 
 export const createAgentFormScenarios = {
+  createNetworkProxy: {
+    group: "Pages/Create Agent",
+    name: "Gateway channel proxy",
+    path: create,
+    actions: form,
+    description:
+      "The Agent form offers an optional Network proxy URL and existing Secret selector for Gateway channel traffic only.",
+    steps: [
+      "Enter an HTTP or HTTPS endpoint without URL credentials.",
+      "Select a proxy credential Secret when authentication is required, then create the Agent.",
+    ],
+    gap: "Simulated UI proof; provisioning, Secret authorization, and proxy routing are not exercised.",
+  },
   createNamespaceProvisioning: {
     group: "Pages/Create Agent",
     name: "Namespace still provisioning",

@@ -13,6 +13,7 @@
     "k3d": true,
     "requiresPreparedStateForFile": true,
     "selfProvisionedFiles": [
+      "tests/integration/channel-egress-envoy-authority-real.test.ts",
       "tests/integration/staged-signin-cleanup-real.test.ts",
       "tests/integration/production-upgrade-command.test.ts"
     ]
@@ -25,6 +26,13 @@
     "tests/integration/production-upgrade-command.test.ts"
   ],
   "files": [
+    {
+      "path": "tests/integration/channel-egress-envoy-authority-real.test.ts",
+      "env": { "OCC_TEST_CHANNEL_ENVOY_REAL": "1" },
+      "expectedTests": [
+        "pinned channel Envoy enforces CIDR authority membership and excluded final-IP literals before an upstream proxy"
+      ]
+    },
     {
       "path": "tests/integration/production-upgrade-command.test.ts"
     },

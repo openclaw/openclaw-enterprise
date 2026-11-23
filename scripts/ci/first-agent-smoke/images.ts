@@ -317,6 +317,7 @@ export async function buildImages(step: Step, { preparedGit = false } = {}) {
     createModelProviderFiles({
       directory: modelDirectory,
       caName: "oce-first-agent-smoke-ca",
+      slackStandIn: !preparedGit,
       run,
     }),
   );

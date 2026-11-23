@@ -27,6 +27,7 @@ const echoPattern =
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const workspaceHistory = process.env.PROBE_ENDPOINT_WORKSPACE_HISTORY === "1";
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const slackStandIn = process.env.PROBE_SLACK_STANDIN === "1";
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
     ? (await import("./skipper-prepared-compute-model.mjs")).createSkipperPreparedComputeEvents(
@@ -344,9 +345,60 @@ function turn(transport, model, request, respond, closed, caller) {
   }, delayMs);
 }
 
+function slackRequest(request, response) {
+  if (!slackStandIn || request.headers.host?.split(":")[0] !== "slack.com") {
+    return false;
+  }
+  const method = new URL(request.url, "https://slack.com").pathname.replace(/^\/api\//, "");
+  const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1] ?? "";
+  const suffix = token.endsWith("-b") ? "B" : "A";
+  let result;
+  if (method === "auth.test" && token.startsWith("xoxb-smoke-")) {
+    result = {
+      ok: true,
+      team: "Smoke",
+      team_id: "TSMOKE",
+      user: `smoke_${suffix}`,
+      user_id: `USMOKE${suffix}`,
+      bot_id: `BSMOKE${suffix}`,
+      url: "https://smoke.slack.com/",
+      is_enterprise_install: false,
+    };
+  } else if (method === "apps.connections.open" && token.startsWith("xapp-1-smoke-")) {
+    result = { ok: true, url: `wss://wss-primary.slack.com/socket/${suffix}` };
+  } else if (method === "users.list" && token.startsWith("xoxb-smoke-")) {
+    result = {
+      ok: true,
+      members: [{ id: "USMOKEA", name: "smoke_a" }],
+      response_metadata: { next_cursor: "" },
+    };
+  } else if (method === "conversations.list" && token.startsWith("xoxb-smoke-")) {
+    result = {
+      ok: true,
+      channels: [{ id: "CSMOKE", name: "smoke" }],
+      response_metadata: { next_cursor: "" },
+    };
+  } else {
+    result = { ok: false, error: "invalid_auth" };
+  }
+  emit({
+    event: "slack-api",
+    method,
+    ok: result.ok,
+    caller: suffix,
+    peer: request.socket.remoteAddress,
+  });
+  response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(result));
+  return true;
+}
+
 const server = createServer(
   { key: readFileSync("/fixture/key.pem"), cert: readFileSync("/fixture/cert.pem") },
   (request, response) => {
+    if (slackRequest(request, response)) {
+      return;
+    }
     const caller = callerLabel(request);
     if (caller === null) {
       response.writeHead(401, { "content-type": "application/json" });
@@ -417,6 +469,25 @@ server.on("tlsClientError", (error) => emit({ event: "tls-error", code: error.co
 
 const sockets = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
+  if (
+    slackStandIn &&
+    request.headers.host?.split(":")[0] === "wss-primary.slack.com" &&
+    request.url?.startsWith("/socket/")
+  ) {
+    sockets.handleUpgrade(request, socket, head, (webSocket) => {
+      const caller = request.url.endsWith("/B") ? "B" : "A";
+      emit({ event: "slack-socket", caller });
+      webSocket.send(
+        JSON.stringify({
+          type: "hello",
+          num_connections: 1,
+          connection_info: { app_id: `ASMOKE${caller}` },
+          debug_info: { host: "smoke" },
+        }),
+      );
+    });
+    return;
+  }
   const caller = callerLabel(request);
   if (caller === null || mode === "reject") {
     emit({ event: "request", transport: "websocket", turn: true });
