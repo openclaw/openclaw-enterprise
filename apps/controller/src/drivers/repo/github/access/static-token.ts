@@ -1,34 +1,6 @@
-import type {
-  GitHubStaticTokenOptions,
-  GitHubStaticTokenOwner,
-  GitHubTokenClass,
-} from "./types.ts";
+import { classifyGitHubToken } from "@openclaw-enterprise/contracts";
 
-// Longest prefix first: "github_pat_" must not be read as an unknown "gh" token.
-const prefixes: readonly (readonly [string, GitHubTokenClass])[] = [
-  ["github_pat_", "fine-grained"],
-  ["ghp_", "classic"],
-  ["gho_", "oauth"],
-  ["ghu_", "app-user"],
-  ["ghs_", "app-installation"],
-];
-
-function startsWith(bytes: Uint8Array, prefix: string): boolean {
-  if (bytes.length <= prefix.length) {
-    return false;
-  }
-  for (let index = 0; index < prefix.length; index++) {
-    if (bytes[index] !== prefix.charCodeAt(index)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Reads only the documented prefix; no other byte is returned or retained. */
-export function classifyGitHubToken(bytes: Uint8Array): GitHubTokenClass {
-  return prefixes.find(([prefix]) => startsWith(bytes, prefix))?.[1] ?? "unknown";
-}
+import type { GitHubStaticTokenOptions, GitHubStaticTokenOwner } from "./types.ts";
 
 /** The process owns this token; finalizing a session never closes it. */
 export function createGitHubStaticTokenOwner({

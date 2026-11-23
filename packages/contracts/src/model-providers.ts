@@ -6,15 +6,24 @@ import {
 
 export type InferenceProtocol = "openai-responses" | "openai-completions";
 
-const sourceProviderPresetIds = ["openai"] as const;
+const modelSourcePresetIds = ["openai"] as const;
+// "github" holds a repository token: a permitted use, but never a model credential.
+const sourceProviderPresetIds = [...modelSourcePresetIds, "github"] as const;
 
 /** An approved provider preset that OCC can associate with a credential source. */
 export type SourceProviderPresetId = (typeof sourceProviderPresetIds)[number];
+
+/** A preset whose Source may authenticate a model provider. */
+export type ModelSourcePresetId = (typeof modelSourcePresetIds)[number];
 
 export const SOURCE_PROVIDER_PRESET_CONFIG_KEY = "provider_preset";
 
 export function isSourceProviderPresetId(value: unknown): value is SourceProviderPresetId {
   return typeof value === "string" && sourceProviderPresetIds.some((id) => id === value);
+}
+
+export function isModelSourcePresetId(value: unknown): value is ModelSourcePresetId {
+  return typeof value === "string" && modelSourcePresetIds.some((id) => id === value);
 }
 
 export interface ModelProviderModel {

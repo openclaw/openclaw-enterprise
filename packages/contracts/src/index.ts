@@ -445,15 +445,26 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
+  ModelSourcePresetId,
   SourceProviderPresetId,
 } from "./model-providers.ts";
 export {
   inferenceKeyDestination,
+  isModelSourcePresetId,
   isSourceProviderPresetId,
   modelProviderRequestApproved,
   normalizeInferenceBaseUrl,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "./model-providers.ts";
+export type { GitHubTokenClass } from "./repository-token-source.ts";
+export {
+  canonicalSourceRepositoryCeiling,
+  classifyGitHubToken,
+  GITHUB_SOURCE_PRESET_ID,
+  SOURCE_REPOSITORIES_CONFIG_KEY,
+  sourceRepositoryCeiling,
+  SourceRepositoryCeilingError,
+} from "./repository-token-source.ts";
 export interface Installation {
   readonly id: string;
   readonly name: string;

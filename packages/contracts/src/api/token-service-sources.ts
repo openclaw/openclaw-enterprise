@@ -13,7 +13,7 @@ const material = Type.Record(Type.String(), SecretValue, {
 const managedConfig = {
   ...CredentialSourceConfig,
   description:
-    "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+    "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries.",
 };
 
 export const RegisterTokenServiceSourceBody = Type.Object(
@@ -38,7 +38,7 @@ export const UpdateTokenServiceSourceBody = Type.Object(
     minProperties: 1,
     additionalProperties: false,
     description:
-      "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+      "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed. The github preset cannot be added or removed after registration; a github Source's repositories change only separately from material and while the Source is unbound.",
   },
 );
 

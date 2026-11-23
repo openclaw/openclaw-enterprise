@@ -17,7 +17,7 @@ import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   inferenceKeyDestination,
-  isSourceProviderPresetId,
+  isModelSourcePresetId,
   modelProviderRequestApproved,
   sandboxNetworkGrantsWithinCeiling,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
@@ -252,7 +252,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
     const presetId = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
-    if (!isSourceProviderPresetId(presetId)) {
+    if (!isModelSourcePresetId(presetId)) {
       throw new ResourceStateConflictError(
         "The Harness credential source has no permitted model provider preset.",
       );

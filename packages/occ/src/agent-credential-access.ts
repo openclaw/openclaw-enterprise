@@ -2,7 +2,9 @@ import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
+  isModelSourcePresetId,
   MAX_AGENT_CREDENTIAL_SOURCES,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   isSecretHarnessAuth,
   type AccessBinding,
   type Agent,
@@ -177,6 +179,12 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
+        const preset = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+        if (preset !== undefined && !isModelSourcePresetId(preset)) {
+          throw new ResourceStateConflictError(
+            "This credential source holds a repository token, not a model credential; an Agent cannot list it or use it for its Harness.",
+          );
+        }
         if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
           throw new ResourceStateConflictError(
             "This TokenService source must authenticate the selected Agent Harness.",

@@ -1539,9 +1539,9 @@ export class CredentialGatewayNotConfiguredError extends Error {
 export class CredentialSourceConfigError extends Error {
   readonly field: string;
   /** The request member that holds `field`. */
-  readonly group: "config" | "secrets";
+  readonly group: "config" | "secrets" | "secret";
 
-  constructor(field: string, message: string, group: "config" | "secrets" = "config") {
+  constructor(field: string, message: string, group: "config" | "secrets" | "secret" = "config") {
     super(message);
     this.name = "CredentialSourceConfigError";
     this.field = field;

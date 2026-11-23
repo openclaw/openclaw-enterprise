@@ -5,7 +5,7 @@ import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
-  isSourceProviderPresetId,
+  isModelSourcePresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -6216,7 +6216,7 @@ export class ControllerWorker {
         source.tokenServiceInstanceId !== instanceId ||
         source.type !== "static" ||
         binding.consumer.kind !== "model" ||
-        !isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
+        !isModelSourcePresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
         source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");

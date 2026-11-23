@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { generateKeyPairSync } from "node:crypto";
-import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
+import {
+  classifyGitHubToken,
+  type GitHubTokenClass,
+  type RepositoryCredentialGrantIdentity,
+} from "@openclaw-enterprise/contracts";
 import type {
   AttemptContext,
   Clock,
@@ -12,17 +16,13 @@ import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/ac
 import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
 import { admitSession } from "../../apps/controller/src/drivers/repo/access/sessions.ts";
 import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/access/config.ts";
-import {
-  classifyGitHubToken,
-  createGitHubStaticTokenOwner,
-} from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
+import { createGitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
 import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/access/factory.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import type {
   GitHubDriverFactory,
   GitHubProfile,
   GitHubStaticTokenOwner,
-  GitHubTokenClass,
   GitHubTokenConfiguration,
 } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";

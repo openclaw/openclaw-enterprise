@@ -984,7 +984,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(
       400,
       "INVALID_REQUEST",
-      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+      "Static sources accept only the optional provider_preset and, for github, repositories configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
     );
   }
   if (

@@ -1,6 +1,7 @@
 import {
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  SOURCE_REPOSITORIES_CONFIG_KEY,
   type AuditEvent,
   type CredentialSourceMetadata,
   type CredentialSourceStatus,
@@ -16,14 +17,23 @@ import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 function managedConfig(config: Readonly<Record<string, string>> | undefined): {
   readonly settings: Readonly<Record<string, string>>;
   readonly providerPreset?: SourceProviderPresetId;
+  readonly repositoryCeiling?: string;
 } {
-  const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: preset, ...settings } = config ?? {};
+  const {
+    [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: preset,
+    [SOURCE_REPOSITORIES_CONFIG_KEY]: repositoryCeiling,
+    ...settings
+  } = config ?? {};
   if (preset !== undefined && !isSourceProviderPresetId(preset)) {
     throw failure(400, "INVALID_REQUEST", "Choose an approved credential source provider preset.", [
       { path: `/config/${SOURCE_PROVIDER_PRESET_CONFIG_KEY}`, code: "INVALID_VALUE" },
     ]);
   }
-  return { settings, ...(preset === undefined ? {} : { providerPreset: preset }) };
+  return {
+    settings,
+    ...(preset === undefined ? {} : { providerPreset: preset }),
+    ...(repositoryCeiling === undefined ? {} : { repositoryCeiling }),
+  };
 }
 
 function phaseAudit(event: AuditEvent, phase: string | undefined): AuditEvent {
@@ -80,8 +90,11 @@ export const credentialSourceHandlers = {
   }) {
     let created: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>;
     if (body && "secret" in body) {
-      const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } =
-        (body.config as Record<string, string> | undefined) ?? {};
+      const {
+        [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset,
+        [SOURCE_REPOSITORIES_CONFIG_KEY]: repositoryCeiling,
+        ...settings
+      } = (body.config as Record<string, string> | undefined) ?? {};
       created = await controller.createManagedCredentialSource(
         context.actorId,
         namespaceId,
@@ -90,6 +103,7 @@ export const credentialSourceHandlers = {
           lifecycleConfig: { type: "static", settings },
           secret: body.secret as Record<string, string>,
           ...(providerPreset === undefined ? {} : { providerPreset }),
+          ...(repositoryCeiling === undefined ? {} : { repositoryCeiling }),
         },
         (resource, phase) => phaseAudit(mutationEvent(resource), phase),
       );
@@ -167,7 +181,12 @@ export const credentialSourceHandlers = {
       const secret = body?.secret as Record<string, string> | undefined;
       const parsed = managedConfig(config);
       const presetUpdate =
-        config === undefined ? {} : { providerPreset: parsed.providerPreset ?? null };
+        config === undefined
+          ? {}
+          : {
+              providerPreset: parsed.providerPreset ?? null,
+              repositoryCeiling: parsed.repositoryCeiling ?? null,
+            };
       const lifecycleUpdate =
         config !== undefined && Object.keys(parsed.settings).length > 0
           ? { lifecycleConfig: { type: identity.type, settings: parsed.settings } }
@@ -178,7 +197,10 @@ export const credentialSourceHandlers = {
       } else if (lifecycleUpdate.lifecycleConfig !== undefined) {
         input = { lifecycleConfig: lifecycleUpdate.lifecycleConfig, ...presetUpdate };
       } else {
-        input = { providerPreset: parsed.providerPreset ?? null };
+        input = {
+          providerPreset: parsed.providerPreset ?? null,
+          repositoryCeiling: parsed.repositoryCeiling ?? null,
+        };
       }
       const updated = await controller.updateManagedCredentialSource(
         context.actorId,
