@@ -1,8 +1,6 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
-import { createRepositorySourceCustody } from "./backends/repository-credentials/source-custody.ts";
-import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
@@ -19,6 +17,7 @@ import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
 import { closeWorkerComposition } from "./worker/shutdown.ts";
+import { startWorkerRepositorySourceCustody } from "./worker/repository-source-custody.ts";
 import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -209,39 +208,23 @@ try {
   }
   if (repositoryOwner && drivers.preparedRepositoryGit) {
     const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
-    // Registrations that name a TokenService Source are lent from its custody. The row hold
-    // spans a Provider write, so it has its own small pool beside the store's.
-    const tokenService = drivers.installation.drivers.token_service;
-    const secrets = drivers.secretDriver.installationSecrets;
-    if (tokenService && secrets) {
-      sourceLockPool = await createPostgresPool(databaseUrl, {
-        ...databasePoolOptions,
-        max: 4,
-      });
-    }
-    const platformState = sourceLockPool && new PostgresPlatformState(pool);
+    // Registrations that name a TokenService Source are lent from its custody.
+    const source = await startWorkerRepositorySourceCustody({
+      registry: drivers.repositoryRegistry,
+      tokenService: drivers.installation.drivers.token_service,
+      secrets: drivers.secretDriver.installationSecrets,
+      createLockPool: () => createPostgresPool(databaseUrl, { ...databasePoolOptions, max: 4 }),
+      createState: () => new PostgresPlatformState(pool),
+      createIAMDriver: (state) => drivers.createIAMDriver(state),
+    });
+    sourceLockPool = source?.lockPool;
     preparedRepositoryGit = await startPreparedGitHubGitOwner({
       ...repositoryOwner,
       ...owner,
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
       registry: drivers.repositoryRegistry,
-      ...(platformState && {
-        repositorySourceCustody: createRepositorySourceCustody({
-          lockPool: sourceLockPool,
-          state: platformState,
-          tokenServiceDriverId: tokenService.id,
-          tokenService: ({ installationId, tokenServiceInstanceId }) =>
-            new OCCTokenServiceDriver(
-              tokenService.id,
-              installationId,
-              secrets,
-              tokenServiceInstanceId,
-              platformState,
-            ),
-          iam: drivers.createIAMDriver(platformState),
-        }),
-      }),
+      ...(source && { repositorySourceCustody: source.custody }),
       ...repositoryGitAuthority(drivers),
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),

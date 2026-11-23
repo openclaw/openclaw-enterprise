@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { createRepositorySourceCustody } from "../../apps/controller/src/backends/repository-credentials/source-custody.ts";
+import { startWorkerRepositorySourceCustody } from "../../apps/controller/src/worker/repository-source-custody.ts";
+
+type WorkerSourceOptions = Parameters<typeof startWorkerRepositorySourceCustody>[0];
 
 // The PostgreSQL behaviour of the hold (the row lock against replacement and retirement, the
 // server ending an idle hold) is in tests/integration/postgres-repository-source-custody.test.ts.
@@ -202,4 +205,60 @@ test("a Source lock reports an ended lock wait apart from other failures", async
     assert.equal(client.queries.at(-1)?.text, "ROLLBACK");
     assert.equal(client.released, true);
   }
+});
+
+test("the Worker builds Source custody only when a registration names a Source", async () => {
+  const registration = (credentialSource?: string) => ({
+    repositoryRef: "fixture",
+    repositoryId: "73",
+    repository: "fixture/a",
+    namespaces: [
+      {
+        namespaceId: "team",
+        profiles: ["github-repository" as const],
+        nativeGit: "v1" as const,
+        ...(credentialSource !== undefined && { credentialSource }),
+      },
+    ],
+  });
+  const registry = (credentialSource?: string) =>
+    ({
+      version: 1,
+      backendId: "github",
+      providerInstanceId: "github-instance",
+      appId: "1",
+      githubInstallationId: "2",
+      maximumDurationSeconds: 3600,
+      repositories: [registration(credentialSource)],
+    }) as unknown as WorkerSourceOptions["registry"];
+  const built: string[] = [];
+  const pool = { end: async () => {} } as unknown as Awaited<
+    ReturnType<WorkerSourceOptions["createLockPool"]>
+  >;
+  const start = (selected: Partial<WorkerSourceOptions>) =>
+    startWorkerRepositorySourceCustody({
+      registry: registry(),
+      tokenService: { id: "occ" } as WorkerSourceOptions["tokenService"],
+      secrets: {} as WorkerSourceOptions["secrets"],
+      createLockPool: async () => (built.push("lock pool"), pool),
+      createState: () =>
+        (built.push("state"), {}) as ReturnType<WorkerSourceOptions["createState"]>,
+      createIAMDriver: () => (
+        built.push("IAM driver"),
+        {} as ReturnType<WorkerSourceOptions["createIAMDriver"]>
+      ),
+      ...selected,
+    });
+  // TokenService and installation Secrets selected, no registration names a Source.
+  assert.equal(await start({}), undefined);
+  assert.equal(await start({ registry: undefined }), undefined);
+  assert.deepEqual(built, [], "an App-only install constructs no Source machinery");
+  // A Source without TokenService or installation Secrets has no custody to read.
+  assert.equal(await start({ registry: registry("cs_one"), tokenService: undefined }), undefined);
+  assert.equal(await start({ registry: registry("cs_one"), secrets: undefined }), undefined);
+  assert.deepEqual(built, []);
+  const source = await start({ registry: registry("cs_one") });
+  assert.ok(source?.custody);
+  assert.equal(source.lockPool, pool);
+  assert.deepEqual(built, ["state", "IAM driver", "lock pool"]);
 });
