@@ -2847,6 +2847,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-radius: var(--radius);
   background: var(--bg);
 }
+.repository-selection > .field[hidden] {
+  display: none;
+}
 .repository-selection h2 {
   margin-bottom: var(--space-2);
 }

@@ -964,12 +964,25 @@ export async function deploymentSandboxPolicy(
   principalId: string,
   namespaceId: string,
   agentId: string,
+  expectedRepositoryPolicyVersion?: number,
 ): Promise<Readonly<SandboxPolicy> | undefined> {
   const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-  if (policy?.repositoryNetworkPolicy !== undefined) {
+  if (
+    policy?.repositoryNetworkPolicy !== undefined ||
+    expectedRepositoryPolicyVersion !== undefined
+  ) {
     const target = { kind: "agent", id: agentId, namespaceId } as const;
     const resource = policyResource(namespaceId, agentId);
     await authority.authorize(principalId, "read", resource);
+    if (
+      expectedRepositoryPolicyVersion !== undefined &&
+      (policy?.repositoryNetworkPolicy === undefined ||
+        policy.version !== expectedRepositoryPolicyVersion)
+    ) {
+      throw new ResourceStateConflictError(
+        "The saved GitHub access changed. Review the current repository policy before deploying.",
+      );
+    }
     await authority.authorize(principalId, "manage_policy", target);
     await authority.authorize(principalId, "update", resource);
   }

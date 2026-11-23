@@ -158,4 +158,8 @@ policy editing off. This requires Installation and Agent administration, permiss
 to manage, read and update policy, and a supported Dedicated runtime and model
 Credential Source. If saving is refused, the Configuration and model credentials
 can remain saved. If the Console cannot confirm the grants, do not deploy.
-Review the saved policy, then choose **Deploy new version** on the draft.
+Select **Recheck saved GitHub access** to read the same draft again.
+
+Check the grants shown beside **Deploy new version**. If the policy changes
+before deployment, the Console stops the request. Select **Review saved GitHub
+access** and check the current grants before you deploy again.

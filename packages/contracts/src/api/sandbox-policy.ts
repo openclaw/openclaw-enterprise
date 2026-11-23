@@ -1,6 +1,13 @@
 import { DriverConfigurationDescriptorSchema } from "./driver-configurations.ts";
 import { Type } from "typebox";
-import { AgentId, NamespaceId, RevisionId, Meta, RepositoryNetworkGrantSchema } from "./common.ts";
+import {
+  AgentId,
+  NamespaceId,
+  RevisionId,
+  Meta,
+  SandboxPolicyVersion,
+  RepositoryNetworkGrantSchema,
+} from "./common.ts";
 import { maxRepositoryNetworkGrants } from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
 
@@ -21,7 +28,6 @@ export const SandboxPolicyRevisionParams = Type.Object(
   { additionalProperties: false },
 );
 
-export const SandboxPolicyVersion = Type.Integer({ minimum: 1, maximum: 2147483647 });
 export const SandboxPolicyApplicationSchema = Type.Object(
   {
     id: Type.String({ format: "uuid" }),

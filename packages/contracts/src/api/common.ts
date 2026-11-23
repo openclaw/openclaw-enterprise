@@ -71,8 +71,18 @@ export const RevisionHarnessSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+export const SandboxPolicyVersion = Type.Integer({ minimum: 1, maximum: 2147483647 });
 export const AgentDeploymentBody = Type.Object(
-  { harnessOverrides: Type.Optional(HarnessSettings) },
+  {
+    harnessOverrides: Type.Optional(HarnessSettings),
+    expectedRepositoryPolicyVersion: Type.Optional(
+      Type.Integer({
+        ...SandboxPolicyVersion,
+        description:
+          "Requires SandboxPolicy read. Deployment returns HTTP 409 if no repository policy is saved or the networking policy version differs from the one reviewed.",
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 export const AgentStopQuery = Type.Object(
@@ -84,7 +94,7 @@ export const FirstDeploymentIntent = Type.Object(
     key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
     expectedConfigurationId: ConfigurationId,
     expectedGeneration: ConfigurationGeneration,
-    ...AgentDeploymentBody.properties,
+    harnessOverrides: AgentDeploymentBody.properties.harnessOverrides,
   },
   { additionalProperties: false },
 );

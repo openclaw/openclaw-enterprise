@@ -653,12 +653,14 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     async deployAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
       try {
+        const body = request.body as DeployAgentInput | undefined;
         const admitted = await controller.deployAgentWithAuthorization(
           context.actorId,
           {
             namespaceId,
             agentId,
-            harnessOverrides: (request.body as DeployAgentInput | undefined)?.harnessOverrides,
+            harnessOverrides: body?.harnessOverrides,
+            expectedRepositoryPolicyVersion: body?.expectedRepositoryPolicyVersion,
           },
           options.resolveHarness,
           (admitted) =>

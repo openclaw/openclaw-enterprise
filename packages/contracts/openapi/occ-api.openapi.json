@@ -23848,6 +23848,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "expectedRepositoryPolicyVersion": {
+                    "description": "Requires SandboxPolicy read. Deployment returns HTTP 409 if no repository policy is saved or the networking policy version differs from the one reviewed.",
+                    "maximum": 2147483647,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "harnessOverrides": {
                     "additionalProperties": {},
                     "description": "Nonsecret settings owned and validated by the selected Compute Driver.",

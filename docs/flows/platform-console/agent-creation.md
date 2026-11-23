@@ -149,7 +149,10 @@ on a provisionable runtime. It sends explicit finite bindings and the reviewed
 `repositoryNetworkPolicy` to `POST /agents`. The handler creates the Agent, enables
 policy editing, reads and saves the policy, restores editing to off, and audits in
 one Read Committed transaction. Any refusal rolls back the Agent. Console checks
-the saved grants before credential access and opens the draft for explicit deployment.
+the saved grants and networking policy version before granting credential access.
+The draft sends `expectedRepositoryPolicyVersion` to `POST /deploy`. Under the
+Namespace lock, admission checks policy read permission and refuses a missing
+repository policy or a different version with HTTP 409 before creating a revision.
 
 Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after

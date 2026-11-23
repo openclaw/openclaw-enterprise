@@ -49,7 +49,7 @@ import {
   CONFIGURATION_CREATE_REFUSED,
   notIncluded,
 } from "./access-reasons.mjs";
-import { reviewRepositoryDraft } from "./detail.mjs";
+import { repositoryReviewFrom, reviewRepositoryDraft } from "./detail.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -3495,7 +3495,9 @@ function renderAgentForm(
     retryPermissionCheck.disabled = pending || permissionsReading;
     submit.hidden = credentialGrantRefused;
     submit.textContent = savedAgent
-      ? "Retry credential access"
+      ? policyUnconfirmed
+        ? "Recheck saved GitHub access"
+        : "Retry credential access"
       : repositories.scoped()
         ? "Save Agent draft"
         : "Create Agent";
@@ -3545,7 +3547,11 @@ function renderAgentForm(
           .filter(Boolean)
           .join(" "),
         savedAgent && !policyUnconfirmed
-          ? link(" Open saved Agent", `agents/${savedAgent.id}?revision=draft`, context)
+          ? link(
+              " Open saved Agent",
+              `agents/${savedAgent.id}?revision=draft${repositories.scoped() ? "&reviewRepositories=1" : ""}`,
+              context,
+            )
           : null,
       ].filter((node) => node !== null),
     );
@@ -4391,6 +4397,7 @@ function renderAgentForm(
       }
       // Grant retries reread exact bindings, so uncertain model or channel grants never recreate the Agent.
       mutationStarted = false;
+      let repositoryReview: ReturnType<typeof repositoryReviewFrom>;
       if (repositoryNetworkPolicy !== undefined) {
         policyUnconfirmed = true;
         showSavedStatus();
@@ -4408,14 +4415,10 @@ function renderAgentForm(
         if (!context.isCurrent()) {
           return;
         }
-        const policy = responseFields(view.policy);
-        if (
-          policy.agentId !== savedAgent.id ||
-          policy.namespaceId !== namespaceId ||
-          !sameValue(policy.repositoryNetworkPolicy, repositoryNetworkPolicy)
-        ) {
+        repositoryReview = repositoryReviewFrom(view, namespaceId, savedAgent.id);
+        if (!repositoryReview || !sameValue(repositoryReview.grants, repositoryNetworkPolicy)) {
           feedback.textContent =
-            "The Agent draft was saved, but its GitHub access could not be confirmed. Do not deploy it. Select Retry credential access to check the saved policy again.";
+            "The Agent draft was saved, but its GitHub access could not be confirmed. Do not deploy it. Select Recheck saved GitHub access.";
           focusFeedbackLine(feedback);
           return;
         }
@@ -4474,9 +4477,9 @@ function renderAgentForm(
       }
       if (context.isCurrent()) {
         context.navigate(
-          repositoryNetworkPolicy === undefined
-            ? `agents/${savedAgent.id}?revision=draft`
-            : reviewRepositoryDraft(namespaceId, savedAgent.id, repositoryNetworkPolicy),
+          repositoryReview
+            ? reviewRepositoryDraft(namespaceId, savedAgent.id, repositoryReview)
+            : `agents/${savedAgent.id}?revision=draft`,
         );
       }
     } catch (cause) {

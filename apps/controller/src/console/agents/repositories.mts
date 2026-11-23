@@ -270,18 +270,14 @@ export function createRepositoryFields(
   retry.hidden = true;
   const mode = element(
     "select",
-    { id: "repository-mode" },
+    { id: "repository-mode", "aria-describedby": "repository-mode-help" },
     element("option", { value: "profiles" }, "Access profiles"),
     element("option", { value: "scoped" }, "GitHub network policy"),
   );
   const scoped = () => mode.value !== "profiles";
   const grants = new Map(initial.scopedGrants);
   mode.value = initial.scopedGrants ? "scoped" : "profiles";
-  const scopeHint = element(
-    "p",
-    { className: "hint", id: "repository-mode-help" },
-    "Read allows clone and fetch. Write adds push. API access depends on Namespace permissions. Save the draft to review your choices before deployment.",
-  );
+  const scopeHint = element("p", { className: "hint", id: "repository-mode-help" });
   const modeField = element(
     "div",
     { className: "field" },
@@ -540,7 +536,9 @@ export function createRepositoryFields(
           (entry) => entry.githubRepository && entry.allowedProfiles.includes("github-repository"),
         ));
     mode.disabled = state.disabled;
-    scopeHint.hidden = !scoped();
+    scopeHint.textContent = scoped()
+      ? "Read allows clone and fetch. Write adds push. API access depends on Namespace permissions. Save the draft to review your choices before deployment."
+      : "Choose GitHub network policy to set Read or Write for each repository.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
       help.hidden = scoped();
