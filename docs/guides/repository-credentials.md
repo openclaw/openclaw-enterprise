@@ -27,7 +27,7 @@ configuration and TLS Secrets. The [registry reference](../reference/repository-
 defines repository and Namespace policy. For OpenShell native Git, a registration
 can instead name a `github` Source holding a fine-grained token
 ([repository token Source](../reference/repository-credentials/access-levels.md#repository-token-source));
-the Worker configuration still requires the App key fields. Set `sessionDurationSeconds: 86400` for
+without a GitHub App, leave `repositoryCredentials.appKeySecretName` empty. Set `sessionDurationSeconds: 86400` for
 a 24-hour version; keep it within the registry's maximum.
 
 The chart's `repositoryCredentials.enabled` defaults to `false`. Follow the

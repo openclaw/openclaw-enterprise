@@ -172,8 +172,12 @@ Registry validation refuses:
 - without the App's `appId` and `githubInstallationId`: a registration without
   `credentialSource`, standing approvals, and `installationAccess`.
 
-An Installation without a GitHub App must still supply the App key fields of
-the Worker's `repository.preparedGitHub` configuration, such as `privateKeyPath`.
+An Installation without a GitHub App leaves the chart's
+`repositoryCredentials.appKeySecretName` empty, so the Worker gets no App key.
+The repository broker (`repositoryCredentials.enabled`) still requires it. Keep
+the Worker's `repository.preparedGitHub.privateKeyPath`: the Worker reads the key
+only when the registry has the App. With the App and no readable key, the Worker
+does not start and logs `PREPARED_GITHUB_APP_KEY_INVALID`.
 
 An Agent's bindings must resolve to one credential: the App, or one Source.
 Naming another Source changes the grant, so earlier revisions go stale.
