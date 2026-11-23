@@ -40,9 +40,7 @@ def digest(directory, name, optional=False):
         return hashlib.sha256(source.read()).hexdigest()
 
 
-def validate_compatibility(path, released, candidate):
-    with open(path, encoding="utf-8") as source:
-        receipt = json.load(source)
+def compatibility_result(receipt):
     file_path = "tests/integration/postgres-migration-compatibility.test.mjs"
     required_cases = (
         "Released controller remains usable across candidate database writes",
@@ -99,12 +97,43 @@ def validate_compatibility(path, released, candidate):
         if (len(selected) != 1 or selected[0].get("status") != "passed" or
                 selected[0].get("file") != file_path):
             raise ValueError("selected compatibility case did not pass")
+    return result
+
+
+def check_compatibility_image(result, role, reference):
     # The runner records the reference suffix, not a platform manifest or config ID.
-    for role, reference in (("releasedController", released), ("candidateController", candidate)):
-        expected = reference.rsplit("@", 1)[-1]
-        if (not re.fullmatch(r"sha256:[a-f0-9]{64}", expected) or
-                result.get("imageDigests", {}).get(role) != expected):
-            raise ValueError("compatibility image selection does not match")
+    expected = reference.rsplit("@", 1)[-1]
+    if (not re.fullmatch(r"sha256:[a-f0-9]{64}", expected) or
+            result.get("imageDigests", {}).get(role) != expected):
+        raise ValueError("compatibility image selection does not match")
+
+
+def validate_compatibility_preview(content, candidate):
+    result = compatibility_result(json.loads(content.decode("utf-8")))
+    check_compatibility_image(result, "candidateController", candidate)
+    released = result.get("imageDigests", {}).get("releasedController", "")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", released):
+        raise ValueError("invalid reported released controller digest")
+
+
+def validate_compatibility(path, released, candidate):
+    with open(path, encoding="utf-8") as source:
+        result = compatibility_result(json.load(source))
+    check_compatibility_image(result, "releasedController", released)
+    check_compatibility_image(result, "candidateController", candidate)
+    measurements = result.get("measurements")
+    if isinstance(measurements, list) and any(
+        isinstance(item, dict) and item.get("kind") == "released-controller-history" and
+        item.get("status") == "unsupported" for item in measurements
+    ):
+        try:
+            os.write(
+                2, b"warning: The released controller rejected the candidate migration history. "
+                   b"Qualify another recovery controller before maintenance.\n"
+            )
+        except OSError:
+            # An unavailable diagnostic stream must not change validation.
+            pass
 
 
 def main():

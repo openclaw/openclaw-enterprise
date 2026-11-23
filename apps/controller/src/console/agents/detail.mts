@@ -1089,16 +1089,24 @@ export async function renderAgentDetail(
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   // A recorded outcome is the version and a status badge (spec 3.5). The separator stays in the
   // text for screen readers and text matching ("v7 · Failed"); the badge's gap shows it.
-  function setDeploymentOutcome(node: HTMLElement, version: string, label: string, tone?: string) {
-    const text = `${version} · ${label}`;
-    const badge = node.querySelector<HTMLElement>(":scope > .badge");
-    if (node.textContent === text && badge && (badge.dataset.tone ?? "") === (tone ?? "")) {
+  function setDeploymentOutcome(revision: Revision, label: string, tone?: string) {
+    const href = context.pageUrl(target(revision.id, "deployment"));
+    const link = latestDeploymentValue.querySelector(":scope > a");
+    const badge = latestDeploymentValue.querySelector<HTMLElement>(":scope > .badge");
+    if (badge && link?.getAttribute("href") === href) {
+      // Keep the version link mounted so a status update does not take away keyboard focus.
+      if (badge.dataset.tone !== tone) {
+        if (tone) {
+          badge.dataset.tone = tone;
+        } else {
+          delete badge.dataset.tone;
+        }
+      }
+      setText(badge, label);
       return;
     }
-    node.replaceChildren(
-      ...(visibleRevisions[0] && version === `v${visibleRevisions[0].revision}`
-        ? [versionLink(version, visibleRevisions[0].id, "deployment")]
-        : [version]),
+    latestDeploymentValue.replaceChildren(
+      versionLink(`v${revision.revision}`, revision.id, "deployment"),
       element("span", { className: "visually-hidden" }, " · "),
       element("span", { className: "badge", ...(tone ? { "data-tone": tone } : {}) }, label),
     );
@@ -2792,8 +2800,7 @@ export async function renderAgentDetail(
       setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
       setDeploymentOutcome(
-        latestDeploymentValue,
-        `v${latest.revision}`,
+        latest,
         label ?? (latestDeploymentUnavailable ? "Unavailable" : "Loading…"),
         latestDeploymentStatus ? DEPLOYMENT_OUTCOME_TONES[latestDeploymentStatus] : undefined,
       );
@@ -4726,11 +4733,12 @@ export async function renderAgentDetail(
       mountedTab.reusable = false;
     }
     savedNotice = saved;
-    // A save lands well after its click, and the rebuilt tab is usually shorter than the editor
-    // it replaces. When the cards below the version layout are in view, scroll by the layout's
-    // change, so they keep their place and the summary takes the editor's (finding 1482).
-    const bottomBefore = versionLayout.getBoundingClientRect().bottom;
-    const anchorBelow = bottomBefore < globalThis.innerHeight;
+    // When a save collapses the editor, keep the cards below it in place if visible.
+    // If they were farther down the page, keep them below the viewport (finding 1482).
+    const anchorBottom = Math.min(
+      versionLayout.getBoundingClientRect().bottom,
+      globalThis.innerHeight,
+    );
     try {
       await renderTab();
     } finally {
@@ -4741,9 +4749,9 @@ export async function renderAgentDetail(
     }
     // The permission reread can land after the rebuilt tab was drawn.
     redrawConfigurationAccessViews();
-    const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
-    if (anchorBelow && shrunk < 0) {
-      globalThis.scrollBy({ top: shrunk, behavior: "instant" });
+    const scrollDelta = versionLayout.getBoundingClientRect().bottom - anchorBottom;
+    if (scrollDelta < 0) {
+      globalThis.scrollBy({ top: scrollDelta, behavior: "instant" });
     }
     // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
     // Cancel that the rebuilt editor hides falls back to the tab (finding 2386).
