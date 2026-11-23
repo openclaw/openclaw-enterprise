@@ -15,7 +15,9 @@
       "path": "tests/integration/openshell-saved-agent-git-policy-real.test.ts",
       "expectedTests": [
         "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
+        "Saved Agent creates pull requests while every bound repository has a grant",
         "Saved native Git grants admit read-only gh API on A and B",
+        "Saved Agent reads pull requests and is refused creation while a bound repository has no grant",
         "Downgraded native Git grants retain read-only gh API"
       ]
     }

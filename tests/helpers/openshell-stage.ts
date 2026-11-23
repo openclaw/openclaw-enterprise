@@ -1,12 +1,15 @@
 import type { TestContext } from "node:test";
+import { types } from "node:util";
 
 import {
+  credentialReplacementCase,
+  credentialReplacementDiagnostic,
   emitOpenShellProgress,
   emitOpenShellStageFailure,
 } from "../../scripts/ci/openshell-progress.mjs";
 
 export async function runOpenShellStage<Result>(
-  context: Pick<TestContext, "diagnostic">,
+  context: Pick<TestContext, "diagnostic"> & Partial<Pick<TestContext, "name">>,
   stage: string,
   operation: () => Result,
   sandboxPhase?: string,
@@ -24,6 +27,16 @@ export async function runOpenShellStage<Result>(
     // node:test reports errors after hooks; report only closed metadata now.
     try {
       emitOpenShellStageFailure(stage, error);
+      if (
+        context.name === credentialReplacementCase.name &&
+        types.isNativeError(error) &&
+        !("openclawCiDiagnostic" in error)
+      ) {
+        const diagnostic = credentialReplacementDiagnostic(stage);
+        if (diagnostic) {
+          Object.assign(error, { openclawCiDiagnostic: diagnostic });
+        }
+      }
     } catch {
       // Diagnostics must not replace the failed operation.
     }

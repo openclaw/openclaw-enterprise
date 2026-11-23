@@ -854,6 +854,23 @@ cases.revisionTest(
       ]);
       assert.equal(notifications, 0);
       assert.equal(resolutions, 0);
+
+      // Once withdrawal is recorded for the deployed revision, even pending work must
+      // prevent a manual retry from delivering the Source back to that Agent.
+      const { "content-type": _contentType, ...withdrawalHeaders } = headers;
+      const withdrawal = await app.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/${owner.id}/credential-sources/${source.id}/withdraw`,
+        headers: withdrawalHeaders,
+      });
+      assert.equal(withdrawal.statusCode, 202, withdrawal.body);
+      assert.equal(withdrawal.json().data.state, "pending");
+      assert.equal((await push([source.id])).statusCode, 409);
+      const remaining = await push("all");
+      assert.equal(remaining.statusCode, 200, remaining.body);
+      assert.deepEqual(remaining.json().data.results, []);
+      assert.equal(notifications, 0);
+      assert.equal(resolutions, 0);
     } finally {
       nativeProxy.notifyCredentialUpdated = notify;
       tokenService.resolveCredential = resolve;
@@ -1020,31 +1037,6 @@ cases.revisionTest(
       ).rows,
       [{ state: "ready", config: { provider_preset: "openai" } }],
     );
-
-    // Live withdrawal cannot use the legacy withdrawal path for staged TokenService delivery.
-    await assert.rejects(
-      controller.withdrawAgentCredentialSource(actorId, {
-        namespaceId,
-        agentId: owner.id,
-        credentialSourceId: source.id,
-      }),
-      (error: unknown) =>
-        error instanceof ResourceStateConflictError &&
-        error.message ===
-          "Withdrawal of a staged TokenService credential source is not supported. Complete Agent Stop to retire the revision.",
-    );
-    const withdrawal = await fixture.observerPool.query(
-      `SELECT credential_source_id FROM occ.credential_withdrawals
-       WHERE namespace_id=$1 AND revision_id=$2 AND credential_source_id=$3`,
-      [namespaceId, revision.id, source.id],
-    );
-    const withdrawalWork = await fixture.observerPool.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE namespace_id=$1 AND revision_id=$2 AND agent_target='credentials_withdrawn'`,
-      [namespaceId, revision.id],
-    );
-    assert.deepEqual(withdrawal.rows, []);
-    assert.deepEqual(withdrawalWork.rows, []);
 
     // An active staged revision cannot be replaced, including by a non-staged draft.
     await controller.updateAgent(

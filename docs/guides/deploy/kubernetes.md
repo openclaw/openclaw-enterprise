@@ -94,10 +94,11 @@ differ between them. If a ClientTrafficPolicy already targets that Gateway or
 listener, add `path` to it.
 
 Keep the console route's request timeout at 15 seconds or more; Envoy Gateway's
-default is 15 seconds. Configuration and Secret create, update and delete send no
-Kubernetes call later than 12 seconds after the API starts the request, so on a slow
-cluster they fail with `503` instead of saving after the ingress answered `504`. The
-database commit is not bounded by them.
+default is 15 seconds. When you create, update or delete a Configuration or Secret,
+Kubernetes calls for the change share a 12-second limit. The limit starts when the
+API handler starts. OCC can return `503` if the limit expires. Cleanup and the
+database commit can take longer. If the ingress returns `504`, the write may still
+commit. Confirm the outcome before retrying.
 
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:

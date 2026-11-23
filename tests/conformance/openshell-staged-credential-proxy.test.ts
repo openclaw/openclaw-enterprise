@@ -601,7 +601,14 @@ async function fixture(t: TestContext) {
       agentId: revision.agentId,
       revisionId: revision.id,
     }),
-  } as unknown as SandboxDriver;
+    async withdrawStagedCredentialRoute() {
+      throw new Error("This Proxy fixture exercises lifecycle cleanup only.");
+    },
+  } as unknown as SandboxDriver &
+    Pick<
+      import("../../apps/controller/src/drivers/sandbox/openshell.ts").OpenShellSandboxDriver,
+      "withdrawStagedCredentialRoute"
+    >;
   const backend = {
     id: "backend",
     client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
@@ -1512,7 +1519,6 @@ test("staged OpenShell Proxy refuses a loaded policy outside the admitted reques
       f.removeCredentialRoute();
       await f.proxy.removeDeployment(f.context, {
         targetRef: configuration.targetRef,
-        bindingRefs: [binding.bindingRef],
       });
       assert.equal(f.state.detaches.length, 1);
       assert.equal(f.state.detaches[0]?.provider, provider!.metadata.name);
@@ -1543,7 +1549,6 @@ test("staged OpenShell Proxy removes the last target binding and its delivery co
   const remove = () =>
     f.proxy.removeDeployment(f.context, {
       targetRef: configuration.targetRef,
-      bindingRefs: [binding.bindingRef],
     });
 
   // Stock Gateway refuses detach while the current policy still binds this Provider.
