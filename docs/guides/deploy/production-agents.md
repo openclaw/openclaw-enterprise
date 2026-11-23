@@ -1,32 +1,38 @@
 # Deploy and verify production Agents
 
-First complete [control-plane installation](production-installation.md) and its
-authenticated API check. Deploy into a ready Namespace and verify model execution.
-Run commands from the repository root with Bash, Python 3, kubectl, the OCC CLI,
-and the existing credentials and Kubernetes context. See [credential grants at deployment](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
-For browser deployment, prepare the Namespace and follow the
-[console workflow](../../reference/console/create-and-deploy.md).
+Deploy an Agent into a ready Namespace and verify model execution. Complete
+[control-plane installation](production-installation.md) and its authenticated
+API check. Run commands from the repository root, retaining credentials and
+Kubernetes context. See [credential grants at deployment](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+
+Use Bash, Python 3, kubectl, and the OCC CLI for the commands below. For browser
+deployment, prepare the Namespace and follow the
+[console deployment workflow](../../reference/console/create-and-deploy.md).
 
 ## Prepare each Namespace
 
 ### Use a driver-managed Kubernetes namespace
 
-Use the bootstrap Namespace `default` or run `occ namespace create NAME`.
-Creation can return before provisioning finishes. Export the selected server-assigned ID:
+Fresh bootstrap creates an OCC Namespace named `default`. Use it or create
+another Namespace with `occ namespace create NAME`. Creation can return while
+the worker is still provisioning. Run `occ namespace list` and export the
+server-assigned ID of the Namespace you selected.
 
 ```bash
 occ namespace list
 export NAMESPACE_ID='<ID of the selected Namespace>'
 ```
 
-If the create reply is lost, do not resend. With the same connection options,
-run `occ namespace list` and `occ namespace get ID`. The request may still commit,
-or permissions may hide the Namespace. Have an Installation administrator check
-the audit log. Retry only after confirming no Namespace was created.
+If you lose the reply to `occ namespace create`, do not resend it. Use the same
+connection options to run `occ namespace list` and `occ namespace get ID`.
+The request may still commit, or permissions may hide the Namespace. If the
+outcome is unclear, ask an Installation administrator to check the audit log.
+Retry only after confirming the original request ended without creating a Namespace.
 
-The worker creates a Kubernetes namespace labeled `openclaw.dev/namespace=$NAMESPACE_ID`.
-Record its name and grant tenant RoleBindings before waiting for the OCC Namespace
-to report `ready`.
+The worker creates a separate Kubernetes namespace labeled
+`openclaw.dev/namespace=$NAMESPACE_ID`. As soon as that namespace exists, record
+its name and grant the tenant RoleBindings below before waiting for the OCC
+Namespace to report `ready`.
 
 ```bash
 TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -34,13 +40,15 @@ TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
   python3 -c 'import json,sys; items=json.load(sys.stdin)["items"]; print(items[0]["metadata"]["name"]) if len(items)==1 else sys.exit("Expected one backing Namespace; check worker provisioning")')" && export TENANT_NAMESPACE
 ```
 
-If discovery finds no backing namespace, check worker logs and retry after creation.
+If discovery finds no backing namespace, check the worker logs and run
+discovery again after the worker creates it.
 
 ### Grant tenant RoleBindings
 
-Single-cluster Compute uses one tenant namespace for runtime roles and canonical
-storage. Use the install's Helm release and namespace: the chart prefixes tenant
-ClusterRoles with the release name and creates fixed-name ServiceAccounts there.
+Single-cluster Compute uses the same tenant namespace for runtime roles and
+canonical storage. Use the Helm release and Kubernetes namespace from the
+control-plane install. The chart prefixes the three tenant ClusterRoles with
+the release name and creates fixed-name ServiceAccounts in the install namespace.
 
 ```bash
 # Control-plane installation example
@@ -83,59 +91,35 @@ OCC IAM grants remain required. Workload ServiceAccounts receive no Secret API
 access. Namespace workload managers are trusted for both roles. Use disjoint
 trusted Gateway and Harness node pools. For the experimental two-cluster
 profile, grant these storage roles in the separately discovered control target
-and worker/Gateway-observer roles in the execution target. See [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
-
-### Grant automation observation
-
-Bind the control chart's unbound observer to `$API_SA` in the Gateway namespace:
-the backing tenant namespace for single-cluster Compute, or the control target
-with its kubeconfig and context for `executionCluster`:
-
-```bash
-tenant_kubectl create rolebinding openclaw-enterprise-automation-observer \
-  --clusterrole="$RELEASE-openclaw-tenant-automation-observer" --serviceaccount="$API_SA"
-```
-
-This role grants Services, HTTPRoutes and NetworkPolicies `get`, and EndpointSlices
-`list`. The configuration binding provides ConfigMaps `get`.
-
-For `executionCluster` (dedicated only), set the execution kubeconfig, context,
-release, system namespace and separately discovered Agent tenant namespace.
-Bind the execution API there:
-
-```bash
-kubectl --kubeconfig "${EXECUTION_KUBECONFIG_FILE:?}" --context "${EXECUTION_CONTEXT:?}" \
-  -n "${EXECUTION_TENANT_NAMESPACE:?}" create rolebinding openclaw-enterprise-automation-observer \
-  --clusterrole="${EXECUTION_RELEASE:?}-execution-tenant-automation-observer" \
-  --serviceaccount="${EXECUTION_SYSTEM_NAMESPACE:?}:openclaw-enterprise-api"
-```
-
-This unbound role permits `get` on any named ConfigMap or NetworkPolicy there.
-Never bind the Gateway role there. Operators create bindings; workers do not write RBAC.
+and worker/observer roles in the execution target. See [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
 
 ### Confirm the Namespace is ready
 
-After binding, run `occ namespace get "$NAMESPACE_ID"`. Wait for `STATUS` `ready`
-before creating Configurations or Agents.
+Run `occ namespace get "$NAMESPACE_ID"` after applying the bindings. Wait for
+`STATUS` to report `ready` before creating Configurations or Agents.
 
-If status stays `provisioning`, check `namespace.ensure` logs.
-[`KUBERNETES_TENANT_ACCESS_DENIED`](../../reference/drivers/kubernetes-compute.md#failure-conditions)
-means Kubernetes denied access. Correct the backing namespace RoleBindings,
-ServiceAccounts, or roles, then recheck the same Namespace ID. For `failed`,
-inspect audit evidence and worker logs for [exhausted lease recovery](../../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence).
+If the status stays `provisioning`, check the worker's `namespace.ensure` logs.
+The [`KUBERNETES_TENANT_ACCESS_DENIED` hint](../../reference/drivers/kubernetes-compute.md#failure-conditions)
+indicates a Kubernetes permission denial. Verify the RoleBindings in the
+backing namespace and their ServiceAccounts and roles. After correcting the
+grants, check the same OCC Namespace ID again. If the status is `failed`,
+inspect audit evidence and worker logs for
+[exhausted lease recovery](../../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence).
 
 ## Prepare each Agent
 
-After the Namespace is ready, set `OCC_URL`, `OCC_SERVICE_KEY_FILE`,
-`OCC_NAMESPACE`, `NAMESPACE_ID`, `TENANT_NAMESPACE`, `KUBECONFIG_FILE`, and
-`CONTEXT` in the operator shell. `TENANT_NAMESPACE` comes from
+Prepare Agent deployment after the Namespace is ready. The operator shell must
+have `OCC_URL`, `OCC_SERVICE_KEY_FILE`, `OCC_NAMESPACE`, `NAMESPACE_ID`,
+`TENANT_NAMESPACE`, `KUBECONFIG_FILE`, and `CONTEXT` set. `TENANT_NAMESPACE`
+is the Kubernetes namespace created by the driver during
 [Namespace preparation](#prepare-each-namespace).
 
 ## Configure the Agent runtime
 
-Both examples enable Control UI with loopback origins so the first version can start
-without trusting arbitrary browser hosts. After deployment, [add the Agent's exact
-HTTPS origin](#open-control-ui). Loopback origins alone do not enable the OCE native admin link.
+Both examples enable Control UI. Their explicit loopback origins allow the first
+version to start without trusting an arbitrary browser host. After deployment,
+[finish Control UI access](#open-control-ui) by adding this Agent's exact HTTPS
+origin. Loopback origins alone do not enable the OCE native admin link.
 
 Complete [private routing](workspace-routing.md#configure-private-routing) first.
 Configure verified Envoy source CIDRs in the trusted Installation YAML before
@@ -537,16 +521,17 @@ If denied, ask an Installation administrator for `read` on that
 
 ## Verify workspace access
 
-After deployment, [verify routing and file access](workspace-routing.md#verify-routing-and-file-access):
-require accepted Gateway and Agent HTTPRoute status, ready TLS certificates, and a
-successful OCC workspace-file API read. In the Console, open the Agent and select
-**Reload AGENTS.md**. An existing file should load without **Workspace access is
-unavailable**. The caller needs exact-Agent `read`; saving also requires `operate`.
+After deployment, complete [Verify routing and file access](workspace-routing.md#verify-routing-and-file-access):
+require the Gateway and Agent HTTPRoute to be accepted, TLS certificates ready,
+and a successful read through the OCC workspace-file API. In the Console, open
+the Agent and select **Reload AGENTS.md**. An existing file should load without
+**Workspace access is unavailable**. The caller needs exact-Agent `read`
+permission; saving also requires `operate`.
 
-An editor error does not prove the workspace is empty. A missing file is a separate result. The file API can create or replace files, but
-cannot delete them. Verify access before creating one;
-see [workspace-file errors](../../reference/agents.md#workspace-files). Then verify a
-model response from the same version.
+An empty editor after an error is not evidence of an empty workspace. A missing
+file is a separate result: the file API can create or replace a file, but cannot
+delete it. Verify access before creating a missing file. See [workspace-file errors](../../reference/agents.md#workspace-files).
+Next, verify a model response from the same version.
 
 ## Verify production workloads
 

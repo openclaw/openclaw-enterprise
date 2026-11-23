@@ -429,14 +429,6 @@ function tenantApiRules() {
   ];
 }
 
-// Automation transport checks are read-only and become effective only through a tenant RoleBinding.
-const automationTransportRules = [
-  { apiGroups: [""], resources: ["services"], verbs: ["get"] },
-  { apiGroups: ["gateway.networking.k8s.io"], resources: ["httproutes"], verbs: ["get"] },
-  { apiGroups: ["discovery.k8s.io"], resources: ["endpointslices"], verbs: ["list"] },
-  { apiGroups: ["networking.k8s.io"], resources: ["networkpolicies"], verbs: ["get"] },
-];
-
 // Runtime log reads: added by agentRuntimeLogs.enabled (default true), never cluster-bound.
 const runtimeLogRules = [
   { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
@@ -1789,21 +1781,6 @@ test(
     assert.ok(!bindings.has(tenantApiRole.metadata.name));
     assert.ok(tenant.rules.some(({ resources }) => resources.includes("configmaps")));
     assert.deepEqual(tenantApiRole.rules, tenantApiRules());
-    // Automation reads must stay separate because development can bind tenant-api globally.
-    const automationObserver = findResource(
-      objects,
-      "ClusterRole",
-      "oce-openclaw-tenant-automation-observer",
-    );
-    assert.deepEqual(automationObserver.rules, automationTransportRules);
-    assert.equal(
-      objects.some(
-        ({ kind, roleRef }) =>
-          ["RoleBinding", "ClusterRoleBinding"].includes(kind) &&
-          roleRef?.name === automationObserver.metadata.name,
-      ),
-      false,
-    );
     // Only the unbound tenant-worker role can list owned gateway claims and reconcile claims.
     assert.deepEqual(
       tenant.rules.filter(({ resources }) => resources.includes("persistentvolumeclaims")),

@@ -147,9 +147,6 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 89 && completedCount > 89) {
     return "preNativeGitDelivery";
   }
-  if (count === 90 && completedCount > 90) {
-    return "preAgentAutomations";
-  }
   if (count === completedCount) {
     return "completed";
   }

@@ -963,12 +963,6 @@ async function assertCompletedHistory(db, previous = []) {
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
-      // Only the exact creator can discard a proven uncommitted reservation.
-      [
-        "occ.discard_unbound_agent_automation(text,text,uuid,text)",
-        true,
-        "search_path=pg_catalog, pg_temp",
-      ],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
       ["occ.hold_agent_audit_policy(text)", true],
@@ -1495,7 +1489,6 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preAgentAutomations"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1951,7 +1944,6 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preAgentAutomations"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2514,7 +2506,6 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preAgentAutomations"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2647,7 +2638,6 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preAgentAutomations"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2813,7 +2803,6 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preAgentAutomations"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2841,7 +2830,6 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [90, "CREATE FUNCTION"],
                 [89, "CREATE FUNCTION"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
@@ -2875,9 +2863,6 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 90) {
-          // Abort 0091 after it has created the automation table.
-          failAt = "IF to_regclass('occ.agent_automations') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

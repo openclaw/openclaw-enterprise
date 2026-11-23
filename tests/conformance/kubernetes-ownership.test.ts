@@ -213,18 +213,6 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
       { kind: "NetworkPolicy", methods: { prepare: ["GET"] } },
     ],
     [
-      `${policyPaths}/allow-automation-mcp-gateway-rev-${revisionDigest}-${agentDigest}`,
-      { kind: "NetworkPolicy", methods: { stop: ["GET"] } },
-    ],
-    [
-      `${policyPaths}/allow-automation-mcp-agent-rev-${revisionDigest}-${agentDigest}`,
-      { kind: "NetworkPolicy", methods: { prepare: ["GET"], stop: ["GET"] } },
-    ],
-    [
-      `${namespacePath}/configmaps/automation-trust-agent-${agentDigest}-rev-${revisionDigest}`,
-      { kind: "ConfigMap", methods: { prepare: ["GET"], stop: ["GET"] } },
-    ],
-    [
       `${namespacePath}/serviceaccounts/agent-${agentDigest}`,
       { kind: "ServiceAccount", methods: { prepare: ["GET", "PATCH"] } },
     ],

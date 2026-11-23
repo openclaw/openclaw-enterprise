@@ -1649,9 +1649,6 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
-  AgentAutomationPolicyQualification,
-  AgentAutomationTransport,
-  AgentAutomationPolicyBinding,
   ProtectedRepositoryNetworkPolicySaveContext,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
@@ -1708,16 +1705,16 @@ export {
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
 } from "./api/agent-credential-push.ts";
-export * from "./api/resources.ts";
-export * from "./api/routes.ts";
 export {
   AgentAutomationParams,
-  AgentAutomationPageQuery,
-  AgentAutomationListQuery,
   CreateAgentAutomationBody,
   UpdateAgentAutomationBody,
   DeleteAgentAutomationQuery,
+  AgentAutomationPageQuery,
+  AgentAutomationResponse,
 } from "./api/agent-automations.ts";
+export * from "./api/resources.ts";
+export * from "./api/routes.ts";
 
 export {
   normalizeHarnessAuthBinding,
@@ -1849,24 +1846,5 @@ export type {
   PluginDeploymentContract,
 } from "./drivers/plugin/deployment.ts";
 
-export type { AgentAutomationOwnership, AgentAutomationToolGrant } from "./agent-automations.ts";
-
-export {
-  AgentAutomationSchema,
-  AgentAutomationResponse,
-  AgentAutomationListResponse,
-  AgentAutomationRunsPageSchema,
-  AgentAutomationRunsResponse,
-  AgentAutomationUnsupportedSummary,
-  AgentAutomationPendingReservationSchema,
-} from "./api/agent-automations.ts";
-export type {
-  AgentAutomationCreateInput,
-  AgentAutomationUpdateInput,
-  AgentAutomationData,
-  AgentAutomationSummary,
-  AgentAutomationPendingReservation,
-  AgentAutomationRunsPage,
-} from "./api/agent-automations.ts";
 export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";
 export { admitSandboxRepositoryNetworkPolicy } from "./sandbox-policy.ts";

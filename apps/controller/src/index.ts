@@ -1,11 +1,7 @@
-import type { AgentAutomationsAccess } from "./gateway/agent-automations-client.ts";
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
-import {
-  createAgentAutomationHandlers,
-  isAgentAutomationOperation,
-} from "./http/agent-automations.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
+import { isAgentAutomationOperation, relayAgentAutomation } from "./http/agent-automations.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
@@ -205,7 +201,6 @@ export interface DevelopmentAdmission {
 }
 
 export interface ControllerAppOptions {
-  readonly agentAutomations?: AgentAutomationsAccess;
   readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
@@ -1221,29 +1216,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const connectionRedirectUri =
     connectionOrigin && `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
-    ...createAgentAutomationHandlers({
-      access: options.agentAutomations,
-      factory,
-      auditSink: options.auditSink,
-      reauthenticate: async (request, context) => {
-        await admit(request, context.operation);
-        await resolveIdentity(request, context.operation);
-        const current = contexts.get(request);
-        if (current?.actorId !== context.actorId || current.sessionId !== context.sessionId) {
-          throw dependencyUnavailable();
-        }
-      },
-      logAuditFailure: (request, error) => {
-        const context = contexts.get(request);
-        if (context) {
-          logRequestAuditFailure(request, context.operation, context.operation.action, error);
-        }
-      },
-      installationId,
-      publicOrigin,
-      nativeAdmin: options.nativeAdmin,
-      requireCsrf: requireWorkspaceFileCsrf,
-    }),
     ...namespaceConnectionHandlers(connectionRedirectUri),
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
@@ -1355,16 +1327,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function admit(request: FastifyRequest, operation: RequestOperation): Promise<void> {
     if (
-      isAgentAutomationOperation(operation) &&
-      request.headers[OCC_SERVICE_KEY_HEADER] !== undefined
-    ) {
-      throw failure(403, "FORBIDDEN", "Agent automations require a human controller session.");
-    }
-    if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
         operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents")
+        operation.operationId === "listAgentAuditEvents" ||
+        isAgentAutomationOperation(operation.operationId))
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -2121,6 +2088,35 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (isAgentAutomationOperation(operation.operationId)) {
+      if (admissions.get(request)?.method !== "session") {
+        throw failure(403, "FORBIDDEN", "Agent automations require a human controller session.");
+      }
+      await relayAgentAutomation({
+        controller,
+        installationId,
+        actorId: context.actorId,
+        operation,
+        request,
+        reply,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditMutation: async (reason) => {
+          await options.auditSink.append(
+            event(
+              operation,
+              request,
+              { kind: "agent", id: agentId, namespaceId },
+              "mutation",
+              context,
+              undefined,
+              reason === undefined ? undefined : { outcome: "failure", reasonCode: reason },
+            ),
+          );
+        },
+      });
+      return;
     }
 
     if (operation.operationId === "listAgentAuditEvents") {
@@ -3394,7 +3390,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         "x-openclaw-permissions": permissions,
         ...(operation.operationId === "bootstrapInstallation" ||
         operation.operationId === "listAgentAuditEvents" ||
-        isAgentAutomationOperation(operation)
+        isAgentAutomationOperation(operation.operationId)
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;

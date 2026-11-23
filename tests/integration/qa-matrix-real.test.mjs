@@ -400,12 +400,7 @@ test(
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
-                            apiKeyAuth: [
-                              "codex-search-config",
-                              "http-chat",
-                              "agent-automations",
-                            ].includes(name),
-                            agentAutomations: name === "agent-automations",
+                            apiKeyAuth: name === "codex-search-config" || name === "http-chat",
                             httpChat: name === "http-chat",
                           });
                         },
@@ -436,42 +431,6 @@ test(
                   });
                 }
                 const scenarios = [
-                  [
-                    "agent-automations",
-                    async (agent, step) => {
-                      const { verifyQaAgentAutomations } =
-                        await import("../helpers/qa-agent-automations.ts");
-                      const { verifyQaAgentAutomationMcp } =
-                        await import("../helpers/qa-agent-automation-mcp.ts");
-                      // Dedicated admission must be proved on a fresh Agent before any session exists.
-                      const mcp = () =>
-                        step("approved MCP ordinary and scheduled authority parity", async () => {
-                          await verifyQaAgentAutomationMcp(f, agent);
-                          return true;
-                        });
-                      // Broader no-tools qualification combines this runtime evidence
-                      // with forced-dispatch proof and the pinned source family map.
-                      const modelOnly = (dedicatedMcpReady) =>
-                        step(
-                          "OCC model-only scheduling, observed no-tool behavior, history and replacement",
-                          async () => {
-                            // A failed MCP stage can leave this Agent's deployment state unknown.
-                            assert.ok(
-                              preset !== "Codex" || dedicatedMcpReady === true,
-                              "blocked by dedicated MCP stage failure or unknown outcome",
-                            );
-                            await verifyQaAgentAutomations(f, agent);
-                          },
-                        );
-                      if (preset === "Codex") {
-                        const dedicatedMcpReady = await mcp();
-                        await modelOnly(dedicatedMcpReady);
-                      } else {
-                        await modelOnly();
-                        await mcp();
-                      }
-                    },
-                  ],
                   [
                     "http-chat",
                     async (agent, step) => {

@@ -1,4 +1,3 @@
-import { postgresAgentAutomations } from "./postgres-agent-automations.ts";
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -4818,7 +4817,6 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
-      agentAutomations: postgresAgentAutomations(client),
       savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),

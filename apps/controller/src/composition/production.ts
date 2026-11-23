@@ -1,4 +1,3 @@
-import { createAgentAutomationsAccess } from "./agent-automations.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { validateAuthSecret } from "../auth/configuration.ts";
 import {
@@ -369,13 +368,7 @@ export async function composeProduction(
         cursorSecret: config.authSecret,
       },
       ...(config.gatewayApiKeyPath !== undefined
-        ? {
-            nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!),
-            agentAutomations: createAgentAutomationsAccess(
-              computeDriver,
-              config.gatewayApiKeyPath!,
-            ),
-          }
+        ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,

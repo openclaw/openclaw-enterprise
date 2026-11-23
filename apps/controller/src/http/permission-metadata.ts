@@ -1,5 +1,4 @@
 import type { OccApiRoute, PermissionAction, ResourceKind } from "@openclaw-enterprise/contracts";
-import { isAgentAutomationOperation } from "./agent-automations.ts";
 
 export interface RequiredPermission {
   readonly phase?: "fresh_admission";
@@ -19,7 +18,6 @@ export interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
-    | "automation_admin_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
     | "saved_sandbox_policy_for_deployment"
@@ -48,14 +46,6 @@ const IAM_BINDING_TARGETS: readonly ResourceKind[] = [
 ];
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
-  if (isAgentAutomationOperation(operation)) {
-    return operation.operationId === "createAgentAutomation"
-      ? [requirement("operate", "agent")]
-      : [
-          requirement("operate", "agent"),
-          requirement("administer", "agent", "requested", "automation_admin_alternative"),
-        ];
-  }
   const { operationId, iamAction, resourceKind } = operation;
   const primary = (
     scope?: RequiredPermission["scope"],
@@ -298,13 +288,8 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
 function permissionDescription(
   permissions: readonly RequiredPermission[],
-  operation: OccApiRoute,
+  operationId: OccApiRoute["operationId"],
 ): string {
-  const { operationId } = operation;
-  if (isAgentAutomationOperation(operation)) {
-    const authority = operationId === "createAgentAutomation" ? "operate" : "operate or administer";
-    return `Requires a human session and ${authority} on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.`;
-  }
   if (operationId === "listAgentAuditEvents") {
     return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
   }
@@ -451,5 +436,5 @@ export function routePermissionMetadata(operation: OccApiRoute): {
   readonly permissions: readonly RequiredPermission[];
 } {
   const permissions = requiredPermissions(operation);
-  return { description: permissionDescription(permissions, operation), permissions };
+  return { description: permissionDescription(permissions, operation.operationId), permissions };
 }

@@ -106,11 +106,8 @@ operation was not authorized.`
 
 ## Additional checks
 
-- [Automation HTTP admission](../agent-automations.md) requires a human session
-  and exact-Agent `operate` for creation; the other five operations also accept
-  `administer` for Agent-wide management. An `operate` caller can manage only
-  their own records. Scheduled execution uses Agent service authority.
-
+- [Agent automation APIs](../agent-automations.md) require a human session and
+  exact-Agent `administer` for each native cron operation. Service keys are refused.
 - [Native browser access](../agent-native-admin.md#native-authority-and-drift)
   delegates `operator.sessions.write` for exact-Agent `operate`, or
   `operator.admin` for `administer`, under the person's native profile. Native

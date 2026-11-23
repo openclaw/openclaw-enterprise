@@ -1,577 +1,256 @@
-import { createHash } from "node:crypto";
-import { match } from "ts-pattern";
-import { occApiRoutes } from "@openclaw-enterprise/contracts";
-import type {
-  AgentAutomationCreateInput,
-  AgentAutomationOwnership,
-  AgentAutomationUpdateInput,
-  OccApiRoute,
-} from "@openclaw-enterprise/contracts";
-import type { AuditEventFactory, AuditSink } from "@openclaw-enterprise/audit";
-import type { FastifyRequest } from "fastify";
+import {
+  GatewayClient,
+  GatewayClientRequestError,
+  GatewayClientRequestTimeoutError,
+  type GatewayClientOptions,
+} from "@openclaw/gateway-client";
+import type { OccApiRoute } from "@openclaw-enterprise/contracts";
+import type { OpenClawController } from "@openclaw-enterprise/occ";
+import { asRecord } from "@openclaw-enterprise/utils";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
-import {
-  nativeAdminConfigurationSupported,
-  nativeAdminTarget,
-  normalizeNativeAdminDomain,
-  type NativeAdminAccessConfig,
-} from "../gateway/native-admin.ts";
-import {
-  AutomationGatewayError,
-  AutomationCreateNotCommittedError,
-  type AgentAutomationsAccess,
-  type BoundAutomation,
-  type AgentAutomationGatewaySession,
-} from "../gateway/agent-automations-client.ts";
 import { dependencyUnavailable, failure } from "./errors.ts";
-import type {
-  RequestContext,
-  RequestOperation,
-  ResourceHandler,
-  ResourceHandlers,
-} from "./types.ts";
 
-type AutomationOperation = Extract<
-  OccApiRoute,
-  {
-    operationId:
-      | "createAgentAutomation"
-      | "listAgentAutomations"
-      | "getAgentAutomation"
-      | "updateAgentAutomation"
-      | "deleteAgentAutomation"
-      | "listAgentAutomationRuns";
-  }
->;
-type AutomationRequestOperation = RequestOperation &
-  Pick<AutomationOperation, "operationId" | "action">;
+const methods = {
+  createAgentAutomation: "cron.add",
+  listAgentAutomations: "cron.list",
+  getAgentAutomation: "cron.get",
+  updateAgentAutomation: "cron.update",
+  deleteAgentAutomation: "cron.remove",
+  listAgentAutomationRuns: "cron.runs",
+} as const;
+type AutomationOperation = keyof typeof methods;
+type Hello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 
-export function isAgentAutomationOperation(
-  operation: OccApiRoute,
-): operation is AutomationOperation;
-export function isAgentAutomationOperation(
-  operation: RequestOperation,
-): operation is AutomationRequestOperation;
-export function isAgentAutomationOperation(operation: RequestOperation): boolean {
-  return (
-    operation.action.startsWith("openclaw.agents.automations.") &&
-    occApiRoutes.some(
-      (route) =>
-        route.operationId === operation.operationId &&
-        route.action === operation.action &&
-        route.method === operation.method &&
-        route.iamAction === operation.iamAction &&
-        route.resourceKind === operation.resourceKind &&
-        route.authorizationTarget === operation.authorizationTarget,
-    )
+export function isAgentAutomationOperation(id: string): id is AutomationOperation {
+  return Object.hasOwn(methods, id);
+}
+
+function unknownOutcome() {
+  return failure(
+    503,
+    "UNKNOWN_OUTCOME",
+    "The native cron mutation may have completed. Read its current state before retrying.",
   );
 }
 
-export function createAgentAutomationHandlers(options: {
-  readonly installationId: string;
-  readonly publicOrigin: string | undefined;
-  readonly nativeAdmin: NativeAdminAccessConfig | undefined;
-  readonly access: AgentAutomationsAccess | undefined;
-  readonly factory: AuditEventFactory;
-  readonly auditSink: AuditSink;
-  readonly requireCsrf: (request: FastifyRequest, requireOrigin: boolean) => void;
-  readonly reauthenticate: (request: FastifyRequest, context: RequestContext) => Promise<void>;
-  readonly logAuditFailure: (request: FastifyRequest, error: unknown) => void;
-}): ResourceHandlers {
-  const handle: ResourceHandler = async ({
-    controller,
-    context,
-    request,
-    reply,
-    params,
-    body,
-    setAuditReadTarget,
-  }) => {
-    if (!isAgentAutomationOperation(context.operation)) {
-      throw dependencyUnavailable();
-    }
-    const operation = context.operation.operationId;
-    const create = operation === "createAgentAutomation";
-    const mutate =
-      create || operation === "updateAgentAutomation" || operation === "deleteAgentAutomation";
-    if (context.sessionId === undefined) {
-      throw failure(403, "FORBIDDEN", "Agent automations require a human controller session.");
-    }
-    options.requireCsrf(request, mutate);
-    if (Object.keys(request.headers).some((name) => name.startsWith("x-openclaw-"))) {
-      throw failure(400, "INVALID_REQUEST", "Native routing and authority headers are reserved.");
-    }
-    const namespaceId = params.namespaceId!;
-    const agentId = params.agentId!;
-    // Creation requires operate before lookup. Administration admits only management.
-    const agent = create
-      ? await controller.getOperableAgent(context.actorId, namespaceId, agentId)
-      : (await controller.getAgentBrowserAccess(context.actorId, namespaceId, agentId)).agent;
-    setAuditReadTarget({ kind: "agent", namespaceId: agent.namespaceId, id: agent.id });
-    // Ownership precedes native availability and eligibility, including history and DELETE.
-    let record: Readonly<AgentAutomationOwnership> | undefined;
-    let ownershipAdminister: boolean | undefined;
-    let owned: readonly Readonly<AgentAutomationOwnership>[] = [];
-    if (operation === "listAgentAutomations") {
-      owned = await controller.listAgentAutomationOwnership(context.actorId, namespaceId, agentId);
-    } else if (!create) {
-      const access = await controller.getAgentAutomationOwnership(
-        context.actorId,
-        namespaceId,
-        agentId,
-        params.automationId!,
-      );
-      record = access.record;
-      ownershipAdminister = access.administer;
-      if (record.retiredAt !== null && operation !== "listAgentAutomationRuns") {
-        throw failure(404, "NOT_FOUND", "The automation was not found.");
-      }
-    }
-    const query = request.query as Record<string, string | undefined>;
-    const offset = Number(query.offset ?? "0");
-    const limit = Number(query.limit ?? "50");
-    if (operation === "listAgentAutomations" && query.view === "pending") {
-      // Recovery must not depend on a selected revision or a reachable native scheduler.
-      await options.reauthenticate(request, context);
-      owned = await controller.listAgentAutomationOwnership(context.actorId, namespaceId, agentId);
-      // The ownership read can finish after an administrator is demoted. Recheck
-      // the session and exact Agent access before disclosing rows or aggregate metadata.
-      await options.reauthenticate(request, context);
-      const finalAccess = await controller.getAgentBrowserAccess(
-        context.actorId,
-        namespaceId,
-        agentId,
-      );
-      if (finalAccess.mode !== "admin") {
-        owned = owned.filter((entry) => entry.creatorPrincipalId === context.actorId);
-      }
-      const pendingReservations = owned
-        .filter((entry) => entry.nativeJobId === null && entry.retiredAt === null)
-        .map((entry) => ({
-          id: entry.id,
-          status: "pending" as const,
-          createdAt: entry.createdAt,
-          configRevision: `reservation:${entry.id}`,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id));
-      const total = pendingReservations.length;
-      const page = pendingReservations.slice(offset, offset + limit);
-      reply.code(200).send({
-        data: {
-          jobs: [],
-          pendingReservations: page,
-          total,
-          nextOffset: offset + page.length < total ? offset + page.length : null,
-          snapshotRevision: createHash("sha256")
-            .update(JSON.stringify(pendingReservations))
-            .digest("hex"),
-        },
-        meta: { requestId: request.id },
-      });
-      return;
-    }
+async function nativeRequest(
+  endpoint: string,
+  headers: Readonly<Record<string, string>>,
+  method: (typeof methods)[AutomationOperation],
+  mutation: boolean,
+  params: (nativeAgentId: string) => Record<string, unknown>,
+): Promise<unknown> {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw dependencyUnavailable();
+  }
+  if (url.protocol !== "wss:" || url.username || url.password || url.search || url.hash) {
+    throw dependencyUnavailable();
+  }
+  const signal = AbortSignal.timeout(15_000);
+  let resolveHello!: (hello: Hello) => void;
+  let rejectHello!: (error: Error) => void;
+  const connected = new Promise<Hello>((resolve, reject) => {
+    resolveHello = resolve;
+    rejectHello = reject;
+  });
+  void connected.catch(() => {});
+  const client = new GatewayClient({
+    url: url.href,
+    clientName: "gateway-client",
+    mode: "backend",
+    role: "operator",
+    deviceIdentity: null,
+    scopes: [],
+    edgeAuthHeaders: headers,
+    hostDeps: { logError: () => {}, logDebug: () => {} },
+    onHelloOk: resolveHello,
+    onConnectError: () => rejectHello(new Error("Gateway connection failed.")),
+    onClose: () => rejectHello(new Error("Gateway connection closed.")),
+  });
+  const abort = () => rejectHello(new Error("Gateway connection timed out."));
+  signal.addEventListener("abort", abort, { once: true });
+  let sent = false;
+  try {
+    client.start();
+    const hello = await connected;
+    const defaults = hello.snapshot.sessionDefaults;
     if (
-      operation === "deleteAgentAutomation" &&
-      (record?.nativeJobId === null || query.expectedConfigRevision?.startsWith("reservation:"))
-    ) {
-      if (
-        !record ||
-        record.nativeJobId !== null ||
-        query.expectedConfigRevision !== `reservation:${record.id}`
-      ) {
-        throw failure(
-          409,
-          "RESOURCE_CONFLICT",
-          "The automation reservation changed. Refresh before retrying.",
-        );
-      }
-      await options.reauthenticate(request, context);
-      await controller.cancelUnboundAgentAutomation(
-        context.actorId,
-        { namespaceId, agentId, id: record.id },
-        (cancelled, action) =>
-          options.factory.create({
-            installationId: options.installationId,
-            namespaceId,
-            kind: "mutation",
-            source: "occ",
-            actor: {
-              principalId: context.actorId,
-              kind: "principal",
-              issuer: context.issuer,
-              subject: context.subject,
-            },
-            resource: { kind: "agent", id: agentId, namespaceId },
-            authorization: {
-              principalId: context.actorId,
-              action,
-              resource: { kind: "agent", id: agentId, namespaceId },
-            },
-            action: `${context.operation.action}.cancelled`,
-            outcome: "success",
-            requestId: request.id,
-            admissionDecisionId: context.admissionDecisionId,
-            details: {
-              operation,
-              phase: "cancelled",
-              jobId: cancelled.id,
-            },
-          }),
-      );
-      reply.code(204).send();
-      return;
-    }
-    if (
-      options.nativeAdmin?.enabled !== true ||
-      agent.status !== "active" ||
-      agent.desiredRuntimeState !== "running" ||
-      !agent.activeRevisionId
+      hello.auth?.role !== "operator" ||
+      !hello.auth.scopes.includes("operator.admin") ||
+      !hello.features.methods.includes(method) ||
+      defaults?.ownership !== "sole" ||
+      defaults.selectionRequired !== false ||
+      typeof defaults.defaultAgentId !== "string" ||
+      !defaults.defaultAgentId
     ) {
       throw dependencyUnavailable();
     }
-    async function select() {
-      const selection = await controller.getBrowserAccessibleActiveAgentRevision(
-        context.actorId,
-        namespaceId,
-        agentId,
-      );
-      const compute = controller.selectedDriver("compute");
-      const { revision, successor } = selection;
-      if (
-        selection.agent.status !== "active" ||
-        selection.agent.desiredRuntimeState !== "running" ||
-        revision.id !== agent.activeRevisionId ||
-        compute.id !== revision.compute.id ||
-        compute.implementation !== revision.compute.implementation ||
-        selection.predecessorPhase === "stopping" ||
-        (selection.predecessorPhase === undefined &&
-          successor !== undefined &&
-          compute.requiresStoppedPredecessors?.(successor) === true)
-      ) {
-        throw dependencyUnavailable();
-      }
-      return selection;
-    }
-    const selection = await select();
-    const administer = selection.mode === "admin";
-    if (ownershipAdminister !== undefined && ownershipAdminister !== administer) {
-      throw dependencyUnavailable();
-    }
-    // The ownership read can finish under an earlier grant. Commit disclosure to
-    // this final mode; assertCurrent fences subsequent mode changes around RPCs.
-    if (!administer) {
-      owned = owned.filter((entry) => entry.creatorPrincipalId === context.actorId);
-    }
-    const domain = normalizeNativeAdminDomain(options.nativeAdmin.domain);
-    if (options.publicOrigin === undefined || domain === undefined) {
-      throw dependencyUnavailable();
-    }
-    const target = nativeAdminTarget({
-      publicOrigin: options.publicOrigin,
-      installationId: options.installationId,
-      agent: selection.agent,
-      revision: selection.revision,
-      domain,
+    return await client.request(method, params(defaults.defaultAgentId), {
+      signal,
+      timeoutMs: 15_000,
+      onSent: () => {
+        sent = true;
+      },
     });
-    if (!nativeAdminConfigurationSupported(selection.revision, target.origin)) {
-      throw dependencyUnavailable();
-    }
-    const unqualified = () =>
-      failure(503, "AUTOMATIONS_UNQUALIFIED", "The Agent automation policy is not qualified.");
-    if (!options.access) {
-      throw unqualified();
-    }
-    const updateInput = body as unknown as AgentAutomationUpdateInput;
-    const disableOnly =
-      operation === "updateAgentAutomation" &&
-      updateInput.enabled === false &&
-      updateInput.name === undefined &&
-      updateInput.prompt === undefined &&
-      updateInput.schedule === undefined;
-    if (create || (operation === "updateAgentAutomation" && !disableOnly)) {
-      let qualified: boolean;
-      try {
-        qualified =
-          (await controller
-            .selectedDriver("compute")
-            .evaluateAgentAutomationPolicy?.(selection.revision)) !== undefined;
-      } catch {
-        throw dependencyUnavailable();
+  } catch (error) {
+    if (error instanceof GatewayClientRequestError) {
+      const code = asRecord(error.details)?.code;
+      if (code === "CRON_JOB_CHANGED") {
+        throw failure(409, "RESOURCE_CONFLICT", "The native cron job changed.");
       }
-      if (!qualified) {
-        throw unqualified();
+      if (code === "CRON_JOB_NOT_FOUND") {
+        throw failure(404, "NOT_FOUND", "The native cron job was not found.");
+      }
+      if ((error.gatewayCode || error.code) === "INVALID_REQUEST") {
+        throw failure(400, "INVALID_REQUEST", "OpenClaw rejected the cron request.");
       }
     }
-    async function assertCurrent() {
-      await options.reauthenticate(request, context);
-      if (create) {
-        await controller.getOperableAgent(context.actorId, namespaceId, agentId);
-      } else if (record) {
-        await controller.getAgentAutomationOwnership(
-          context.actorId,
-          namespaceId,
-          agentId,
-          record.id,
-        );
-      }
-      if ((await select()).mode !== selection.mode) {
-        throw dependencyUnavailable();
-      }
-    }
-    function audit(
-      outcome: "admitted" | "bound" | "retired" | "success" | "unknown" | "discarded",
-      ownership = record,
-      action: "operate" | "administer" = create || selection.mode !== "admin"
-        ? "operate"
-        : "administer",
+    if (
+      mutation &&
+      (sent || (error instanceof GatewayClientRequestTimeoutError && error.requestSent))
     ) {
-      return options.factory.create({
-        installationId: options.installationId,
-        namespaceId,
-        kind: "mutation",
-        source: "occ",
-        actor: {
-          principalId: context.actorId,
-          kind: "principal",
-          issuer: context.issuer,
-          subject: context.subject,
-        },
-        resource: { kind: "agent", id: agentId, namespaceId },
-        authorization: {
-          principalId: context.actorId,
-          action,
-          resource: { kind: "agent", id: agentId, namespaceId },
-        },
-        action: `${context.operation.action}.${outcome}`,
-        outcome: outcome === "unknown" || outcome === "discarded" ? "failure" : "success",
-        requestId: request.id,
-        admissionDecisionId: context.admissionDecisionId,
-        details: {
-          revisionId: selection.revision.id,
-          operation,
-          phase: outcome,
-          ...(ownership
-            ? {
-                jobId: ownership.id,
-                ...(ownership.nativeJobId === null ? {} : { nativeJobId: ownership.nativeJobId }),
-              }
-            : {}),
-        },
-      });
+      throw unknownOutcome();
     }
-    const location = (id: string) =>
-      `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}/automations/${encodeURIComponent(id)}`;
-    const abort = new AbortController();
-    const deadline = new Date(Date.now() + 30_000);
-    const disconnect = () => {
-      if (!reply.raw.writableEnded) {
-        abort.abort();
-      }
-    };
-    request.raw.once("aborted", disconnect);
-    reply.raw.once("close", disconnect);
-    if (request.raw.aborted || reply.raw.destroyed) {
-      abort.abort();
-    }
-    let native: AgentAutomationGatewaySession | undefined;
-    let committed = false;
-    try {
-      await assertCurrent();
-      native = await options.access.open({
-        revision: selection.revision,
-        signal: abort.signal,
-        deadline,
-        assertCurrent,
-      });
-      const session = native;
-      if (create) {
-        const toolGrant = await session.captureToolGrant();
-        record = await controller.reserveAgentAutomation(
-          context.actorId,
-          {
-            namespaceId,
-            agentId,
-            revisionId: selection.revision.id,
-            nativeAgentId: session.nativeAgentId,
-            toolGrant,
-          },
-          (reserved) => audit("admitted", reserved),
-        );
-      } else if (mutate) {
-        await options.auditSink.append(audit("admitted"));
-      }
-      async function bind(
-        ownership: Readonly<AgentAutomationOwnership>,
-        nativeJobId: string,
-      ): Promise<Readonly<AgentAutomationOwnership> & BoundAutomation> {
-        await assertCurrent();
-        return controller.bindAgentAutomation(
-          context.actorId,
-          { namespaceId, agentId, id: ownership.id, nativeJobId, requireOperate: create },
-          (bound, action) => audit("bound", bound, action),
-        );
-      }
-      async function resolved(): Promise<BoundAutomation> {
-        if (!record) {
-          throw dependencyUnavailable();
-        }
-        const nativeJobId = await session.resolve(record);
-        if (record.nativeJobId === null) {
-          record = await bind(record, nativeJobId);
-        }
-        if (record.nativeJobId !== nativeJobId) {
-          throw dependencyUnavailable();
-        }
-        return { ...record, nativeJobId };
-      }
-      const result = await match(operation)
-        .with("createAgentAutomation", async () => {
-          const input = body as unknown as AgentAutomationCreateInput;
-          const created = await session.create(record!.id, input, record!.toolGrant);
-          committed = true;
-          const bound = await bind(record!, created.nativeJobId);
-          record = bound;
-          // Native creation is disabled until the durable binding can authorize post-deletion history.
-          return input.enabled
-            ? session.update(bound, {
-                enabled: true,
-                expectedConfigRevision: created.job.configRevision,
-              })
-            : created.job;
-        })
-        .with("getAgentAutomation", async () => session.get(await resolved()))
-        .with("updateAgentAutomation", async () =>
-          session.update(await resolved(), body as unknown as AgentAutomationUpdateInput),
-        )
-        .with("deleteAgentAutomation", async () => {
-          await session.remove(await resolved(), query.expectedConfigRevision!, administer);
-          committed = true;
-          record = await controller.retireAgentAutomation(
-            context.actorId,
-            { namespaceId, agentId, id: record!.id },
-            (retired, action) => audit("retired", retired, action),
-          );
-        })
-        .with("listAgentAutomationRuns", async () => session.runs(await resolved(), offset, limit))
-        .with("listAgentAutomations", async () => {
-          const inventory = await session.list(owned);
-          const byId = new Map(owned.map((entry) => [entry.id, entry]));
-          for (const entry of inventory.entries) {
-            const ownership = byId.get(entry.id)!;
-            if (ownership.nativeJobId === null) {
-              await bind(ownership, entry.nativeJobId);
-            } else if (ownership.nativeJobId !== entry.nativeJobId) {
-              throw dependencyUnavailable();
-            }
+    throw dependencyUnavailable();
+  } finally {
+    signal.removeEventListener("abort", abort);
+    client.stop();
+    await client.stopAndWait({ timeoutMs: 1_000 }).catch(() => undefined);
+  }
+}
+
+export async function relayAgentAutomation(input: {
+  controller: OpenClawController;
+  installationId: string;
+  actorId: string;
+  operation: OccApiRoute;
+  request: FastifyRequest;
+  reply: FastifyReply;
+  gatewayApiKey: (() => Promise<string>) | undefined;
+  auditMutation: (reason?: string) => Promise<void>;
+}): Promise<void> {
+  const { controller, request, reply, operation } = input;
+  const p = request.params as Record<string, string>;
+  const q = request.query as Record<string, string | undefined>;
+  const body = request.body as Record<string, unknown> | undefined;
+  const selection = await controller.getAdministerableActiveAgentRevision(
+    input.actorId,
+    p.namespaceId!,
+    p.agentId!,
+  );
+  if (selection.agent.desiredRuntimeState !== "running" || input.gatewayApiKey === undefined) {
+    throw dependencyUnavailable();
+  }
+  const compute = controller.selectedDriver("compute");
+  if (
+    compute.id !== selection.revision.compute.id ||
+    compute.implementation !== selection.revision.compute.implementation
+  ) {
+    throw dependencyUnavailable();
+  }
+  const transport = await compute.getGatewayBrowserRequest?.(
+    selection.revision,
+    { installationId: input.installationId, principalId: input.actorId, mode: "admin" },
+    AbortSignal.timeout(15_000),
+  );
+  if (transport === undefined) {
+    throw dependencyUnavailable();
+  }
+  const key = await input.gatewayApiKey();
+  if (!key) {
+    throw dependencyUnavailable();
+  }
+  const id = operation.operationId;
+  if (!isAgentAutomationOperation(id)) {
+    throw dependencyUnavailable();
+  }
+  const mutation =
+    id === "createAgentAutomation" ||
+    id === "updateAgentAutomation" ||
+    id === "deleteAgentAutomation";
+  const page = { offset: Number(q.offset ?? 0), limit: Number(q.limit ?? 100) };
+  let result: unknown;
+  try {
+    result = await nativeRequest(
+      transport.endpoint,
+      { ...transport.headers, "x-api-key": key },
+      methods[id],
+      mutation,
+      (nativeAgentId) => {
+        switch (id) {
+          case "createAgentAutomation":
+            return {
+              agentId: nativeAgentId,
+              name: body!.name,
+              enabled: body!.enabled,
+              schedule: body!.schedule,
+              sessionTarget: "isolated",
+              wakeMode: "now",
+              payload: { kind: "agentTurn", message: body!.prompt },
+              delivery: { mode: "none" },
+            };
+          case "listAgentAutomations":
+            return { includeDisabled: true, includeDeliveryPreviews: false, ...page };
+          case "getAgentAutomation":
+            return { id: p.automationId };
+          case "updateAgentAutomation": {
+            const patch = {
+              ...(body!.name === undefined ? {} : { name: body!.name }),
+              ...(body!.enabled === undefined ? {} : { enabled: body!.enabled }),
+              ...(body!.schedule === undefined ? {} : { schedule: body!.schedule }),
+              ...(body!.prompt === undefined
+                ? {}
+                : { payload: { kind: "agentTurn", message: body!.prompt } }),
+            };
+            return {
+              id: p.automationId,
+              patch,
+              expectedConfigRevision: body!.expectedConfigRevision,
+            };
           }
-          const jobs = inventory.entries
-            .map((entry) => entry.summary)
-            .sort((a, b) => a.id.localeCompare(b.id));
-          const total = jobs.length;
-          const snapshotRevision = createHash("sha256").update(JSON.stringify(jobs)).digest("hex");
-          const page = jobs.slice(offset, offset + limit);
-          return {
-            jobs: page,
-            pendingReservations: [],
-            total,
-            nextOffset: offset + page.length < total ? offset + page.length : null,
-            snapshotRevision,
-          };
-        })
-        .exhaustive();
-      committed = mutate;
-      await assertCurrent();
-      if (mutate) {
-        await options.auditSink.append(audit("success"));
-      }
-      if (operation === "deleteAgentAutomation") {
-        reply.code(204).send();
-      } else {
-        if (create && record) {
-          reply.header("location", location(record.id));
+          case "deleteAgentAutomation":
+            return { id: p.automationId, expectedConfigRevision: q.expectedConfigRevision };
+          case "listAgentAutomationRuns":
+            return { id: p.automationId, ...page };
         }
-        reply.code(create ? 201 : 200).send({ data: result, meta: { requestId: request.id } });
+      },
+    );
+    if (id === "createAgentAutomation") {
+      const acknowledgement = asRecord(result);
+      const job = asRecord(acknowledgement?.job);
+      if (acknowledgement?.created !== true || typeof job?.id !== "string" || !job.id) {
+        throw unknownOutcome();
       }
-    } catch (caught) {
-      let error = caught;
-      if (create && !committed && record && error instanceof AutomationCreateNotCommittedError) {
-        try {
-          await controller.discardUnboundAgentAutomation(
-            context.actorId,
-            { namespaceId, agentId, id: record.id },
-            (discarded) => audit("discarded", discarded),
-          );
-        } catch (cleanupError) {
-          options.logAuditFailure(request, cleanupError);
-          throw dependencyUnavailable();
-        }
-        error = error.cause;
-      }
-      if (committed || (error instanceof AutomationGatewayError && error.code === "unknown")) {
-        if (record) {
-          reply.header("location", location(record.id));
-        }
-        try {
-          await options.auditSink.append(audit("unknown"));
-        } catch (auditError) {
-          options.logAuditFailure(request, auditError);
-        }
-        throw failure(
-          503,
-          "UNKNOWN_OUTCOME",
-          "The automation mutation outcome is unknown. Refresh the automation inventory before deciding whether to retry.",
-        );
-      }
-      if (
-        operation === "deleteAgentAutomation" &&
-        record?.nativeJobId &&
-        error instanceof AutomationGatewayError &&
-        error.code === "missing"
-      ) {
-        // Native one-shot deletion can precede an OCC delete. Retire the grant
-        // after definite absence so retained history cannot block deployment.
-        await controller.retireAgentAutomation(
-          context.actorId,
-          { namespaceId, agentId, id: record.id },
-          (retired, action) => audit("retired", retired, action),
-        );
-      }
-      if (error instanceof AutomationGatewayError) {
-        throw match(error.code)
-          .with("missing", () => failure(404, "NOT_FOUND", "The automation was not found."))
-          .with("invalid", () =>
-            failure(400, "INVALID_REQUEST", "The native scheduler refused the automation request."),
-          )
-          .with("conflict", () =>
-            failure(
-              409,
-              "RESOURCE_CONFLICT",
-              "The automation or inventory changed. Refresh before retrying.",
-            ),
-          )
-          .with("unsupported", () =>
-            failure(409, "RESOURCE_CONFLICT", "The automation has an unsupported configuration."),
-          )
-          .with("unavailable", () => dependencyUnavailable())
-          .with("unqualified", unqualified)
-          .with("unknown", () =>
-            failure(503, "UNKNOWN_OUTCOME", "The automation mutation outcome is unknown."),
-          )
-          .exhaustive();
-      }
-      throw error;
-    } finally {
-      request.raw.removeListener("aborted", disconnect);
-      reply.raw.removeListener("close", disconnect);
-      await native?.close();
+      result = job;
     }
-  };
-  return {
-    createAgentAutomation: handle,
-    listAgentAutomations: handle,
-    getAgentAutomation: handle,
-    updateAgentAutomation: handle,
-    deleteAgentAutomation: handle,
-    listAgentAutomationRuns: handle,
-  };
+    if (!asRecord(result)) {
+      throw mutation ? unknownOutcome() : dependencyUnavailable();
+    }
+    if (mutation) {
+      if (id === "deleteAgentAutomation" && asRecord(result)?.removed !== true) {
+        throw unknownOutcome();
+      }
+      try {
+        await input.auditMutation();
+      } catch {
+        throw unknownOutcome();
+      }
+    }
+  } catch (error) {
+    if (mutation && asRecord(error)?.code === "UNKNOWN_OUTCOME") {
+      await input.auditMutation("UNKNOWN_OUTCOME").catch(() => undefined);
+    }
+    throw error;
+  }
+  if (id === "deleteAgentAutomation") {
+    reply.status(204).send();
+    return;
+  }
+  reply
+    .status(id === "createAgentAutomation" ? 201 : 200)
+    .send({ data: result, meta: { requestId: request.id } });
 }

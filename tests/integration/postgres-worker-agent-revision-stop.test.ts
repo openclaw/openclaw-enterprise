@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after, type TestContext, type TestOptions } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { AuditEventFactory } from "../../packages/audit/src/index.ts";
 import type { QueryResult } from "pg";
 import type {
   Agent,
@@ -1798,43 +1797,6 @@ test(
       fixture.work(siblingRevision, "succeeded"),
     ]);
 
-    // Real broker reservations must follow Agent deletion through the worker and
-    // database finalizer; deleting one Agent must retain the sibling's ownership.
-    const automationAudit = new AuditEventFactory();
-    Object.assign(fixture.controller.selectedDriver("compute"), {
-      async evaluateAgentAutomationPolicy() {
-        return { grant: { tools: [] }, bindings: [] };
-      },
-    });
-    const automationOwnership = [];
-    for (const [agent, revision] of [
-      [owner, targetRevision],
-      [sibling, siblingRevision],
-    ] as const) {
-      automationOwnership.push(
-        await fixture.controller.reserveAgentAutomation(
-          fixture.actor.id,
-          {
-            namespaceId: fixture.namespace.id,
-            agentId: agent.id,
-            revisionId: revision.id,
-            nativeAgentId: "main",
-            toolGrant: { tools: [] },
-          },
-          (record) =>
-            automationAudit.create({
-              installationId: fixture.controller.installation.id,
-              namespaceId: fixture.namespace.id,
-              actorId: fixture.actor.id,
-              kind: "mutation",
-              action: "openclaw.agents.automations.create.admitted",
-              resource: { kind: "agent", id: agent.id, namespaceId: fixture.namespace.id },
-              details: { jobId: record.id, revisionId: revision.id },
-            }),
-        ),
-      );
-    }
-
     // Use an exact Namespace-local role so the binding is realistic and the
     // finalizer must remove it without relying on a foreign-key cascade.
     const revisionRoleId = `role-${randomUUID()}`;
@@ -1904,18 +1866,6 @@ test(
     assert.equal(survivingAgent?.activeRevisionId, siblingRevision.id);
     assert.equal(survivingRevision?.id, siblingRevision.id);
     assert.equal(survivingConfiguration?.id, owner.configurationId);
-    assert.deepEqual(
-      await fixture.state.read((view) =>
-        view.agentAutomations.list(fixture.namespace.id, owner.id),
-      ),
-      [],
-    );
-    assert.deepEqual(
-      await fixture.state.read((view) =>
-        view.agentAutomations.list(fixture.namespace.id, sibling.id),
-      ),
-      [automationOwnership[1]],
-    );
     assert.deepEqual(
       retiredRevisions.filter((id) => id === targetRevision.id),
       [targetRevision.id, targetRevision.id],

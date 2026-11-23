@@ -145,25 +145,6 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ .Release.Name }}-openclaw-tenant-automation-observer
-rules:
-  # Verify the revision-owned automation route, endpoint, and egress policy.
-  - apiGroups: [""]
-    resources: [services]
-    verbs: [get]
-  - apiGroups: [gateway.networking.k8s.io]
-    resources: [httproutes]
-    verbs: [get]
-  - apiGroups: [discovery.k8s.io]
-    resources: [endpointslices]
-    verbs: [list]
-  - apiGroups: [networking.k8s.io]
-    resources: [networkpolicies]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
   name: {{ .Release.Name }}-openclaw-tenant-configuration
 rules:
   - apiGroups: [""]

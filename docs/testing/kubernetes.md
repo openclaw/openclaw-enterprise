@@ -293,23 +293,21 @@ TLS and SHA-256 checks stay enabled.
 
 ### Native workspace identity
 
-Prepare native/Envoy images (`OCC_TEST_RUNTIME_IMAGE`, `OCC_TEST_WORKSPACE_ENVOY_IMAGE`)
-and a fresh [migrated disposable database](postgresql.md#other-postgresql-suites)
-(`OCC_TEST_DATABASE_URL`) using the limited application role:
+Prepare native runtime and Envoy images, then set both `OCC_TEST_RUNTIME_IMAGE`
+and `OCC_TEST_WORKSPACE_ENVOY_IMAGE`:
 
 ```sh
 node --test tests/integration/workspace-files-native.test.ts
 ```
 
-Checks file access, PostgreSQL ownership, ControllerWorker reconciliation and Docker
-Gateway replacement; no model calls. Compute is a fixture; OCC restart and
-Kubernetes routing/cutover remain unproved. Partial image selection fails.
+This checks file access without model calls. It does not prove Kubernetes
+routing policies, PostgreSQL or worker execution. Selecting only one image fails.
 
 ### Native Gateway sharing
 
-`gateway-routing` checks native browser access, `agent:operate` chat,
+The `gateway-routing` lane checks native browser access, `agent:operate` chat,
 administration denial, and WebSocket closure after permission withdrawal or
-session expiry. Combined QA adds real Keycloak sign-in. See
+session expiry. Its combined QA journey adds real Keycloak sign-in. See
 [Native Agent browser tests](native-agent-browser.md) for selection, prerequisites,
 cleanup, and proof boundaries. These tests do not qualify automatic account
 enrollment, Git, or OpenShell.
@@ -478,16 +476,11 @@ Create a private JSON fixture with `apiUrl` (loopback), `serviceKeyFile`,
 `dockerContext` (an explicit local Unix-socket context), `agentConfiguration`
 (the dedicated native Configuration create body), and `control` and `execution`
 objects. Each object needs `kubeconfigPath`, `kubernetesContext`, `release`, and
-`systemNamespace`. Set `harnessAuthMethod` to `api_key` (default) or `codex_pat`.
-For `api_key`, prefer `OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE` pointing to a private
-regular file; `OPENAI_API_KEY` is an alternative. For `codex_pat`, use
-`CODEX_ACCESS_TOKEN`. Select exactly one source; mixed sources are refused. Never
-put credentials in the fixture. The helper removes credential environment variables
-before starting host kubectl or Docker processes. Runtime credential projection
-goes only to the dedicated Agent workload. The pass covers only the selected method.
+`systemNamespace`. Set `harnessAuthMethod` to `api_key` (default) or `codex_pat`;
+provide its credential through `OPENAI_API_KEY` or `CODEX_ACCESS_TOKEN`, not the
+fixture. The pass covers only the selected method.
 
 ```sh
-OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE=/private/path/model.key \
 OCC_TEST_TWO_CLUSTER_CONFIG=/private/path/two-cluster.json \
   node --test tests/integration/kubernetes-two-cluster-real.test.mjs
 ```

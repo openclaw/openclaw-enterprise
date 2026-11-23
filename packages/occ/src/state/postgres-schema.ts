@@ -1,7 +1,6 @@
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
-  AgentAutomationToolGrant,
   InitialWorkspaceFiles,
   ProtectedEgressSource,
   EgressInstallation,
@@ -2936,59 +2935,5 @@ export const nativeBrowserHandles = occSchema.table(
     ),
     index("native_browser_handle_parent").on(table.parentSessionId),
     index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
-  ],
-);
-
-export const agentAutomations = occSchema.table(
-  "agent_automations",
-  {
-    id: uuid("id").primaryKey(),
-    namespaceId: text("namespace_id").notNull(),
-    agentId: text("agent_id").notNull(),
-    creatorPrincipalId: text("creator_principal_id").notNull(),
-    nativeAgentId: text("native_agent_id").notNull(),
-    nativeJobId: text("native_job_id"),
-    toolGrant: jsonb("tool_grant").$type<AgentAutomationToolGrant>().notNull(),
-    retiredAt: timestamp("retired_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  },
-  (table) => [
-    foreignKey({
-      name: "agent_automations_agent_owner",
-      columns: [table.namespaceId, table.agentId],
-      foreignColumns: [agents.namespaceId, agents.id],
-    })
-      .onDelete("cascade")
-      .onUpdate("restrict"),
-    check(
-      "agent_automations_retirement_valid",
-      sql`${table.retiredAt} IS NULL OR ${table.nativeJobId} IS NOT NULL`,
-    ),
-    check(
-      "agent_automations_tool_grant_valid",
-      sql`occ.valid_agent_automation_tool_grant(${table.toolGrant})`,
-    ),
-    check(
-      "agent_automations_creator_valid",
-      sql`char_length(${table.creatorPrincipalId}) BETWEEN 1 AND 200 AND ${table.creatorPrincipalId} = btrim(${table.creatorPrincipalId}) AND ${table.creatorPrincipalId} !~ '[[:cntrl:]]'`,
-    ),
-    check(
-      "agent_automations_native_agent_valid",
-      sql`${table.nativeAgentId} ~ '^[a-z0-9][a-z0-9_-]{0,63}$'`,
-    ),
-    unique("agent_automations_native_identity").on(
-      table.namespaceId,
-      table.agentId,
-      table.nativeJobId,
-    ),
-    check(
-      "agent_automations_native_job_valid",
-      sql`${table.nativeJobId} IS NULL OR (char_length(${table.nativeJobId}) BETWEEN 1 AND 128 AND ${table.nativeJobId} = btrim(${table.nativeJobId}) AND ${table.nativeJobId} !~ '[[:cntrl:]]')`,
-    ),
-    index("agent_automations_agent_creator").on(
-      table.namespaceId,
-      table.agentId,
-      table.creatorPrincipalId,
-    ),
   ],
 );

@@ -4,16 +4,14 @@ Expose native Agent chat or administration on an isolated host through OCC. Requ
 
 ## Local development
 
-Manage [automations](../agent-automations.md) through OCC.
-
 Local setup prepares private routing and the browser endpoint. When you
 [create an Agent in the console](../../reference/console/create-and-deploy.md),
 select **Enable browser chat** before **Create Agent**. After deployment,
 select **Open chat** with `operate` permission or **Open Agent UI** with
 `administer` permission on that exact Agent.
 
-Ordinary creation and guided provisioning require Installation native access;
-see [creation requirements](../../reference/agent-native-admin.md#enable-during-creation).
+The checkbox supports ordinary creation and guided provisioning after Installation
+native access is enabled; see [creation requirements](../../reference/agent-native-admin.md#enable-during-creation).
 For an existing Agent, follow [Configure each Agent](#configure-each-agent).
 
 The [local OpenShell quickstart](local-setup.md) includes native admin setup,

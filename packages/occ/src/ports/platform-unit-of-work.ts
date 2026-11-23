@@ -1,4 +1,3 @@
-import type { AgentAutomationRepository } from "./agent-automations.ts";
 import type { EgressSendReceiptRepository } from "../egress-send-receipts.ts";
 import type { AgentProvisioningRepository } from "./agent-provisioning.ts";
 import type {
@@ -34,7 +33,6 @@ export interface PlatformAuditRepository {
 }
 
 export interface PlatformUnitOfWork extends PlatformReadView {
-  readonly agentAutomations: AgentAutomationRepository;
   readonly preparedTokenProof: PreparedTokenCurrentProof;
   readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly sandboxPolicies: SandboxPolicyRepository;
@@ -64,14 +62,6 @@ export function bindPlatformUnitOfWork(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformUnitOfWork {
   return Object.freeze({
-    agentAutomations: bindRepository(repositories.agentAutomations, lifetime, [
-      "find",
-      "list",
-      "create",
-      "bind",
-      "retire",
-      "discardUnbound",
-    ]),
     preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
     egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [
       "find",

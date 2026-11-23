@@ -53,13 +53,7 @@ function launchSelected(options: GatewayOptions = {}, useProfile = true) {
       OPENCLAW_REMOTE_WORKSPACE_ROOT: root,
       ...options.env,
     },
-    gatewayEntrypoint: gatewayRuntimeEntrypoint(
-      true,
-      undefined,
-      false,
-      undefined,
-      useProfile ? profile : undefined,
-    ),
+    gatewayEntrypoint: gatewayRuntimeEntrypoint(true, useProfile ? profile : undefined),
     setTimeout: () => ({ unref() {} }),
   });
 }

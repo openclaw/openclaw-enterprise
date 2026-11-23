@@ -29,7 +29,8 @@ requests and explains the responses. Use the [interactive API reference](api-exp
 to inspect paths, schemas, permissions, error codes, and examples. The
 [Markdown reference](api.md) provides a text-only view for browsing and site search.
 Both use the generated [OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).
-Follow [create and deploy an Agent](../guides/http-api-agent.md) for the complete workflow.
+Follow [create and deploy an Agent](../guides/http-api-agent.md) for the complete workflow. Use the
+[Agent automation API](agent-automations.md) to manage native cron jobs.
 
 ## Metrics
 
@@ -52,8 +53,6 @@ pool/schema ownership for controller authentication.
 - [Agent Presets](presets.md) defines reusable launch settings, variables, and CRUD permissions.
 - [Agent native admin UI](agent-native-admin.md) covers trusted operator access,
   exact Agent authorization, and routing limits.
-- [Agent automations](agent-automations.md) defines scheduling, creator ownership
-  and native execution through the OCC broker.
 
 <span id="drivers"></span>
 

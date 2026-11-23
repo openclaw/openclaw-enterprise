@@ -1,8 +1,4 @@
-import type {
-  AgentAutomationOwnership,
-  RepositoryNetworkGrant,
-} from "@openclaw-enterprise/contracts";
-import type { BindAgentAutomationInput, ReserveAgentAutomationInput } from "./agent-automations.ts";
+import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
   createControllerComposition,
   type ControllerComposition,
@@ -404,81 +400,6 @@ export class OpenClawController {
     readonly endpoint: AgentChatCompletionsResolution;
   }> {
     return this.composition.agentQueries.resolveAgentChat(principalId, agentId, namespaceScope);
-  }
-
-  async reserveAgentAutomation(
-    principalId: string,
-    input: ReserveAgentAutomationInput,
-    audit: (record: Readonly<AgentAutomationOwnership>) => AuditEvent,
-  ) {
-    return this.composition.agentAutomations.reserve(principalId, input, audit);
-  }
-
-  async bindAgentAutomation(
-    principalId: string,
-    input: BindAgentAutomationInput,
-    audit: (
-      record: Readonly<AgentAutomationOwnership>,
-      action: "operate" | "administer",
-    ) => AuditEvent,
-  ) {
-    return this.composition.agentAutomations.bind(principalId, input, audit);
-  }
-
-  async discardUnboundAgentAutomation(
-    principalId: string,
-    input: Pick<BindAgentAutomationInput, "namespaceId" | "agentId" | "id">,
-    audit: (record: Readonly<AgentAutomationOwnership>) => AuditEvent,
-  ) {
-    return this.composition.agentAutomations.discardUnbound(principalId, input, audit);
-  }
-
-  async cancelUnboundAgentAutomation(
-    principalId: string,
-    input: Pick<BindAgentAutomationInput, "namespaceId" | "agentId" | "id">,
-    audit: (
-      record: Readonly<AgentAutomationOwnership>,
-      action: "operate" | "administer",
-    ) => AuditEvent,
-  ) {
-    return this.composition.agentAutomations.cancelUnbound(principalId, input, audit);
-  }
-
-  async retireAgentAutomation(
-    principalId: string,
-    input: Pick<BindAgentAutomationInput, "namespaceId" | "agentId" | "id">,
-    audit: (
-      record: Readonly<AgentAutomationOwnership>,
-      action: "operate" | "administer",
-    ) => AuditEvent,
-  ) {
-    return this.composition.agentAutomations.retire(principalId, input, audit);
-  }
-
-  async listAgentAutomationOwnership(principalId: string, namespaceId: string, agentId: string) {
-    return this.composition.agentAutomations.list(principalId, namespaceId, agentId);
-  }
-
-  async getAgentAutomationOwnership(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-    id: string,
-  ) {
-    return this.composition.agentAutomations.get(principalId, namespaceId, agentId, id);
-  }
-
-  async getOperableAgent(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<Agent>> {
-    return this.composition.agentQueries.getAuthorizedAgent(
-      principalId,
-      namespaceId,
-      agentId,
-      "operate",
-    );
   }
 
   async getAdministerableAgent(

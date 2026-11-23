@@ -9,8 +9,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Run QA on disposable Compose/Kubernetes installations with real dependencies.
-Results gate neither merge nor publication.
+QA covers Console Secrets, OpenShell security and lifecycle, local installation,
+OIDC Agent chat and native Agent browsing on disposable Compose/Kubernetes
+installations with real dependencies. Results gate neither merge nor publication.
 
 <a id="when-it-runs"></a>
 
@@ -29,9 +30,8 @@ Results gate neither merge nor publication.
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
 are ineligible. Narrow labels select their union. `full-qa` runs Codex
-`console-secrets`, Compose `agent-audit`, and `http-chat` and `agent-automations`
-in both presets and placements. Compose checks native redeployment and required
-workers on Kubernetes.
+`console-secrets`, Compose `agent-audit`, and `http-chat` in both presets and
+placements. Compose checks native redeployment and required workers on Kubernetes.
 
 New commits replace opted-in merge-commit runs. Unrelated labels leave runs
 unchanged. Remove QA labels before pushing unreviewed code. Active runs and
@@ -52,8 +52,9 @@ jobs use [`integration-qa-pr`](configuration.md#environments).
 
 ## Scenarios
 
-The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) preserves clusters
-and kubeconfig, and checks OpenClaw’s Google Workspace and Codex’s Linear catalogs.
+The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) preserves existing
+clusters and kubeconfig. Setup checks Google Workspace for OpenClaw and Linear
+for Codex.
 
 | Scenario                         | In advisory          | Presets         | Checks                                                                                                                                                                           |
 | -------------------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -63,7 +64,6 @@ and kubeconfig, and checks OpenClaw’s Google Workspace and Codex’s Linear ca
 | `scratch-volume`                 | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
 | `oidc-agent-chat`                | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
 | `console-secrets`                | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
-| `agent-automations`              | Yes                  | OpenClaw, Codex | Scheduling, history, replacement, and [anonymous HTTPS MCP parity](../docker.md#verify-automation-mcp-parity).                                                                   |
 | `agent-audit`                    | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
 | `git-write`                      | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
 | `git-push-denied`                | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |

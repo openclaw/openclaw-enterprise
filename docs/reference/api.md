@@ -65,7 +65,7 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "AUTOMATIONS_UNQUALIFIED" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP" or "INVALID_RANGE" or "OUTSIDE_CEILING"` | Yes | — |
 | `error.details[].message` | `string` | No | max length: 512 |
@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 55 operations |
+| [Agents](#agents) | 61 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -99,7 +99,6 @@ the paths.
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
 | [Service accounts](#service-accounts) | 6 operations |
-| [Agent automations](#agent-automations) | 6 operations |
 
 ## Operations
 
@@ -4460,6 +4459,12 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List an Agent's native cron automations |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Create a native cron automation for an Agent |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete a native cron automation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Get a native cron automation |
+| [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Update a native cron automation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | List native execution history for a cron automation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credentials/push`](#post-namespacesnamespaceidagentsagentidcredentialspush) | Retry delivery for selected deployed Agent credential sources |
@@ -6376,6 +6381,394 @@ Example response
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"
     }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations`
+
+<span id="get-namespacesnamespaceidagentsagentidautomations"></span>
+
+List an Agent's native cron automations
+
+**Operation ID:** `listAgentAutomations`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
+| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "jobs": [],
+    "nextOffset": null,
+    "total": 0
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/automations`
+
+<span id="post-namespacesnamespaceidagentsagentidautomations"></span>
+
+Create a native cron automation for an Agent
+
+**Operation ID:** `createAgentAutomation`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | Yes | — |
+| `name` | `string` | Yes | min length: 1; max length: 200 |
+| `prompt` | `string` | Yes | min length: 1; max length: 16384 |
+| `schedule` | `object or object or object` | Yes | — |
+
+Example request
+```json
+{
+  "enabled": true,
+  "name": "Morning report",
+  "prompt": "Prepare a report.",
+  "schedule": {
+    "expr": "0 9 * * *",
+    "kind": "cron",
+    "tz": "UTC"
+  }
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "revision-1",
+    "enabled": true,
+    "id": "cron-example",
+    "name": "Morning report",
+    "payload": {
+      "kind": "agentTurn",
+      "message": "Prepare a report."
+    },
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "tz": "UTC"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="delete-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Delete a native cron automation
+
+**Operation ID:** `deleteAgentAutomation`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `expectedConfigRevision` | query | `string` | Yes | min length: 1; max length: 128 | "revision-1" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="get-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Get a native cron automation
+
+**Operation ID:** `getAgentAutomation`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "revision-1",
+    "enabled": true,
+    "id": "cron-example",
+    "name": "Morning report",
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "tz": "UTC"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="patch-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Update a native cron automation
+
+**Operation ID:** `updateAgentAutomation`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | No | — |
+| `expectedConfigRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `name` | `string` | No | min length: 1; max length: 200 |
+| `prompt` | `string` | No | min length: 1; max length: 16384 |
+| `schedule` | `object or object or object` | No | — |
+
+Example request
+```json
+{
+  "enabled": false,
+  "expectedConfigRevision": "revision-1"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "revision-2",
+    "enabled": false,
+    "id": "cron-example",
+    "name": "Morning report"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`
+
+<span id="get-namespacesnamespaceidagentsagentidautomationsautomationidruns"></span>
+
+List native execution history for a cron automation
+
+**Operation ID:** `listAgentAutomationRuns`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
+| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "entries": [],
+    "nextOffset": null,
+    "total": 0
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -13808,491 +14201,6 @@ Example response
     "id": "sa_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model service account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-<span id="agent-automations"></span>
-
-### Agent automations
-
-| Operation | Summary |
-| --- | --- |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List authorized Agent automations or pending reservations |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Create a scheduled Agent automation |
-| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete an Agent automation or cancel a pending reservation |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Read a managed Agent automation |
-| [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Update an Agent automation |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | Read authorized Agent automation history |
-
-#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations`
-
-<span id="get-namespacesnamespaceidagentsagentidautomations"></span>
-
-List authorized Agent automations or pending reservations
-
-**Operation ID:** `listAgentAutomations`
-
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
-| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
-| `view` | query | `"pending"` | No | — | "pending" |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.jobs` | `array<object or object>` | Yes | — |
-| `data.nextOffset` | `integer or null` | Yes | — |
-| `data.pendingReservations` | `array<object>` | Yes | max items: 100 |
-| `data.pendingReservations[].configRevision` | `string` | Yes | pattern: `^reservation:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$` |
-| `data.pendingReservations[].createdAt` | `string (date-time)` | Yes | — |
-| `data.pendingReservations[].id` | `string (uuid)` | Yes | — |
-| `data.pendingReservations[].status` | `"pending"` | Yes | — |
-| `data.snapshotRevision` | `string` | Yes | min length: 1; max length: 128 |
-| `data.total` | `integer` | Yes | minimum: 0 |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "jobs": [
-      {
-        "configRevision": "observed-native-revision",
-        "enabled": true,
-        "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
-        "lastRunStatus": null,
-        "name": "Daily report",
-        "nextRunAtMs": 1795276800000,
-        "schedule": {
-          "expr": "0 9 * * *",
-          "kind": "cron",
-          "staggerMs": 0,
-          "tz": "America/Los_Angeles"
-        }
-      }
-    ],
-    "nextOffset": null,
-    "pendingReservations": [],
-    "snapshotRevision": "example-inventory-revision",
-    "total": 1
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /namespaces/{namespaceId}/agents/{agentId}/automations`
-
-<span id="post-namespacesnamespaceidagentsagentidautomations"></span>
-
-Create a scheduled Agent automation
-
-**Operation ID:** `createAgentAutomation`
-
-**Permissions:** Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `operate` | `agent` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | Yes | — |
-| `name` | `string` | Yes | min length: 1; max length: 200 |
-| `prompt` | `string` | Yes | min length: 1; max length: 16384 |
-| `schedule` | `object or object or object` | Yes | — |
-
-Example request
-```json
-{
-  "enabled": true,
-  "name": "Daily report",
-  "prompt": "Generate the daily report",
-  "schedule": {
-    "expr": "0 9 * * *",
-    "kind": "cron",
-    "tz": "America/Los_Angeles"
-  }
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `201` | Created automation |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity. |
-
-**`201` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
-| `data.enabled` | `boolean` | Yes | — |
-| `data.id` | `string (uuid)` | Yes | — |
-| `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
-| `data.name` | `string` | Yes | min length: 1; max length: 200 |
-| `data.nextRunAtMs` | `integer or null` | Yes | — |
-| `data.prompt` | `string` | Yes | min length: 1; max length: 16384 |
-| `data.schedule` | `object or object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "configRevision": "observed-native-revision",
-    "enabled": true,
-    "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
-    "lastRunStatus": null,
-    "name": "Daily report",
-    "nextRunAtMs": 1795276800000,
-    "prompt": "Generate the daily report",
-    "schedule": {
-      "expr": "0 9 * * *",
-      "kind": "cron",
-      "staggerMs": 0,
-      "tz": "America/Los_Angeles"
-    }
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
-
-<span id="delete-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
-
-Delete an Agent automation or cancel a pending reservation
-
-**Operation ID:** `deleteAgentAutomation`
-
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `expectedConfigRevision` | query | `string` | Yes | min length: 1; max length: 128 | "observed-native-revision" |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity. |
-
-#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
-
-<span id="get-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
-
-Read a managed Agent automation
-
-**Operation ID:** `getAgentAutomation`
-
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
-| `data.enabled` | `boolean` | Yes | — |
-| `data.id` | `string (uuid)` | Yes | — |
-| `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
-| `data.name` | `string` | Yes | min length: 1; max length: 200 |
-| `data.nextRunAtMs` | `integer or null` | Yes | — |
-| `data.prompt` | `string` | Yes | min length: 1; max length: 16384 |
-| `data.schedule` | `object or object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "configRevision": "observed-native-revision",
-    "enabled": true,
-    "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
-    "lastRunStatus": null,
-    "name": "Daily report",
-    "nextRunAtMs": 1795276800000,
-    "prompt": "Generate the daily report",
-    "schedule": {
-      "expr": "0 9 * * *",
-      "kind": "cron",
-      "staggerMs": 0,
-      "tz": "America/Los_Angeles"
-    }
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
-
-<span id="patch-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
-
-Update an Agent automation
-
-**Operation ID:** `updateAgentAutomation`
-
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | No | — |
-| `expectedConfigRevision` | `string` | Yes | min length: 1; max length: 128 |
-| `name` | `string` | No | min length: 1; max length: 200 |
-| `prompt` | `string` | No | min length: 1; max length: 16384 |
-| `schedule` | `object or object or object` | No | — |
-
-Example request
-```json
-{
-  "enabled": false,
-  "expectedConfigRevision": "observed-native-revision"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
-| `data.enabled` | `boolean` | Yes | — |
-| `data.id` | `string (uuid)` | Yes | — |
-| `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
-| `data.name` | `string` | Yes | min length: 1; max length: 200 |
-| `data.nextRunAtMs` | `integer or null` | Yes | — |
-| `data.prompt` | `string` | Yes | min length: 1; max length: 16384 |
-| `data.schedule` | `object or object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "configRevision": "observed-native-revision",
-    "enabled": false,
-    "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
-    "lastRunStatus": null,
-    "name": "Daily report",
-    "nextRunAtMs": null,
-    "prompt": "Generate the daily report",
-    "schedule": {
-      "expr": "0 9 * * *",
-      "kind": "cron",
-      "staggerMs": 0,
-      "tz": "America/Los_Angeles"
-    }
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`
-
-<span id="get-namespacesnamespaceidagentsagentidautomationsautomationidruns"></span>
-
-Read authorized Agent automation history
-
-**Operation ID:** `listAgentAutomationRuns`
-
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
-| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.nextOffset` | `integer or null` | Yes | — |
-| `data.runs` | `array<object>` | Yes | — |
-| `data.runs[].completionStatus` | `"succeeded" or "failed" or "unknown" or null` | Yes | — |
-| `data.runs[].deliveryStatus` | `"delivered" or "not-delivered" or "not-requested" or "unknown" or null` | Yes | — |
-| `data.runs[].error` | `string` | No | — |
-| `data.runs[].finishedAtMs` | `integer or null` | Yes | — |
-| `data.runs[].runId` | `string` | Yes | min length: 1; max length: 200 |
-| `data.runs[].startedAtMs` | `integer or null` | Yes | — |
-| `data.runs[].status` | `"ok" or "error" or "skipped" or null` | Yes | — |
-| `data.runs[].summary` | `string` | No | — |
-| `data.total` | `integer` | Yes | minimum: 0 |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "nextOffset": null,
-    "runs": [],
-    "total": 0
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

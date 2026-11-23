@@ -1241,10 +1241,6 @@ async function prepareRuntimeSmokeCodexSeccompProfile(
     throw new Error("Codex seccomp preparation did not publish an absolute Docker profile path.");
   }
   env.OCC_TEST_CODEX_SECCOMP_PROFILE = seccomp.dockerProfilePath;
-  env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-  env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-  env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = runtimeImage.reference;
-  env.OCC_TEST_KUBERNETES_AGENT_IMAGE = runtimeImage.reference;
   env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE = seccomp.profileName;
   cluster.codexSeccompProfile = seccomp.profileName;
   cluster.codexSeccompProfiles = seccomp.nodes;
@@ -1306,13 +1302,6 @@ export async function prepareRuntimeImageSmoke({
     await markResourceReady(path, state, resource);
     await prepareNativeWorkspaceEnvoyImage(state, env);
     await prepareRuntimeSmokeCodexSeccompProfile(path, state, env);
-    await ensurePostgresServer(path, state);
-    const database = await createAndMigrateDatabase(path, state, {
-      kind: "ci",
-      label: "runtime_smoke",
-      requireExistingServer: true,
-    });
-    env.OCC_TEST_DATABASE_URL = database.appUrl;
     await saveLaneEnv(path, state, env);
     return { env, cleanup: () => cleanupResourceIds(path) };
   } catch (error) {
@@ -1585,7 +1574,6 @@ async function prepareLane({
       );
       Object.assign(env, built.env);
       if (name === "images-runtime-startup") {
-        await ensurePostgresServer(resolvedStatePath, state);
         await timedPreparation(name, "workspace-envoy-image", () =>
           prepareNativeWorkspaceEnvoyImage(state, env),
         );
@@ -2386,12 +2374,7 @@ async function prepareFileWithState({
     env.OCC_TEST_CI_POSTGRES_STATES = JSON.stringify(children);
   }
 
-  if (
-    prepare.postgres &&
-    !prepare.selfProvisionedFiles?.includes(relativeFile) &&
-    (name !== "images-runtime-startup" ||
-      relativeFile === "tests/integration/workspace-files-native.test.ts")
-  ) {
+  if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
     const dbKind = prepare.k3d ? "k8s" : "ci";
     const database = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: dbKind,
@@ -2418,12 +2401,6 @@ async function prepareFileWithState({
     if (name === "postgres-application" && relativeFile === nativeIAMBarrierFile) {
       env.OCC_TEST_NATIVE_IAM_BARRIER_CI = "1";
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;
-      env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
-    }
-    if (
-      name === "images-runtime-startup" &&
-      relativeFile === "tests/integration/workspace-files-native.test.ts"
-    ) {
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (

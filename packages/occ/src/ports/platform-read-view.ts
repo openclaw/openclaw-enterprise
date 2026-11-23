@@ -1,4 +1,3 @@
-import type { AgentAutomationReadRepository } from "./agent-automations.ts";
 import type { AgentProvisioningReadRepository } from "./agent-provisioning.ts";
 import type { AgentReadRepository, AgentRevisionReadRepository } from "./agent-reads.ts";
 import type { SandboxPolicyReadRepository, WorkspaceSetupReadRepository } from "./agents.ts";
@@ -20,7 +19,6 @@ import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
 
 export interface PlatformReadView {
-  readonly agentAutomations: AgentAutomationReadRepository;
   readonly sandboxPolicies: SandboxPolicyReadRepository;
   readonly installations: InstallationReadRepository;
   readonly namespaces: NamespaceReadRepository;
@@ -42,7 +40,6 @@ export interface PlatformReadView {
 }
 
 export const platformReadMethods = deepFreeze({
-  agentAutomations: ["find", "list"],
   sandboxPolicies: ["find"],
   operations: [
     "list",
@@ -153,7 +150,6 @@ export function createPlatformReadView(
     keys: readonly Key[],
   ) => bindRepository(repository, lifetime, keys);
   return Object.freeze({
-    agentAutomations: bind(repositories.agentAutomations, methods.agentAutomations),
     sandboxPolicies: Object.freeze({
       ...bind(repositories.sandboxPolicies, methods.sandboxPolicies),
       ...(repositories.sandboxPolicies.supportsRepositoryNetworkPolicy === true

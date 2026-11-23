@@ -22,18 +22,15 @@ import {
 } from "./model-providers.ts";
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
-import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
-  AgentAutomationResponse,
-  AgentAutomationListResponse,
-  AgentAutomationRunsResponse,
   AgentAutomationParams,
-  AgentAutomationPageQuery,
-  AgentAutomationListQuery,
   CreateAgentAutomationBody,
   UpdateAgentAutomationBody,
   DeleteAgentAutomationQuery,
+  AgentAutomationPageQuery,
+  AgentAutomationResponse,
 } from "./agent-automations.ts";
+import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -192,27 +189,6 @@ const mutationErrors = {
   409: ErrorResponseRef,
 } as const;
 
-const automationLocationHeader = {
-  Location: Type.String({
-    description:
-      "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
-  }),
-};
-const automationMutationErrors = {
-  ...createErrors,
-  503: {
-    description:
-      "Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity.",
-    headers: automationLocationHeader,
-    content: { "application/json": { schema: ErrorResponseRef } },
-  },
-};
-
-const automationDeleteErrors = {
-  ...mutationErrors,
-  503: automationMutationErrors[503],
-};
-
 const runtimeReadErrors = {
   ...readErrors,
   429: ErrorResponseRef,
@@ -232,111 +208,6 @@ const chatErrors = Object.fromEntries(
 );
 
 export const occApiRoutes = [
-  {
-    operationId: "createAgentAutomation",
-    method: "POST",
-    path: "/namespaces/:namespaceId/agents/:agentId/automations",
-    action: "openclaw.agents.automations.create",
-    iamAction: "operate",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "Create a scheduled Agent automation",
-    tags: ["Agent automations"],
-    schema: {
-      params: AgentParams,
-      querystring: EmptyQuery,
-      body: CreateAgentAutomationBody,
-      response: {
-        201: {
-          description: "Created automation",
-          headers: automationLocationHeader,
-          content: { "application/json": { schema: AgentAutomationResponse } },
-        },
-        ...automationMutationErrors,
-      },
-    },
-  },
-  {
-    operationId: "listAgentAutomations",
-    method: "GET",
-    path: "/namespaces/:namespaceId/agents/:agentId/automations",
-    action: "openclaw.agents.automations.list",
-    iamAction: "operate",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "List authorized Agent automations or pending reservations",
-    tags: ["Agent automations"],
-    schema: {
-      params: AgentParams,
-      querystring: AgentAutomationListQuery,
-      response: { 200: AgentAutomationListResponse, ...mutationErrors },
-    },
-  },
-  {
-    operationId: "getAgentAutomation",
-    method: "GET",
-    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
-    action: "openclaw.agents.automations.read",
-    iamAction: "operate",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "Read a managed Agent automation",
-    tags: ["Agent automations"],
-    schema: {
-      params: AgentAutomationParams,
-      querystring: EmptyQuery,
-      response: { 200: AgentAutomationResponse, ...mutationErrors },
-    },
-  },
-  {
-    operationId: "updateAgentAutomation",
-    method: "PATCH",
-    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
-    action: "openclaw.agents.automations.update",
-    iamAction: "operate",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "Update an Agent automation",
-    tags: ["Agent automations"],
-    schema: {
-      params: AgentAutomationParams,
-      querystring: EmptyQuery,
-      body: UpdateAgentAutomationBody,
-      response: { 200: AgentAutomationResponse, ...automationMutationErrors },
-    },
-  },
-  {
-    operationId: "deleteAgentAutomation",
-    method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
-    action: "openclaw.agents.automations.delete",
-    iamAction: "operate",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "Delete an Agent automation or cancel a pending reservation",
-    tags: ["Agent automations"],
-    schema: {
-      params: AgentAutomationParams,
-      querystring: DeleteAgentAutomationQuery,
-      response: { 204: Type.Null(), ...automationDeleteErrors },
-    },
-  },
-  {
-    operationId: "listAgentAutomationRuns",
-    method: "GET",
-    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId/runs",
-    action: "openclaw.agents.automations.runs.list",
-    iamAction: "operate",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "Read authorized Agent automation history",
-    tags: ["Agent automations"],
-    schema: {
-      params: AgentAutomationParams,
-      querystring: AgentAutomationPageQuery,
-      response: { 200: AgentAutomationRunsResponse, ...readErrors },
-    },
-  },
   {
     operationId: "chatWithAgent",
     method: "POST",
@@ -2204,6 +2075,104 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentReadResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "createAgentAutomation",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations",
+    action: "openclaw.agents.automations.create",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Create a native cron automation for an Agent",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: EmptyQuery,
+      body: CreateAgentAutomationBody,
+      response: { 201: AgentAutomationResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listAgentAutomations",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations",
+    action: "openclaw.agents.automations.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List an Agent's native cron automations",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: AgentAutomationPageQuery,
+      response: { 200: AgentAutomationResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getAgentAutomation",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
+    action: "openclaw.agents.automations.read",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Get a native cron automation",
+    tags: ["Agents"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: EmptyQuery,
+      response: { 200: AgentAutomationResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "updateAgentAutomation",
+    method: "PATCH",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
+    action: "openclaw.agents.automations.update",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Update a native cron automation",
+    tags: ["Agents"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: EmptyQuery,
+      body: UpdateAgentAutomationBody,
+      response: { 200: AgentAutomationResponse, ...mutationErrors },
+    },
+  },
+  {
+    operationId: "deleteAgentAutomation",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
+    action: "openclaw.agents.automations.delete",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Delete a native cron automation",
+    tags: ["Agents"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: DeleteAgentAutomationQuery,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
+    operationId: "listAgentAutomationRuns",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId/runs",
+    action: "openclaw.agents.automations.runs.read",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List native execution history for a cron automation",
+    tags: ["Agents"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: AgentAutomationPageQuery,
+      response: { 200: AgentAutomationResponse, ...readErrors },
     },
   },
   {

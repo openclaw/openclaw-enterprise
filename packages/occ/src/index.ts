@@ -429,10 +429,4 @@ export type {
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
 
-export type { BindAgentAutomationInput, ReserveAgentAutomationInput } from "./agent-automations.ts";
-
-export {
-  agentAutomationGrantSupported,
-  validAgentAutomationToolGrant,
-} from "./agent-automation-policy.ts";
 export { hasOnlyScopedRepositoryRevisions } from "./repository-network-policy.ts";

@@ -1,10 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
-import {
-  agentAutomationGrantSupported,
-  hasOnlyScopedRepositoryRevisions,
-  reduceCredentialPolicy,
-} from "@openclaw-enterprise/occ";
+import { hasOnlyScopedRepositoryRevisions, reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
@@ -5183,15 +5179,6 @@ export class ControllerWorker {
         }
         return;
       }
-      if (!(await this.automationAuthorityCurrent(claim, revision))) {
-        const code = "AUTOMATION_TOOL_GRANT_MISMATCH";
-        if (agent.activeRevisionId === revision.id) {
-          await this.finalizeActiveRevision(claim, revision, code);
-        } else {
-          await refuseAdmission({ outcome: "permanent", code });
-        }
-        return;
-      }
       if (this.compute.bindAgent !== undefined) {
         try {
           await this.withRevisionDispatch(claim, revision, async () => {
@@ -7794,28 +7781,6 @@ export class ControllerWorker {
       }
     }
     return false;
-  }
-
-  private async automationAuthorityCurrent(
-    claim: ClaimedWork,
-    revision: Readonly<AgentRevision>,
-  ): Promise<boolean> {
-    return this.state.transact(async (unit) => {
-      const agent = await this.lockClaimAgent(unit, claim);
-      if (!agent) {
-        return false;
-      }
-      const automations = (
-        await unit.agentAutomations.list(revision.namespaceId, revision.agentId)
-      ).filter((automation) => automation.retiredAt === null);
-      if (automations.length === 0) {
-        return true;
-      }
-      const current = (await this.compute.evaluateAgentAutomationPolicy?.(revision))?.grant;
-      return automations.every((automation) =>
-        agentAutomationGrantSupported(automation.toolGrant, current),
-      );
-    });
   }
 
   // Lock the claim's Agent in admission order: Namespace, then Agent. These

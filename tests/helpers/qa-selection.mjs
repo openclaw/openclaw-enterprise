@@ -4,7 +4,6 @@ const scenarioPresets = {
   "native-restart": ["Codex"],
   "channel-egress-upgrade": ["Codex"],
   "http-chat": ["OpenClaw", "Codex"],
-  "agent-automations": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
@@ -224,9 +223,7 @@ export function selectQaMatrix(env = process.env) {
       .flatMap((cell) => cell.scenarios);
     if (
       name === "OpenClaw" ||
-      selectedScenarios.some((scenario) =>
-        ["http-chat", "codex-search-config", "agent-automations"].includes(scenario),
-      )
+      selectedScenarios.some((scenario) => ["http-chat", "codex-search-config"].includes(scenario))
     ) {
       if (!requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
         requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
@@ -234,9 +231,7 @@ export function selectQaMatrix(env = process.env) {
     }
     if (
       name === "Codex" &&
-      selectedScenarios.some(
-        (scenario) => !["http-chat", "codex-search-config", "agent-automations"].includes(scenario),
-      )
+      selectedScenarios.some((scenario) => !["http-chat", "codex-search-config"].includes(scenario))
     ) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }

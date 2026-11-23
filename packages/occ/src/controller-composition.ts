@@ -1,4 +1,3 @@
-import { createAgentAutomations } from "./agent-automations.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
   type RepositoryNetworkPolicyCeiling,
@@ -821,13 +820,6 @@ export function createControllerComposition(
     selectedCompute,
     timestamp: resourceValues.timestamp,
   });
-  const agentAutomations = createAgentAutomations({
-    transactions,
-    authority,
-    timestamp: resourceValues.timestamp,
-    policyEvaluator: async (revision) =>
-      (await selectedCompute().evaluateAgentAutomationPolicy?.(revision))?.grant,
-  });
   const agentQueries = createAgentQueries({
     transactions,
     authority,
@@ -1184,7 +1176,6 @@ export function createControllerComposition(
     agentCredentialRetry,
     agentCredentialWithdrawal,
     agentDrafts,
-    agentAutomations,
     agentQueries,
     agentTermination,
     bindInstallationRepository,

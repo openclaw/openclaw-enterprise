@@ -64,8 +64,6 @@ kind: reference/driver
   - [`retireExpiredRepositoryAccess`](#method-retire-expired-repository-access)
   - [`rejectedExecutionWithdrawal`](#method-rejected-execution-withdrawal)
   - [`observeRevision`](#method-observe-revision)
-  - [`evaluateAgentAutomationPolicy`](#method-evaluate-agent-automation-policy)
-  - [`openAgentAutomationTransport`](#method-open-agent-automation-transport)
   - [`getRuntimeImages`](#method-get-runtime-images)
   - [`discoverHarnessModels`](#method-discover-harness-models)
   - [`diagnoseAgentDeployment`](#method-diagnose-agent-deployment)
@@ -147,8 +145,6 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-retire-expired-repository-access"></a>`retireExpiredRepositoryAccess`                                  | Optional    | For expiry or committed standing/finite withdrawal, report `withdrawn` only after verifying revoked Git and the same independently authorized, ready inference runtime; otherwise `pending` or `retire-runtime`. Without this method, expiry retires the runtime except for `policyReductionVersion: 2` egress plans, which use policy reduction.         |
 | <a id="method-rejected-execution-withdrawal"></a>`rejectedExecutionWithdrawal`                                       | Optional    | After release is refused, select a callback to withdraw a previously admitted grant. The worker runs it under the active revision's claim. With no callback, the refusal stands.                                                                                                                                                                          |
 | <a id="method-observe-revision"></a>`observeRevision`                                                                | Optional    | Read Harness state for an unverified repository execution. Failure yields `unknown`. This cannot establish Git execution identity.                                                                                                                                                                                                                        |
-| <a id="method-evaluate-agent-automation-policy"></a>`evaluateAgentAutomationPolicy`                                  | Optional    | Return a grant and MCP bindings without side effects; `undefined` refuses qualification, `grant.tools: []` permits model-only. [Contract](../agent-automations.md#execution-qualification).                                                                                                                                                               |
-| <a id="method-open-agent-automation-transport"></a>`openAgentAutomationTransport`                                    | Optional    | Return an instance-bound transport with recheck/close; undefined qualification permits only conservative recovery.                                                                                                                                                                                                                                        |
 | <a id="method-get-runtime-images"></a>`getRuntimeImages`                                                             | Optional    | Report revision-owned containers, excluding separate Sandbox Driver workloads. Return full lowercase 40-character Git SHAs for known commits and `null` for unknown image IDs or commits; never infer commits from tags. OCC returns entries without validation. Without a selected revision it reports `undeployed`; without this method, `unsupported`. |
 | <a id="method-discover-harness-models"></a>`discoverHarnessModels`                                                   | Optional    | Accept `authMethod`, `provider`, and `apiKey`. Return native model IDs and names. Never persist the credential. If discovery is unavailable, enter the model ID manually.                                                                                                                                                                                 |
 | <a id="method-diagnose-agent-deployment"></a>`diagnoseAgentDeployment`                                               | Optional    | Return current checks for one revision. Without support, OCC reports dependency unavailable.                                                                                                                                                                                                                                                              |
@@ -205,17 +201,17 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 
 An ordinary `ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
-The worker rejects foreign readiness results. For held startup
-failures, return validated revision-specific `runtimeFailure`:
+The worker rejects another revision's readiness result. For a held startup
+failure, return validated `runtimeFailure` evidence for this revision:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains terminal failures, such as
+explains which failures end deployment immediately, such as
 [`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
-Throw `ComputePreparationFailedError` for terminal initialization failures.
-In one transaction, the worker records the failed deployment and queues
-`stopRevision` for the candidate. It resumes cleanup after restart.
+Throw `ComputePreparationFailedError` for terminal initialization failure.
+The worker records the failed deployment and queues `stopRevision` for that
+candidate in one transaction. After restart it resumes cleanup.
 
 <a id="optional-runtime-diagnostics"></a>
 <a id="optional-runtime-status-and-logs"></a>
@@ -223,9 +219,10 @@ In one transaction, the worker records the failed deployment and queues
 
 ### Runtime reads and logging
 
-Diagnostics read revisions without deployment changes or model probes. OCC validates
-timestamps and state for up to 32 checks. With platform logging, OCC applies its [Harness logging policy](../harness-execution.md#runtime-logging).
-The Driver rechecks ownership before each read. For a cluster `403`,
+Diagnostics read the requested revision without changing its deployment or running
+another model probe. OCC accepts up to 32 checks and validates timestamps and
+state. With platform logging, OCC applies its [Harness logging policy](../harness-execution.md#runtime-logging).
+The Driver rechecks workload ownership before each read. For a cluster `403`,
 raise `RuntimeLogsForbiddenByClusterError`. OCC redacts
 and limits each response to 512 KiB. A Driver-managed collector must supply its own
 access control, redaction, and delivery guarantees. With Driver-owned logging, OCC preserves
@@ -235,8 +232,10 @@ the validated native settings and both runtime-description and log routes return
 
 ## IAM
 
-OCC authenticates the caller; the [IAM Driver](iam.md) authorizes the exact resource. For deployment, the worker rechecks the original actor's Agent `deploy` and
-Configuration `read`. Both actor and Agent service principal need `operate` on each bound Secret and applicable credential
+OCC authenticates the caller and uses the [IAM Driver](iam.md) to authorize the
+exact resource. For deployment, the worker rechecks the original actor's
+`deploy` on the Agent and `read` on its Configuration. Both actor and Agent
+service principal need `operate` on each bound Secret and applicable credential
 source. ServiceAccount authentication also requires the actor to read the
 account. Denied access or unavailable IAM blocks preparation.
 
@@ -252,8 +251,9 @@ Installed Drivers run with control-plane privileges.
 
 ### Driver initialization and shutdown
 
-Each API or worker process loads its Driver, validates methods, attaches selected
-hooks, and runs applicable preflight. Shutdown does not delete Namespace or Agent resources. See [Driver loading](../../flows/driver-plugin-loading.md).
+Each API or worker process loads its configured Driver, validates its methods,
+attaches selected hooks, and runs applicable preflight. Process shutdown does
+not delete Namespace or Agent resources. See [Driver loading](../../flows/driver-plugin-loading.md).
 
 ### Production revision stages
 
@@ -290,11 +290,11 @@ Before calling Compute, the worker checks its selected identity and current
 credential references.
 Activation must be safe to repeat. A failed activation after selection resumes
 at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
-version 5 `online-request` and version 6 `request-hook-observed` allow selection
-before readiness. When Compute reports `heldForRepositoryGitMaterial` and
-`REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can record
-the selection. It keeps the work queued until the revision is ready, then activates
-it, retires its predecessor, and completes the work.
+both version 5 `online-request` and version 6 `request-hook-observed` support
+selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
+and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
+record the selection. The original work stays queued until that revision is ready;
+only then does the worker activate it, retire its predecessor, and complete the work.
 
 Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
 before closing credentials and stopping predecessors. Failed stop blocks preparation.
@@ -319,11 +319,12 @@ a separate five-second cleanup signal. See [hook execution](../../flows/compute-
 
 ### Optional active-runtime maintenance
 
-A Compute interval queues authorized preparation and activation of the selected
-revision. Repository access or standing approvals can schedule maintenance
-independently; the worker uses the earliest applicable interval. A failed
-observation keeps the selected revision and schedules another authorized pass.
-A newer deployment or exclusive replacement can supersede an older pass.
+A Compute interval queues another authorized preparation and activation for the
+selected revision. Repository access or standing approvals can schedule
+maintenance independently. The worker uses the earliest applicable interval.
+A failed maintenance observation leaves the selected revision in place and schedules
+another authorized pass. A newer deployment or an
+exclusive replacement can supersede an older pass.
 
 ### Plugin startup warnings
 
@@ -334,7 +335,7 @@ runtime is ready. The worker records warnings on successful deployment. See
 
 ## Configuration
 
-Set `drivers.compute` in Installation YAML; restart API and worker after changes.
+Select Compute under `drivers.compute` in Installation startup YAML. Restart API and worker after changes.
 
 | Setting         | Type   | Requirement | Value, default, and constraints                                  |
 | --------------- | ------ | ----------- | ---------------------------------------------------------------- |
@@ -343,14 +344,15 @@ Set `drivers.compute` in Installation YAML; restart API and worker after changes
 | `package`       | string | Optional    | Installed package. Omit for bundled Kubernetes or SSH selection. |
 
 See [selection and validation](selection.md#configuration-definitions-and-discovery)
-and [implementations](#implementations). Docker uses development environment settings.
-Each revision saves Agent Configuration and Harness bindings separately.
+and the [implementation references](#implementations). Docker uses development
+environment settings instead. Agent Configuration and Harness bindings are
+separate inputs saved with each revision.
 
 ## Limits
 
 Compute uses the revision's recorded identity. Changing Drivers does not migrate it.
-Stop, retirement, and deletion require confirmed Driver-owned cleanup. See the
-[feature matrix](compute-matrix.md) for topology, deletion support, and private gateway access.
+Stop, retirement, and deletion require confirmation of Driver-owned cleanup. Check the [feature matrix](compute-matrix.md)
+for topology, deletion support, and private gateway access.
 
 ## Troubleshooting
 

@@ -36,7 +36,6 @@ import {
 } from "./native-admin-shared-session-cases.ts";
 import {
   continueNativeAdminProxyCase,
-  registerAgentAutomationAdmissionCase,
   registerNativeAdminAvailabilityCases,
   registerNativeAdminCopiedLinkCase,
   registerNativeAdminDeniedBackCase,
@@ -554,7 +553,6 @@ test("native admin stays available before the shared stop boundary, then becomes
 registerNativeAdminExplicitStopCase(test, nativeAdminCaseDependencies);
 
 registerNativeAdminAvailabilityCases(test, nativeAdminCaseDependencies);
-registerAgentAutomationAdmissionCase(test, nativeAdminCaseDependencies);
 
 registerNativeAdminSharedCookieCases(test, nativeAdminCaseDependencies);
 

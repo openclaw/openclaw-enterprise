@@ -170,29 +170,6 @@ For a prepared [Image Runtime Startup lane](../../scripts/ci/test-suites/images-
 before cleanup. The runner supplies the profile, and the tests check its path and SHA-256
 against the preparation record. Cleanup removes the file with the run-owned cluster directory.
 
-The lane includes `automation-model-only-dispatch.test.ts` for both Harnesses.
-Embedded OpenClaw uses Docker; Codex uses the lane's qualified k3d node with
-separate Gateway and Agent filesystems. A local synthetic provider drives the
-stock runtime without external network access. Ordinary chat must write a file;
-a scheduled empty tool cap must advertise no tools, reject the injected call,
-and leave the file absent. Codex checks shell and Code Mode dispatch separately.
-Both Harnesses also check Gateway `sessions_spawn` against native child history
-and exact database label counts, and `message` against a local Slack-protocol
-collector. These empty-cap controls do not establish native Codex collaboration, app or
-managed MCP coverage. They do not replace the
-[anonymous HTTPS MCP QA scenario](#verify-automation-mcp-parity).
-
-An OCE-managed MCP control needs the supported dedicated OpenClaw and
-OpenShell/Credential Gateway placement, an admitted release, a paired worker,
-the `mcp.tools.call.v1` grant, and a local collector that accepts `tools/call`.
-The existing pairing and tool-discovery fixtures do not provide that complete
-model-triggered control. A native Codex app control needs an authorized ChatGPT
-login, a selected installed app, its connected account and an observed callable
-tool ID. API-key authentication cannot install those apps. Follow
-[plugin verification](plugins.md#native-runtime-prerequisites) and
-[supported plugin boundaries](../reference/agent-plugins.md#current-support);
-these missing inputs remain coverage gaps, not proof of tool absence.
-
 For a standalone run of the default Codex version where Docker's default profile blocks
 the sandbox, obtain the reviewed manual file separately from the image export and set
 `OCC_TEST_CODEX_SECCOMP_PROFILE` to its path. The [smoke helper](../../tests/helpers/runtime-image-startup.ts)
@@ -202,63 +179,6 @@ historical Codex version.
 
 The controller check expects an unreachable database; it does
 not prove connectivity. Runtime checks do not prove a model turn or Slack delivery.
-
-### Verify automation MCP parity
-
-Select `OCC_TEST_QA_INSTALLATION=kubernetes`, `OCC_TEST_QA_PRESET=all`, and
-`OCC_TEST_QA_SCENARIOS=agent-automations`. Follow the
-[local QA setup](ci/qa-advisory.md#local-inputs) for source-built images, authorized
-model credentials and a runner that supports the Codex sandbox. The scenario
-runs the empty-cap checks before the
-[HTTPS MCP helper](../../tests/helpers/qa-agent-automation-mcp.ts) for OpenClaw.
-Codex runs the helper first.
-It needs no MCP account. Stdio and credentialed MCP are outside this pilot.
-
-The fixture creates an anonymous HTTPS peer and temporarily supplies exact
-`automations.trustedAnonymousMcpEndpoints` records through Installation
-configuration. Each record contains the endpoint URL, the peer Pod's translated
-IPv4 `/32` or IPv6 `/128` egress destination, and its public PEM CA bundle.
-The fixture checks the rendered network policies and removes its peer resources
-and restores Installation configuration during cleanup. Never put a CA signing
-key in an endpoint record. See the [endpoint contract](../reference/drivers/kubernetes-compute.md#automation-mcp-endpoints).
-
-The assertions compare ordinary and scheduled `tools/call` requests at the peer,
-check the captured native cap and run transcripts, and require
-no sibling-operation, second-server or file-write effect. They also exercise
-service denial, missing or changed endpoint records, replacement of the deployed
-guard binding, and refusal of unsupported tool sources. A paused automation keeps
-its immutable grant: incompatible narrowing or binding changes must remain blocked
-until the automation is deleted and its grant is retired. Dedicated evidence must
-bind the API-key revision opt-in, Agent-only requirements mount, and Agent-local
-readiness with all four effective feature constraints off. As a trusted native
-writer, the disposable Codex fixture pauses the stock memory-core dreaming cron
-job by compare-and-swap before Agent STOP. It restores the job by compare-and-swap
-after Agent CONT and readiness recovery. If the fixture cannot restore the job
-with its next run more than two hours away, the QA case fails and quarantines the
-fixture. The two-hour check applies only to QA fixture isolation.
-Require the exact direct approved declaration and call; a native `exec` wrapper
-or sleep tool does not qualify. Refuse repository credentials and protected Git for empty and finite
-dedicated caps. Recovery proof must
-also cover the paged `view=pending` response and reservation cancellation while
-the native runtime is unavailable, creator and administrator isolation, the
-bind/cancel race, and a delayed add that remains disabled. See
-[grant retirement](../reference/agent-automations.md#policy-changes-and-retained-grants).
-
-To qualify genuine HTTPS MCP, each packaged Harness needs
-ordinary and scheduled permitted HTTPS calls, negative peer-effect checks and
-unsafe canonical `agents.entries` override refusal. Dedicated admission must make
-no prior session, effective-tool or history read and must refuse included-alias
-collisions and reserved `mcp__` prefixes even outside the granted subset. Both
-Harnesses must refuse enabled
-include filters with `resources_list`, `resources_read`, `prompts_list` or
-`prompts_get`, including case variants. Both must refuse raw own-server prefix
-selectors before subsets while preserving unrelated `foo__bar` raw operations.
-Embedded must refuse a warm
-dock/subagent-only session inventory. Historical model-only results,
-dedicated refusal and synthetic bridge diagnostics do not qualify MCP. Record
-the final source, image digests, both Harness outcomes, collector evidence and cleanup. Pod metadata or a guard label alone does not prove that the broker's
-connection reached that runtime instance; destination verification also remains
-part of the pending qualification.
 
 ### Build images from the checkout
 

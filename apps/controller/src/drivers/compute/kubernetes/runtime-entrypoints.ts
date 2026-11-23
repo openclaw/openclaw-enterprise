@@ -5,21 +5,7 @@ import {
   managedCredentialEnvironment,
 } from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
-import {
-  AUTOMATION_MCP_PROXY_SOURCE,
-  type AutomationMcpProxyConfiguration,
-} from "./automation-mcp-proxy.ts";
-
-export {
-  AUTOMATION_MCP_PROXY_PORT,
-  type AutomationMcpProxyConfiguration,
-  type AutomationMcpProxyRoute,
-} from "./automation-mcp-proxy.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
-import {
-  AGENT_AUTOMATION_ORIGIN_GUARD,
-  AGENT_AUTOMATION_PRE_DOCTOR_GUARD,
-} from "../agent-automation-guard.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import {
   EXITED_OPENCLAW_STATE_RELEASE,
@@ -2736,14 +2722,8 @@ function requireInspectedFileTransferPolicy(fileConfig, workspaceNodeId, remoteR
 
 export function gatewayRuntimeEntrypoint(
   managedMode: boolean,
-  automationGuardBinding?: string,
-  embeddedAutomationMarker = false,
-  automationMcpProxy?: AutomationMcpProxyConfiguration,
   workspaceNodeProfile?: GatewayWorkspaceNodeProfile,
 ): string {
-  if (Boolean(automationMcpProxy) !== Boolean(automationGuardBinding)) {
-    throw new Error("Automation MCP proxy and qualified policy binding must be selected together.");
-  }
   if (
     workspaceNodeProfile !== undefined &&
     (!managedMode ||
@@ -2759,12 +2739,6 @@ export function gatewayRuntimeEntrypoint(
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawn } = require("node:child_process");
-const AUTOMATION_MCP_PROXY = ${JSON.stringify(automationMcpProxy ?? null)};
-${automationMcpProxy ? AUTOMATION_MCP_PROXY_SOURCE : ""}
-let automationMcpProxy;
-let automationMcpProxyFailed = false;
-${automationGuardBinding || embeddedAutomationMarker ? AGENT_AUTOMATION_PRE_DOCTOR_GUARD : ""}
-${automationGuardBinding ? `const AUTOMATION_POLICY_BINDING = ${JSON.stringify(automationGuardBinding)};\n${AGENT_AUTOMATION_ORIGIN_GUARD}` : ""}
 
 // OCE upgrades this runtime by rolling out a selected image.
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
@@ -2868,7 +2842,6 @@ let gatewayServed = false;
 // every agent's inspection settles; /readyz adds channel, state database,
 // failed agent database and plugin reload health.
 async function gatewayRuntimeReady() {
-  if (AUTOMATION_MCP_PROXY && (!automationMcpProxy?.listening() || automationMcpProxyFailed)) return false;
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
@@ -2937,7 +2910,6 @@ function forwardTermination(currentChild) {
   const forward = (signal) => {
     if (gatewayTerminating) return;
     gatewayTerminating = true;
-    automationMcpProxy?.close();
     const target = currentChild();
     if (target === undefined) {
       process.exit(0);
@@ -3711,15 +3683,10 @@ function holdGatewayStartupFailure(error) {
 }
 
 function startGatewayProcess() {
-  if (AUTOMATION_MCP_PROXY) {
-    if (!automationMcpProxy?.listening() || automationMcpProxyFailed) throw new Error("Automation MCP proxy is unavailable.");
-  }
-  const childEnvironment = { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()}${automationGuardBinding ? ', OPENCLAW_DISABLE_BUNDLED_SOURCE_OVERLAYS: "1"' : ""} };
-  ${automationGuardBinding ? "assertCleanAutomationOrigins(childEnvironment, gatewayToolPolicyInput, initialConfigPath);" : ""}
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: childEnvironment },
+    { stdio: "inherit", env: { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()} } },
   );
   child = spawned;
   childRunning = true;
@@ -3733,7 +3700,6 @@ function startGatewayProcess() {
         exitedGatewayStateKept = code !== 0 && !releaseExitedOpenClawState(gatewayEnvironment());
       }
       resolve();
-      if (automationMcpProxyFailed && gatewayStartupHeld) return;
       if (stoppingContainer) {
         process.exit(DELIBERATE_RESTART_EXIT_STATUS);
         return;
@@ -3776,16 +3742,6 @@ function stopContainer(reason) {
   setTimeout(() => process.exit(DELIBERATE_RESTART_EXIT_STATUS), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
-function holdAutomationMcpProxyFailure() {
-  if (automationMcpProxyFailed) return;
-  automationMcpProxyFailed = true;
-  gatewayStartupHeld = true;
-  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
-  console.error("Automation MCP proxy refused Gateway startup or stopped unexpectedly.");
-  if (childRunning) stopNativeGateway(child, "SIGTERM");
-  setInterval(() => {}, 3600000);
-}
-
 let pluginResult;
 let peerStatus;
 let resetWorkspaceNodeTracking = () => {};
@@ -3797,43 +3753,7 @@ if (codexBridgeRecordProblem !== undefined) {
 peerStatus = followsPeerStatus
   ? await timeStartupPhase("peer-plugin-status", waitForPeerPluginRuntimeStatus)
   : undefined;
- ${
-   embeddedAutomationMarker
-     ? `try {
-  const initial = JSON.parse(pluginReadFileSync(initialConfigPath, "utf8"));
-  assertReviewedEmbeddedAutomationImage(initial.meta);
-  assertAutomationPersistedDiscovery(process.env);
-} catch {
-  gatewayStartupHeld = true;
-  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
-  console.error("Automation reviewed image or persisted discovery check refused Gateway startup.");
-  setInterval(() => {}, 3600000);
-  return;
-}`
-     : ""
- }
-${
-  automationMcpProxy
-    ? String.raw`try {
-  assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, JSON.parse(pluginReadFileSync(initialConfigPath, "utf8")));
-} catch {
-  holdAutomationMcpProxyFailure();
-  return;
-}`
-    : ""
-}
 const started = configureGateway(peerStatus);
-${
-  automationMcpProxy
-    ? String.raw`try {
-  assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, readOpenClawConfig());
-  automationMcpProxy = await startAutomationMcpProxy(AUTOMATION_MCP_PROXY, holdAutomationMcpProxyFailure);
-} catch {
-  holdAutomationMcpProxyFailure();
-  return;
-}`
-    : ""
-}
 // Doctor reads the configuration the Gateway starts with. Current state adds
 // no await before the spawn.
 // A failure holds the Gateway unready with the step named, rather than
@@ -4407,13 +4327,11 @@ function codexRetryDelay(retry) {
 
 // Both the resident HTTP handler and the standalone healthcheck use this RPC boundary.
 const CODEX_READINESS_HELPER = String.raw`
-function codexReadinessFailure(url, token, requireAutomationRequirements = false) {
+function codexReadinessFailure(url, token) {
   return new Promise((resolve) => {
     let socket;
     let settled = false;
     let timeout;
-    let awaitingRequirements = false;
-    const automationFailure = "Codex automation requirements unavailable";
     const settle = (reason) => {
       if (settled) return;
       settled = true;
@@ -4443,12 +4361,7 @@ function codexReadinessFailure(url, token, requireAutomationRequirements = false
       settle("Codex app-server WebSocket unavailable");
       return;
     }
-    timeout = setTimeout(
-      () => settle(awaitingRequirements
-        ? automationFailure
-        : "Codex app-server initialize request timed out"),
-      2_000,
-    );
+    timeout = setTimeout(() => settle("Codex app-server initialize request timed out"), 2_000);
     socket.on("open", () => {
       // Codex exempts its probe identity from changing the process-wide originator.
       socket.send(JSON.stringify({
@@ -4463,42 +4376,20 @@ function codexReadinessFailure(url, token, requireAutomationRequirements = false
       try {
         response = JSON.parse(data.toString("utf8"));
       } catch {
-        settle(awaitingRequirements
-          ? automationFailure
-          : "Codex app-server initialize response is invalid");
+        settle("Codex app-server initialize response is invalid");
         return;
       }
-      if (response?.id !== (awaitingRequirements ? 2 : 1)) return;
-      if (awaitingRequirements) {
-        const features = response.result?.requirements?.featureRequirements;
-        if (
-          response.error !== undefined ||
-          features == null ||
-          !["code_mode_host", "code_mode", "code_mode_only", "sleep_tool"].every(
-            (name) => Object.hasOwn(features, name) && features[name] === false,
-          )
-        ) {
-          settle(automationFailure);
-        } else {
-          settle();
-        }
-      } else if (response.error !== undefined) {
+      if (response?.id !== 1) return;
+      if (response.error !== undefined) {
         settle("Codex app-server initialize request failed");
       } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
         settle("Codex app-server initialize response is invalid");
-      } else if (!requireAutomationRequirements) {
+      } else {
         // No later RPC needs an initialized notification (which Codex logs).
         settle();
-      } else {
-        awaitingRequirements = true;
-        // The local native server accepts this read after initialize without an
-        // initialized notification. Never project its response or transport token.
-        socket.send(JSON.stringify({ id: 2, method: "configRequirements/read", params: {} }));
       }
     });
-    socket.on("close", () => settle(awaitingRequirements
-      ? automationFailure
-      : "Codex app-server closed before initialization completed"));
+    socket.on("close", () => settle("Codex app-server closed before initialization completed"));
     socket.on("error", () => settle("Codex app-server WebSocket unavailable"));
   });
 }
@@ -4638,12 +4529,7 @@ ${
   }
 ${
   computeOwned
-    ? String.raw`  const policy = process.env.OCE_CODEX_AUTOMATION_REQUIREMENTS;
-  if (policy !== undefined && policy !== "required") {
-    return false;
-  }
-  return codexReadinessFailure(codexAppServerUrl(), token, policy === "required")
-    .then((reason) => reason === undefined);`
+    ? "  return codexReadinessFailure(codexAppServerUrl(), token).then((reason) => reason === undefined);"
     : String.raw`  return new Promise((resolve) => {
     let settled = false;
     let timeout;
