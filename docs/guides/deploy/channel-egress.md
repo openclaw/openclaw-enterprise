@@ -28,8 +28,53 @@ If discovery is unavailable or incomplete, the operator must verify the explicit
 list independently. Both verify CRD establishment, controller readiness and version, patch-policy configuration,
 GatewayClass acceptance, and actual Envoy patch delivery. The temporary probe
 uses a unique namespace and private ClusterIP routing. Cleanup deletes only the
-probe resources with their observed UIDs. Retain the reported probe name if
-cleanup fails. Disabled channel candidates exit without dependency changes.
+probe resources with their observed UIDs. It waits for the namespace and its
+Envoy Pods to disappear before removing the NetworkPolicy. If the script
+loses a create response, it can recover that object's UID
+when its annotation matches the create attempt. The operator needs create,
+read, watch, and delete access for the probe namespace and for the probe's
+NetworkPolicy in the Envoy namespace.
+Disabled channel candidates exit without dependency changes.
+
+The setup command creates the probe's egress policy. It does not grant
+ingress to the Envoy controller. If the controller Pods are isolated, work
+with their owner before starting the probe.
+
+1. Verify that a policy selecting only Envoy controller Pods allows TCP 18000
+   from the permanent channel fleet. Select peer Pods in the Envoy namespace.
+   Match their `gateway.envoyproxy.io/owning-gateway-name` to the configured Gateway
+   and their `gateway.envoyproxy.io/owning-gateway-namespace` to the release namespace.
+2. Set `PROBE_NAME` to `oce-channel-probe-` followed by 12 random lowercase
+   hexadecimal digits. Choose an unused name. The script uses it for the probe
+   namespace and Gateway. It creates an egress policy with the same name in
+   the Envoy namespace.
+3. Have the owner allow TCP 18000 from the probe in a policy that selects only
+   Envoy controller Pods. Match peer Pods in the Envoy namespace with both
+   Gateway ownership labels equal to the probe name. Use a different name for
+   the ingress policy. Preserve existing access.
+4. Add `--probe-name "$PROBE_NAME"` to the dependency command. The script refuses
+   an existing probe namespace. Keep the temporary ingress rule through all
+   checks and cleanup. Then have its owner remove that rule and retain the
+   permanent fleet rule.
+
+A successful probe verifies patch delivery for its own Gateway. Check the
+permanent fleet rule separately before starting an upgrade.
+
+### If probe creation or cleanup is uncertain
+
+Keep the name reserved. Confirm that the command has stopped. Have the
+Kubernetes operator resolve any pending requests before manual cleanup.
+For the probe namespace and egress policy, match each remaining resource's `openclaw.dev/channel-probe-attempt`
+annotation to its own reported create attempt. Check its UID against any
+recorded UID. Stop if ownership is uncertain or a read fails.
+
+1. If the probe namespace remains, delete it with its UID as a precondition.
+   Confirm that the namespace is gone.
+2. In the Envoy namespace, confirm that no Pods match both Gateway ownership
+   labels for `$PROBE_NAME`. Keep the egress policy while any matching Pod remains.
+3. If the probe's egress NetworkPolicy remains in the Envoy namespace, delete
+   it with its UID as a precondition. Confirm that it is gone before reusing
+   the name.
 
 ## Enable channels in the Kubernetes and EKS quickstarts
 

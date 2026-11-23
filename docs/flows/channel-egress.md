@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-20
-last_updated_session: authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2
+updated: 2026-11-22
+last_updated_session: authoring-run/0b7e55af-e8c6-41d0-b5a3-36b1186d000a
 ---
 
 # Channel egress flow
@@ -75,9 +75,14 @@ settings into Helm and the external Installation. Explicit false remains off.
 `internal/occdev/channel_egress.go:prepareDevelopmentChannelEgress` uses chart
 defaults and discovered cluster exclusions for local Kubernetes installations.
 `scripts/setup-channel-egress:main` checks the pinned controller, CRDs and
-GatewayClass. Its probe verifies actual patch delivery and deletes only its
-acknowledged resources with UID preconditions. Existing dependencies retain
-ownership; incompatible configuration requires the owner's repair.
+GatewayClass. The probe verifies patch delivery. Cleanup uses UID preconditions.
+If a create response is lost, the script can recover the UID from an object
+marked with that create attempt.
+
+The controller owner manages ingress. The operator can reserve an unused name
+for both the probe namespace and Gateway. The one-off passes it to both
+dependency checks and binds the name and helper checksum to the original run.
+Resume refuses a change to either before Agent Stop.
 
 `scripts/upgrade-channel-egress:prepare` patches actual legacy input files.
 Before `prepare` writes candidates or `validate` compares inputs, `helm_values`
@@ -233,6 +238,8 @@ and remaining acceptance evidence.
 
 ## Changelog
 
+- 2026-11-22 22:05: Clarify probe ownership and resume checks. (authoring-run/0b7e55af-e8c6-41d0-b5a3-36b1186d000a - c58967c563e73b1bce73ff9040b525b9ccae8617)
+
 - 2026-11-20 18:02: Forecast the Worker's direct-egress guard before Stop and verify execution and Gateway namespace ownership (authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2 - 499592f85223d2a36369d6e230915c549ff09864)
 
 - 2026-11-20 14:26: Check Helm display headings and parse values from one file read (authoring-run/1298084c-0ccd-44f1-84ab-4170b4c56d21 - d2c019d17f3c4471b6a10579b1e8c9876240689f)
@@ -241,6 +248,8 @@ and remaining acceptance evidence.
 - 2026-11-20 10:51: Preserve valid Helm values mappings that share the display heading (authoring-run/ee570ea2-5d17-4170-a37b-0f46c4fbd8ea - d26c1eb9420d4ec22662f390534a73653325d42f)
 - 2026-11-20 10:26: Reject Helm display output in one-off upgrade values (authoring-run/73549c13-fca6-4842-813d-62fa224637ec - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 - 2026-11-20 09:53: Documented the worker diagnostic for additive public egress policies (authoring-run/7734097f-2ed2-4eb1-afc9-b87345676072 - 9092839d0c3b9598e85300451f425ac6d3084fe5)
+
+- 2026-11-20 01:31: Allow the controller owner to admit an exact native dependency probe before an upgrade (authoring-run/b6a46343-cf19-417a-add5-df3f309d8add - 46b193ba5b9a45386faa747c53886c43f08ccc7b)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 

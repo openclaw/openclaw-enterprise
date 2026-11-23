@@ -163,8 +163,15 @@ Secret data, identity, and candidate checks still apply.
 
 Follow [Set up managed channel egress](channel-egress.md) with the prepared
 values at `$ATTEMPT_DIRECTORY/candidate/values.yaml`. Complete the dependency
-check before running the one-off.
-Existing dependencies retain their owner; disabled channels skip provisioning.
+check before running the one-off. Existing dependencies retain their owner.
+Disabled channels skip provisioning.
+
+If ingress to the Envoy controller is restricted, ask its owner to allow the
+permanent channel fleet and the named probe as described in the setup guide.
+Add `--channel-probe-name "$PROBE_NAME"` to the `run` command below for
+preflight, deployment, and resume. Keep the probe rule until the last check
+and its cleanup finish. Resume from the original release checkout with the
+same probe name and unchanged helper.
 
 ### Run the transition
 

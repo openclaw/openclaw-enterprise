@@ -793,6 +793,8 @@ evidence_unrestored=0
 cleanup_conflicting_args=0
 channel_egress_one_off=0
 channel_egress_enabled=false
+channel_probe_name=
+channel_probe_args=()
 
 while (($#)); do
   case "$1" in
@@ -801,6 +803,13 @@ while (($#)); do
   esac
   case "$1" in
     --channel-egress-one-off) channel_egress_one_off=1; shift ;;
+    --channel-probe-name)
+      (($# >= 2)) || die "$1 requires a value."
+      [[ "$2" =~ ^oce-channel-probe-[0-9a-f]{12}$ ]] ||
+        die "--channel-probe-name must be oce-channel-probe- followed by 12 lowercase hexadecimal digits."
+      channel_probe_name=$2
+      shift 2
+      ;;
     --cleanup-preflight) cleanup_only=1; shift ;;
     --previous-process-settled) previous_process_settled=1; shift ;;
     --evidence-unrestored) evidence_unrestored=1; shift ;;
@@ -1006,6 +1015,10 @@ done
 [[ -z "$verify_agent" || -z "$runtime_image" ]] ||
   die "--verify-agent cannot be combined with --runtime-image, which selects new Agent revisions."
 
+if [[ -n "$channel_probe_name" ]]; then
+  ((channel_egress_one_off)) || die "--channel-probe-name requires scripts/upgrade-channel-egress run."
+  channel_probe_args=(--probe-name "$channel_probe_name")
+fi
 if ((channel_egress_one_off)); then
   [[ -n "$controller_image" && -z "$runtime_image" && -z "$verify_agent" &&
      -n "$requested_values" && -n "$requested_installation" ]] && ((migration_check_only == 0)) ||
@@ -1275,7 +1288,7 @@ if ((resume)); then
   select_recovery_target
 fi
 admit_live_kubeconfig
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig_source_sha" "$channel_egress_one_off" 3<<<"$approved_upgrade_inputs" 4<<<"$original_parameters" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig_source_sha" "$channel_egress_one_off" "$channel_probe_name" 3<<<"$approved_upgrade_inputs" 4<<<"$original_parameters" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
@@ -1293,6 +1306,8 @@ parameters["channelEgressOneOff"] = sys.argv[22] == "1"
 if parameters["channelEgressOneOff"]:
     parameters["channelEgressScriptSha256"] = digest("scripts/upgrade-channel-egress")
     parameters["channelDependenciesSha256"] = digest("scripts/setup-channel-egress")
+    if sys.argv[23]:
+        parameters["channelProbeName"] = sys.argv[23]
 # Keep recovery's original operation mode in its parameter and dispatch identity.
 parameters["profiled"] = original["profiled"] if original is not None else approved is not None
 if parameters["profiled"] and approved and approved.get("kubeconfig server CA") is not None:
@@ -2851,7 +2866,7 @@ fi
 if [[ "$channel_egress_enabled" == true ]]; then
   warn "The channel direct-egress forecast covers a single Worker guard. Activation checks Envoy inspection and listener conflicts after Agent Stop."
   python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
-    --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" ||
+    --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" "${channel_probe_args[@]}" ||
     die "Envoy dependencies are not ready; no Agent or OCC writer was stopped."
 fi
 
@@ -3119,7 +3134,7 @@ if ((helm_complete == 0)); then
   fi
   if [[ "$channel_egress_enabled" == true ]]; then
     python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
-      --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" ||
+      --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" "${channel_probe_args[@]}" ||
       die "Envoy dependencies changed before Agent Stop."
   fi
   progress "Checking and stopping OCC writers."
