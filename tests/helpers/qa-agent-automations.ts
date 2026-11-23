@@ -355,6 +355,29 @@ export async function verifyQaAgentAutomations(
   const failures: unknown[] = [];
   let outcome: { observationLimits: string[] } | undefined;
   try {
+    // A new Agent can be ready before its asynchronous Gateway route is available.
+    await f.waitFor(
+      "automation runtime readiness",
+      async () => {
+        const result = await request("GET", "?limit=1").catch(() => {
+          throw new Error("Automation readiness request failed");
+        });
+        if (result.status === 200) {
+          return true;
+        }
+        const code = ERROR_CODES.find(
+          (candidate) => candidate === asRecord(result.envelope?.error)?.code,
+        );
+        assert.equal(result.status, 503, "Automation readiness returned an unexpected status");
+        assert.equal(
+          code,
+          "DEPENDENCY_UNAVAILABLE",
+          "Automation readiness returned an unexpected error code",
+        );
+        return false;
+      },
+      120_000,
+    );
     const created: AgentAutomationData[] = [];
     for (const schedule of [
       { kind: "at" as const, at: new Date(Date.now() + 3_600_000).toISOString() },
