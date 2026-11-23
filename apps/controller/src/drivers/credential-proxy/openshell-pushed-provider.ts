@@ -5,7 +5,6 @@ import type {
   CredentialInjectionPolicy,
   CredentialDeploymentConfiguration,
   CredentialDeploymentRef,
-  DeploymentRequestMatch,
   CredentialDeploymentContext,
   CredentialSourceReference,
   ResolvedCredential,
@@ -31,6 +30,12 @@ import {
   sameOpenShellPolicy,
 } from "../sandbox/openshell-policy.ts";
 import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
+import {
+  openShellCredentialProviderName,
+  openShellNetworksOverlappingCredentialPath,
+  openShellProjectedCredentialProviderName,
+  type OpenShellCredentialRoute,
+} from "../sandbox/openshell-credential-policy.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
 const GRPC_FAILED_PRECONDITION = 9;
@@ -71,21 +76,26 @@ function deliveryOwnership(source: CredentialSourceReference): Record<string, st
 
 function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProfile {
   if (
-    binding.consumer.kind !== "model" ||
+    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
     binding.projection.presentation !== "bearer" ||
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.projection.environment)
   ) {
     refuse();
   }
-  return profileForSource(binding.sourceRef, binding.projection.environment);
+  return profileForSource(
+    binding.sourceRef,
+    binding.projection.environment,
+    openShellCredentialProviderName(binding),
+  );
 }
 
 function profileForSource(
   sourceRef: CredentialSourceReference,
   environment: string,
+  name: string,
 ): OpenShellProviderProfile {
   return {
-    id: openShellProviderName(sourceRef.id),
+    id: name,
     displayName: "OCC credential delivery",
     category: "PROVIDER_PROFILE_CATEGORY_OTHER",
     credentials: [
@@ -142,10 +152,11 @@ function ownsDeliveryProvider(
   provider: OpenShellProviderResponse | undefined,
   sourceRef: CredentialSourceReference,
   workspace: string,
+  name: string,
 ): provider is OpenShellProviderResponse {
   return (
     !!provider &&
-    provider.name === openShellProviderName(sourceRef.id) &&
+    provider.name === name &&
     provider.workspace === workspace &&
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
     provider.labels[SOURCE_ID_LABEL] === sourceRef.id &&
@@ -155,9 +166,27 @@ function ownsDeliveryProvider(
   );
 }
 
+/** Source lifecycle operations include all owned projection copies and the retained model name. */
+export function openShellDeliveryProviderNames(
+  source: CredentialSourceReference,
+  providers: readonly OpenShellProviderResponse[],
+  profiles: readonly OpenShellStoredProviderProfile[] = [],
+): readonly string[] {
+  const legacy = openShellProviderName(source.id);
+  const projected = new RegExp(`^${legacy}-[a-f0-9]{24}$`);
+  return [
+    ...new Set([
+      legacy,
+      ...providers.map(({ name }) => name).filter((name) => projected.test(name)),
+      ...profiles.map(({ id }) => id).filter((name) => projected.test(name)),
+    ]),
+  ];
+}
+
 function checkProvider(
   provider: OpenShellProviderResponse | undefined,
   sourceRef: CredentialSourceReference,
+  name: string,
   workspace: string,
   workspaceId: string,
   profileVersion: string,
@@ -165,8 +194,8 @@ function checkProvider(
   const version = provider?.config[SOURCE_VERSION];
   // Native TokenService sources can use the same source-derived name. Mixed ownership is unsafe.
   if (
-    !ownsDeliveryProvider(provider, sourceRef, workspace) ||
-    provider.type !== openShellProviderName(sourceRef.id) ||
+    !ownsDeliveryProvider(provider, sourceRef, workspace, name) ||
+    provider.type !== name ||
     provider.profileWorkspace !== workspace ||
     !provider.id ||
     !/^[1-9]\d*$/.test(provider.resourceVersion) ||
@@ -193,12 +222,9 @@ export async function readOwnedOpenShellPushedProvider(input: {
   readonly binding: DeploymentCredentialBinding;
   readonly signal: AbortSignal;
 }): Promise<OpenShellProviderResponse> {
-  const provider = await input.client.getProvider(
-    input.workspace,
-    openShellProviderName(input.binding.sourceRef.id),
-    input.signal,
-  );
-  if (!ownsDeliveryProvider(provider, input.binding.sourceRef, input.workspace)) {
+  const name = openShellCredentialProviderName(input.binding);
+  const provider = await input.client.getProvider(input.workspace, name, input.signal);
+  if (!ownsDeliveryProvider(provider, input.binding.sourceRef, input.workspace, name)) {
     refuse();
   }
   return provider;
@@ -216,10 +242,11 @@ export async function retireOccTokenServiceProviderCopy(input: {
   >;
   readonly workspace: string;
   readonly source: CredentialSourceReference;
+  readonly name: string;
   readonly signal: AbortSignal;
   readonly retainIfAttached?: boolean;
 }): Promise<void> {
-  const { client, workspace, source, signal } = input;
+  const { client, workspace, source, name, signal } = input;
   const owner = await client.getWorkspace(workspace, signal);
   if (!owner) {
     return;
@@ -232,11 +259,10 @@ export async function retireOccTokenServiceProviderCopy(input: {
   ) {
     refuse();
   }
-  const name = openShellProviderName(source.id);
   const provider = await client.getProvider(workspace, name, signal);
   const profile = await client.getProviderProfile(workspace, name, signal);
   if (
-    (provider && !ownsDeliveryProvider(provider, source, workspace)) ||
+    (provider && !ownsDeliveryProvider(provider, source, workspace, name)) ||
     (profile &&
       (profile.id !== name || !isDeepStrictEqual(profile.annotations, deliveryOwnership(source))))
   ) {
@@ -316,7 +342,7 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   // Another deployment may have completed initialization while the profile was being imported.
   const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
   if (prior) {
-    return checkProvider(prior, binding.sourceRef, workspace, owner.id, profileVersion);
+    return checkProvider(prior, binding.sourceRef, profile.id, workspace, owner.id, profileVersion);
   }
   let resolved: ResolvedCredential;
   try {
@@ -350,7 +376,14 @@ export async function prepareOccTokenServiceProviderCopy(input: {
     }
     provider = await client.getProvider(workspace, profile.id, signal);
   }
-  const prepared = checkProvider(provider, binding.sourceRef, workspace, owner.id, profileVersion);
+  const prepared = checkProvider(
+    provider,
+    binding.sourceRef,
+    profile.id,
+    workspace,
+    owner.id,
+    profileVersion,
+  );
   if (prepared.sourceVersion !== resolved.version) {
     refuse();
   }
@@ -365,6 +398,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
   >;
   readonly workspace: string;
   readonly sourceRef: CredentialSourceReference;
+  readonly name: string;
   readonly version?: string;
   readonly resolveCredential: () => Promise<ResolvedCredential>;
   readonly signal: AbortSignal;
@@ -375,7 +409,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
     }
   | undefined
 > {
-  const { client, workspace, sourceRef, signal } = input;
+  const { client, workspace, sourceRef, name, signal } = input;
   signal.throwIfAborted();
   const owner = await client.getWorkspace(workspace, signal);
   if (
@@ -386,23 +420,27 @@ export async function updateOccTokenServiceProviderCopy(input: {
   ) {
     refuse();
   }
-  const name = openShellProviderName(sourceRef.id);
   const existing = await client.getProvider(workspace, name, signal);
   if (!existing) {
     return undefined;
   }
-  if (!ownsDeliveryProvider(existing, sourceRef, workspace)) {
+  if (!ownsDeliveryProvider(existing, sourceRef, workspace, name)) {
     refuse();
   }
   const stored = await client.getProviderProfile(workspace, name, signal);
   const credentials = stored?.definition?.credentials;
   const credential = Array.isArray(credentials) ? asRecord(credentials[0]) : undefined;
   const environment = credential?.name;
-  if (typeof environment !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(environment)) {
+  if (
+    typeof environment !== "string" ||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(environment) ||
+    (name !== openShellProviderName(sourceRef.id) &&
+      name !== openShellProjectedCredentialProviderName(sourceRef.id, environment))
+  ) {
     refuse();
   }
-  const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment));
-  const current = checkProvider(existing, sourceRef, workspace, owner.id, profileVersion);
+  const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment, name));
+  const current = checkProvider(existing, sourceRef, name, workspace, owner.id, profileVersion);
   if (!client.updateProviderCredentialsConditionally) {
     refuse();
   }
@@ -432,7 +470,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
     current.resourceVersion,
     signal,
   );
-  const provider = checkProvider(updated, sourceRef, workspace, owner.id, profileVersion);
+  const provider = checkProvider(updated, sourceRef, name, workspace, owner.id, profileVersion);
   if (
     provider.id !== current.id ||
     BigInt(provider.resourceVersion) <= BigInt(current.resourceVersion) ||
@@ -465,53 +503,20 @@ export function assertOpenShellDeploymentContext(
   }
 }
 
-export function assertOpenShellInjectionPolicy(
-  policies: readonly CredentialInjectionPolicy[],
-  bindingRef?: string,
-): DeploymentRequestMatch {
-  const injection = policies[0];
-  if (
-    policies.length !== 1 ||
-    !injection?.bindingRef ||
-    (bindingRef !== undefined && injection.bindingRef !== bindingRef) ||
-    injection.allowedRequests.length !== 1
-  ) {
-    refuse();
-  }
-  const request = injection.allowedRequests[0]!;
-  if (
-    !request.binary ||
-    !/^[a-z0-9.-]+$/i.test(request.host) ||
-    request.ports.length !== 1 ||
-    request.ports[0]!.from !== request.ports[0]!.to ||
-    request.ports[0]!.from < 1 ||
-    request.ports[0]!.from > 65535 ||
-    request.requestPolicy?.type !== "http" ||
-    request.requestPolicy.method !== "POST" ||
-    !request.requestPolicy.path.startsWith("/") ||
-    request.requestPolicy.path.includes("*")
-  ) {
-    refuse();
-  }
-  return request;
-}
-
 // TODO(native policy): require leaf-only executable rules (#4943) and Bearer-only
 // placeholder substitution when OpenShell provides those enforcement capabilities.
 /** Check the Gateway's effective policy, including its derived credential marker. */
 export function openShellPushedPolicyMatches(
   source: unknown,
   effective: unknown,
-  request: DeploymentRequestMatch,
-  provider: string,
+  routes: readonly OpenShellCredentialRoute[],
 ): boolean {
   const sourceNetworks = asRecord(asRecord(source)?.network_policies);
   const networks = asRecord(asRecord(effective)?.network_policies);
-  const port = request.ports[0]?.from;
-  if (!sourceNetworks || !networks || !port || request.requestPolicy?.type !== "http") {
+  if (!sourceNetworks || !networks || routes.length === 0) {
     return false;
   }
-  let matched: string | undefined;
+  const matched = new Map<OpenShellCredentialRoute, string>();
   for (const [name, value] of Object.entries(networks)) {
     const rule = asRecord(value);
     if (!rule) {
@@ -525,22 +530,31 @@ export function openShellPushedPolicyMatches(
     }
     for (const value of rule.endpoints) {
       const endpoint = asRecord(value);
-      const host = typeof endpoint?.host === "string" ? endpoint.host.toLowerCase() : "";
+      const binding = asRecord(endpoint?.credential_binding);
+      if (!binding) {
+        continue;
+      }
       const ports =
         Array.isArray(endpoint?.ports) && endpoint.ports.length
           ? endpoint.ports
           : typeof endpoint?.port === "number" && endpoint.port > 0
             ? [endpoint.port]
             : [];
-      const binding = asRecord(endpoint?.credential_binding);
-      if (binding?.provider !== provider) {
-        continue;
-      }
+      const route = routes.find(
+        (candidate) =>
+          candidate.provider === binding.provider &&
+          typeof endpoint?.host === "string" &&
+          candidate.host.toLowerCase() === endpoint.host.toLowerCase() &&
+          (candidate.endpointPath === undefined
+            ? endpoint.path === undefined || endpoint.path === ""
+            : candidate.endpointPath === endpoint.path) &&
+          sameOpenShellPolicy(rule.binaries, [{ path: candidate.binary }]) &&
+          sameOpenShellPolicy(ports, [candidate.port]),
+      );
       if (
-        matched !== undefined ||
         !endpoint ||
-        host !== request.host.toLowerCase() ||
-        !sameOpenShellPolicy(rule.binaries, [{ path: request.binary }]) ||
+        !route ||
+        matched.has(route) ||
         rule.name !== name ||
         rule.endpoints.length !== 1 ||
         !sameOpenShellPolicy(sourceNetworks[name], {
@@ -558,26 +572,33 @@ export function openShellPushedPolicyMatches(
                 : endpoint.enforcement,
           },
           {
-            host: request.host,
-            ports: [port],
+            host: route.host,
+            path: route.endpointPath,
+            ports: [route.port],
             protocol: "rest",
             enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-            rules: [
-              { allow: { method: request.requestPolicy.method, path: request.requestPolicy.path } },
-            ],
-            credential_binding: { provider },
+            rules: route.rules,
+            credential_binding: { provider: route.provider },
             provider_credentialed: true,
           },
         )
       ) {
         return false;
       }
-      matched = name;
+      matched.set(route, name);
     }
   }
+  const names = [...matched.values()];
   return (
-    matched !== undefined &&
-    !openShellNetworkRouteMayOverlap(networks, { host: request.host, port }, [matched])
+    matched.size === routes.length &&
+    routes.every(
+      (route) =>
+        !openShellNetworkRouteMayOverlap(
+          openShellNetworksOverlappingCredentialPath(networks, route.path),
+          route,
+          names,
+        ),
+    )
   );
 }
 
@@ -591,11 +612,10 @@ export function assertOpenShellPushedBinding(
     context.revision.executionAdmission.version !== 8 ||
     context.revision.executionAdmission.mode !== "standalone" ||
     !admitted ||
-    admitted.bindings.length !== 1 ||
-    !isDeepStrictEqual(admitted.bindings[0], binding) ||
+    !admitted.bindings.some((candidate) => isDeepStrictEqual(candidate, binding)) ||
     !isDeepStrictEqual(admitted.injectionPolicies, policies) ||
     !binding.bindingRef ||
-    binding.consumer.kind !== "model" ||
+    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
     binding.sourceRef.kind !== "credential_source" ||
     !binding.sourceRef.id ||
     binding.sourceRef.namespaceId !== context.namespace.id ||
@@ -604,7 +624,6 @@ export function assertOpenShellPushedBinding(
   ) {
     refuse();
   }
-  assertOpenShellInjectionPolicy(policies, binding.bindingRef);
 }
 
 export function assertOpenShellDeploymentRef(
@@ -658,6 +677,7 @@ export async function readOpenShellPushedProvider(input: {
   return checkProvider(
     await input.client.getProvider(input.workspace, profile.id, input.signal),
     input.binding.sourceRef,
+    profile.id,
     input.workspace,
     owner.id,
     version,

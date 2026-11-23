@@ -180,7 +180,7 @@ export interface ControllerOptions {
     readonly configuration: Readonly<Record<string, unknown>>;
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
-  /** Composition qualifies the selected implementations for the complete admitted credential policy. */
+  /** Composition qualifies the selected implementations against the complete deployment policy. */
   readonly supportsCredentialDeployment?: (input: {
     readonly sandbox: SandboxDriver;
     readonly proxy: CredentialProxyDriver;

@@ -137,6 +137,10 @@ function recordingActiveGateway(
       assert.equal(name, providerName);
       return provider;
     },
+    async listProviders(requestWorkspace) {
+      assert.equal(requestWorkspace, workspace);
+      return provider ? [provider] : [];
+    },
     async createProvider(request) {
       assert.equal(request.workspace, workspace);
       assert.equal(request.name, providerName);
