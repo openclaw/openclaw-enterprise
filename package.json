@@ -71,7 +71,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@stylistic/eslint-plugin": "5.10.0",
+    "@stylistic/eslint-plugin": "6.0.1",
     "@types/node": "26.6.6",
     "@types/pg": "8.23.1",
     "@typescript/native": "npm:typescript@7.0.2",
