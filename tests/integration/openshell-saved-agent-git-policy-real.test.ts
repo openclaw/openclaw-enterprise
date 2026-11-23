@@ -2115,9 +2115,13 @@ if (savedAgentAcl === "source") {
             process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
         "Use the inert Local Setup credential with the synthetic startup model",
       );
+      // OCC_TEST_SOURCE_APP_KEY=none runs the Installation without a GitHub App (no key Secret,
+      // no key values, a Source-only registry) through the first deploy, then names the App.
+      const withoutApp = process.env.OCC_TEST_SOURCE_APP_KEY === "none";
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
         repositorySource: true,
+        repositoryAppKey: !withoutApp,
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       const source = fixture.repositorySource;
@@ -2517,6 +2521,96 @@ if (savedAgentAcl === "source") {
       );
       // AC-2 after deploy.
       await assertTokensAbsentFromWorkload(t, exec, first.target, values, "deploy");
+      if (withoutApp) {
+        // The controller and Worker started without the App key, and the deploy above read A and
+        // B and wrote B through the Source. A registry that names the App without a key refuses
+        // the next Worker start.
+        assert.ok(fixture.appLess);
+        evidence("without-app", fixture.appLess.state);
+        assert.equal(fixture.appLess.state.appKeySecret, "absent");
+        assert.ok(
+          fixture.appLess.state.ownerSecrets.every(
+            (names: readonly string[]) => !names.includes("git-fixture-app"),
+          ),
+          "SOURCE_WITHOUT_APP_NO_KEY_MOUNT",
+        );
+        const refusal = await fixture.appLess.refuseAppRegistryWithoutKey();
+        evidence("app-registry-without-key", refusal);
+        assert.equal(refusal.newWorker.ready, false, "SOURCE_APP_REGISTRY_WITHOUT_KEY_REFUSED");
+        return;
+      }
+      if (process.env.OCC_TEST_SOURCE_CEILING === "lowered") {
+        // The Source ceiling is lowered below a saved grant (B write) after deploy. The API refuses
+        // that change while its registry names the Source, so only the API is pointed at the
+        // registry without the Source; the Worker keeps lending, and its next loan is refused.
+        const api = "openclaw-enterprise-api";
+        const deployment = JSON.parse(
+          await fixture.kube(["get", "deployment", api, "-n", fixture.platform, "-o", "json"]),
+        );
+        const volumes: { name: string; configMap?: { name: string } }[] =
+          deployment.spec.template.spec.volumes;
+        const at = volumes.findIndex(({ name }) => name === "repository-registry");
+        assert.equal(volumes[at]?.configMap?.name, "git-fixture-registry-source");
+        await fixture.kube([
+          "patch",
+          "deployment",
+          api,
+          "-n",
+          fixture.platform,
+          "--type=json",
+          "-p",
+          JSON.stringify([
+            {
+              op: "replace",
+              path: `/spec/template/spec/volumes/${at}/configMap/name`,
+              value: "git-fixture-registry-v1",
+            },
+          ]),
+        ]);
+        await fixture.kube(
+          ["rollout", "status", `deployment/${api}`, "-n", fixture.platform, "--timeout=180s"],
+          { timeout: 190_000 },
+        );
+        // The first request after the API's replacement can ride a kept-alive connection that no
+        // longer answers; one read, whatever its outcome, moves the client to a fresh connection.
+        const afterRollout = await statusOf(request("GET", source.path));
+        const patchStarted = Date.now();
+        const lowered = await statusOf(
+          request("PATCH", source.path, {
+            config: {
+              provider_preset: "github",
+              repositories: "fixture/a:write,fixture/b:read,fixture/c:write",
+            },
+          }),
+        );
+        const loweredAt = Date.now();
+        evidence("ceiling-lowered", {
+          afterRollout,
+          status: lowered,
+          seconds: (loweredAt - patchStarted) / 1000,
+        });
+        assert.equal(lowered, 200, "SOURCE_CEILING_LOWERED");
+        const exceeded = await observeUntil(
+          "Source loan refusal after the ceiling is lowered",
+          t.signal,
+          async () => {
+            await delay(5_000, undefined, { signal: t.signal });
+            return (await refusals()).find(
+              ({ reason }) =>
+                reason === "source_access_exceeded" || reason === "source_ceiling_exceeded",
+            );
+          },
+          16 * 60_000,
+        );
+        evidence("ceiling-refusal", {
+          reason: exceeded.reason,
+          sourceNamed: exceeded.sourceNamed,
+          versionLogged: exceeded.versionLogged,
+          afterSeconds: Number.isNaN(exceeded.at) ? "untimed" : (exceeded.at - loweredAt) / 1000,
+        });
+        assert.equal(exceeded.reason, "source_access_exceeded", "SOURCE_CEILING_REFUSAL_REASON");
+        return;
+      }
 
       // AC-1 narrowing: B read-only on a new revision, confirmed by readback; same Source value.
       const readOnly = [

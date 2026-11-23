@@ -254,7 +254,9 @@ async function certificates(
  * `repositorySource` selects the OCC TokenService, enrolls a `github` Source holding a fake
  * fine-grained value through the API, and names it on the primary Namespace's registrations; the
  * peer Namespace stays on the App. The origin accepts that value as a static token. Native Git only.
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, issueReads?: boolean, repositorySource?: boolean }} [options]
+ * `repositoryAppKey: false` (with `repositorySource`) then runs the Installation without a GitHub
+ * App: a Source-only registry, no App key Secret and no App key values.
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, issueReads?: boolean, repositorySource?: boolean, repositoryAppKey?: boolean }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -266,6 +268,7 @@ export function createOpenShellGitInstallation(
     networkAcl = false,
     issueReads = false,
     repositorySource = false,
+    repositoryAppKey = true,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -277,6 +280,7 @@ export function createOpenShellGitInstallation(
       networkAcl,
       issueReads,
       repositorySource,
+      repositoryAppKey,
     }),
   );
 }
@@ -291,11 +295,16 @@ async function installOpenShellGit(
     networkAcl,
     issueReads,
     repositorySource,
+    repositoryAppKey,
   },
 ) {
   assert.ok(
     !repositorySource || (nativeGit && !issueReads),
     "A repository token Source lends to native Git only, without scoped REST",
+  );
+  assert.ok(
+    repositoryAppKey || repositorySource,
+    "Only a Source-only registry runs without the App",
   );
   assert.ok(!(nativeGit && networkAcl), "Select one Git ACL credential fixture");
   assert.ok(
@@ -955,6 +964,7 @@ async function installOpenShellGit(
     independent.modelSource = await registerModel(independent.namespace);
   }
   let repositorySourceState;
+  let appLess;
   if (repositorySource) {
     onSetupStep?.("enroll repository token Source");
     // Fake values only, built from parts: never a real token.
@@ -997,6 +1007,19 @@ async function installOpenShellGit(
         ),
       })),
     };
+    if (!repositoryAppKey) {
+      // No GitHub App: only the primary Namespace's Source registrations, no App key Secret and
+      // no App key values. The upgrade below restarts the controller and Worker in this form.
+      delete sourceRegistry.appId;
+      delete sourceRegistry.githubInstallationId;
+      sourceRegistry.repositories = sourceRegistry.repositories.map((entry) => ({
+        ...entry,
+        namespaces: entry.namespaces.filter((policy) => policy.namespaceId === namespace.id),
+      }));
+      await kube(["delete", "secret", "git-fixture-app", "-n", platform, "--wait=true"]);
+      delete values.repositoryCredentials.appKeySecretName;
+      delete values.repositoryCredentials.appKeyKey;
+    }
     await apply([
       configMap("git-fixture-registry-source", { "registry.json": JSON.stringify(sourceRegistry) }),
     ]);
@@ -1004,22 +1027,128 @@ async function installOpenShellGit(
     const sourceValuesFile = join(directory, "oce-values-source.json");
     await writeFile(sourceValuesFile, JSON.stringify(values), { mode: 0o600 });
     onSetupStep?.("upgrade controller with the Source registry");
-    await command(
-      "helm",
-      [
-        "upgrade",
-        "openclaw-enterprise",
-        join(root, "deploy/helm/openclaw-enterprise"),
-        ...helmContext,
-        "-f",
-        sourceValuesFile,
-        "--wait",
-        "--timeout",
-        "180s",
-      ],
-      { timeout: 190_000 },
-    );
+    const upgrade = (file, wait = true) =>
+      command(
+        "helm",
+        [
+          "upgrade",
+          "openclaw-enterprise",
+          join(root, "deploy/helm/openclaw-enterprise"),
+          ...helmContext,
+          "-f",
+          file,
+          ...(wait ? ["--wait", "--timeout", "180s"] : []),
+        ],
+        { timeout: 190_000 },
+      );
+    await upgrade(sourceValuesFile);
     repositorySourceState = { id: created.id, path: sourcePath, value, index, fake };
+    if (!repositoryAppKey) {
+      const workerPods = async () =>
+        JSON.parse(
+          await kube(["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"]),
+        ).items;
+      // The names of the Secrets the running Worker mounts for the prepared Git owner.
+      const ownerSecrets = (pod) =>
+        (pod.spec.volumes ?? [])
+          .filter(({ name }) => name === "prepared-repository-owner")
+          .flatMap(({ projected }) => projected?.sources ?? [])
+          .flatMap(({ secret }) => (secret ? [secret.name] : []));
+      const workerState = (pod) => {
+        const status = (pod.status.containerStatuses ?? []).find(({ name }) => name === "worker");
+        return {
+          ready: status?.ready === true,
+          restarts: status?.restartCount,
+          waiting: status?.state?.waiting?.reason,
+          exitCode: status?.lastState?.terminated?.exitCode,
+        };
+      };
+      const running = await workerPods();
+      appLess = {
+        state: {
+          appKeySecret:
+            (
+              await kube(["get", "secret", "git-fixture-app", "-n", platform, "--ignore-not-found"])
+            ).trim() === ""
+              ? "absent"
+              : "present",
+          registryNamesApp: false,
+          ownerSecrets: running.map(ownerSecrets),
+          workers: running.map(workerState),
+        },
+        // The same Installation, with a registry that names the App and still no key: the new
+        // Worker refuses to start with the documented code and reason.
+        refuseAppRegistryWithoutKey: async () => {
+          const before = new Set(running.map((pod) => pod.metadata.name));
+          const appRegistry = {
+            ...sourceRegistry,
+            appId: registry.appId,
+            githubInstallationId: registry.githubInstallationId,
+          };
+          await apply([
+            configMap("git-fixture-registry-app-no-key", {
+              "registry.json": JSON.stringify(appRegistry),
+            }),
+          ]);
+          const appValues = structuredClone(values);
+          appValues.repositoryCredentials.registryConfigMapName = "git-fixture-registry-app-no-key";
+          const appValuesFile = join(directory, "oce-values-app-no-key.json");
+          await writeFile(appValuesFile, JSON.stringify(appValues), { mode: 0o600 });
+          const started = Date.now();
+          await upgrade(appValuesFile, false);
+          const keyRefused = (logs) =>
+            logs
+              .split("\n")
+              .some(
+                (line) =>
+                  line.includes("PREPARED_GITHUB_APP_KEY_INVALID") &&
+                  line.includes("app_key_unreadable"),
+              );
+          return eventually(
+            "Worker refusal for an App registry without a key",
+            async () => {
+              await delay(3_000, undefined, { signal: t.signal });
+              const fresh = (await workerPods()).filter((pod) => !before.has(pod.metadata.name));
+              for (const pod of fresh) {
+                const name = pod.metadata.name;
+                const state = workerState(pod);
+                const logs = async (previous) =>
+                  kube(
+                    [
+                      "logs",
+                      "-n",
+                      platform,
+                      name,
+                      "--container=worker",
+                      "--tail=400",
+                      ...(previous ? ["--previous"] : []),
+                    ],
+                    { timeout: 30_000 },
+                  ).catch(() => "");
+                const refusedNow = keyRefused(await logs(false));
+                const refusedBefore = state.restarts > 0 && keyRefused(await logs(true));
+                if ((refusedNow || refusedBefore) && !state.ready) {
+                  const old = (await workerPods()).filter((current) =>
+                    before.has(current.metadata.name),
+                  );
+                  return {
+                    refused: true,
+                    code: "PREPARED_GITHUB_APP_KEY_INVALID",
+                    reason: "app_key_unreadable",
+                    seconds: (Date.now() - started) / 1000,
+                    newWorker: state,
+                    newWorkerOwnerSecrets: ownerSecrets(pod),
+                    previousWorkers: old.map(workerState),
+                  };
+                }
+              }
+              return undefined;
+            },
+            300_000,
+          );
+        },
+      };
+    }
     callbacks = await installCallbacks();
   }
 
@@ -1880,6 +2009,7 @@ async function installOpenShellGit(
     platform,
     sessionDurationSeconds,
     ...(repositorySourceState && { repositorySource: repositorySourceState }),
+    ...(appLess && { appLess }),
     signalWorker,
     nodeShell,
     ...(callbacks && { callbacks }),
