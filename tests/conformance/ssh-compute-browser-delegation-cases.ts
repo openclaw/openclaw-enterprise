@@ -45,3 +45,25 @@ test("browser requests require a matching private listener; no shared endpoint f
   assert.equal(request?.endpoint, "wss://127.0.0.1:28000/");
   assert.equal(request?.headers["x-openclaw-scopes"], "operator.sessions.write");
 });
+
+test("the SSH forward binds only locally and selects a distinct Unix socket per revision", async () => {
+  const { browserForwardArgs, browserSocketPath } =
+    await import("../../apps/controller/src/drivers/compute/ssh/browser-forward.ts");
+  const host = {
+    address: "127.0.0.1",
+    user: "compute",
+    port: 22,
+    knownHostsFile: "/etc/known_hosts",
+    identityFile: "/etc/key",
+    connectTimeoutSeconds: 5,
+  };
+  const args = browserForwardArgs(host, target, 19000);
+  assert.ok(args.includes("127.0.0.1:19000:" + browserSocketPath(target)));
+  for (const field of Object.keys(target))
+    assert.notEqual(
+      browserSocketPath(target),
+      browserSocketPath({ ...target, [field]: "different" }),
+    );
+  assert.ok(args.includes("StrictHostKeyChecking=yes"));
+  assert.throws(() => browserForwardArgs(host, target, 65536));
+});
