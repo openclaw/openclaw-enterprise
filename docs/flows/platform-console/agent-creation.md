@@ -144,15 +144,10 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-With **GitHub network policy**, the form takes the draft path even
-on a provisionable runtime. It sends explicit finite bindings and the reviewed
-`repositoryNetworkPolicy` to `POST /agents`. The handler creates the Agent, enables
-policy editing, reads and saves the policy, restores editing to off, and audits in
-one Read Committed transaction. Any refusal rolls back the Agent. Console checks
-the saved grants and networking policy version before granting credential access.
-The draft sends `expectedRepositoryPolicyVersion` to `POST /deploy`. Under the
-Namespace lock, admission checks policy read permission and refuses a missing
-repository policy or a different version with HTTP 409 before creating a revision.
+[GitHub network policy](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
+saves the draft and grants atomically. Console confirms them before granting
+credentials. Deployment checks the reviewed version under the Namespace lock
+and refuses stale grants with HTTP 409.
 
 Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
