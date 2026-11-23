@@ -1792,12 +1792,26 @@ test("Dedicated Agent creation keeps following the job when the first deployment
     work.url,
     observations.length,
   );
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
   // The refusal keeps the reader on the form: the completed line offers the Agent's page
   // instead of the form forcing it open, and the reader chooses to open it.
   assert.equal(new URL(page.url()).pathname, "/console/agents/new");
   await page.getByText("Agent ready.", { exact: true }).waitFor();
   const offer = page.getByRole("link", { name: "Open Agent" });
   await offer.waitFor();
+  // The completed form is terminal: the Agent exists, so editing and resubmitting would only
+  // replay the finished request under the same ID. Name and Create Agent stay locked, and no
+  // second provisioning POST leaves the page.
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  assert.equal(await create.isDisabled(), true);
+  // Even a programmatic submit cannot replay the request: the handler's guard stops it.
+  await page.evaluate(() => {
+    globalThis.document
+      .querySelector("#create-agent-form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await waitForIdleFetches(page);
+  assert.equal(served.submitted, 1);
   await offer.click();
   await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
   const location = new URL(page.url());

@@ -1114,10 +1114,11 @@ export const createAgentProvisioningScenarios = {
     provisioningPhases: ["admitted", "configuration", "handoff"],
     provisionedDeploymentRefused: true,
     description:
-      "The first deployment's read is refused for this caller, so nothing opens by itself when the job succeeds: the completed status line stays in the sticky bar and offers Open Agent, which the reader selects to reach the Agent's Configuration tab. The deployment tab belongs to a caller who may read it.",
+      "The first deployment's read is refused for this caller, so nothing opens by itself when the job succeeds: the completed status line stays in the sticky bar and offers Open Agent, which the reader selects to reach the Agent's Configuration tab. The completed form stays terminal — its fields and Create Agent stay locked, so the finished request cannot be replayed. The deployment tab belongs to a caller who may read it.",
     steps: [
       "Click Create Agent and wait for the line to say the Agent is ready.",
-      "Confirm nothing opened by itself, and that the line offers Open Agent beside the buttons; select it to reach the Agent's Configuration tab.",
+      "Confirm nothing opened by itself, and that the line offers Open Agent beside the buttons; try the name field and Create Agent and confirm both stay locked.",
+      "Select Open Agent to reach the Agent's Configuration tab.",
     ],
     gap: "Simulated UI proof: the refused read is a fixture answer, not a real Restriction.",
   },

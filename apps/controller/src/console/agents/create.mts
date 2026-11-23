@@ -2264,6 +2264,10 @@ function renderAgentForm(
   // must then resend the same plan: the API answers an edited one with 409 "different plan".
   let requestAdmitted = false;
   let provisioningAttempt: ProvisioningAttempt | null = null;
+  // A job that succeeded while its deployment read was refused completes on the form: the
+  // completed line offers Open Agent, and the form stays terminal so a resubmit cannot replay
+  // the finished request under the same ID.
+  let completedOnForm = false;
   // Create can resend an admitted plan after the retry endpoint refuses a finished job.
   let admittedAttempt: ProvisioningAttempt | undefined;
   const capabilityStatus = element(
@@ -3217,11 +3221,14 @@ function renderAgentForm(
   }
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
-    const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
+    const saved = Boolean(
+      savedConfiguration || savedAgent || provisioningAttempt || completedOnForm,
+    );
     const planLocked =
       pending ||
       Boolean(savedAgent) ||
       Boolean(provisioningAttempt) ||
+      completedOnForm ||
       outcomeUnknown ||
       requestAdmitted;
     for (const node of form.querySelectorAll<
@@ -3623,7 +3630,8 @@ function renderAgentForm(
       credentialGrantRefused ||
       selectedModeUnavailable() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
-      Boolean(provisioningAttempt);
+      Boolean(provisioningAttempt) ||
+      completedOnForm;
     setHidden(
       repositoryDeploymentWarning,
       submitUnavailable ||
@@ -4004,7 +4012,9 @@ function renderAgentForm(
       repositories.recordSuccessfulSave();
       if (tab === undefined) {
         // The deployment read was refused, so Create does not force the Agent's page open: the
-        // completed line offers it, and the reader chooses.
+        // completed line offers it, and the reader chooses. The form stays terminal: the Agent
+        // exists, so a resubmit would only replay the finished request under the same ID.
+        completedOnForm = true;
         provisioningMeter.offer(
           link("Open Agent", `agents/${agentId}?revision=${revisionId}&tab=configuration`, context),
         );
@@ -4288,6 +4298,7 @@ function renderAgentForm(
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||
+      completedOnForm ||
       credentialGrantRefused ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilitiesSettled() ||
