@@ -2,6 +2,9 @@
 
 Follow the [production upgrade preparation](production-upgrade.md#prepare-the-release), including the backup and exclusive maintenance window.
 
+The [preprovisioned Namespace](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md#what-the-chart-changes) profile omits the initialization Job and requires a separately migrated database and bootstrapped Installation.
+The upgrade helper refuses this profile, so stop before using this procedure with it.
+
 By default Helm migrates, bootstraps and restores Deployments. To deploy the
 database separately, set `database.upgradeMigration: separate` in the reviewed
 candidate values. Use a controller image that supports `--check-for-installation`,
@@ -110,7 +113,7 @@ Mode arguments require the production-prefixed `db:migrate:production` command.
 If the loader refuses an older image before migration, select an image that
 supports the required mode.
 
-For a first Helm install, leave the database history empty. The chart’s
+For a first Helm install with an initialization Job, leave the database history empty. The chart’s
 initialization Job applies migrations with `--expect-empty`, even when
 `database.upgradeMigration` is `separate`. Do not apply SQL manually before that Job.
 
