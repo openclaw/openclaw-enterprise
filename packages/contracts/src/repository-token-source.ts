@@ -1,7 +1,4 @@
-import {
-  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
-  type SourceProviderPresetId,
-} from "./model-providers.ts";
+import type { SourceProviderPresetId } from "./model-providers.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
   type RepositoryNetworkPolicyCeiling,
@@ -84,17 +81,4 @@ export function canonicalSourceRepositoryCeiling(value: string): string {
     .sort((a, b) => (a.repository < b.repository ? -1 : 1))
     .map(({ repository, access }) => `${repository}:${access}`)
     .join(",");
-}
-
-/**
- * The repository ceiling a `github` Source carries, or undefined for any other Source. A stored
- * ceiling that does not parse fails closed with SourceRepositoryCeilingError.
- */
-export function sourceRepositoryCeiling(
-  config: Readonly<Record<string, string>>,
-): RepositoryNetworkPolicyCeiling | undefined {
-  if (config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== GITHUB_SOURCE_PRESET_ID) {
-    return undefined;
-  }
-  return parseCeiling(config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
 }

@@ -117,7 +117,8 @@ function sourceRepositoryCeilingConfig(
 /** Refused before custody; the message names the accepted class and never the value. */
 function assertGitHubSourceMaterial(secret: Readonly<Record<string, string>>): void {
   for (const [field, value] of Object.entries(secret)) {
-    if (classifyGitHubToken(value) !== "fine-grained") {
+    // GitHub tokens are printable ASCII; a pasted newline or space would fail only at use.
+    if (classifyGitHubToken(value) !== "fine-grained" || !/^[\x21-\x7e]+$/.test(value)) {
       throw new CredentialSourceConfigError(
         field,
         "A github credential source accepts only a fine-grained personal access token.",

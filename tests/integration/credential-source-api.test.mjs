@@ -433,6 +433,8 @@ const REFUSED_CLASSES = {
   "app-user": fakeToken("ghu"),
   "app-installation": fakeToken("ghs"),
   unknown: "synthetic-repository-material",
+  // A fine-grained prefix with a pasted line break is not a usable token.
+  "fine-grained with newline": fakeToken("github", "pat") + "\n",
 };
 const CLASS_REFUSAL =
   "A github credential source accepts only a fine-grained personal access token.";
