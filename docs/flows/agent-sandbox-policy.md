@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9"
+last_updated_session: "authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6"
 ---
 
 # Agent sandbox policy flow
@@ -80,9 +80,9 @@ edits and live apply. Protected dedicated Codex admits the Sandbox-approved
 version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
-Both protected Codex compilers validate the revision artifact map. `openshell-codex-artifacts.ts`
+Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
 excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
-immutable `SandboxResourceRef.proxyWiring`. The proxy checks the map, auxiliary rule and loaded
+immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
 policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
 uses selected Namespace permissions and saved grants. Admission passes saved or deployed
 `repositoryCredentials`. Binding, deploy and provisioning refuse additions or defaults targeting
@@ -90,9 +90,8 @@ uses selected Namespace permissions and saved grants. Admission passes saved or 
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds rules to the credential-only Provider. OpenShell enforces Git and REST routes locally.
-Namespace `issues: write` and Agent Write permit issue creation unless
-`deny: ["issues:create"]`. PR grants remain independent. OCE skips body validation
+binds rules to the credential-only Provider. OpenShell filters eligible REST routes through
+Namespace `apiActions`. Active filters require native policy. Git and PR safeguards persist. OCE skips body validation
 ([limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
@@ -271,6 +270,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
 
 - 2026-11-23 18:58: Explain native REST grants. (authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9 - fc2ffba308)
 

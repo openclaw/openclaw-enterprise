@@ -27,7 +27,6 @@ interface NamespaceInput {
   draftPullLimit?: string | number | boolean | null;
   permissions?: Record<string, string>;
   nativeGit?: "v1";
-  deny?: readonly string[];
   allowStandingApproval?: true;
   token?: string;
 }
@@ -116,7 +115,7 @@ test("Git network grants require the canonical repository and exact Namespace co
   assert.equal(permits("namespace-a", "read", "Example/Application"), false);
 });
 
-test("native operation denials are an exact set and change only the effective grant", () => {
+test("native API filters are strict, canonical and bound to credential authority", () => {
   const input = registryInput();
   const bind = (options: Record<string, unknown>) => {
     input.repositories[0].namespaces[0] = {
@@ -132,28 +131,49 @@ test("native operation denials are an exact set and change only the effective gr
     }).grant.grantId;
   };
   const enabled = bind({});
-  assert.equal(enabled, bind({ deny: [] }));
-  assert.notEqual(enabled, bind({ deny: ["issues:create"] }));
-  for (const deny of [
+  const filtered = (apiActions: unknown) => bind({ apiActions });
+  assert.equal(enabled, filtered({ deny: [] }));
+  assert.notEqual(enabled, filtered({ deny: ["issues:create"] }));
+  assert.notEqual(enabled, filtered({ allow: [] }));
+  const gitOnly = { permissions: { metadata: "read", contents: "write" } };
+  assert.notEqual(bind(gitOnly), bind({ ...gitOnly, apiActions: { allow: [] } }));
+  for (const key of ["allow", "deny"]) {
+    assert.equal(
+      filtered({ [key]: ["issues:read", "pull_requests:create"] }),
+      filtered({ [key]: ["pull_requests:create", "issues:read"] }),
+    );
+    for (const actions of [
+      null,
+      "issues:create",
+      {},
+      [null],
+      [true],
+      ["*"],
+      ["issues:*"],
+      ["issues:edit"],
+      ["POST /issues"],
+      ["issues:create", "issues:create"],
+    ]) {
+      assert.throws(() => filtered({ [key]: actions }), /invalid-repository-registry/);
+    }
+  }
+  for (const malformed of [
     null,
-    "issues:create",
+    [],
     {},
-    [null],
-    [true],
-    ["*"],
-    ["issues:*"],
-    ["issues:edit"],
-    ["POST /issues"],
-    ["issues:create", "issues:create"],
+    { allow: [], deny: [] },
+    { allow: [], extra: true },
+    { unknown: [] },
   ]) {
-    assert.throws(() => bind({ deny }), /invalid-repository-registry/);
+    assert.throws(() => filtered(malformed), /invalid-repository-registry/);
   }
   for (const invalid of [
+    { deny: ["issues:create"] },
     { scopedRest: "v1" },
     { scopedRest: "v2" },
     { scopedRest: true },
     { createIssues: false },
-    { nativeGit: undefined, deny: ["issues:create"] },
+    { nativeGit: undefined, apiActions: { deny: ["issues:create"] } },
   ]) {
     assert.throws(() => bind(invalid), /invalid-repository-registry/);
   }

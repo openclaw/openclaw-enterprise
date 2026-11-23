@@ -1082,6 +1082,16 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
+      const independent = fixture.independent;
+      assert.ok(independent?.modelSource);
+      assert.notEqual(independent.namespace.id, fixture.namespace.id);
+      assert.notEqual(independent.workspace, workspace);
+      const peerFixture = {
+        ...fixture,
+        ...independent,
+        verifySupervisorImage: (target: GitTarget) =>
+          fixture.verifySupervisorImage(target, independent.workspace),
+      };
       const origin: GitOrigin = fixture.origin;
       const network = origin.network;
       assert.ok(network && network.token === undefined, "Require the controlled App issuer");
@@ -1197,6 +1207,9 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
         const grants = desired.repositoryNetworkPolicy;
         assert.ok(grants);
         const restEnabled = issueReads && mode !== "peer";
+        const apiGrants = restEnabled
+          ? grants.filter(({ repository }) => !issueControls || repository !== "fixture/c")
+          : [];
         if (restEnabled) {
           // Stock selects middleware by host. No OCE service may sit on the API host.
           const middlewares = asRecord(asRecord(config.policy)?.network_middlewares);
@@ -1209,7 +1222,7 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
           });
           assert.deepEqual(routes, [], "Scoped REST must not select a request hook");
         }
-        assert.equal(github.length, grants.length * (restEnabled ? 2 : 1));
+        assert.equal(github.length, grants.length + apiGrants.length);
         const git = github.find(({ endpoint }) => endpoint?.host === "github.com");
         assert.ok(git?.endpoint && desired.repositoryNetworkPolicy);
         const providers = serving.sandbox.spec?.providers;
@@ -1310,34 +1323,29 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
         const everyBindingGranted = network.repositories.every((repository) =>
           grants.some((grant) => grant.repository === repository),
         );
-        const restRoutes = restEnabled
-          ? grants.map(({ repository, access }) => {
-              const root = `/repos/${repository}`;
-              const createPulls = access === "write" && everyBindingGranted;
-              const canCreateIssues =
-                access === "write" &&
-                (issueWrites || (issueControls && repository !== "fixture/b"));
-              return {
-                path: `${root}/**`,
-                rules: [
-                  ...(createPulls ? [{ allow: { method: "POST", path: `${root}/pulls` } }] : []),
-                  ...(canCreateIssues
-                    ? [{ allow: { method: "POST", path: `${root}/issues` } }]
-                    : []),
-                  ...["issues", "pulls"].flatMap((resource) => [
-                    { allow: { method: "GET", path: `${root}/${resource}` } },
-                    ...Array.from({ length: 19 }, (_, width) => ({
-                      allow: {
-                        method: "GET",
-                        path: `${root}/${resource}/[1-9]${"[0-9]".repeat(width)}`,
-                      },
-                    })),
-                  ]),
-                ],
-                deny_rules: [],
-              };
-            })
-          : [];
+        const restRoutes = apiGrants.map(({ repository, access }) => {
+          const root = `/repos/${repository}`;
+          const createPulls = access === "write" && everyBindingGranted;
+          const canCreateIssues =
+            access === "write" && (issueWrites || (issueControls && repository !== "fixture/b"));
+          return {
+            path: `${root}/**`,
+            rules: [
+              ...(createPulls ? [{ allow: { method: "POST", path: `${root}/pulls` } }] : []),
+              ...(canCreateIssues ? [{ allow: { method: "POST", path: `${root}/issues` } }] : []),
+              ...["issues", "pulls"].flatMap((resource) => [
+                { allow: { method: "GET", path: `${root}/${resource}` } },
+                ...Array.from({ length: 19 }, (_, width) => ({
+                  allow: {
+                    method: "GET",
+                    path: `${root}/${resource}/[1-9]${"[0-9]".repeat(width)}`,
+                  },
+                })),
+              ]),
+            ],
+            deny_rules: [],
+          };
+        });
         const byRoute = (left: unknown, right: unknown) =>
           JSON.stringify(wirePolicy(left)).localeCompare(JSON.stringify(wirePolicy(right)), "en");
         assert.deepEqual(
@@ -1493,7 +1501,8 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
         return result;
       };
 
-      const legacy = await prepareAgent(fixture);
+      const legacyFixture = issueControls ? peerFixture : fixture;
+      const legacy = await prepareAgent(legacyFixture);
       const control = await deployWithIssuance(origin, legacy.deploy);
       const view: SandboxPolicyViewWire = await request(
         "GET",
@@ -1503,11 +1512,11 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
       const legacyExec = createManagedWorkloadExec(t, {
         backend: fixture.gatewayBackend,
         gatewayClient,
-        workspace,
+        workspace: legacyFixture.workspace,
         checkpoint: fixture.checkpoint,
       });
       const legacyConfig = await gatewayClient.getSandboxConfig(
-        workspace,
+        legacyFixture.workspace,
         control.target.sandboxName,
         t.signal,
       );
@@ -1547,7 +1556,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       assert.ok(indices.size === 1 && typeof index === "number");
       assert.equal(index, control.credentialIndex);
       const box = await gatewayClient.getSandbox(
-        { workspace, name: control.target.sandboxName },
+        { workspace: legacyFixture.workspace, name: control.target.sandboxName },
         t.signal,
       );
       assert.equal(box?.id, control.target.sandboxId);
@@ -1569,9 +1578,32 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       await stop(control);
       await retire(control, gitProviders[0]!, index, {
         path: legacy.path,
-        workspace,
+        workspace: legacyFixture.workspace,
         agentId: legacy.agent.id,
       });
+
+      if (issueControls) {
+        // Attempt fallback with the legacy callback still available. This Agent
+        // has the active filters, and no saved network policy was supplied.
+        const filtered = await prepareAgent(fixture);
+        const filteredPolicy: SandboxPolicyViewWire = await request(
+          "GET",
+          `${filtered.path}/sandbox-policy/networking`,
+        );
+        assert.equal(filteredPolicy.policy.repositoryNetworkPolicy, undefined);
+        const before = origin.snapshot();
+        const attempts = await callbacks.read();
+        const deployPath = `${filtered.path}/deploy`;
+        await assert.rejects(request("POST", deployPath), {
+          message: `OCC POST ${deployPath} returned HTTP 409`,
+        });
+        assert.deepEqual(await request("GET", `${filtered.path}/revisions`), []);
+        const refusedAgent: AgentReadWire = await request("GET", filtered.path);
+        assert.equal(refusedAgent.activeRevisionId, undefined);
+        assert.equal(origin.snapshot().issued, before.issued);
+        assert.equal(origin.snapshot().requests, before.requests);
+        assert.equal(await callbacks.read(), attempts);
+      }
 
       const denied = await prepareAgent(fixture);
       const deniedPath = `${denied.path}/sandbox-policy/networking`;
@@ -1629,6 +1661,28 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
                 number: 43,
               });
               await refuseSavedIssueCreation(fixture, exec, deployed);
+              // C still has Git Write. Its empty API allowlist withholds all four REST actions.
+              for (const route of ["issues", "issues/42", "pulls", "pulls/42"]) {
+                await refuseGh(fixture, exec, deployed, `repos/fixture/c/${route}`);
+              }
+              await refuseSavedIssueCreation(fixture, exec, deployed, "fixture/c");
+              await refuseGh(fixture, exec, deployed, "repos/fixture/c/pulls", pull);
+              const { gitScript, repositoryUrl } = savedGitProbeTools(fixture, exec);
+              const ref = "refs/heads/empty-api-allowlist-control";
+              assert.equal(await network.ref("fixture/c", ref), undefined);
+              const pushed = await gitScript(
+                deployed.target,
+                `work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+git clone -q '${repositoryUrl("c")}' "$work/checkout"
+git -C "$work/checkout" -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m 'C Git control'
+git -C "$work/checkout" push -q origin 'HEAD:${ref}'
+git -C "$work/checkout" rev-parse HEAD`,
+              );
+              const oid = pushed.stdout.toString("utf8").trim();
+              assert.match(oid, /^[a-f0-9]{40}$/u);
+              assert.notEqual(oid, origin.initialSha);
+              assert.equal(await network.ref("fixture/c", ref), oid);
               assert.equal(await callbacks.read(), nativeCallbackBaseline);
             },
           );
@@ -1748,16 +1802,6 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       };
       const original = await rotate(restricted);
       const startPeer = async () => {
-        const independent = fixture.independent;
-        assert.ok(independent?.modelSource);
-        assert.notEqual(independent.namespace.id, fixture.namespace.id);
-        assert.notEqual(independent.workspace, workspace);
-        const peerFixture = {
-          ...fixture,
-          ...independent,
-          verifySupervisorImage: (target: GitTarget) =>
-            fixture.verifySupervisorImage(target, independent.workspace),
-        };
         const prepared = await prepareAgent(peerFixture);
         assert.notEqual(prepared.agent.id, agent.id);
         const peerPolicyPath = `${prepared.path}/sandbox-policy/networking`;

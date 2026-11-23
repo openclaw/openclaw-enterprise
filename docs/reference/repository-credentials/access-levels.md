@@ -64,7 +64,7 @@ Provider writes for this delivery mode.
 Native GitHub App REST access on stock OpenShell 0.1.9 follows the selected
 repository's Namespace `permissions` and the Agent's saved repository grant.
 GitHub App permissions that are not configured on the Namespace registration do
-not grant Agent access. There is no separate REST version or adoption profile.
+not grant Agent access.
 
 | Operation                              | Namespace `permissions` entry      | Saved grant   |
 | -------------------------------------- | ---------------------------------- | ------------- |
@@ -93,15 +93,41 @@ custody and recipient checks remain unchanged. Comments, reviews, PR updates or
 merges, other issue-write routes, GraphQL, and direct access to ungranted
 repositories remain denied. See [Known limits](#known-limits) for indirect effects.
 
+#### API action restrictions
+
+On a repository's selected native Namespace registration, optional `apiActions`
+can narrow the routes already eligible under Namespace permissions and the
+Agent's saved grant. Use exactly one of `allow` or `deny` with an array of
+unique action IDs:
+
+| Action ID              | Direct GitHub routes                      |
+| ---------------------- | ----------------------------------------- |
+| `issues:read`          | Issue collection and numbered detail GETs |
+| `issues:create`        | Issue collection POST                     |
+| `pull_requests:read`   | PR collection and numbered detail GETs    |
+| `pull_requests:create` | PR collection POST                        |
+
+For example, `apiActions: { deny: ["issues:create"] }` removes only issue
+creation. `apiActions: { allow: ["pull_requests:read"] }` permits only eligible
+PR GETs. `apiActions: { allow: [] }` removes all API routes while leaving Git
+grants unchanged. Omitting `apiActions` or setting `apiActions: { deny: [] }`
+applies no filter. Reject null or malformed filters, both keys together, extra
+keys, unknown IDs, wildcards and duplicate entries. An allow entry never adds
+a missing Namespace permission, overrides Agent Read, or bypasses the existing
+mixed-grant PR safeguard. Creation does not grant a separate GET.
+
+An allow list, including `allow: []`, or a nonempty deny list is an active
+filter even if no API permission is configured. Active filters require a saved
+repository network ACL and enforceable native policy. If either is missing,
+credential delivery is refused rather than falling back to broader online
+authorization. Withdrawal and Stop remain available.
+
 #### Issue creation
 
 Namespace `permissions.issues: write` and saved Agent Write permit
-`POST /repos/{owner}/{repo}/issues`. To remove only this repository's issue POST,
-set `deny: ["issues:create"]` on its selected native Namespace registration. An
-absent `deny` or `deny: []` removes nothing. Other strings, malformed values and
-duplicate entries are rejected. The setting does not remove issue reads, Git or
-independently authorized PR operations. Read-only or denied repositories bound to
-the same credential do not block issue creation in a writable repository.
+`POST /repos/{owner}/{repo}/issues` unless `apiActions` filters it out. Read-only
+or denied repositories bound to the same credential do not block issue creation
+in a writable repository.
 
 Save the request in `issue.json` and send it with stock `gh api`:
 
@@ -117,16 +143,14 @@ Inspect the repository before retrying an uncertain creation result.
 
 #### Cut over existing registrations
 
-Remove `scopedRest` from existing registrations before rollout. Both that
-retired setting and the previously proposed `createIssues` field are rejected.
-Review each Namespace's Issues and Pull requests permissions first. At the
-next deployment, new and existing Agent drafts receive the routes allowed by
-those permissions and the saved repository grants. No draft edit is required.
-
-Changed grant identities can interrupt credential preparation or renewal for an
-older revision, affecting Git and REST. Redeploy and verify retirement of the
-old Sandbox. Editing a registration does not immediately revoke a running
-Sandbox's loaded policy or credential.
+Remove retired REST-version and issue-switch configuration fields. Review each
+Namespace's Issues and Pull requests permissions and any `apiActions` restriction
+before deployment. An existing Agent draft can gain eligible REST routes at its
+next deployment. Changed grant identities can interrupt an older revision's
+credential preparation or renewal, affecting Git and REST until recovery. Edit
+the normal draft and redeploy, then verify retirement of the old Sandbox. A
+registration edit does not immediately revoke a running Sandbox's loaded policy
+or current credential.
 
 #### Pull request creation
 
@@ -165,7 +189,7 @@ results do not qualify live GitHub effects. Disable issue creation if these
 effects are unacceptable.
 
 The [existing pull-request rule](https://github.com/openclaw/openclaw-enterprise/pull/7135)
-remains independent. `deny: ["issues:create"]` does not prevent conversion of an issue
+remains independent. Denying `issues:create` does not prevent conversion of an issue
 through an independently permitted PR POST.
 
 OpenShell matches the method, path and query of a request. It does not inspect

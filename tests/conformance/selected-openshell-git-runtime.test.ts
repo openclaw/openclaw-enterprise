@@ -96,7 +96,7 @@ const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
 // example/outside is bound without a saved grant unless `outside` says otherwise.
 type ScopedRest = {
-  disableIssueCreationOn?: string;
+  filters?: Record<string, { allow: string[] } | { deny: string[] }>;
   permissions: Record<string, string>;
   outside?: "read" | "unbound";
 };
@@ -142,7 +142,9 @@ async function selectedV5(
                 contents: "write",
                 ...rest?.permissions,
               },
-              ...(rest?.disableIssueCreationOn === repo.repository && { deny: ["issues:create"] }),
+              ...(rest?.filters?.[repo.repository] && {
+                apiActions: rest.filters[repo.repository],
+              }),
             },
           ],
         })),
@@ -3684,7 +3686,7 @@ test("native scoped REST intersects the selected permissions, operation denials 
   const createIssue = { method: "POST", path: "/repos/example/delivery/issues" };
   // Outside is bound but ungranted, so #7135 withholds PR creation. Only B has Write.
   const bound = await apiRules(
-    { permissions, disableIssueCreationOn: "example/application" },
+    { permissions, filters: { "example/outside": { allow: [] } } },
     true,
   );
   assert.deepEqual(
@@ -3698,7 +3700,11 @@ test("native scoped REST intersects the selected permissions, operation denials 
   // Disabling B's issue creation leaves its independently granted PR creation intact.
   assert.deepEqual(
     await apiRules(
-      { permissions, outside: "unbound", disableIssueCreationOn: "example/delivery" },
+      {
+        permissions,
+        outside: "unbound",
+        filters: { "example/delivery": { deny: ["issues:create"] } },
+      },
       true,
     ),
     mixed,
@@ -3708,6 +3714,21 @@ test("native scoped REST intersects the selected permissions, operation denials 
     both.filter(({ method }) => method !== "GET"),
     [...create, createIssue],
   );
+  const only = (allow: string[]) => ({
+    "example/application": { allow },
+    "example/delivery": { allow },
+  });
+  assert.deepEqual(
+    await apiRules({ permissions, filters: only(["pull_requests:read"]) }, true),
+    pullReads,
+  );
+  assert.deepEqual(await apiRules({ permissions, filters: only([]) }), []);
+  const creates = only(["pull_requests:create", "issues:create"]);
+  assert.deepEqual(await apiRules({ permissions, filters: creates, outside: "unbound" }, true), [
+    ...create,
+    createIssue,
+  ]);
+  assert.deepEqual(await apiRules({ permissions: { issues: "read" }, filters: creates }), []);
 });
 
 test("a persisted v9 Git-only binding cannot inherit issue network access", async () => {

@@ -31,8 +31,9 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
   ```
 
   The suite selects `issues` for native Issues write. For the deny control, run
-  the file directly with `issue-controls` (B denies `issues:create`, with Issues
-  write permission fixed). Replace it with `reads` for Issues read only.
+  the file directly with `issue-controls` (B uses
+  `apiActions: { deny: ["issues:create"] }`, with Issues write fixed). Replace
+  it with `reads` for Issues read only. Keep legacy callback calibration on an unfiltered Namespace.
 
   ```bash
   env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \
