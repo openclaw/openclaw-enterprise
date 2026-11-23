@@ -14,6 +14,7 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
+import { createGitAclDenialCommand } from "../helpers/openshell-git-denial.ts";
 
 const alias = `openshell:resolve:env:s${"0".repeat(64)}_GITHUB_TOKEN`;
 const repos = ["fixture/a", "fixture/b", "fixture/c"];
@@ -360,6 +361,7 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
 test("private Git network origin tracks the rotated credential and retains redaction fingerprints", async (t) => {
   const origin = await startSkipperPrivateGitOrigin({
     networkAcl: "issued",
+    witnessIssuedGit: true,
     repository: "fixture/a",
   });
   t.after(() => origin.close());
@@ -454,6 +456,50 @@ test("private Git network origin tracks the rotated credential and retains redac
     ],
   );
 
+  // Exercise the origin and denial oracle locally. Only the installed caller
+  // can establish what OpenShell does with these literal targets.
+  const outcomes = await network.checkGitVariants(2, async (probe) => {
+    if (probe.expected === "read") {
+      const replay = probe.target.includes("%61")
+        ? { method: probe.method, service: probe.service }
+        : probe;
+      assert.equal((await network.probeIssued(2, probe.repository, replay)).status, 200);
+      return "200 upload-advertisement\n";
+    }
+    return probe.method === "HEAD" ? "403 head-http\n" : "403 native-rest-policy\n";
+  });
+  assert.equal(new Set(outcomes.map(({ method, target }) => `${method} ${target}`)).size, 15);
+  assert.deepEqual(
+    outcomes.filter((row) => row.exactLiteral === false).map((row) => row.wire),
+    [{ method: "literal", path: "canonical", query: "canonical" }],
+  );
+  // A canonical GET can return the right Git media type on the right repository.
+  // It cannot witness a different request target.
+  const normalized = {
+    ...network,
+    probeIssued: () =>
+      network.probeIssued(2, "fixture/a", { method: "GET", service: "git-receive-pack" }),
+  };
+  await assert.rejects(
+    normalized.checkGitVariants(2, async () => assert.fail("normalized calibration")),
+    /Git calibration recipient or target mismatch/,
+  );
+  await assert.rejects(
+    network.checkGitVariants(1, async () => assert.fail("revoked token")),
+    /Git variant calibration failed/,
+  );
+  await assert.rejects(
+    network.checkGitVariants(2, async (probe) => {
+      await network.probeIssued(2, probe.repository, probe);
+      return "403 native-rest-policy\n";
+    }),
+    /Forbidden Git variant reached the origin/,
+  );
+  await assert.rejects(
+    network.checkGitVariants(2, async () => "transport\n"),
+    /Missing Git variant refusal/,
+  );
+
   const representations = [previous, renewed].flatMap((token) => [token, basic(token).slice(6)]);
   const fingerprints = network.issuedCredentialFingerprints();
   assert.deepEqual(
@@ -463,6 +509,30 @@ test("private Git network origin tracks the rotated credential and retains redac
       createHash("sha256").update(value).digest("hex"),
     ]),
   );
+  // A convincing denial cannot compensate for a truncated capture. Both streams fit alone.
+  const denial = createGitAclDenialCommand(fingerprints);
+  const fatal = "fatal: The requested URL returned error: 403\n".padEnd(4096);
+  for (const bytes of [4096, 4097]) {
+    const [, ...args] = denial({ kind: "git" }, [
+      "/bin/sh",
+      "-c",
+      'printf %s "$1"; printf %s "$2" >&2; exit 128',
+      "--",
+      "x".repeat(bytes),
+      fatal,
+    ]);
+    const { code, stdout, stderr } = await run(process.execPath, args, {
+      env: { GITHUB_TOKEN: alias },
+      signal: t.signal,
+      allowFailure: true,
+    });
+    assert.ok(
+      bytes === 4096
+        ? code === 0 && stdout === "403 native-git\n" && stderr === ""
+        : code === 1 && stdout === "" && stderr === "ACL_DENIAL_CAPTURE\n",
+      "Git denial requires complete output",
+    );
+  }
   const observations = JSON.stringify([origin.snapshot(), network.requests(), fingerprints]);
   for (const credential of representations) {
     assert.ok(!observations.includes(credential), "credential leaked into observations");

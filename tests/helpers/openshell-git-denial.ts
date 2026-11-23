@@ -397,8 +397,60 @@ export function createOpenShellGitDenial({
   });
 }
 
+// Keep the literal request target separate from the repository and service
+// that Git must actually serve. Mixed service keys must never reach the origin.
+// Under AC-3, stock OpenShell may match HEAD as GET. A "read" row may be
+// refused or advertise uploads on A. HEAD on A receive or C must be denied.
+export function gitAclVariants(initialSha: string) {
+  const upload = "/fixture/a.git/info/refs?service=git-upload-pack";
+  const receive = "/fixture/a.git/info/refs?service=git-receive-pack";
+  const cases = [
+    ["GET", upload + "&service=git-receive-pack", "a", "receive", "deny"],
+    ["GET", receive + "&service=git-upload-pack", "a", "upload", "deny"],
+    ["GET", upload + "&%73ervice=git-receive-pack", "a", "receive", "deny"],
+    ["GET", upload + "&service=git-upload-pack", "a", "upload", "read"],
+    ["GET", upload + "&extra=1", "a", "upload", "read"],
+    ["GET", upload + "&Service=git-receive-pack", "a", "upload", "read"],
+    ["GET", "/fixture/%61.git/info/refs?%73ervice=git-%75pload-pack", "a", "upload", "read"],
+    ["HEAD", upload, "a", "upload", "read"],
+    ["HEAD", receive, "a", "receive", "deny"],
+    ["HEAD", "/fixture/%63.git/info/refs?service=git-upload-pack", "c", "upload", "deny"],
+    [
+      "GET",
+      "/fixture/a.git/%2e%2e/%63.git/info/refs?service=git-upload-pack",
+      "c",
+      "upload",
+      "deny",
+    ],
+    ["GET", "/fixture/%63.git/info/refs?service=git-receive-pack", "c", "receive", "deny"],
+    ["POST", "/fixture/a.git/git-receive-pack?anything=1", "a", "receive", "deny"],
+    ["POST", "/fixture/%63.git/git-upload-pack", "c", "upload", "deny"],
+    ["POST", "/fixture/a.git/../%63.git/git-receive-pack", "c", "receive", "deny"],
+  ] as const;
+  return cases.map(([method, target, repo, operation, expected]) => {
+    const repository = `fixture/${repo}`;
+    const service = `git-${operation}-pack`;
+    const rpc = method === "POST";
+    return Object.freeze({
+      method,
+      target,
+      repository,
+      operation,
+      expected,
+      service,
+      path: `/${repository}.git/${rpc ? service : "info/refs"}`,
+      ...(rpc && {
+        body: operation === "upload" ? `0032want ${initialSha}\n00000009done\n` : "0000",
+      }),
+    });
+  });
+}
+
+export type GitAclVariant = ReturnType<typeof gitAclVariants>[number];
+
 type GitAclObservation =
   | { kind: "git" | "success" }
+  | { kind: "variant"; method: GitAclVariant["method"]; path: string; host: string }
   | { kind: "rest"; method: "GET" | "POST"; path: string; host: string };
 type GitAclCredentialFingerprint = readonly [length: number, sha256: string];
 
@@ -430,7 +482,7 @@ async function checkGitAclDenial() {
     process.exitCode = 1;
   };
   const fingerprints: GitAclCredentialFingerprint[] = JSON.parse(encoded ?? "null");
-  const rest = kind === "rest";
+  const rest = kind === "rest" || kind === "variant";
   if (
     (!rest && kind !== "git" && kind !== "success") ||
     !Array.isArray(fingerprints) ||
@@ -523,6 +575,17 @@ async function checkGitAclDenial() {
   }
   const response = stdout.toString("utf8");
   const diagnostic = "ACL_NATIVE_REST_DENIAL";
+  if (kind === "variant") {
+    if (/\n200 application\/x-git-upload-pack-advertisement\n$/.test(response)) {
+      process.stdout.write("200 upload-advertisement\n");
+      return;
+    }
+    // HEAD has no denial body. Status alone does not identify the policy layer.
+    if (method === "HEAD" && /\n403 [^\r\n]*\n$/.test(response)) {
+      process.stdout.write("403 head-http\n");
+      return;
+    }
+  }
   const footer = /\n403 application\/json\n$/.exec(response);
   if (!footer) {
     return fail(diagnostic);
