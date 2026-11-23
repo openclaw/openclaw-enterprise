@@ -217,14 +217,13 @@ Sandbox until it ends.
   or renewed for it. Once no registration names the Source, it can be deleted,
   and no further loan is made.
 
-A loan holds the Source's catalog row from its checks until the Provider write
-returns, so replacement and retirement wait for an in-flight write. A hold ends
-about 60 seconds after it was taken: the Worker commits it, and when the Worker
-is frozen or cut off from the database, PostgreSQL ends its idle session. The
-same limit applies to the Worker's transaction the checks run in, which holds
-the Namespace row that replacement and retirement lock first. Right
-before the write the Worker confirms the hold on that session, so a Worker that
-resumes after the database ended its hold writes nothing from that loan.
+Replacement and retirement wait while the Worker holds the Source's catalog row.
+The Worker limits the hold to 60 seconds and confirms it before and after the
+Provider write. A missing hold prevents dispatch. If confirmation fails after
+dispatch, the Worker blocks the route as `write_unknown` and does not retry or
+confirm delivery. The Gateway may still install the submitted credential with
+its original expiry. Stop the Agent and verify the Sandbox has retired before
+redeploying. For immediate revocation, revoke the token on GitHub.
 
 ## Console access levels
 

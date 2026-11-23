@@ -278,9 +278,13 @@ export function registerPreparedGitRotationCases(): void {
             ...next,
             ...(end === "invalid" && { expiresAt: new Date(Date.now() + 7_200_000).toISOString() }),
             isCurrent: () => open,
-            settle: async () => {
-              open = false;
-              settled.push(state.requests.filter(isUpdate).length);
+            hold: {
+              held: () => open,
+              confirm: async () => open,
+              release: async () => {
+                open = false;
+                settled.push(state.requests.filter(isUpdate).length);
+              },
             },
           };
         },

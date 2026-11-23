@@ -2166,16 +2166,15 @@ export class OpenShellGitRuntime {
                 return;
               }
               const current = await read(() => readMaterial(reservedInstall), signal);
-              // A lent Source's row stays held until the write returns (the Provider settles it),
-              // so its replacement or retirement waits; once released, nothing is dispatched.
               const hold = writeHoldOf(current);
               const held = () => isCurrent() && (hold === undefined || hold.held());
-              // Every exit that does not hand the hold to the Provider's settle releases it here.
+              // The Provider takes responsibility for the hold only when given material.
               let lent = false;
               try {
                 if (
                   current &&
                   !("absent" in current) &&
+                  (!("credentialSource" in current) || hold !== undefined) &&
                   isDeepStrictEqual(material, current) &&
                   held()
                 ) {
@@ -2197,11 +2196,6 @@ export class OpenShellGitRuntime {
                       return;
                     }
                   }
-                  // The database may have ended the hold while this Worker was frozen or cut off;
-                  // only the holding session can tell, so ask it last before the write.
-                  if (hold && !((await hold.confirm()) && held())) {
-                    return;
-                  }
                   lent = hold !== undefined;
                   return {
                     value: current.value,
@@ -2216,7 +2210,7 @@ export class OpenShellGitRuntime {
                     ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
                       isCurrent: held,
                     }),
-                    ...(hold && { settle: () => hold.release() }),
+                    ...(hold && { hold }),
                   };
                 }
                 entry.absent = current && "absent" in current ? current.absent : undefined;

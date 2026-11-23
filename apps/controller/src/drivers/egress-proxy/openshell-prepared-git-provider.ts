@@ -1,3 +1,4 @@
+import type { MaterialWriteHold } from "../repo/access/material-hold.ts";
 import {
   openShellGitEndpoints,
   type OpenShellGitNetworkTarget,
@@ -998,8 +999,7 @@ export class OpenShellPreparedGitProvider {
     release: () => Promise<
       | (OpenShellPreparedGitToken & {
           isCurrent?: () => boolean;
-          /** Ends the material owner's hold once the write has returned or was never sent. */
-          settle?: () => Promise<void>;
+          hold?: MaterialWriteHold;
         })
       | undefined
     >,
@@ -1007,7 +1007,7 @@ export class OpenShellPreparedGitProvider {
   ): Promise<OpenShellPreparedGitBinding | undefined> {
     previous = Object.freeze({ ...previous });
     let phase: "reading" | "release" | "writing" = "reading";
-    let settle: (() => Promise<void>) | undefined;
+    let hold: MaterialWriteHold | undefined;
     try {
       if (!this.owns(previous) || !this.client.updateProviderCredentialsConditionally) {
         refuse();
@@ -1034,12 +1034,15 @@ export class OpenShellPreparedGitProvider {
       }
       phase = "release";
       const token = await release();
-      settle = token?.settle;
+      hold = token?.hold;
       phase = "reading";
       if (!token || signal.aborted) {
         return;
       }
       this.token(token);
+      if (hold && !(await hold.confirm())) {
+        return;
+      }
       if (token.isCurrent && !token.isCurrent()) {
         return;
       }
@@ -1060,6 +1063,9 @@ export class OpenShellPreparedGitProvider {
         token.isCurrent,
       );
       if (
+        // PostgreSQL may have ended the session while the Gateway was writing. The update
+        // may have taken effect, but its ordering against replacement is now unknown.
+        (hold && !(await hold.confirm())) ||
         updated.id !== previous.providerId ||
         updated.resourceVersion === previous.resourceVersion
       ) {
@@ -1106,7 +1112,7 @@ export class OpenShellPreparedGitProvider {
         phase === "writing" ? undefined : readFailure(error, signal),
       );
     } finally {
-      await settle?.();
+      await hold?.release();
     }
   }
 }
