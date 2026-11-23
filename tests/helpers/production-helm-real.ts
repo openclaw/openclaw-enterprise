@@ -113,6 +113,7 @@ type PrepareOptions = HelmTarget &
     agentNativeAdminDomain: string;
     installationName: string;
     bootstrapCredentials?: "generate" | "existing";
+    useChartResourceDefaults?: boolean;
     apiClients: readonly PodPeer[];
     channelEgress?: ChannelEgressOptions | undefined;
     slackProxy?: { enabled: boolean } | undefined;
@@ -234,6 +235,7 @@ async function preparePostgresAndValues({
   authBaseURL,
   agentNativeAdminDomain,
   installationName,
+  useChartResourceDefaults,
   apiClients,
   channelEgress,
   slackProxy,
@@ -509,7 +511,7 @@ async function preparePostgresAndValues({
     api: {
       clients: apiClients,
     },
-    resources,
+    ...(useChartResourceDefaults ? {} : { resources }),
     // Callers without prepared routing exercise the supported direct-access installation.
     gatewayRouting: gatewayRouting === undefined ? { enabled: false } : gatewayRouting,
     repositoryCredentials,

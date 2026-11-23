@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
+import { nativeProofFailureStage } from "../../scripts/ci/runner-reporter-output.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -44,7 +45,7 @@ interface RunSummary {
     };
     cleanup: { status: string };
     fileFailure?: unknown;
-    tests: { name: string; status: string; error?: { message?: string } }[];
+    tests: { name: string; status: string; error?: { message?: string; diagnostic?: unknown } }[];
   }[];
 }
 
@@ -284,10 +285,20 @@ test(
         new URL("../../scripts/ci/test-suites/openshell.json", import.meta.url),
         "utf8",
       ),
-    ) as { files: { path: string }[] };
+    ) as { files: { path: string; expectedTests?: string[] }[] };
+    const installerFailure = canonical.files.find(
+      ({ path }) => path === "tests/integration/local-first-agent-openshell-real.test.mjs",
+    );
+    assert.ok(installerFailure?.expectedTests);
+    const [parentCase, nativeCase] = installerFailure.expectedTests;
+    assert.ok(parentCase && nativeCase);
     const installers = canonical.files
       .filter(({ path }) => isOpenShellInstallerFile(path))
-      .map(({ path }) => ({ path }));
+      .map((file) =>
+        file === installerFailure
+          ? { path: file.path, expectedTests: file.expectedTests }
+          : { path: file.path },
+      );
     await writeRunnerManifest(root, {
       lanes: { openshell: { files: [...installers, { path: first }] } },
       groups: { full: ["openshell"] },
@@ -329,14 +340,30 @@ test(
     assert.equal(focusedSplit.status, 1, focusedSplit.stderr);
     assert.deepEqual(commands(focusedSplit.stderr), unknownOrdinalCommands);
 
-    const installerFailure = installers[1];
-    assert.ok(installerFailure);
-    for (const installer of installers) {
-      await writeFile(
-        join(root, installer.path),
-        installer === installerFailure ? failingCase : passingCase,
-      );
+    for (const { path } of installers) {
+      await writeFile(join(root, path), passingCase);
     }
+    // The wrapper imports the declaration just as the Compose installer does, so
+    // Node reports the actual declaration as the nested terminal's source.
+    await writeFile(
+      join(root, installerFailure.path),
+      'await import("./local-first-agent-real.test.mjs");\n',
+    );
+    const nativeDeclaration = join(root, "tests/integration/local-first-agent-real.test.mjs");
+    await writeFile(
+      nativeDeclaration,
+      `
+import test from "node:test";
+function reportFailure(failureStage) {
+  throw Object.assign(new Error("::warning::private-proof-canary"), {
+    openclawCiDiagnostic: { kind: "native-first-agent-proof", failureStage },
+  });
+}
+test(${JSON.stringify(parentCase)}, async (t) => {
+  await t.test("sibling proof", () => reportFailure("exec-proof"));
+  await t.test(${JSON.stringify(nativeCase)}, () => reportFailure("model-outcome"));
+});`,
+    );
     const installerResults = join(root, "results/split-installers.json");
     const installerSplit = await runRunnerAsync(
       laneArgs(root, "openshell-installers", "state/split-installers.jsonl", installerResults),
@@ -345,14 +372,52 @@ test(
     assert.ifError(installerSplit.error);
     assert.equal(installerSplit.status, 1, installerSplit.stderr);
     const installerSummary = await readSummary(installerResults);
+    assert.equal(installerSummary.exitCode, 1);
     assert.deepEqual(
-      installerSummary.files.filter(({ status }) => status === "failed").map(({ path }) => path),
-      [installerFailure.path],
+      installerSummary.files.map(({ path, status }) => [path, status]),
+      installers.map(({ path }) => [path, path === installerFailure.path ? "failed" : "passed"]),
+    );
+    const installerOutcome = installerSummary.files.find(
+      ({ path }) => path === installerFailure.path,
+    );
+    assert.ok(installerOutcome);
+    assert.equal(installerOutcome.nodeExitCode, 1);
+    assert.deepEqual(installerOutcome.cleanup, { status: "passed" });
+    assert.deepEqual(
+      installerOutcome.tests.map(({ name, status, error }) => [name, status, error?.diagnostic]),
+      [
+        [
+          "sibling proof",
+          "failed",
+          { kind: "native-first-agent-proof", failureStage: "exec-proof" },
+        ],
+        [nativeCase, "failed", { kind: "native-first-agent-proof", failureStage: "model-outcome" }],
+        [parentCase, "failed", undefined],
+      ],
     );
     assert.deepEqual(commands(installerSplit.stderr), [
       ...unknownOrdinalCommands,
       `${splitHint} 2.`,
+      "::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage model-outcome.",
     ]);
+
+    // The same real sibling remains first. Removing or corrupting the named
+    // case's normalized stage must suppress the hint, never select exec-proof.
+    for (const diagnostic of [
+      undefined,
+      {
+        kind: "native-first-agent-proof",
+        failureStage: "model-outcome\n::warning::private-stage-canary",
+      },
+    ]) {
+      assert.equal(
+        nativeProofFailureStage([
+          installerOutcome.tests[0]!,
+          { name: nativeCase, error: { diagnostic } },
+        ]),
+        undefined,
+      );
+    }
 
     await writeFile(join(root, first), passingCase);
     const greenSplit = await runRunnerAsync(
