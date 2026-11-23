@@ -53,7 +53,6 @@ drivers:
                     - protocol: TCP
                       port: 8080
       kubernetes:
-        runtimeClassName: openshell-sandbox
         serviceAccount:
           mode: gatewayConfigured
         sandboxDataMount:
