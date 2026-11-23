@@ -1,8 +1,9 @@
 import type { TestContext } from "node:test";
+import { types } from "node:util";
 
 import {
   credentialReplacementCase,
-  credentialReplacementStage,
+  credentialReplacementDiagnostic,
   emitOpenShellProgress,
   emitOpenShellStageFailure,
 } from "../../scripts/ci/openshell-progress.mjs";
@@ -28,13 +29,13 @@ export async function runOpenShellStage<Result>(
       emitOpenShellStageFailure(stage, error);
       if (
         context.name === credentialReplacementCase.name &&
-        error instanceof Error &&
-        !("openclawCiDiagnostic" in error) &&
-        credentialReplacementStage(stage) !== undefined
+        types.isNativeError(error) &&
+        !("openclawCiDiagnostic" in error)
       ) {
-        Object.assign(error, {
-          openclawCiDiagnostic: { kind: "openshell-credential-replacement", stage },
-        });
+        const diagnostic = credentialReplacementDiagnostic(stage);
+        if (diagnostic) {
+          Object.assign(error, { openclawCiDiagnostic: diagnostic });
+        }
       }
     } catch {
       // Diagnostics must not replace the failed operation.

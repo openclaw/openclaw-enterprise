@@ -87,15 +87,18 @@ function isOneOf<T>(values: readonly T[], value: unknown): value is T {
   return values.some((allowed) => value === allowed);
 }
 
-export function credentialReplacementStage(value: unknown) {
-  const stages = [
-    "installation",
-    "exposure-auth",
-    "initial-model",
-    "credential-route",
-    "replacement",
-  ] as const;
-  return isOneOf(stages, value) ? value : undefined;
+const credentialReplacementStages = [
+  "installation",
+  "exposure-auth",
+  "initial-model",
+  "credential-route",
+  "replacement",
+] as const;
+// The notice covers only these stages; later audit/absence checks remain unclassified.
+export function credentialReplacementDiagnostic(stage: unknown) {
+  return isOneOf(credentialReplacementStages, stage)
+    ? ({ kind: "openshell-credential-replacement", stage } as const)
+    : undefined;
 }
 
 function hasProperties(value: unknown): value is Record<string, unknown> {
