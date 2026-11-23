@@ -5,16 +5,19 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { compileOpenShellCredentialPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import {
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
-import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
+import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import { openShellWorkspaceHarnessConfiguration } from "./sandbox-driver-installation-fixture.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
 import { workspaceNodeSetupSecret } from "./sandbox-driver-workspace-node-setup-fixture.ts";
@@ -306,6 +309,145 @@ ${NATIVE_WORKER_ENTRYPOINT}
   });
 
   await driver.ensureNamespace(context);
+  const proxy = new OpenShellCredentialProxyDriver({
+    id: driver.id,
+    implementation: driver.implementation,
+    tokenServiceImplementation: "occ/token-service",
+    backend: backendFor(gateway),
+    sandbox: driver,
+  });
+  const otherPluginRequest = {
+    ...pluginRequest,
+    requestPolicy: { type: "http" as const, method: "GET", path: "/plugins/other" },
+  };
+  const sharedBinding = {
+    ...pluginBinding,
+    bindingRef: "plugin-other-account",
+    consumer: { ...pluginBinding.consumer, requirement: "other-account" },
+  };
+  const broadPluginGrant = {
+    id: "plugin-broad",
+    binary: pluginRequest.binary,
+    host: pluginRequest.host,
+    ports: pluginRequest.ports,
+  };
+  const unsafeRevisions: readonly { readonly reason: string; readonly revision: AgentRevision }[] =
+    [
+      ...[
+        sharedBinding,
+        {
+          ...sharedBinding,
+          projection: { ...sharedBinding.projection, environment: "PLUGIN_OTHER_API_KEY" },
+        },
+      ].map((binding) => ({
+        reason: `a Source cannot be reused for disjoint routes with environment ${binding.projection.environment}`,
+        revision: {
+          ...revision,
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: {
+              allowed: [
+                ...revision.credentialDeployment!.networkAccessPolicy.allowed,
+                otherPluginRequest,
+              ],
+            },
+            bindings: [...revision.credentialDeployment!.bindings, binding],
+            injectionPolicies: [
+              ...revision.credentialDeployment!.injectionPolicies,
+              { bindingRef: binding.bindingRef, allowedRequests: [otherPluginRequest] },
+            ],
+          },
+        },
+      })),
+      {
+        reason:
+          "a broad credential-free Plugin grant cannot be silently replaced by narrow injection routes",
+        revision: {
+          ...revision,
+          sandboxPolicy: driver.admitNetworkPolicy([grant, broadPluginGrant], 1),
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: {
+              allowed: [
+                ...revision.credentialDeployment!.networkAccessPolicy.allowed,
+                broadPluginGrant,
+              ],
+            },
+          },
+        },
+      },
+    ];
+  for (const unsafe of unsafeRevisions) {
+    assert.equal(
+      supportsOpenShellCredentialDeployment({
+        sandbox: driver,
+        proxy,
+        policy: unsafe.revision.credentialDeployment!,
+      }),
+      false,
+      unsafe.reason,
+    );
+    await assert.rejects(
+      driver.provisionStagedHarness({ ...context, revision: unsafe.revision }),
+      /staged native credential policy is unsupported/,
+      unsafe.reason,
+    );
+    assert.equal(
+      gateway.sandboxes.size,
+      0,
+      "unsupported policy must fail before native Sandbox creation",
+    );
+    assert.deepEqual(events, [], "unsupported policy must not mutate the native runtime");
+  }
+  // Plugin-only staging needs a separate model API key; OpenShell cannot project that Secret.
+  const pluginOnly = {
+    ...revision.credentialDeployment!,
+    networkAccessPolicy: { allowed: [pluginRequest, profileRequest] },
+    bindings: [pluginBinding],
+    injectionPolicies: [revision.credentialDeployment!.injectionPolicies[1]!],
+  };
+  assert.equal(
+    supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: pluginOnly }),
+    false,
+  );
+  await assert.rejects(
+    driver.provisionStagedHarness({
+      ...context,
+      revision: {
+        ...revision,
+        harnessAuth: {
+          method: "api_key",
+          source: { kind: "secret", namespaceId: revision.namespaceId, id: "sec_model" },
+          secretDriverId: "secrets",
+        },
+        credentialDeployment: pluginOnly,
+      },
+      requirements: {
+        ...context.requirements,
+        environment: [
+          ...context.requirements.environment,
+          {
+            name: "OPENAI_API_KEY",
+            valueFrom: { secretKeyRef: { name: "model-key", key: "value" } },
+          },
+        ],
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof SandboxRevisionUnsupportedError);
+      assert.equal(error.code, "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED");
+      return true;
+    },
+  );
+  assert.equal(gateway.sandboxes.size, 0, "unsupported model Secret must not create a Sandbox");
+  assert.equal(
+    supportsOpenShellCredentialDeployment({
+      sandbox: driver,
+      proxy,
+      policy: revision.credentialDeployment!,
+    }),
+    true,
+  );
   assert.equal((await driver.provisionStagedHarness(context)).sandboxId, "sandbox-fixture");
   assert.equal(
     [...gateway.sandboxes.values()][0]!.annotations["openclaw.dev/configuration-id"],

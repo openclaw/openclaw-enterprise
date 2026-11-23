@@ -286,7 +286,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (!isDeepStrictEqual(input.injectionPolicies, admitted.injectionPolicies)) {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
-    const sourceBindings = new Map<string, (typeof input.bindings)[number]>();
     const seen = new Set<string>();
     for (const supplied of input.bindings) {
       const { binding } = supplied;
@@ -299,9 +298,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       }
       seen.add(binding.bindingRef);
       assertOpenShellPushedBinding(context, binding, input.injectionPolicies);
-      if (!sourceBindings.has(binding.sourceRef.id)) {
-        sourceBindings.set(binding.sourceRef.id, supplied);
-      }
     }
     const initialTarget = await this.readSandboxTarget(context, input);
     if (typeof initialTarget.client.attachSandboxProviderWithReceipt !== "function") {
@@ -309,7 +305,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     const prepared: DeploymentCredentialBinding[] = [];
     try {
-      for (const supplied of sourceBindings.values()) {
+      for (const supplied of input.bindings) {
         const { binding } = supplied;
         const deliveryProvider = await prepareOccTokenServiceProviderCopy({
           client: initialTarget.client,
@@ -415,9 +411,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
       const routes = this.routes(admitted);
-      const bindings = [
-        ...new Map(admitted.bindings.map((binding) => [binding.sourceRef.id, binding])).values(),
-      ];
+      const bindings = admitted.bindings;
       const target = await this.readSandboxTarget(context, expected);
       const providers = [];
       for (const binding of bindings) {
@@ -594,20 +588,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       const selected = new Set(
         input.bindingRefs ?? admitted.bindings.map(({ bindingRef }) => bindingRef),
       );
-      const bindings = [
-        ...new Map(
-          admitted.bindings
-            .filter(
-              (binding) =>
-                selected.has(binding.bindingRef) &&
-                !admitted.bindings.some(
-                  (other) =>
-                    other.sourceRef.id === binding.sourceRef.id && !selected.has(other.bindingRef),
-                ),
-            )
-            .map((binding) => [binding.sourceRef.id, binding]),
-        ).values(),
-      ];
+      const bindings = admitted.bindings.filter((binding) => selected.has(binding.bindingRef));
       for (const binding of bindings) {
         assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
       }

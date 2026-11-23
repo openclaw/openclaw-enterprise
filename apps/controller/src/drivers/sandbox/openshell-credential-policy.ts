@@ -163,8 +163,9 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
     credentialPolicyFailure();
   }
   const refs = new Set<string>();
-  const environments = new Map<string, string>();
-  const sourceEnvironments = new Map<string, string>();
+  // OpenShell exposes one placeholder per Source profile; it cannot isolate repeated bindings.
+  const environments = new Set<string>();
+  const sources = new Set<string>();
   const routes = new Map<
     string,
     {
@@ -191,14 +192,14 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
       (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
       binding.projection.presentation !== "bearer" ||
       !/^[A-Z][A-Z0-9_]*$/.test(environment) ||
-      (environments.has(environment) && environments.get(environment) !== source) ||
-      (sourceEnvironments.has(source) && sourceEnvironments.get(source) !== environment)
+      environments.has(environment) ||
+      sources.has(source)
     ) {
       credentialPolicyFailure();
     }
     refs.add(binding.bindingRef);
-    environments.set(environment, source);
-    sourceEnvironments.set(source, environment);
+    environments.add(environment);
+    sources.add(source);
     const injections = policy.injectionPolicies.filter(
       (value) => value.bindingRef === binding.bindingRef,
     );
@@ -254,6 +255,33 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
   // OpenShell selects the most specific endpoint path before it evaluates REST rules.
   inheritSubtreeRules(credentialRoutes);
   const publicRoutes = openShellPublicRoutes(policy, credentialRoutes);
+  const httpRoutes = [...credentialRoutes, ...publicRoutes];
+  for (const grant of policy.networkAccessPolicy.allowed) {
+    if (grant.requestPolicy !== undefined) {
+      continue;
+    }
+    for (const route of httpRoutes) {
+      if (
+        route.host.toLowerCase() !== grant.host.toLowerCase() ||
+        !grant.ports.some(({ from, to }) => from <= route.port && route.port <= to)
+      ) {
+        continue;
+      }
+      // The established model route replaces its saved L4 grant with one approved inference request.
+      // New credential-free grants must not be silently narrowed by that replacement mechanism.
+      if (
+        !credentialRoutes.some(
+          (model) =>
+            model.binding.consumer.kind === "model" &&
+            model.binary === grant.binary &&
+            model.host.toLowerCase() === grant.host.toLowerCase() &&
+            model.port === route.port,
+        )
+      ) {
+        credentialPolicyFailure();
+      }
+    }
+  }
   return { credentialRoutes, publicRoutes };
 }
 

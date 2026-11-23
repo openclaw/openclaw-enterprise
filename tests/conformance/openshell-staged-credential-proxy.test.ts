@@ -914,10 +914,11 @@ test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider wi
   assert.equal(f.state.updates.length, 0);
 });
 
-test("native Proxy configures a Plugin-only HTTP binding and refuses MCP before Source resolution", async (t) => {
+test("native Proxy refuses a mixed model and MCP Plugin policy before Source resolution", async (t) => {
   const f = await fixture(t);
   const plugin = {
     ...binding,
+    sourceRef: { ...binding.sourceRef, id: "source-plugin" },
     bindingRef: "plugin-api",
     consumer: { kind: "plugin" as const, pluginId: "http", requirement: "api", connection: "one" },
     projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
@@ -925,19 +926,6 @@ test("native Proxy configures a Plugin-only HTTP binding and refuses MCP before 
   const pluginRequest = {
     ...request,
     requestPolicy: { type: "http" as const, method: "GET", path: "/api" },
-  };
-  const policy = { bindingRef: plugin.bindingRef, allowedRequests: [pluginRequest] };
-  const context: CredentialDeploymentContext = {
-    ...f.context,
-    revision: {
-      ...f.context.revision,
-      credentialDeployment: {
-        ...f.context.revision.credentialDeployment!,
-        networkAccessPolicy: { allowed: [pluginRequest] },
-        bindings: [plugin],
-        injectionPolicies: [policy],
-      },
-    },
   };
   const mcp = {
     ...pluginRequest,
@@ -950,53 +938,34 @@ test("native Proxy configures a Plugin-only HTTP binding and refuses MCP before 
   };
   const mcpPolicy = { bindingRef: plugin.bindingRef, allowedRequests: [mcp] };
   const mcpContext: CredentialDeploymentContext = {
-    ...context,
+    ...f.context,
     revision: {
-      ...context.revision,
+      ...f.context.revision,
       credentialDeployment: {
-        ...context.revision.credentialDeployment!,
-        networkAccessPolicy: { allowed: [mcp] },
-        injectionPolicies: [mcpPolicy],
+        ...f.context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [request, mcp] },
+        bindings: [binding, plugin],
+        injectionPolicies: [injection, mcpPolicy],
       },
     },
   };
   await assert.rejects(
     f.proxy.configureDeployment(mcpContext, {
       ...configuration,
-      bindings: [{ binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential }],
-      injectionPolicies: [mcpPolicy],
+      bindings: [
+        f.suppliedBinding,
+        { binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential },
+      ],
+      injectionPolicies: [injection, mcpPolicy],
     }),
     DependencyUnavailableError,
   );
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.creates.length, 0);
-  const configured = await f.proxy.configureDeployment(context, {
-    ...configuration,
-    bindings: [{ binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential }],
-    injectionPolicies: [policy],
-  });
-  assert.deepEqual(configured.credentialProjections, [
-    {
-      bindingRef: plugin.bindingRef,
-      environment: "PLUGIN_API_KEY",
-      placeholder: { kind: "runtime" },
-    },
-  ]);
-  assert.equal(f.resolutions(), 1);
 });
 
 test("native Proxy delivers multiple HTTP consumers using one Provider per Source and verifies every loaded route", async (t) => {
   const f = await fixture(t);
-  const shared = {
-    ...binding,
-    bindingRef: "plugin-shared",
-    consumer: {
-      kind: "plugin" as const,
-      pluginId: "shared",
-      requirement: "api",
-      connection: "one",
-    },
-  };
   const plugin = {
     ...binding,
     sourceRef: { ...binding.sourceRef, id: "source-plugin" },
@@ -1013,11 +982,7 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
     ...pluginRequest,
     requestPolicy: { type: "http" as const, method: "GET", path: "/discovery" },
   };
-  const policies = [
-    injection,
-    { bindingRef: shared.bindingRef, allowedRequests: [request] },
-    { bindingRef: plugin.bindingRef, allowedRequests: [pluginRequest] },
-  ];
+  const policies = [injection, { bindingRef: plugin.bindingRef, allowedRequests: [pluginRequest] }];
   const context: CredentialDeploymentContext = {
     ...f.context,
     revision: {
@@ -1025,7 +990,7 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
       credentialDeployment: {
         ...f.context.revision.credentialDeployment!,
         networkAccessPolicy: { allowed: [request, pluginRequest, discoveryRequest] },
-        bindings: [binding, shared, plugin],
+        bindings: [binding, plugin],
         injectionPolicies: policies,
       },
     },
@@ -1035,7 +1000,6 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
     ...configuration,
     bindings: [
       f.suppliedBinding,
-      { binding: shared, resolveCredential: f.suppliedBinding.resolveCredential },
       {
         binding: plugin,
         resolveCredential: async () => {
@@ -1048,13 +1012,13 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
   });
   assert.deepEqual(
     configured.credentialProjections,
-    [binding, shared, plugin].map((current) => ({
+    [binding, plugin].map((current) => ({
       bindingRef: current.bindingRef,
       environment: current.projection.environment,
       placeholder: { kind: "runtime" },
     })),
   );
-  assert.equal(f.resolutions(), 1, "the shared Source is resolved only once");
+  assert.equal(f.resolutions(), 1);
   assert.equal(pluginResolutions, 1);
   assert.equal(f.state.creates.length, 2);
   assert.equal(f.state.attaches.length, 2);
@@ -1125,17 +1089,11 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
     code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
   });
 
-  // Removing one binding must retain a Provider still needed by another binding on this Sandbox.
-  await f.proxy.removeDeployment(context, {
-    targetRef: configuration.targetRef,
-    bindingRefs: [binding.bindingRef],
-  });
-  assert.equal(f.state.detaches.length, 0);
   f.sandbox.spec.policy = { network_policies: {} };
   f.state.config!.policy = { network_policies: {} };
   await f.proxy.removeDeployment(context, {
     targetRef: configuration.targetRef,
-    bindingRefs: [binding.bindingRef, shared.bindingRef, plugin.bindingRef],
+    bindingRefs: [binding.bindingRef, plugin.bindingRef],
   });
   assert.equal(f.state.detaches.length, 2);
   assert.equal(f.state.deletes.length, 2);

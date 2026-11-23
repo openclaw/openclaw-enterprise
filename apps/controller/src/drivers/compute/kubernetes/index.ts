@@ -1192,7 +1192,7 @@ interface NativeRuntimeSnapshot {
   readonly configuration: string;
 }
 
-/** Validate staged consumers and match any model binding to the Harness model operation. */
+/** Match the staged model binding to the Harness model operation. */
 function validateStagedCredentialBindings(revision: Readonly<AgentRevision>): void {
   const deployment = revision.credentialDeployment;
   if (
@@ -1206,14 +1206,6 @@ function validateStagedCredentialBindings(revision: Readonly<AgentRevision>): vo
   }
   const auth = revision.harnessAuth;
   const modelBindings = deployment.bindings.filter(({ consumer }) => consumer.kind === "model");
-  if (modelBindings.length === 0) {
-    if (auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined) {
-      throw new DependencyUnavailableError(
-        "The staged model binding does not match the configured Harness model operation.",
-      );
-    }
-    return;
-  }
   const binding = modelBindings[0];
   const selected = harnessModelAuthentication(revision.configuration);
   if (
