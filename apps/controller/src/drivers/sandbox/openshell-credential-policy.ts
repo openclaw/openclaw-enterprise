@@ -3,7 +3,7 @@ import type {
   DeploymentPolicy,
   DeploymentRequestMatch,
 } from "@openclaw-enterprise/contracts";
-import { sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 
 import { openShellProviderName } from "../../backends/openshell.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
@@ -78,6 +78,34 @@ export function openShellCredentialPathsOverlap(left: string, right: string): bo
     !validHttpPath(right) ||
     pathCovers(left, right) ||
     pathCovers(right, left)
+  );
+}
+
+/** Retain opaque endpoints and paths that can overlap the selected credential. */
+export function openShellNetworksOverlappingCredentialPath(
+  networks: Record<string, unknown>,
+  path: string,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(networks).map(([name, value]) => {
+      const rule = asRecord(value);
+      if (!rule || !Array.isArray(rule.endpoints)) {
+        return [name, value];
+      }
+      return [
+        name,
+        {
+          ...rule,
+          endpoints: rule.endpoints.filter((endpoint) => {
+            const endpointPath = asRecord(endpoint)?.path;
+            return (
+              typeof endpointPath !== "string" ||
+              openShellCredentialPathsOverlap(endpointPath, path)
+            );
+          }),
+        },
+      ];
+    }),
   );
 }
 

@@ -32,7 +32,7 @@ import {
 import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
 import {
   openShellCredentialProviderName,
-  openShellCredentialPathsOverlap,
+  openShellNetworksOverlappingCredentialPath,
   openShellProjectedCredentialProviderName,
   type OpenShellCredentialRoute,
 } from "../sandbox/openshell-credential-policy.ts";
@@ -441,21 +441,20 @@ export async function updateOccTokenServiceProviderCopy(input: {
   }
   const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment, name));
   const current = checkProvider(existing, sourceRef, name, workspace, owner.id, profileVersion);
-  if (input.version === current.sourceVersion) {
-    // TODO(manual retry): observe a persisted push without retransferring credential material.
-    refuse();
-  }
   if (!client.updateProviderCredentialsConditionally) {
     refuse();
   }
   const resolved = await input.resolveCredential();
   signal.throwIfAborted();
-  if (!resolved.credential || !resolved.version) {
+  if (
+    !resolved.credential ||
+    !resolved.version ||
+    (input.version !== undefined && input.version !== resolved.version)
+  ) {
     refuse();
   }
-  if (resolved.version === current.sourceVersion) {
-    refuse();
-  }
+  // A prior update may have persisted this Source version before its targets were ready.
+  // Reissuing the conditional delivery obtains fresh receipts for their serving state.
   const updated = await client.updateProviderCredentialsConditionally(
     {
       workspace,
@@ -502,33 +501,6 @@ export function assertOpenShellDeploymentContext(
   ) {
     refuse();
   }
-}
-
-function withoutDisjointPaths(
-  networks: Record<string, unknown>,
-  path: string,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(networks).map(([name, value]) => {
-      const rule = asRecord(value);
-      if (!rule || !Array.isArray(rule.endpoints)) {
-        return [name, value];
-      }
-      return [
-        name,
-        {
-          ...rule,
-          endpoints: rule.endpoints.filter((endpoint) => {
-            const endpointPath = asRecord(endpoint)?.path;
-            return (
-              typeof endpointPath !== "string" ||
-              openShellCredentialPathsOverlap(endpointPath, path)
-            );
-          }),
-        },
-      ];
-    }),
-  );
 }
 
 // TODO(native policy): require leaf-only executable rules (#4943) and Bearer-only
@@ -621,7 +593,11 @@ export function openShellPushedPolicyMatches(
     matched.size === routes.length &&
     routes.every(
       (route) =>
-        !openShellNetworkRouteMayOverlap(withoutDisjointPaths(networks, route.path), route, names),
+        !openShellNetworkRouteMayOverlap(
+          openShellNetworksOverlappingCredentialPath(networks, route.path),
+          route,
+          names,
+        ),
     )
   );
 }

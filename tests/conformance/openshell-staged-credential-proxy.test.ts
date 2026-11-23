@@ -152,6 +152,8 @@ async function fixture(t: TestContext) {
     updates: [] as Wire[],
     attaches: [] as Wire[],
     detaches: [] as Wire[],
+    detachReceipts: new Map<string, Wire>(),
+    routeWithdrawals: [] as { sandboxId: string; bindingRef: string }[],
     deletes: [] as Wire[],
     profileDeletes: [] as Wire[],
     sandboxReads: 0,
@@ -286,25 +288,24 @@ async function fixture(t: TestContext) {
         target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
         target.spec.provider_attachment_epoch = mutationId;
       }
-      return {
-        detached,
-        receipt: {
-          receipt_id: randomUUID(),
-          mutation_id: mutationId,
-          kind: "PROVIDER_MUTATION_KIND_DETACH",
-          workspace: namespace.name,
-          provider,
-          desired: {
-            sandbox_id: target.metadata.id,
-            sandbox: target.metadata.name,
-            attachment_epoch: target.spec.provider_attachment_epoch,
-            provider_env_revision: String(state.config?.provider_env_revision ?? "1"),
-            config_revision: String(state.config?.config_revision ?? "1"),
-            policy_hash: String(state.config?.policy_hash ?? "b".repeat(64)),
-          },
-          persisted_time: { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 },
+      const receipt = {
+        receipt_id: randomUUID(),
+        mutation_id: mutationId,
+        kind: "PROVIDER_MUTATION_KIND_DETACH",
+        workspace: namespace.name,
+        provider,
+        desired: {
+          sandbox_id: target.metadata.id,
+          sandbox: target.metadata.name,
+          attachment_epoch: target.spec.provider_attachment_epoch,
+          provider_env_revision: String(state.config?.provider_env_revision ?? "1"),
+          config_revision: String(state.config?.config_revision ?? "1"),
+          policy_hash: String(state.config?.policy_hash ?? "b".repeat(64)),
         },
+        persisted_time: { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 },
       };
+      state.detachReceipts.set(receipt.receipt_id, receipt);
+      return { detached, receipt };
     },
     DeleteProvider: (input) => {
       state.deletes.push(input);
@@ -367,6 +368,13 @@ async function fixture(t: TestContext) {
     GetSandboxPolicyStatus: () => state.policyStatus,
     GetSandboxProviderStatus: (input) => {
       state.statusReads.push(input);
+      const detach = state.detachReceipts.get(String(input.receipt_id));
+      if (detach) {
+        assert.equal(input.sandbox, record(detach.desired).sandbox);
+        assert.equal(input.provider, detach.provider);
+        assert.equal(record(input.workspace_scope).workspace, detach.workspace);
+        return { status: { state: "PROVIDER_READINESS_STATE_REVOKED", receipt: detach } };
+      }
       const status = providerStatusFor(String(input.provider));
       if (!status) {
         return undefined;
@@ -466,6 +474,10 @@ async function fixture(t: TestContext) {
         const receiptId = randomUUID();
         const time = { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 };
         const priorDesired = prior && record(record(prior.receipt).desired);
+        // A persisted update advances the generation even when its supervisor evidence is stale.
+        const priorRevision = BigInt(String(priorDesired?.provider_env_revision ?? 0));
+        const loadedRevision = BigInt(String(state.config?.provider_env_revision ?? 0));
+        const lastRevision = priorRevision > loadedRevision ? priorRevision : loadedRevision;
         const desired = {
           ...(priorDesired ?? {
             sandbox_id: sandbox.metadata.id,
@@ -475,7 +487,7 @@ async function fixture(t: TestContext) {
           }),
           provider_resource_version: provider.metadata.resource_version,
           ...(priorDesired && {
-            provider_env_revision: String(BigInt(String(state.config!.provider_env_revision)) + 1n),
+            provider_env_revision: String(lastRevision + 1n),
           }),
         };
         const receipt = {
@@ -653,7 +665,19 @@ async function fixture(t: TestContext) {
       agentId: revision.agentId,
       revisionId: revision.id,
     }),
-  } as unknown as SandboxDriver;
+    async withdrawStagedCredentialRoute(
+      _context: CredentialDeploymentContext,
+      sandboxId: string,
+      bindingRef: string,
+    ) {
+      // The test supplies policy readback. The Sandbox suite verifies policy reduction itself.
+      state.routeWithdrawals.push({ sandboxId, bindingRef });
+    },
+  } as unknown as SandboxDriver &
+    Pick<
+      import("../../apps/controller/src/drivers/sandbox/openshell.ts").OpenShellSandboxDriver,
+      "withdrawStagedCredentialRoute"
+    >;
   const backend = {
     id: "backend",
     client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
@@ -1128,6 +1152,30 @@ test("native Proxy isolates and rotates projections of one Source across HTTP co
     new Set([modelName, pluginName]),
   );
 
+  const observedUpdates = f.state.statusReads.length;
+  await f.notify("source-v2");
+  assert.equal(f.resolutions(), 3);
+  const retryUpdates = f.state.updates.slice(2);
+  assert.equal(retryUpdates.length, 2);
+  for (const { provider: value } of retryUpdates) {
+    const provider = record(value);
+    assert.deepEqual(
+      [provider.credentials, provider.config],
+      rotations.get(record(provider.metadata).name),
+    );
+  }
+  const retryStatusReads = f.state.statusReads.slice(observedUpdates);
+  assert.deepEqual(
+    new Set(retryStatusReads.map(({ provider }) => provider)),
+    new Set([modelName, pluginName]),
+  );
+  const priorReceiptIds = new Set(
+    f.state.statusReads.slice(0, observedUpdates).map(({ receipt_id }) => receipt_id),
+  );
+  assert.ok(
+    retryStatusReads.every(({ receipt_id }) => receipt_id && !priorReceiptIds.has(receipt_id)),
+  );
+
   // A loaded route still needs its own projection, even when both copies store the same Source.
   pluginEndpoint.credential_binding.provider = modelName;
   f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
@@ -1161,6 +1209,9 @@ test("native Proxy isolates and rotates projections of one Source across HTTP co
     targetRef: configuration.targetRef,
     bindingRefs: [plugin.bindingRef],
   });
+  assert.deepEqual(f.state.routeWithdrawals, [
+    { sandboxId: configuration.targetRef.sandboxId, bindingRef: plugin.bindingRef },
+  ]);
   assert.deepEqual(
     f.state.detaches.map(({ provider }) => provider),
     [pluginName],
@@ -1170,6 +1221,9 @@ test("native Proxy isolates and rotates projections of one Source across HTTP co
     [pluginName],
   );
   assert.deepEqual(f.sandbox.spec.providers, [modelName]);
+  const detachRead = f.state.statusReads.at(-1)!;
+  assert.equal(detachRead.provider, pluginName);
+  assert.equal(f.state.detachReceipts.get(String(detachRead.receipt_id))?.provider, pluginName);
   assert.ok(f.state.profile);
   assert.equal(f.state.additionalProfiles.size, 0);
 });
@@ -1187,6 +1241,16 @@ test("OpenShell Source notification leaves an absent delivery Provider absent", 
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.creates.length, 0);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("OpenShell Source notification refuses a version that differs from resolved custody", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.setResolvedCredential("synthetic-material-v3", "source-v3");
+
+  await assert.rejects(f.notify("source-v2"), DependencyUnavailableError);
+  assert.equal(f.state.updates.length, 0);
+  assert.equal(f.state.provider!.config.oce_source_version, "source-v1");
 });
 
 test("OpenShell Source notification rejects a mismatched Source Namespace placement", async (t) => {
@@ -1259,7 +1323,7 @@ test("OpenShell Source notification updates an attached Provider copy and confir
   assert.equal(typeof receiptQueries[0], "string");
 });
 
-test("OpenShell Source notification stops on caller cancellation and rejects stale READY", async (t) => {
+test("OpenShell Source notification rejects stale readiness and can retry the persisted version", async (t) => {
   for (const readiness of ["cancel-pending", "stale-ready"] as const) {
     await t.test(readiness, async (t) => {
       const f = await fixture(t);
@@ -1287,6 +1351,23 @@ test("OpenShell Source notification stops on caller cancellation and rejects sta
         "13",
       );
       assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "12");
+
+      if (readiness === "stale-ready") {
+        const providerId = f.state.provider!.metadata.id;
+        const failedReceiptId = record(f.state.providerStatus!.receipt).receipt_id;
+        f.state.updateReadiness = "converge";
+
+        // Source custody is already at v2. A manual delivery retry reuses the Provider and
+        // succeeds only after a new UPDATE receipt confirms that its serving target caught up.
+        await f.notify("source-v2");
+
+        assert.equal(f.state.updates.length, 2);
+        assert.equal(f.state.creates.length, 1);
+        assert.equal(f.state.provider!.metadata.id, providerId);
+        assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
+        assert.notEqual(record(f.state.providerStatus!.receipt).receipt_id, failedReceiptId);
+        assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "14");
+      }
     });
   }
 });
@@ -1780,7 +1861,6 @@ test("staged OpenShell Proxy refuses a loaded policy outside the admitted reques
       f.removeCredentialRoute();
       await f.proxy.removeDeployment(f.context, {
         targetRef: configuration.targetRef,
-        bindingRefs: [binding.bindingRef],
       });
       assert.equal(f.state.detaches.length, 1);
       assert.equal(f.state.detaches[0]?.provider, provider!.metadata.name);
@@ -1811,7 +1891,6 @@ test("staged OpenShell Proxy removes the last target binding and its delivery co
   const remove = () =>
     f.proxy.removeDeployment(f.context, {
       targetRef: configuration.targetRef,
-      bindingRefs: [binding.bindingRef],
     });
 
   // Stock Gateway refuses detach while the current policy still binds this Provider.

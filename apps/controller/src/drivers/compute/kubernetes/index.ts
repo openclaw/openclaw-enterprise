@@ -9632,6 +9632,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
+    if (source.ownerCapability === "token_service") {
+      if (!credentialSourceMatchesSnapshot(source, snapshot)) {
+        throw new OwnershipFailure("The staged Source does not match its admitted owner.");
+      }
+      return this.withdrawStagedCredentialSource(revision, source, signal);
+    }
     const owner =
       source.ownerCapability === "credential_gateway"
         ? this.credentialGatewayDriver
@@ -9708,6 +9714,60 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new OwnershipFailure("The Credential Gateway withdrew another credential source.");
     }
     return status;
+  }
+
+  private async withdrawStagedCredentialSource(
+    revision: Readonly<AgentRevision>,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+  ): Promise<CredentialAttachmentStatus> {
+    const deployment = revision.credentialDeployment;
+    const bindingRefs = deployment?.bindings
+      .filter(
+        ({ sourceRef }) =>
+          sourceRef.kind === "credential_source" &&
+          sourceRef.namespaceId === source.namespaceId &&
+          sourceRef.id === source.id,
+      )
+      .map(({ bindingRef }) => bindingRef);
+    const proxy = this.credentialDeploymentProxyDriver;
+    if (
+      !deployment ||
+      !bindingRefs?.length ||
+      source.namespaceId !== revision.namespaceId ||
+      proxy?.id !== deployment.proxyDriverId
+    ) {
+      throw new OwnershipFailure("The staged credential binding or Proxy is unavailable.");
+    }
+    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+    const existing = await this.getNamespace(namespace);
+    if (existing !== undefined) {
+      this.verifyNamespaceOwnership(existing, { namespaceId: revision.namespaceId }, external);
+    }
+    const targetNamespace = await this.controlNamespace(revision.namespaceId);
+    const sandboxId = await this.credentialDeploymentTarget(revision, targetNamespace);
+    if (sandboxId === undefined) {
+      throw new DependencyUnavailableError(
+        "The staged Sandbox target is unavailable for withdrawal.",
+      );
+    }
+    await proxy.removeDeployment(
+      {
+        namespace: this.sandboxNamespaceForRevision(revision, namespace),
+        revision,
+        signal,
+      },
+      {
+        targetRef: {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          sandboxId,
+        },
+        bindingRefs,
+      },
+    );
+    return { sourceId: source.id, state: "revoked" };
   }
 
   /**
@@ -9980,7 +10040,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       {
         targetRef: { ...deployment, sandboxId },
-        bindingRefs: revision.credentialDeployment.bindings.map((binding) => binding.bindingRef),
       },
     );
     await this.deleteOwnedNamespacedResource(

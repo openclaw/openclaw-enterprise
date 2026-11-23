@@ -604,7 +604,8 @@ ${NATIVE_WORKER_ENTRYPOINT}
     }),
     true,
   );
-  assert.equal((await driver.provisionStagedHarness(context)).sandboxId, "sandbox-fixture");
+  const target = await driver.provisionStagedHarness(context);
+  assert.equal(target.sandboxId, "sandbox-fixture");
   assert.equal(
     [...gateway.sandboxes.values()][0]!.annotations["openclaw.dev/configuration-id"],
     revision.configurationId,
@@ -647,6 +648,12 @@ ${NATIVE_WORKER_ENTRYPOINT}
     version: policyVersion,
     activeVersion: policyVersion,
     state: "POLICY_STATUS_LOADED",
+  });
+  gateway.getSandboxConfig = async (workspace) => ({
+    workspace,
+    policy: policyRevision,
+    version: policyVersion,
+    configuration_admitted: true,
   });
   assert.equal(
     (await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches,
@@ -787,6 +794,24 @@ ${NATIVE_WORKER_ENTRYPOINT}
   delete fixture.requirements.workspaceSetup;
   await driver.prepareStagedHarness(context, projections);
   await driver.activateStagedHarness(context);
+
+  // Both projections share a Source. Revoking the Plugin binding must leave the model and
+  // credential-free discovery routes active, and replay must avoid another UpdateConfig.
+  const activePolicy = structuredClone(policyRevision);
+  const retainedNetworks = Object.fromEntries(
+    Object.entries(activePolicy.network_policies).filter(([, { endpoints }]) =>
+      endpoints.every(
+        ({ path }) => path !== "/plugins/accounts/**" && path !== "/plugins/accounts/profile",
+      ),
+    ),
+  );
+  const activeVersion = policyVersion;
+  await driver.withdrawStagedCredentialRoute(context, target.sandboxId, pluginBinding.bindingRef);
+  assert.deepEqual(policyRevision, { ...activePolicy, network_policies: retainedNetworks });
+  assert.equal(policyVersion, activeVersion + 1);
+  await driver.withdrawStagedCredentialRoute(context, target.sandboxId, pluginBinding.bindingRef);
+  assert.equal(policyVersion, activeVersion + 1, "a retry must observe the already reduced policy");
+
   await driver.cleanup({ ...fixture.context, revision });
   assert.equal(gateway.sandboxes.size, 0);
   assert.equal(

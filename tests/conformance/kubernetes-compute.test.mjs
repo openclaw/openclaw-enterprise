@@ -77,6 +77,7 @@ import {
   nativeSandboxRevision,
   readyNativeHarnessPod,
   recordingNativeSandbox,
+  refusingNativeSandbox,
 } from "./kubernetes-dedicated-deploy-fixture.ts";
 import {
   checkPendingScheduling,
@@ -708,9 +709,23 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     consumer: { kind: "model", providerId: "openai" },
     projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
   };
+  // A second HTTP consumer has a distinct projection for the same Plugin Source.
+  const secondPluginBinding = {
+    ...pluginBinding,
+    bindingRef: "reporting-default",
+    consumer: { ...pluginBinding.consumer, pluginId: "reporting-plugin" },
+    projection: { ...pluginBinding.projection, environment: "REPORTING_ACCESS_TOKEN" },
+  };
+  const secondPluginRequest = {
+    ...pluginRequest,
+    binary: "/app/bin/reporting",
+    host: "reporting.example.test",
+    requestPolicy: { type: "http", method: "GET", path: "/reports" },
+  };
   let target;
   let prepared;
-  const bindings = [pluginBinding, modelBinding];
+  const removals = [];
+  const bindings = [pluginBinding, modelBinding, secondPluginBinding];
   const projections = bindings.map((binding) => ({
     bindingRef: binding.bindingRef,
     environment: binding.projection.environment,
@@ -757,7 +772,9 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     async getDeploymentStatus() {
       return { state: "ready" };
     },
-    async removeDeployment() {},
+    async removeDeployment(_context, removal) {
+      removals.push(removal);
+    },
   };
   const registration = {
     ref: {
@@ -826,6 +843,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
           allowed: [
             { binary: modelGrant.binary, host: modelGrant.host, ports: modelGrant.ports },
             pluginRequest,
+            secondPluginRequest,
           ],
         },
         bindings,
@@ -842,6 +860,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
               },
             ],
           },
+          { bindingRef: secondPluginBinding.bindingRef, allowedRequests: [secondPluginRequest] },
         ],
       },
     },
@@ -874,6 +893,28 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
   const result = await fixture.prepare();
   assert.equal(result.preparedForCredentialActivation, true);
   assert.deepEqual(prepared, projections);
+
+  // A Source withdrawal and a replay both cover only that Source's admitted bindings.
+  const { driver, revision } = fixture;
+  const signal = AbortSignal.timeout(5_000);
+  await assert.rejects(
+    driver.withdrawCredentialSource(revision, { ...pluginSource, namespaceId: "other" }, signal),
+    { code: "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT" },
+  );
+  const withdrawn = { sourceId: pluginSource.id, state: "revoked" };
+  assert.deepEqual(
+    await driver.withdrawCredentialSource(revision, pluginSource, signal),
+    withdrawn,
+  );
+  assert.deepEqual(
+    await driver.withdrawCredentialSource(revision, pluginSource, signal, { recheck: true }),
+    withdrawn,
+  );
+  const removal = {
+    targetRef: target,
+    bindingRefs: [pluginBinding.bindingRef, secondPluginBinding.bindingRef],
+  };
+  assert.deepEqual(removals, [removal, removal]);
 });
 
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
@@ -1014,7 +1055,11 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     async removeDeployment(_context, removal) {
       events.push("remove-bound");
       removedTarget = removal.targetRef;
-      assert.deepEqual(removal.bindingRefs, [binding.bindingRef]);
+      assert.equal(
+        removal.bindingRefs,
+        undefined,
+        "Stop removes the whole deployment after Sandbox cleanup",
+      );
       if (boundRemovalFailure !== undefined) {
         throw boundRemovalFailure;
       }
@@ -2173,28 +2218,13 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
   let failure = new SandboxWorkspaceSetupRefusedError(
     "OpenShell workspace initialization refused.",
   );
-  const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels() {
-      return undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      throw failure;
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
-    async harnessStatus() {
-      assert.fail("a refused setup is reported without a status read");
-    },
-    async withdrawHarnessExposure() {},
-  };
+  const sandboxDriver = refusingNativeSandbox(provisions, () => failure);
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
     revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
   markReady(gatewayName);
   const before = Date.now();
   const refused = await prepare();
@@ -2227,35 +2257,26 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
 // the Driver again, so a freed Pod resumes the deployment.
 test("Kubernetes Sandbox provisioning keeps a revision pending when preparation Pods hit a full quota", async () => {
   const provisions = [];
-  const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels() {
-      return undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      throw new SandboxPodQuotaExceededError("The Namespace Pod quota is full.");
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
-    async harnessStatus() {
-      assert.fail("a pending quota is reported without a status read");
-    },
-    async withdrawHarnessExposure() {},
-  };
+  const sandboxDriver = refusingNativeSandbox(
+    provisions,
+    () => new SandboxPodQuotaExceededError("The Namespace Pod quota is full."),
+  );
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
-    revision: nativeSandboxRevision(sandboxDriver.id, "quota"),
+    revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
   markReady(gatewayName);
   const pending = await prepare();
   assert.equal(provisions.length, 1);
   assert.equal(pending.ready, false);
   assert.equal(pending.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
   assert.equal(pending.runtimeFailure, undefined);
-  assert.equal((await prepare()).pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  const retried = await prepare();
+  assert.equal(retried.ready, false);
+  assert.equal(retried.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  assert.equal(retried.runtimeFailure, undefined);
   assert.equal(provisions.length, 2);
 });
 
@@ -4666,7 +4687,6 @@ test("native channel settings require readable Secret bindings", async () => {
     }),
     { nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
   );
-  const namespace = kubernetesNamespaceName(tenant.id);
   const agentId = "agent-a";
   const revision = {
     id: "revision-a-1",
@@ -4685,45 +4705,21 @@ test("native channel settings require readable Secret bindings", async () => {
   };
   revision.configuration = createHarnessConfiguration("codex", "gpt-5");
   admitRevisionHarness(driver, revision);
-  const secretEnvironment = [
-    {
-      name: "SLACK_APP_TOKEN",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000001",
-      backendRef: { namespaceName: namespace, name: "occ-slack-app", key: "value", uid: "app-uid" },
-    },
-    {
-      name: "SLACK_BOT_TOKEN",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000002",
-      backendRef: { namespaceName: namespace, name: "occ-slack-bot", key: "value", uid: "bot-uid" },
-    },
-    {
-      name: "MSTEAMS_APP_PASSWORD",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000003",
-      backendRef: {
-        namespaceName: namespace,
-        name: "occ-teams-password",
-        key: "value",
-        uid: "teams-uid",
-      },
-    },
-  ];
   const secretBindings = Object.freeze({
     SLACK_APP_TOKEN: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[0].secretId },
+      source: {
+        kind: "secret",
+        namespaceId: tenant.id,
+        id: "sec_00000000-0000-4000-8000-000000000001",
+      },
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[1].secretId },
-      delivery: { type: "env" },
-    },
-    MSTEAMS_APP_PASSWORD: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[2].secretId },
+      source: {
+        kind: "secret",
+        namespaceId: tenant.id,
+        id: "sec_00000000-0000-4000-8000-000000000002",
+      },
       delivery: { type: "env" },
     },
   });
@@ -4746,21 +4742,25 @@ test("native channel settings require readable Secret bindings", async () => {
     }),
     { message: unsupportedChannelRefusal("channels.discord") },
   );
+
+  const slackToken = (botToken) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: {
+      slack: {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken,
+      },
+    },
+  });
+  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+
   assert.throws(
     () =>
       driver.validateHarnessAuth(
         revision.harness,
         revision.harnessAuth,
-        {
-          agents: { defaults: { model: "codex/gpt-5" } },
-          channels: {
-            slack: {
-              appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            },
-          },
-        },
-        { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN },
+        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
+        { ...appBinding },
       ),
     // A row stored before Configuration save checked it: admission names the setting and the
     // missing binding, as save does.
@@ -4773,15 +4773,7 @@ test("native channel settings require readable Secret bindings", async () => {
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
-    {
-      agents: { defaults: { model: "codex/gpt-5" } },
-      channels: {
-        slack: {
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-        },
-      },
-    },
+    slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
     null,
   );
   // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
@@ -4821,16 +4813,6 @@ test("native channel settings require readable Secret bindings", async () => {
   // Admission reads a string as the runtime substitutes it (finding 2475): a reference anywhere
   // in the text, or with a `:-fallback`, still needs a binding, since the fallback would replace
   // the unset name. The `$${NAME}` escape is literal text.
-  const slackToken = (botToken) => ({
-    agents: { defaults: { model: "codex/gpt-5" } },
-    channels: {
-      slack: {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken,
-      },
-    },
-  });
-  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
   // In a secret-input field such as botToken, a whole `$NAME` is an environment SecretRef too
   // (finding 2476).
   for (const botToken of [

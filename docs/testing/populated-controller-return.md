@@ -6,12 +6,11 @@ last_verified: "2026-11-04"
 
 # Rehearse a populated controller return
 
-Use this local test to check whether the previous OpenClaw Control Plane (OCC)
-controller can serve a draft that the candidate saved after recovering an
-interrupted upgrade. The test creates a new
-installation and PostgreSQL instance, then uses the
-[local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md)
-to change the controller image.
+Check whether the previous OpenClaw Control Plane (OCC) controller can serve a
+candidate-saved draft after an ordinary or interrupted upgrade. The test creates
+an installation and PostgreSQL instance, then changes the controller image with the
+[local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md).
+For a return on the same database, use the [in-place rehearsal](postgresql.md#rehearse-an-in-place-controller-switch).
 
 ## Prepare the cluster and images
 
@@ -52,6 +51,15 @@ transport changes or loses the expected identity; do not assign a published
 name to an unverified local image. Keep one approved runtime image fixed across
 both controllers.
 
+Before rehearsing a return, run [released controller compatibility](postgresql.md#released-controller-compatibility).
+After candidate writes, the test runs the released image’s migrator with
+`--require-current` against the disposable database. In the migration file’s
+`measurements`, find `kind: "released-controller-history"`. Only `status: "current"`
+confirms that the image accepts the upgraded history. `unsupported` means the
+image rejected that history, even if forward compatibility passed. A missing
+or `unconfirmed` result leaves the question open. With current history, still
+verify the return and read back the acknowledged write.
+
 In a private environment file, set the values below. Run from a local shell
 without model or Git credentials. Release checkouts must
 contain only their committed files, with no ignored build artifacts, hidden
@@ -73,16 +81,24 @@ OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Require the rehearsal to pass without a skip. During the forward upgrade, the
-test suspends the exact Helm client after observing its attempt-bound initializer
-Job. Kubernetes finishes the real initialization while Helm remains pending.
-The test terminates and reaps that client, checks the committed PostgreSQL
-history with the candidate's migrator, and runs the supported
-`--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
-Recovery must advance exactly one revision without replacing the completed
-initializer Job or Pod or changing the committed migration history. The test
-does not edit Helm storage or disable hooks. If Helm finishes before the
-interruption, the rehearsal fails rather than claiming recovery coverage.
+Require a pass without skips. For ordinary upgrade timing, set
+`OCC_TEST_PRODUCTION_TUI_REHEARSAL=ordinary`. After preflight, the test requires
+one new deployed Helm revision and verifies the Installation.
+
+With `OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`, the test suspends the Helm client
+after observing its attempt's initializer Job. Kubernetes finishes initialization
+while Helm remains pending. The test terminates and reaps that client, checks
+committed PostgreSQL history with the candidate migrator, and runs
+`--resume --recover-helm --migration-history-checked --recovery-reviewed`.
+Recovery must advance exactly one revision and preserve the completed initializer
+Job, Pod, and committed migration history. The test leaves Helm storage and hooks
+intact. It fails if Helm finishes before interruption.
+
+Both archive return modes use chart resource defaults. Compare timings on fresh clusters
+with matching image digests and resource limits. Earlier fixture limits were
+1 CPU and 1 GiB. `proof.json` records CPU and memory limits from Kubernetes for
+the previous, candidate, and returned API and worker containers, with `null`
+for absent limits.
 
 After the candidate acknowledges the new Agent, the previous image’s migrator
 must report completed history on the candidate database. If this check fails,
@@ -153,9 +169,10 @@ the interval between starts. `maxStartGapMs` includes the boundary reads.
 All offsets use the same monotonic clock. Wall-clock timestamps support log
 correlation.
 
-In the forward receipt, `guardedResume.startOffsetMs` marks the start of the
-resume attempt after the migration history check. It includes the fixture's
-cluster, database and release checks before the command runs.
+In the interrupted rehearsal's forward receipt, `guardedResume.startOffsetMs`
+marks the start of the resume attempt after the migration history check. It
+includes the fixture's cluster, database and release checks before the command
+runs.
 `guardedResume.endOffsetMs` marks when the attempt finishes, even on failure.
 A checkpoint can omit the end offset or the whole interval. Missing timing cannot establish
 whether the command ran or succeeded. Compare this interval with probe times

@@ -19,11 +19,15 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
+  SandboxNetworkPolicyConflictError,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { failureAfterCleanup } from "../compute/cleanup-failure.ts";
+import type { OpenShellSandboxDriver } from "../sandbox/openshell.ts";
+import { OpenShellSandboxConfigurationFailure } from "../sandbox/openshell-sandbox-errors.ts";
 import {
   compileOpenShellCredentialPolicy,
   openShellCredentialProviderName,
@@ -58,7 +62,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly id: string;
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;
-  private readonly sandbox: SandboxDriver;
+  private readonly sandbox: SandboxDriver &
+    Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
   private sourceNamespaceResolver?: (
     sourceRef: CredentialSourceReference,
     signal: AbortSignal,
@@ -69,7 +74,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     readonly implementation: string;
     readonly tokenServiceImplementation: string;
     readonly backend: Backend<OpenShellGateway>;
-    readonly sandbox: SandboxDriver;
+    readonly sandbox: SandboxDriver & Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
   }) {
     // TODO(OpenShell TokenService): Add its shared-Provider path when that implementation is available.
     if (selection.tokenServiceImplementation !== "occ/token-service") {
@@ -615,6 +620,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         input.bindingRefs ?? admitted.bindings.map(({ bindingRef }) => bindingRef),
       );
       const bindings = admitted.bindings.filter((binding) => selected.has(binding.bindingRef));
+      if (bindings.length === 0 || bindings.length !== selected.size) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
       for (const binding of bindings) {
         assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
       }
@@ -633,41 +641,104 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           () => new OpenShellCredentialDeliveryRefusedError(),
           readSandbox,
         );
+      const exactWithdrawal = input.bindingRefs !== undefined;
+      const assertTarget = (target: Parameters<typeof assertOpenShellPushedTarget>[0]) => {
+        try {
+          assertOpenShellPushedTarget(target, scope.workspace, scope.name, expected);
+        } catch (error) {
+          if (exactWithdrawal && error instanceof OpenShellCredentialDeliveryRefusedError) {
+            throw new CredentialWithdrawalRefusedError(
+              "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+              "The Sandbox does not match the withdrawn binding target.",
+            );
+          }
+          throw error;
+        }
+      };
       for (const binding of bindings) {
+        const providerName = openShellCredentialProviderName(binding);
         const sandbox = (await refused(readSandbox)) ?? (await absent());
         if (sandbox) {
-          assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
+          assertTarget(sandbox);
           const providers = sandbox.spec?.providers;
           if (!sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
             throw new OpenShellCredentialDeliveryRefusedError();
           }
-          if (providers?.includes(openShellCredentialProviderName(binding))) {
-            const provider = await refused(() =>
-              readOwnedOpenShellPushedProvider({
-                client: scope.client,
-                workspace: scope.workspace,
-                binding,
-                signal: context.signal,
-              }),
+          if (exactWithdrawal) {
+            await refused(() =>
+              this.sandbox.withdrawStagedCredentialRoute(
+                context,
+                expected.targetRef.sandboxId,
+                binding.bindingRef,
+              ),
             );
+          }
+          if (providers?.includes(providerName) || exactWithdrawal) {
+            if (providers?.includes(providerName)) {
+              try {
+                await refused(() =>
+                  readOwnedOpenShellPushedProvider({
+                    client: scope.client,
+                    workspace: scope.workspace,
+                    binding,
+                    signal: context.signal,
+                  }),
+                );
+              } catch (error) {
+                if (exactWithdrawal && error instanceof OpenShellCredentialDeliveryRefusedError) {
+                  throw new CredentialWithdrawalRefusedError(
+                    "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+                    "The Provider does not belong to the withdrawn Source.",
+                  );
+                }
+                throw error;
+              }
+            }
             // TODO(CP2): accepted same-name replacement race until Gateway can enforce the immutable
             // Sandbox ID before detach: https://github.com/NVIDIA/OpenShell/issues/5794
-            await refused(() =>
+            const detached = await refused(() =>
               scope.client.detachSandboxProvider(
                 scope.workspace,
                 scope.name,
-                provider.name,
+                providerName,
                 context.signal,
               ),
             );
+            if (exactWithdrawal) {
+              if (!detached?.receiptId) {
+                throw new OpenShellCredentialDeliveryRefusedError();
+              }
+              const status = await refused(() =>
+                scope.client.getSandboxProviderStatus(
+                  scope.workspace,
+                  scope.name,
+                  providerName,
+                  context.signal,
+                  detached.receiptId,
+                ),
+              );
+              if (
+                status.state !== "PROVIDER_READINESS_STATE_REVOKED" ||
+                status.receipt?.receiptId !== detached.receiptId ||
+                status.receipt.kind !== "PROVIDER_MUTATION_KIND_DETACH" ||
+                status.receipt.workspace !== scope.workspace ||
+                status.receipt.provider !== providerName ||
+                status.receipt.desired?.sandboxId !== expected.targetRef.sandboxId ||
+                status.receipt.desired.sandbox !== scope.name
+              ) {
+                throw new DependencyUnavailableError(
+                  "The native credential detach receipt is not revoked.",
+                );
+              }
+            }
             const after = (await refused(readSandbox)) ?? (await absent());
             if (after) {
-              assertOpenShellPushedTarget(after, scope.workspace, scope.name, expected);
+              assertTarget(after);
               const remaining = after.spec?.providers;
               if (
                 !after.spec ||
                 (remaining !== undefined && !Array.isArray(remaining)) ||
-                remaining?.includes(provider.name)
+                remaining?.includes(providerName)
               ) {
                 throw new OpenShellCredentialDeliveryRefusedError();
               }
@@ -679,7 +750,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             client: scope.client,
             workspace: scope.workspace,
             source: binding.sourceRef,
-            name: openShellCredentialProviderName(binding),
+            name: providerName,
             signal: context.signal,
             retainIfAttached: true,
           }),
@@ -688,11 +759,21 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     } catch (error) {
       context.signal.throwIfAborted();
       if (
+        error instanceof CredentialWithdrawalRefusedError ||
         error instanceof OpenShellCredentialDeliveryRefusedError ||
         error instanceof OpenShellAdmissionLimitError ||
         error instanceof SandboxGatewayUnauthorizedError
       ) {
         throw error;
+      }
+      if (
+        error instanceof OpenShellSandboxConfigurationFailure ||
+        error instanceof SandboxNetworkPolicyConflictError
+      ) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          error.message,
+        );
       }
       throw new DependencyUnavailableError("The native credential withdrawal is unconfirmed.");
     }

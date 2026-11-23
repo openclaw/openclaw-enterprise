@@ -881,11 +881,10 @@ export class OpenShellGitRuntime {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
     const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
-    const issueReads = scopedRest?.some(
-      ({ repository, readIssues }) =>
-        readIssues &&
-        scope.repositoryNetworkPolicy?.some((grant) => grant.repository === repository),
-    );
+    // The Sandbox Driver and the Credential Proxy derive the same answer from this rule.
+    const scopedRoutes =
+      entry.preview.native &&
+      entry.provider.boundNetworkRule()?.endpoints.some(({ host }) => host === "api.github.com");
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
@@ -935,7 +934,7 @@ export class OpenShellGitRuntime {
         this.configuration.registrationName,
         entry.bindingId,
         entry.preview.native,
-        issueReads,
+        scopedRoutes,
       ),
     };
   }
@@ -2679,7 +2678,7 @@ export function openShellGitMiddleware(
   registrationName: string,
   bindingId: string,
   native = false,
-  issueReads = false,
+  scopedRoutes = false,
 ) {
   return {
     "oce-prepared-git": {
@@ -2688,11 +2687,12 @@ export function openShellGitMiddleware(
       config: { fields: { binding_id: { stringValue: bindingId } } },
       on_error: "fail_closed",
       order: 2147483647,
-      // Recipient verification pins the registered service. Select no admitted GitHub host
-      // on native delivery: stock selects by host, so a PR hook would also capture issue reads.
+      // Recipient verification pins the registered service. Stock selects middleware by host,
+      // so native delivery with any scoped API route selects no admitted GitHub host: OpenShell
+      // alone enforces issue reads, pull request reads and pull request creation.
       endpoints: {
         include: native
-          ? [issueReads ? "deny-egress.invalid" : "api.github.com"]
+          ? [scopedRoutes ? "deny-egress.invalid" : "api.github.com"]
           : ["github.com", "api.github.com"],
       },
     },
