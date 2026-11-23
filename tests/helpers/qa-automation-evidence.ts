@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../apps/controller/src/gateway/agent-automations-runtime.ts";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -30,12 +31,13 @@ try {
   if (report?.source !== "run" || report.sessionId !== input.sessionId || !Array.isArray(report.tools?.entries)) throw new Error("run-owned tool report unavailable");
   observationStage="gateway-tool-inventory";
   const direct = report.tools.entries.map(t => t.name);
+  const directToolNames=direct.map(name=>typeof input.approved==="string"&&name===input.approved?input.approved:"unapproved");
   const deferred = report.tools.deferred?.entries ?? [];
   if (!direct.every(n => typeof n === "string") || !Array.isArray(deferred)) throw new Error("invalid tool inventory");
   observationStage="gateway-transcript-read";
   const rows = db.prepare("SELECT event_json,event_zstd,event_utf8_bytes FROM transcript_events WHERE session_id=? ORDER BY seq").all(input.sessionId);
   if (rows.length > 20000) throw new Error("transcript exceeds proof limit");
-  let promptSeen=false, answerSeen=false, toolCalls=0, toolResults=0;const calledToolNames=[];
+  let promptSeen=false, answerSeen=false, toolCalls=0, toolResults=0;const calledToolNames=[],calls=[],results=[];
   for (const row of rows) {
     observationStage="gateway-transcript-decode";
     const text = row.event_json ?? zstdDecompressSync(row.event_zstd, {maxOutputLength:8388608}).toString("utf8");
@@ -49,11 +51,38 @@ try {
     const textContent = typeof message.content === "string" ? message.content : blocks.filter(b=>b.type==="text").map(b=>b.text??"").join("\n");
     if (message.role === "user" && textContent.includes(input.marker)) promptSeen=true;
     if (message.role === "assistant" && textContent.includes(input.marker)) answerSeen=true;
-    for(const block of blocks.filter(b=>["toolCall","tool_use","function_call","custom_tool_call"].includes(b.type))){toolCalls++;calledToolNames.push(block.name??block.toolName??block.tool_name??"unknown")}
-    if (message.role === "toolResult" || message.role === "tool") toolResults++;
+    for(const block of blocks.filter(b=>["toolCall","tool_use","function_call","custom_tool_call"].includes(b.type))){toolCalls++;const name=block.name??block.toolName??block.tool_name;calledToolNames.push(typeof input.approved==="string"&&name===input.approved?input.approved:"unapproved");calls.push({type:block.type,id:block.id,name})}
+    if (message.role === "toolResult" || message.role === "tool") {toolResults++;results.push(message)}
+  }
+  let approvedPair=false,approvedCallHash,executionSource=false,knownOutcome=false,auditSucceeded=false;
+  if(typeof input.approved==="string"&&calls.length===1&&results.length===1){
+    const call=calls[0],result=results[0];
+    approvedPair=call.type==="toolCall"&&typeof call.id==="string"&&call.id.length>0&&call.name===input.approved&&result.role==="toolResult"&&result.toolCallId===call.id&&result.toolName===input.approved&&result.isError===false;
+    if(approvedPair){
+      approvedCallHash=require("node:crypto").createHash("sha256").update(call.id).digest("hex");
+      const output=result.__openclaw?.toolOutput;
+      executionSource=output?.source==="execution";
+      knownOutcome=output?.outcome===undefined;
+      observationStage="gateway-audit-read";
+      const ledger=new DatabaseSync("/home/node/.openclaw/state/openclaw.sqlite",{readOnly:true});
+      try {
+        ledger.exec("PRAGMA busy_timeout=5000");
+        const query=ledger.prepare("SELECT action,status,error_code,run_id FROM audit_events WHERE kind='tool_action' AND session_id=? AND tool_call_id=?");
+        const deadline=Date.now()+10000,wait=new Int32Array(new SharedArrayBuffer(4));
+        let entries=[],terminal=[];
+        do {
+          entries=query.all(input.sessionId,"sha256:"+approvedCallHash);
+          terminal=entries.filter(entry=>entry.action==="tool.action.finished");
+          if(terminal.length>0||Date.now()>=deadline) break;
+          Atomics.wait(wait,0,0,100);
+        } while(true);
+        const runs=new Set(entries.map(entry=>entry.run_id).filter(id=>typeof id==="string"&&id.length>0));
+        auditSucceeded=entries.length>0&&runs.size===1&&entries.every(entry=>typeof entry.run_id==="string"&&runs.has(entry.run_id))&&terminal.length===1&&terminal[0].status==="succeeded"&&terminal[0].error_code==null;
+      } finally {ledger.close()}
+    }
   }
   console.log(JSON.stringify({sessionId:input.sessionId, historySessionKey:input.sessionKey, retainedSessionKey:input.retainedSessionKey, reportSource:report.source,
-    directToolNames:direct, deferredToolCount:deferred.length, promptSeen,answerSeen,toolCalls,toolResults,calledToolNames}));
+    directToolNames, deferredToolCount:deferred.length, promptSeen,answerSeen,toolCalls,toolResults,calledToolNames,approvedPair,approvedCallHash,executionSource,knownOutcome,auditSucceeded}));
 } finally { db.close(); }
 `;
 
@@ -82,14 +111,15 @@ function findNativeRun() {
       if (!meta || typeof meta.id!=="string") continue;
       const dynamic=meta.dynamic_tools ?? [];
       if (!Array.isArray(dynamic)) throw new Error("native dynamic tool metadata invalid");
-      let promptSeen=false,answerSeen=false,toolCalls=0;const calledToolNames=[];
+      let promptSeen=false,answerSeen=false,toolCalls=0;const calledToolNames=[],calls=[],outputs=[];
       const turns=new Set();
       for (const row of rows) {
         const p=row.payload;
         if (!p || typeof p!=="object") continue;
         if (row.type==="turn_context" && typeof p.turn_id==="string") turns.add(p.turn_id);
         if (row.type==="response_item") {
-          if (["function_call","custom_tool_call","local_shell_call","web_search_call","mcp_call","computer_call","image_generation_call","code_interpreter_call"].includes(p.type)){toolCalls++;calledToolNames.push(p.name??p.tool_name??p.tool??p.type)}
+          if (["function_call","custom_tool_call","local_shell_call","web_search_call","mcp_call","computer_call","image_generation_call","code_interpreter_call"].includes(p.type)){toolCalls++;const name=p.name??p.tool_name??p.tool??p.type;calledToolNames.push(typeof input.approved==="string"&&name===input.approved?input.approved:"unapproved");calls.push(p)}
+          if(p.type==="function_call_output") outputs.push(p);
           if (p.type==="message" && Array.isArray(p.content)) {
             const text=p.content.map(b=>b.text??"").join("\n");
             if (p.role==="user" && text.includes(input.marker)) promptSeen=true;
@@ -98,7 +128,11 @@ function findNativeRun() {
         }
         if (row.type==="event_msg" && p.type==="agent_message" && typeof p.message==="string" && p.message.includes(input.marker)) answerSeen=true;
       }
-      if (promptSeen) found.set(meta.id,{threadId:meta.id,turnIds:[...turns],dynamicToolCount:dynamic.length,promptSeen,answerSeen,toolCalls,calledToolNames});
+      const approvedDirectDeclaration=typeof input.approved==="string"&&dynamic.length===1&&dynamic[0]?.type==="function"&&dynamic[0].name===input.approved;
+      const call=calls[0],output=outputs[0];
+      const approvedDirectCall=typeof input.approved==="string"&&calls.length===1&&outputs.length===1&&call.type==="function_call"&&call.name===input.approved&&typeof call.call_id==="string"&&call.call_id.length>0&&output.call_id===call.call_id;
+      const approvedCallHash=approvedDirectCall?require("node:crypto").createHash("sha256").update(call.call_id).digest("hex"):undefined;
+      if (promptSeen) found.set(meta.id,{threadId:meta.id,turnIds:[...turns],dynamicToolCount:dynamic.length,approvedDirectDeclaration,approvedDirectCall,approvedCallHash,promptSeen,answerSeen,toolCalls,calledToolNames});
     }
   }
   visit(path.join(home,"sessions")); visit(path.join(home,"archived_sessions"));
@@ -162,6 +196,32 @@ const liveObservation={}; let observationStage="native-thread";
 })().catch(() => { console.log(JSON.stringify({...liveObservation,unavailable:observationStage})); });
 `;
 
+const codexRequirementsProgram = String.raw`
+${PLUGIN_RUNTIME_HELPERS}
+(async () => {
+  const markerRequired=process.env.OCE_CODEX_AUTOMATION_REQUIREMENTS==="required";
+  if (!markerRequired || pluginRuntimeRevisionId()!==input.revisionId) throw new Error("automation requirement identity unavailable");
+  const port=pluginRuntimeStatusPort();
+  if (port===undefined) throw new Error("local native status unavailable");
+  const response=await fetch("http://127.0.0.1:"+port+PLUGIN_STATUS_PATH,{signal:AbortSignal.timeout(15000)});
+  if (response.status!==200) throw new Error("local native status unavailable");
+  const status=await response.json();
+  if (status?.revisionId!==input.revisionId || status.container!=="agent" || status.phase!=="ready" || typeof status.startupId!=="string") throw new Error("native status identity mismatch");
+  process.env.APP_SERVER_TOKEN=derivePluginAppServerToken(status.startupId);
+  const provenance=JSON.parse(require("node:fs").readFileSync("/opt/oce/runtime/provenance.json","utf8"));
+  const reviewedOpenClawSourceMatches=provenance?.source==="https://github.com/openclaw/openclaw"&&provenance.commit===input.source;
+  const codexMetadataPresent=provenance.codex?.source==="npm:@openai/codex"&&typeof provenance.codex?.version==="string"&&/^[a-f0-9]{64}$/.test(provenance.codex?.binarySha256??"");
+  if(!reviewedOpenClawSourceMatches||!codexMetadataPresent) throw new Error("native source metadata mismatch");
+  const result=await codexAppServerRequest("configRequirements/read",{});
+  const requirements=result?.requirements?.featureRequirements;
+  const disabled={};
+  for (const feature of ["code_mode_host","code_mode","code_mode_only","sleep_tool"]) {
+    disabled[feature]=requirements!==null&&typeof requirements==="object"&&!Array.isArray(requirements)&&Object.hasOwn(requirements,feature)&&requirements[feature]===false;
+  }
+  console.log(JSON.stringify({markerRequired,revisionMatches:true,reviewedOpenClawSourceMatches,codexMetadataPresent,disabled}));
+})().catch(() => { process.stderr.write("Native automation requirements evidence unavailable."); process.exitCode=1; });
+`;
+
 function program(input: object, body: string) {
   return `const input=${JSON.stringify(input)};\n${body}`;
 }
@@ -181,6 +241,97 @@ async function observe(f: Fixture, agent: Agent, role: "gateway" | "agent", body
   const value = asRecord(JSON.parse(result.stdout));
   assert.ok(value, "runtime observation must be an object");
   return value;
+}
+
+/** Read the managed native feature requirements in the exact dedicated Agent Pod. */
+export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent) {
+  assert.equal(agent.preset, "Codex");
+  const before = await f.pod(agent, "agent");
+  const container = before.spec.containers.find(
+    (value: { name: string }) => value.name === "agent",
+  );
+  const status = before.status.containerStatuses.find(
+    (value: { name: string }) => value.name === "agent",
+  );
+  assert.ok(
+    container &&
+      status &&
+      typeof container.image === "string" &&
+      typeof status.imageID === "string" &&
+      typeof status.containerID === "string" &&
+      status.containerID.length > 0,
+  );
+  const selectedImage = process.env.OCC_TEST_QA_RUNTIME_IMAGE;
+  if (selectedImage !== undefined) {
+    assert.equal(
+      container.image,
+      selectedImage,
+      "the Agent Pod must select the exact QA runtime index",
+    );
+  }
+  const indexDigest = container.image.match(/@sha256:([a-f0-9]{64})$/u)?.[1];
+  const observedDigest = status.imageID.match(/sha256:([a-f0-9]{64})$/u)?.[1];
+  assert.ok(
+    indexDigest && observedDigest,
+    "the selected index and observed image identity must be immutable",
+  );
+  // An OCI index and its platform child have different digests. This observation
+  // does not prove their relationship or the exact Codex binary identity; a separate
+  // candidate platform receipt must establish those facts.
+  assert.equal(before.metadata.labels["openclaw.dev/revision"], agent.revision.id);
+  const result = await f.execRole(agent, "agent", [
+    "node",
+    "-e",
+    ...nodeProgramArguments(
+      program(
+        { revisionId: agent.revision.id, source: AGENT_AUTOMATIONS_OPENCLAW_SOURCE },
+        codexRequirementsProgram,
+      ),
+    ),
+  ]);
+  assert.equal(
+    result.label,
+    before.metadata.uid,
+    "requirements must come from the selected Agent Pod",
+  );
+  const after = await f.pod(agent, "agent");
+  assert.equal(
+    after.metadata.uid,
+    before.metadata.uid,
+    "the Agent Pod must not change during observation",
+  );
+  assert.equal(after.metadata.labels["openclaw.dev/revision"], agent.revision.id);
+  const afterContainer = after.spec.containers.find(
+    (value: { name: string }) => value.name === "agent",
+  );
+  const afterStatus = after.status.containerStatuses.find(
+    (value: { name: string }) => value.name === "agent",
+  );
+  assert.equal(afterContainer?.image, container.image);
+  assert.equal(afterStatus?.imageID, status.imageID);
+  assert.equal(afterStatus?.containerID, status.containerID);
+  const value = asRecord(JSON.parse(result.stdout));
+  assert.ok(value);
+  assert.equal(value.markerRequired, true);
+  assert.equal(value.revisionMatches, true);
+  assert.equal(value.reviewedOpenClawSourceMatches, true);
+  assert.equal(value.codexMetadataPresent, true);
+  assert.deepEqual(value.disabled, {
+    code_mode_host: true,
+    code_mode: true,
+    code_mode_only: true,
+    sleep_tool: true,
+  });
+  return {
+    markerRequired: value.markerRequired,
+    revisionMatches: value.revisionMatches,
+    reviewedOpenClawSourceMatches: value.reviewedOpenClawSourceMatches,
+    codexMetadataPresent: value.codexMetadataPresent,
+    disabled: value.disabled,
+    podIdentityMatches: true,
+    selectedIndexDigest: `sha256:${indexDigest}`,
+    observedImageDigest: `sha256:${observedDigest}`,
+  };
 }
 
 export function startQaCodexToolObservation(f: Fixture, agent: Agent, marker: string) {
@@ -288,7 +439,12 @@ export async function readQaAutomationMcpRunEvidence(
   input: { sessionKey: string; retainedSessionKey: string; sessionId: string; marker: string },
   approved: string,
 ) {
-  const gateway = await observe(f, agent, "gateway", gatewayObservationProgram(input));
+  const gateway = await observe(
+    f,
+    agent,
+    "gateway",
+    gatewayObservationProgram({ ...input, approved }),
+  );
   assert.equal(gateway.reportSource, "run");
   assert.equal(gateway.promptSeen, true);
   assert.equal(gateway.answerSeen, true);
@@ -303,25 +459,55 @@ export async function readQaAutomationMcpRunEvidence(
     gateway.calledToolNames.every((name) => name === approved),
     "the Gateway transcript must not contain a forbidden call",
   );
+  assert.equal(gateway.toolCalls, 1, "the Gateway must record exactly one approved call");
+  assert.equal(gateway.toolResults, 1, "the Gateway must record exactly one result");
+  assert.equal(
+    gateway.approvedPair,
+    true,
+    "the approved Gateway call and successful result must share one exact ID and name",
+  );
+  assert.equal(
+    gateway.auditSucceeded,
+    true,
+    "the exact approved call needs one authoritative successful terminal audit",
+  );
+  assert.equal(typeof gateway.approvedCallHash, "string");
   if (agent.preset !== "Codex") {
-    assert.equal(gateway.toolCalls, 1);
     return { gateway };
   }
+  assert.equal(gateway.executionSource, true, "the Codex result must come from tool execution");
+  assert.equal(gateway.knownOutcome, true, "an explicit Codex outcome is not established success");
   const native = await observe(
     f,
     agent,
     "agent",
-    program(input, `${codexRolloutProgram}\nconsole.log(JSON.stringify(findNativeRun()??{}));`),
+    program(
+      { ...input, approved },
+      `${codexRolloutProgram}\nconsole.log(JSON.stringify(findNativeRun()??{}));`,
+    ),
   );
   assert.equal(native.promptSeen, true);
   assert.equal(native.answerSeen, true);
-  assert.ok(Array.isArray(native.calledToolNames));
-  assert.equal(native.calledToolNames.length, 1);
-  assert.ok(
-    native.calledToolNames.every(
-      (name) => typeof name === "string" && (name === approved || name.endsWith(`__${approved}`)),
-    ),
-    "the native transcript must not contain shell, session, app, delegation, or other forbidden calls",
+  assert.equal(native.dynamicToolCount, 1, "the native thread must declare exactly one tool");
+  assert.equal(
+    native.approvedDirectDeclaration,
+    true,
+    "the native thread must declare the exact approved direct function",
+  );
+  assert.equal(
+    native.approvedDirectCall,
+    true,
+    "the native call must be one direct function_call with one matching output",
+  );
+  assert.equal(
+    native.approvedCallHash,
+    gateway.approvedCallHash,
+    "native and Gateway evidence must identify the same approved call",
+  );
+  assert.deepEqual(
+    native.calledToolNames,
+    [approved],
+    "the native transcript must contain only the exact approved direct function call",
   );
   return { gateway, native };
 }

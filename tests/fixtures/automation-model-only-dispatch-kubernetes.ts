@@ -19,6 +19,61 @@ import {
   type DispatchProbe,
 } from "./automation-model-only-dispatch-inputs.ts";
 
+// Run inside the Codex Agent container. Only a fixed result leaves the Pod;
+// the local native transport token and native response stay inside it.
+const nativeRequirementsScript = String.raw`
+const { createRequire } = require("node:module");
+const WebSocket = createRequire("/app/node_modules/ws/package.json")("ws");
+const names = ["code_mode_host", "code_mode", "code_mode_only", "sleep_tool"];
+const token = process.env.APP_SERVER_TOKEN;
+const port = process.env.APP_SERVER_PORT;
+let socket;
+let done = false;
+let timer;
+function finish(ok) {
+  if (done) return;
+  done = true;
+  clearTimeout(timer);
+  socket?.terminate();
+  if (ok) {
+    process.stdout.write(JSON.stringify({ requirementsEnforced: true }));
+  } else {
+    process.stderr.write("Native managed requirements unavailable.");
+    process.exitCode = 1;
+  }
+}
+if (typeof token !== "string" || !token || !/^\d+$/.test(port ?? "")) {
+  finish(false);
+} else {
+  socket = new WebSocket("ws://127.0.0.1:" + port, {
+    headers: { Authorization: "Bearer " + token },
+    perMessageDeflate: false,
+    maxPayload: 65536,
+  });
+  timer = setTimeout(() => finish(false), 5000);
+  socket.on("open", () => socket.send(JSON.stringify({
+    id: 1,
+    method: "initialize",
+    params: { clientInfo: { name: "codex_app_server_daemon", version: "1.0.0" } },
+  })));
+  socket.on("message", (data) => {
+    let response;
+    try { response = JSON.parse(data.toString("utf8")); } catch { return finish(false); }
+    if (response.id === 1) {
+      if (response.error || typeof response.result?.userAgent !== "string") return finish(false);
+      socket.send(JSON.stringify({ id: 2, method: "configRequirements/read", params: {} }));
+    } else if (response.id === 2) {
+      const features = response.result?.requirements?.featureRequirements;
+      finish(!response.error && features !== null && typeof features === "object" &&
+        !Array.isArray(features) && names.every((name) =>
+          Object.hasOwn(features, name) && features[name] === false));
+    }
+  });
+  socket.on("error", () => finish(false));
+  socket.on("close", () => finish(false));
+}
+`;
+
 export async function runKubernetesAutomationDispatchProbe(
   t: TestContext,
   {
@@ -125,6 +180,24 @@ export async function runKubernetesAutomationDispatchProbe(
       data,
     }),
   );
+  // This fixture uses the same native feature ceiling as an opted-in dedicated
+  // Agent, but it still calls native cron directly and does not prove OCC admission.
+  await applyManifest(
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: {
+        name: "dispatch-codex-requirements",
+        namespace,
+        labels: { "openclaw.dev/probe-owner": nonce },
+      },
+      immutable: true,
+      data: {
+        "requirements.toml":
+          "[features]\ncode_mode_host = false\ncode_mode = false\ncode_mode_only = false\nsleep_tool = false\n",
+      },
+    }),
+  );
   const restricted = {
     allowPrivilegeEscalation: false,
     readOnlyRootFilesystem: true,
@@ -181,6 +254,14 @@ export async function runKubernetesAutomationDispatchProbe(
         },
         volumes: [
           { name: "fixture", configMap: { name: "dispatch-fixture" } },
+          {
+            name: "codex-requirements",
+            configMap: {
+              name: "dispatch-codex-requirements",
+              defaultMode: 0o444,
+              items: [{ key: "requirements.toml", path: "requirements.toml" }],
+            },
+          },
           ...volumeNames.map((name) => ({ name, emptyDir: { sizeLimit: "1Gi" } })),
         ],
         // Match privateStateInitContainer: safe-temp checks require private children
@@ -220,7 +301,15 @@ export async function runKubernetesAutomationDispatchProbe(
               seccompProfile: { type: "Localhost", localhostProfile: seccompProfile },
             },
             resources,
-            volumeMounts: mounts("agent"),
+            volumeMounts: [
+              ...mounts("agent"),
+              {
+                name: "codex-requirements",
+                mountPath: "/etc/codex/requirements.toml",
+                subPath: "requirements.toml",
+                readOnly: true,
+              },
+            ],
           },
         ],
       },
@@ -242,6 +331,32 @@ export async function runKubernetesAutomationDispatchProbe(
     await delay(1500);
   }
   assertDispatchReport(report, "codex", probe, nonemptyCap);
+  const nativeRequirements = await kubectl(
+    "exec",
+    "-n",
+    namespace,
+    "dispatch",
+    "-c",
+    "agent",
+    "--",
+    "node",
+    "-e",
+    nativeRequirementsScript,
+  );
+  assert.deepEqual(JSON.parse(nativeRequirements), { requirementsEnforced: true });
+  const gatewayRequirements = await kubectl(
+    "exec",
+    "-n",
+    namespace,
+    "dispatch",
+    "-c",
+    "gateway",
+    "--",
+    "node",
+    "-e",
+    'process.stdout.write(JSON.stringify({requirementsAbsent:!require("node:fs").existsSync("/etc/codex/requirements.toml")}));',
+  );
+  assert.deepEqual(JSON.parse(gatewayRequirements), { requirementsAbsent: true });
   if (nonemptyCap) {
     for (const role of ["gateway", "agent"]) {
       const peer = await kubectl(
@@ -301,6 +416,7 @@ export async function runKubernetesAutomationDispatchProbe(
         : {}),
       gatewayImage,
       agentImage,
+      nativeManagedRequirements: true,
       placement:
         "same Pod loopback provider with separate Gateway/Codex filesystems; not separate-Pod workflow proof",
     }),

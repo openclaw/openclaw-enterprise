@@ -17,49 +17,65 @@ filter is not a grant. Eligible operations require:
 - The same endpoint, workload credential identity, permitted provider actions and
   standing approval as ordinary unattended execution.
 
-Kubernetes Compute qualifies operator-attested anonymous HTTPS MCP for embedded
-OpenClaw and ordinary deployment-backed dedicated Codex. Nonempty grants refuse provider-owned Sandbox, protected/credential deployments,
-native Git v9, stdio and credential-bearing MCP. Each packaged Harness requires real permitted/forbidden HTTPS proof
-before deployment. Unsupported qualification returns `503 AUTOMATIONS_UNQUALIFIED`
-without fallback; qualified model-only scheduling remains available. An Installation
-administrator supplies [endpoint attestations](drivers/kubernetes-compute.md#automation-mcp-endpoints).
+Kubernetes Compute qualifies Installation-attested anonymous HTTPS MCP for embedded
+OpenClaw and ordinary deployment-backed dedicated Codex. Nonempty grants reject
+provider-owned Sandbox, protected/credential deployments, native Git v9, stdio
+and credential-bearing MCP. Each packaged Harness needs genuine permitted and
+forbidden HTTPS execution proof. Unsupported qualification returns
+`503 AUTOMATIONS_UNQUALIFIED` without fallback. The Installation administrator
+supplies [endpoint attestations](drivers/kubernetes-compute.md#automation-mcp-endpoints).
 For nonempty grants, every enabled server requires attested `streamable-http`.
-Qualification refuses SSE, HTTP, caller loopback, more than 64 routes or Gateway
-port 47730/47731 without holding chat. Installation rejects equivalent
-duplicate IPv6 host CIDRs. Compute projects opaque Gateway loopback routes; public
-source keeps HTTPS URLs. Each MCP-tool grant binds the full enabled map and all
-attestations; sibling changes invalidate it. Catalog setup may initialize/list
-siblings before filtering; forbidden calls remain denied. Pinned model-only
-`toolsAllow: []` skips MCP acquisition. The proxy pins the checked admitted DNS
-address, verifies fixed-target TLS with route-local CA when set, rejects all 3xx without
-Location/replay, and permits only GET/POST/DELETE and protocol headers. Limits:
-32 concurrent exchanges, 4 MiB request, 32 MiB response, 60-second idle and
-300-second deadline. Proxy failure holds the Gateway unready. Endpoint egress is
-Gateway-only; automation CA never expands process-wide Gateway/model or Agent trust.
-Independent routes and Codex trust remain separate.
+Reject SSE, HTTP, caller loopback, more than 64 routes and Gateway port 47730/47731
+without holding chat; reject
+equivalent duplicate IPv6 host CIDRs. Public source retains HTTPS URLs; Compute
+projects Gateway loopback routes. Each grant binds the full enabled map and its
+attestations, so sibling changes invalidate it. Catalog setup may initialize/list
+siblings before filtering; forbidden calls remain denied. Model-only
+`toolsAllow: []` skips MCP acquisition.
+
+The Gateway proxy pins the checked DNS address, verifies target TLS with route-local
+CA when set,
+rejects 3xx without Location or replay, and permits GET/POST/DELETE and protocol
+headers. Limits are 32 concurrent exchanges, 4 MiB request, 32 MiB response, 60-second idle
+and 300-second deadline. Proxy failure holds the Gateway unready. Endpoint egress
+is Gateway-only; automation CA does not expand Gateway/model or Agent trust.
 
 OCC saves ceilings and binding fingerprints, never credentials. Clients cannot
 choose tools, credentials or approvals. Interactive or requester-specific authority
 is ineligible; approve actions separately.
 
-Dedicated requires `codex.defaultToolsApprovalMode: "approve"` on each HTTPS server;
-this grants no provider actions. Its Standard guardian configuration requires
-`approvalPolicy: "on-request"`, `approvalsReviewer: "user"` (never `auto_review`),
-and `sandbox: "workspace-write"`. `networkProxy` requires `enabled: true`,
-`baseProfile: "workspace"`, `mode: "limited"`, 1–64 canonical lowercase multi-label
-DNS `domains` mapped to `allow` or `deny`, and empty `unixSockets`. Set
-`enableSocks5`, `enableSocks5Udp`, `allowUpstreamProxy`, `allowLocalBinding`,
-`dangerouslyAllowNonLoopbackProxy` and `dangerouslyAllowAllUnixSockets` to `false`.
-Reject IPs, wildcards, localhost, extra keys, overrides and caller `readOnlyPaths`.
-Grants bind reviewer/proxy, filesystem permissions and ordered server-owned
-`readOnlyPaths` (`/app/node_modules/openclaw`, `/home/node/.codex/skills/.system`);
-proxy hosts do not
-authorize MCP endpoint access. [App approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
-remains outside this pilot.
+Dedicated Codex requires `harnessAuth.method: "api_key"` and both raw Agent
+revision settings `tools.codeMode: false` and
+`tools.gatewayPolicy.automations: {scope: "caller", allowCommandJobs: false}`
+for every grant, including `[]`. Rendered Gateway defaults do not opt in.
+Runtime, PAT, OAuth, ChatGPT and `credential_source` authentication do not
+qualify. Dedicated grants refuse repository credentials, repository
+NetworkPolicy, protected native Git and Driver `beforeWorkloadStart` callbacks. Compute mounts revision-owned Codex
+requirements read-only in the Agent Pod. They pin `code_mode_host`, `code_mode`, `code_mode_only` and `sleep_tool`
+to `false`; Agent-local readiness confirms the effective requirements. Admission
+requires the exact Ready Pod, probe, mount, image and source. These pins remove
+Code Mode and native sleep from ordinary Agent chat.
 
-For nonempty grants, Code Mode and tool search must already be off; admission
-does not change ordinary chat. Shell/file tools, code, discovery, delegation,
-messaging, apps and managed MCP Sandbox are outside this pilot.
+Each dedicated HTTPS server requires `codex.defaultToolsApprovalMode: "approve"`;
+this grants no provider actions. The Standard guardian requires
+`approvalPolicy: "on-request"`, `approvalsReviewer: "user"` (not `auto_review`),
+and `sandbox: "workspace-write"`. Its `networkProxy` requires `enabled: true`,
+`baseProfile: "workspace"`, `mode: "limited"`, 1–64 canonical lowercase
+multi-label DNS `domains` mapped to `allow` or `deny`, and empty `unixSockets`.
+Set `enableSocks5`, `enableSocks5Udp`, `allowUpstreamProxy`,
+`allowLocalBinding`, `dangerouslyAllowNonLoopbackProxy` and
+`dangerouslyAllowAllUnixSockets` to `false`. Reject IPs, wildcards, localhost,
+extra keys, overrides and caller `readOnlyPaths`. Grants bind reviewer/proxy,
+filesystem permissions and ordered server-owned `readOnlyPaths`
+(`/app/node_modules/openclaw`, `/home/node/.codex/skills/.system`). Proxy hosts
+do not authorize MCP access. [App approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
+is outside this pilot.
+
+Dedicated grants require tool search off; embedded nonempty grants require Code
+Mode and tool search off. Shell/file tools,
+code, discovery, delegation, messaging, apps and managed MCP Sandbox are outside
+this pilot. Approved dedicated MCP calls use direct dynamic-tool declarations;
+a native `exec` wrapper does not qualify.
 
 Native writes set explicit `payload.toolsAllow`. The empty cap disables
 model-selected tools. Trusted administrator hooks and required runtime setup can
@@ -82,44 +98,40 @@ verification cannot be disabled. The `codex` object accepts only
 guardian WebSocket `config`.
 Extra settings refuse qualification.
 
-Nonempty grants require immutable images and a restricted plugin namespace.
+Dedicated grants and embedded nonempty grants require immutable images and a
+restricted plugin namespace.
 Channel entries, selected managed/native plugins and local load paths are
 unqualified; only pinned core plugin IDs without MCP declarations qualify. OCC
 binds sole `agents.entries.main.identity.name` under the
 [API Name rule](../../packages/contracts/src/api/plain-text.ts). Embedded may use
-identity alone; dedicated also requires exact aliases in `main.tools.allow`,
-Gateway policy and literal MCP filters. Bindings include workspace, guardian
+identity alone; dedicated needs matching `main.tools.allow` and Gateway allow
+lists (`[]` for model-only), plus literal MCP filters. Bindings include workspace, guardian
 posture and exclusions, never app-server token or URL. Refuse legacy `agents.list`,
 environment overrides, Secret bindings and repository credentials. Agent/model
 overrides cannot re-enable Code Mode or tool search; `gateway.nodes.pluginTools.enabled`
 and `gateway.nodes.allowSkills` must be `false`.
 
-With endpoint support enabled, an embedded immutable Gateway image, nonempty
-`plugins.allow` and any MCP server not explicitly disabled, Compute alone projects
-`meta.lastTouchedVersion: "2026.11.5"`; caller `meta` is refused. Before Doctor,
-verify the reviewed package/source and persisted discovery/index; existing `compat`
-fails closed. Doctor and missing-plugin repair still run, but configured-plugin
-release bookkeeping/restamp is suppressed. Requalify pin changes.
+For qualified embedded MCP, Compute supplies `meta.lastTouchedVersion: "2026.11.5"`;
+caller `meta` and existing `compat` are refused. Discovery, Doctor and package
+checks follow the [startup flow](../flows/agent-automations.md#2-qualify-the-selected-runtime-and-effective-mcp-operations).
+Requalify pin changes.
 
-Require the version-bound controller guard, endpoint network/trust assets, read-only
-root filesystem and no `/app` replacement mounts. Before every Gateway spawn,
-including respawn/container startup, the guard compares entries/MCP with immutable
-embedded source or dedicated rendered ConfigMap and checks Code Mode/tool search,
-node plugin/skill controls, Agent/model overrides, writable discovery roots and
-installed-plugin state. Unsafe or unknown origins block startup. `plugins.inspect` and `tools.catalog` check
-bundled provenance and core/plugin collisions. Include filters precede alias
-allocation. Dedicated checks the complete source namespace before Gateway, Agent
-or caller subsets, refusing collisions, suffix ambiguity and reserved `mcp__`
-prefixes (case-insensitive). Embedded reads at most 100 `sessions.list` rows and probes at most 20
-`tools.effective` sessions. Trusted hello `mainSessionKey` prioritizes an exact
-eligible canonical browser `main` in inventory; otherwise inspect the first 20
-rows in native order. Main outside inventory may be unavailable. Require
+A version-bound guard checks rendered entries/MCP, Code Mode/tool search, node
+plugin/skill controls, Agent/model overrides and plugin discovery before every
+Gateway spawn. Unknown origins block startup. Require a read-only root and no
+`/app` replacement mounts. `plugins.inspect` and `tools.catalog` verify provenance
+and collisions; include filters precede alias allocation. Dedicated rejects
+collisions, suffix ambiguity and reserved `mcp__` prefixes before subsets,
+ignoring case. Embedded reads at most 100 `sessions.list` rows and probes at
+most 20 `tools.effective` sessions. Trusted hello `mainSessionKey` prioritizes
+an eligible canonical browser `main` in inventory; otherwise inspect the first
+20 rows in native order. Main outside inventory may be unavailable. Require
 unparented ordinary same-Agent scope; grouped New Chat roots with parent lineage
-cannot be distinguished from explicit children and are ineligible. Exclude cron,
-subagent, system, dock, foreign, unknown and session-denied scopes/tools. Dedicated skips session/effective/history reads and chat denials;
-packaged parity replaces discovery. Both Harnesses reject raw includes beginning
-with their normalized server prefix plus `__`, and utility names
-`resources_list`, `resources_read`, `prompts_list`, `prompts_get`
+are ineligible. Exclude cron, subagent, system, dock, foreign, unknown and
+session-denied scopes/tools. Dedicated skips session/effective/history reads and
+chat denials; packaged parity replaces discovery. Both Harnesses reject raw
+includes beginning with their normalized server prefix plus `__`, and utility
+names `resources_list`, `resources_read`, `prompts_list`, `prompts_get`
 (case-insensitive), before subsets without probe or fallback; unrelated raw
 `foo__bar` remains valid.
 
@@ -254,7 +266,8 @@ narrower Agent policy, then create a new automation. Retirement preserves histor
 it does not authorize reusing the old job with new authority.
 
 Removing an endpoint from the Installation attestation blocks new eligibility and
-startup qualification. It does not stop an already-running native scheduler.
+startup qualification. Neither that change nor readiness loss closes an established
+Gateway-to-Agent connection or stops native cron.
 Disable or delete jobs to stop future scheduling. For immediate denial of further
 provider calls, use service-side denial; an in-flight call can still complete.
 
@@ -281,25 +294,21 @@ characters, PID positive; no prior values are expected. Mutations need
 captured identity and unchanged boot ID; recheck Pod/container per request. Never
 reconnect/replay or use the Agent-wide route; cleanup removes route and Service.
 
-Without policy qualification, allow only inventory, inspection, history,
-disable-only updates and deletion under existing authorization and native-shape
-checks; never create, edit or re-enable. Native recovery still requires
-instance-bound transport and supported provenance, without route fallback. Pending
-view and reservation cancellation need no native access.
+Without policy qualification, permit only authorized inventory, inspection, history,
+disable-only PATCH and DELETE with normal native-shape and instance-bound transport
+checks. Pending view and reservation cancellation need no native access.
 
-The private connection requires native administration, six cron methods and one
-unambiguous native Agent. Inspection methods under
+The private connection requires native administration and one unambiguous native
+Agent. Inspection methods under
 [execution qualification](#execution-qualification) are private reads, not public
 operations or mutation authority. OCC's typed adapter enforces six cron operations;
-the broader native credential never reaches callers. Browser chat scopes stay unchanged.
+the broader native credential never reaches callers. Browser chat authorization scopes stay unchanged.
 
 A stopped, replacing or unavailable runtime returns `503 DEPENDENCY_UNAVAILABLE`
 for native-dependent requests.
-Missing automation transport returns `503 AUTOMATIONS_UNQUALIFIED`. Updates and
-explicit re-enablement also require current qualification of the captured grant.
-After policy withdrawal, disable-only PATCH, DELETE and history remain available,
-subject to their normal authorization, transport and native-shape checks.
-Unsupported native job shapes cannot be enabled or edited.
+Missing automation transport returns `503 AUTOMATIONS_UNQUALIFIED`. Editing or
+re-enabling requires current captured-grant qualification; unsupported native job
+shapes cannot be edited or enabled.
 Invalid requests return 400; human/Agent denials return 403; absent or hidden jobs
 return 404; conflicts and unsupported job shapes return 409.
 

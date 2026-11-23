@@ -1,0 +1,406 @@
+import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import type { createQaAgent, createQaInstallation } from "./qa-installation.mjs";
+
+type Fixture = Awaited<ReturnType<typeof createQaInstallation>>;
+type Agent = Awaited<ReturnType<typeof createQaAgent>>;
+type NativeJob = { id: string; declarationKey: unknown };
+type Response = { status: number; data?: unknown; errorCode?: string | undefined };
+type PendingReservation = { id: string; configRevision: string };
+
+export type QaCodexReadinessCallbacks = {
+  nativeJobs: () => Promise<NativeJob[]>;
+  peerCalls: () => Promise<number>;
+  pendingReservations: () => Promise<PendingReservation[]>;
+  cancelPending: (reservation: PendingReservation) => Promise<void>;
+  createPaused: () => Promise<Response>;
+  readRequirements: () => Promise<unknown>;
+};
+
+type Identity = {
+  namespace: string;
+  name: string;
+  uid: string;
+  revisionId: string;
+  imageId: string;
+  containerId: string;
+  statusPort: number;
+};
+
+const processProgram = String.raw`
+const fs=require("node:fs"),path=require("node:path");
+const {action,controlPath}=input;
+function identity(pid){
+ const owner=fs.statSync("/proc/"+pid).uid;
+ if(owner!==process.getuid())return;
+ const stat=fs.readFileSync("/proc/"+pid+"/stat","utf8"),end=stat.lastIndexOf(")");
+ if(end<0)throw Error("invalid process state");
+ const fields=stat.slice(end+2).split(" "),args=fs.readFileSync("/proc/"+pid+"/cmdline").toString().split("\0").filter(Boolean);
+ const argv0=path.basename(args[0]||""),listen=args.indexOf("--listen"),auth=args.indexOf("--ws-auth");
+ if(argv0!=="codex"||!args.includes("app-server")||listen<0||args[listen+1]!=="ws://0.0.0.0:"+process.env.APP_SERVER_PORT||auth<0||args[auth+1]!=="capability-token")return;
+ if(!/^[0-9]+$/.test(fields[19]||""))throw Error("invalid process start");
+ return {pid:Number(pid),startTicks:fields[19],state:fields[0],uid:owner};
+}
+try{
+ if(!/^\/tmp\/oce-qa-codex-readiness-[0-9a-f-]{36}\.json$/.test(controlPath))throw Error("invalid control path");
+ if(action==="stop"){
+  const matches=[];
+  for(const entry of fs.readdirSync("/proc"))if(/^[0-9]+$/.test(entry)&&Number(entry)>1){try{const value=identity(entry);if(value)matches.push(value)}catch{}}
+  if(matches.length!==1)throw Error("native process is not unique");
+  const selected=matches[0],fd=fs.openSync(controlPath,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);
+  try{fs.writeFileSync(fd,JSON.stringify({pid:selected.pid,startTicks:selected.startTicks,uid:selected.uid}));fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
+  const again=identity(selected.pid);
+  if(!again||again.startTicks!==selected.startTicks||again.uid!==selected.uid)throw Error("native process changed");
+  process.kill(selected.pid,"SIGSTOP");
+  process.stdout.write(JSON.stringify({stopped:true}));
+ }else if(action==="continue"){
+  let fd;try{fd=fs.openSync(controlPath,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW)}catch(error){if(error.code==="ENOENT"){process.stdout.write(JSON.stringify({absent:true}));process.exit(0)}throw error}
+  let expected;try{const info=fs.fstatSync(fd);if(!info.isFile()||info.uid!==process.getuid()||(info.mode&0o777)!==0o600||info.size<1||info.size>1024)throw Error("invalid control binding");expected=JSON.parse(fs.readFileSync(fd,"utf8"))}finally{fs.closeSync(fd)}
+  if(!Number.isSafeInteger(expected?.pid)||expected.pid<=1||!/^[0-9]+$/.test(expected?.startTicks||"")||expected.uid!==process.getuid())throw Error("invalid process binding");
+  const current=identity(expected.pid);
+  if(!current||current.startTicks!==expected.startTicks||current.uid!==expected.uid)throw Error("native process binding changed");
+  const stopped=["T","t"].includes(current.state);
+  if(stopped)process.kill(expected.pid,"SIGCONT");
+  fs.unlinkSync(controlPath);
+  process.stdout.write(JSON.stringify({continued:stopped,alreadyRunning:!stopped}));
+ }else throw Error("invalid control action");
+}catch{process.stderr.write("Native readiness control unavailable.");process.exitCode=1}
+`;
+
+const statusProgram = String.raw`
+const port=Number(input.port);
+if(!Number.isSafeInteger(port)||port<1||port>65535)process.exit(1);
+fetch("http://127.0.0.1:"+port+"/readyz",{signal:AbortSignal.timeout(7000)})
+ .then(response=>process.stdout.write(JSON.stringify({status:response.status})))
+ .catch(()=>{process.stderr.write("Resident readiness observation unavailable.");process.exitCode=1});
+`;
+
+function requiredString(value: unknown, reason: string): string {
+  assert.ok(typeof value === "string" && value.length > 0, reason);
+  return value;
+}
+
+function podIdentity(value: unknown, agent: Agent): Identity {
+  const pod = asRecord(value);
+  const metadata = asRecord(pod?.metadata);
+  const labels = asRecord(metadata?.labels);
+  const spec = asRecord(pod?.spec);
+  const status = asRecord(pod?.status);
+  const containers = Array.isArray(spec?.containers) ? spec.containers.map(asRecord) : [];
+  const selected = containers.filter((container) => container?.name === "agent");
+  const statuses = Array.isArray(status?.containerStatuses)
+    ? status.containerStatuses.map(asRecord).filter((container) => container?.name === "agent")
+    : [];
+  assert.equal(selected.length, 1, "one exact Agent container is required");
+  assert.equal(statuses.length, 1, "one exact Agent container status is required");
+  const probe = asRecord(selected[0]?.readinessProbe);
+  const http = asRecord(probe?.httpGet);
+  assert.equal(
+    probe?.timeoutSeconds,
+    3,
+    "qualified native readiness must allow its bounded RPC to finish",
+  );
+  assert.equal(http?.path, "/readyz", "the real resident readiness path is required");
+  assert.equal(http?.port, "plugin-status", "the real resident readiness port is required");
+  const ports = Array.isArray(selected[0]?.ports)
+    ? selected[0].ports.map(asRecord).filter((port) => port?.name === "plugin-status")
+    : [];
+  assert.equal(ports.length, 1, "one resident readiness port is required");
+  const statusPort = ports[0]?.containerPort;
+  assert.ok(
+    Number.isSafeInteger(statusPort) && Number(statusPort) > 0 && Number(statusPort) <= 65535,
+  );
+  assert.equal(labels?.["openclaw.dev/agent"], agent.id);
+  assert.equal(labels?.["openclaw.dev/revision"], agent.revision.id);
+  assert.equal(labels?.["openclaw.dev/workload-role"], "agent");
+  assert.equal(status?.phase, "Running");
+  assert.equal(metadata?.deletionTimestamp, undefined);
+  return {
+    namespace: requiredString(metadata?.namespace, "Agent Pod namespace is required"),
+    name: requiredString(metadata?.name, "Agent Pod name is required"),
+    uid: requiredString(metadata?.uid, "Agent Pod UID is required"),
+    revisionId: agent.revision.id,
+    imageId: requiredString(statuses[0]?.imageID, "Agent image identity is required"),
+    containerId: requiredString(statuses[0]?.containerID, "Agent container identity is required"),
+    statusPort: Number(statusPort),
+  };
+}
+
+function readinessState(value: unknown): "ready" | "unready" | "transition" {
+  const pod = asRecord(value);
+  const status = asRecord(pod?.status);
+  const conditions = Array.isArray(status?.conditions)
+    ? status.conditions.map(asRecord).filter((condition) => condition?.type === "Ready")
+    : [];
+  const containers = Array.isArray(status?.containerStatuses)
+    ? status.containerStatuses.map(asRecord).filter((container) => container?.name === "agent")
+    : [];
+  assert.equal(conditions.length, 1, "one Pod Ready condition is required");
+  assert.equal(containers.length, 1, "one Agent readiness status is required");
+  assert.ok(["True", "False"].includes(String(conditions[0]?.status)));
+  assert.equal(typeof containers[0]?.ready, "boolean");
+  if (conditions[0]?.status === "True" && containers[0]?.ready === true) {
+    return "ready";
+  }
+  if (conditions[0]?.status === "False" && containers[0]?.ready === false) {
+    return "unready";
+  }
+  return "transition";
+}
+
+function sameIdentity(expected: Identity, current: Identity) {
+  assert.deepEqual(
+    current,
+    expected,
+    "the exact Agent Pod, revision, image and container must remain",
+  );
+}
+
+async function getPod(f: Fixture, agent: Agent, identity: Identity) {
+  const pod = JSON.parse(
+    await f.kubectl("-n", identity.namespace, "get", "pod", identity.name, "-o", "json"),
+  );
+  sameIdentity(identity, podIdentity(pod, agent));
+  return pod;
+}
+
+async function exec(f: Fixture, identity: Identity, script: string, input: object) {
+  const stdout = await f.kubectl(
+    "-n",
+    identity.namespace,
+    "exec",
+    identity.name,
+    "-c",
+    "agent",
+    "--",
+    "node",
+    "-e",
+    ...nodeProgramArguments("const input=" + JSON.stringify(input) + ";" + script),
+  );
+  const result = asRecord(JSON.parse(stdout));
+  assert.ok(result, "the Agent-local readiness control must return fixed evidence");
+  return result;
+}
+
+/** Exercise the real resident readiness failure before any scheduled job exists. */
+export async function verifyQaCodexAutomationReadinessRefusal(
+  f: Fixture,
+  agent: Agent,
+  callbacks: QaCodexReadinessCallbacks,
+): Promise<void> {
+  assert.equal(agent.preset, "Codex");
+  const initialPod = await f.pod(agent, "agent");
+  const identity = podIdentity(initialPod, agent);
+  assert.equal(readinessState(initialPod), "ready");
+  const baselineJobs = await callbacks.nativeJobs();
+  const baselinePeerCalls = await callbacks.peerCalls();
+  const baselinePending = await callbacks.pendingReservations();
+  assert.equal(baselineJobs.length, 0, "readiness refusal must precede every automation job");
+  assert.equal(baselinePending.length, 0, "readiness refusal must precede every reservation");
+  const failures: unknown[] = [];
+  const controlPath = "/tmp/oce-qa-codex-readiness-" + randomUUID() + ".json";
+  let stopAttempted = false;
+  let stopped = false;
+  let resident503 = false;
+  let podUnready = false;
+  let denied = false;
+  let recovered = false;
+  let nativeInventoryUnchanged = false;
+  let peerCallsUnchanged = false;
+  let pendingUnchanged = false;
+  let unexpectedResponse = false;
+  let postAttempted = false;
+  let quarantined = false;
+  try {
+    // Suspend only the native child. The resident status server and the real
+    // Kubernetes readiness probe remain active, so this models transport loss.
+    stopAttempted = true;
+    const control = await exec(f, identity, processProgram, { action: "stop", controlPath });
+    assert.equal(control.stopped, true);
+    stopped = true;
+    await f.waitFor(
+      "resident Codex readiness failure",
+      async () => {
+        await getPod(f, agent, identity);
+        const observation = await exec(f, identity, statusProgram, { port: identity.statusPort });
+        assert.ok(
+          observation.status === 200 || observation.status === 503,
+          "unexpected resident readiness status",
+        );
+        resident503 = observation.status === 503;
+        return resident503;
+      },
+      30_000,
+    );
+    await f.waitFor(
+      "exact Codex Agent Pod unready",
+      async () => {
+        podUnready = readinessState(await getPod(f, agent, identity)) === "unready";
+        return podUnready;
+      },
+      30_000,
+    );
+    // This is one real API mutation attempt. An uncertain response is never replayed.
+    let response: Response;
+    try {
+      postAttempted = true;
+      response = await callbacks.createPaused();
+    } catch {
+      throw new Error("Automation creation outcome is unknown; do not replay the request.");
+    }
+    unexpectedResponse = response.status === 201;
+    denied = response.status === 503 && response.errorCode === "DEPENDENCY_UNAVAILABLE";
+    assert.equal(denied, true, "unready dedicated execution must refuse automation admission");
+    assert.deepEqual(
+      await callbacks.pendingReservations(),
+      baselinePending,
+      "refusal must not write an OCC reservation",
+    );
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    if (stopAttempted) {
+      // A failed admission must not be allowed to dispatch when the native
+      // process resumes. Reconcile only an exact pending reservation while the
+      // independent Gateway confirms no native job was created.
+      let nativeSafe = false;
+      try {
+        assert.deepEqual(await callbacks.nativeJobs(), baselineJobs);
+        nativeSafe = true;
+      } catch {
+        failures.push(new Error("Native job inventory is unsafe or unavailable before recovery."));
+      }
+      try {
+        const pending = await callbacks.pendingReservations();
+        const added = pending.filter(
+          (row) => !baselinePending.some((prior) => prior.id === row.id),
+        );
+        if (added.length > 0 && nativeSafe) {
+          assert.equal(added.length, 1, "only one uncertain reservation may be cancelled");
+          try {
+            await callbacks.cancelPending(added[0]!);
+          } catch {
+            failures.push(
+              new Error("Pending reservation cancellation outcome is unknown; do not replay it."),
+            );
+          }
+        }
+      } catch {
+        failures.push(new Error("Pending reservation inventory could not be safely reconciled."));
+      }
+      try {
+        assert.deepEqual(await callbacks.nativeJobs(), baselineJobs);
+        nativeInventoryUnchanged = true;
+      } catch {
+        failures.push(new Error("Native job inventory changed before recovery."));
+      }
+      try {
+        assert.deepEqual(await callbacks.pendingReservations(), baselinePending);
+        pendingUnchanged = true;
+      } catch {
+        failures.push(new Error("Pending reservation inventory changed before recovery."));
+      }
+      try {
+        assert.equal(await callbacks.peerCalls(), baselinePeerCalls);
+        peerCallsUnchanged = true;
+      } catch {
+        failures.push(new Error("MCP peer effects changed before recovery."));
+      }
+      if (
+        unexpectedResponse ||
+        !nativeInventoryUnchanged ||
+        !pendingUnchanged ||
+        !peerCallsUnchanged
+      ) {
+        // Do not resume into an unknown or possibly active job. The disposable
+        // fixture must destroy this task Pod, which also kills the stopped child.
+        quarantined = true;
+        failures.push(
+          new Error("Codex execution remains quarantined for disposable fixture teardown."),
+        );
+      } else {
+        try {
+          await getPod(f, agent, identity);
+          const continued = await exec(f, identity, processProgram, {
+            action: "continue",
+            controlPath,
+          });
+          if (continued.continued === true) {
+            await f.waitFor(
+              "same Codex Agent Pod recovered",
+              async () => readinessState(await getPod(f, agent, identity)) === "ready",
+              60_000,
+            );
+            recovered = true;
+          } else {
+            assert.ok(!stopped && (continued.absent === true || continued.alreadyRunning === true));
+          }
+        } catch {
+          failures.push(new Error("The exact suspended Codex process could not be recovered."));
+        }
+      }
+    }
+  }
+  if (recovered) {
+    try {
+      await callbacks.readRequirements();
+    } catch {
+      failures.push(new Error("Recovered native automation requirements could not be verified."));
+    }
+  }
+  if (postAttempted && recovered) {
+    try {
+      assert.deepEqual(await callbacks.nativeJobs(), baselineJobs);
+      nativeInventoryUnchanged = true;
+    } catch {
+      nativeInventoryUnchanged = false;
+      failures.push(new Error("Readiness refusal left a changed native inventory."));
+    }
+    try {
+      assert.deepEqual(await callbacks.pendingReservations(), baselinePending);
+      pendingUnchanged = true;
+    } catch {
+      pendingUnchanged = false;
+      failures.push(new Error("Readiness refusal left a changed pending reservation inventory."));
+    }
+    try {
+      assert.equal(await callbacks.peerCalls(), baselinePeerCalls);
+      peerCallsUnchanged = true;
+    } catch {
+      peerCallsUnchanged = false;
+      failures.push(new Error("Readiness refusal changed the MCP peer effects."));
+    }
+  }
+  await f.record("automations-" + agent.id + "-readiness-refusal", {
+    revisionId: identity.revisionId,
+    podUidHash: createHash("sha256").update(identity.uid).digest("hex"),
+    imageIdHash: createHash("sha256").update(identity.imageId).digest("hex"),
+    exactPodAndProcess: stopped && recovered,
+    resident503,
+    podUnready,
+    denied,
+    recovered,
+    quarantined,
+    nativeInventoryUnchanged,
+    pendingUnchanged,
+    peerCallsUnchanged,
+    proofValid:
+      failures.length === 0 &&
+      resident503 &&
+      podUnready &&
+      denied &&
+      recovered &&
+      !quarantined &&
+      nativeInventoryUnchanged &&
+      pendingUnchanged &&
+      peerCallsUnchanged,
+  });
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Codex readiness refusal or recovery failed.");
+  }
+}

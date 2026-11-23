@@ -4407,11 +4407,13 @@ function codexRetryDelay(retry) {
 
 // Both the resident HTTP handler and the standalone healthcheck use this RPC boundary.
 const CODEX_READINESS_HELPER = String.raw`
-function codexReadinessFailure(url, token) {
+function codexReadinessFailure(url, token, requireAutomationRequirements = false) {
   return new Promise((resolve) => {
     let socket;
     let settled = false;
     let timeout;
+    let awaitingRequirements = false;
+    const automationFailure = "Codex automation requirements unavailable";
     const settle = (reason) => {
       if (settled) return;
       settled = true;
@@ -4441,7 +4443,12 @@ function codexReadinessFailure(url, token) {
       settle("Codex app-server WebSocket unavailable");
       return;
     }
-    timeout = setTimeout(() => settle("Codex app-server initialize request timed out"), 2_000);
+    timeout = setTimeout(
+      () => settle(awaitingRequirements
+        ? automationFailure
+        : "Codex app-server initialize request timed out"),
+      2_000,
+    );
     socket.on("open", () => {
       // Codex exempts its probe identity from changing the process-wide originator.
       socket.send(JSON.stringify({
@@ -4456,20 +4463,42 @@ function codexReadinessFailure(url, token) {
       try {
         response = JSON.parse(data.toString("utf8"));
       } catch {
-        settle("Codex app-server initialize response is invalid");
+        settle(awaitingRequirements
+          ? automationFailure
+          : "Codex app-server initialize response is invalid");
         return;
       }
-      if (response?.id !== 1) return;
-      if (response.error !== undefined) {
+      if (response?.id !== (awaitingRequirements ? 2 : 1)) return;
+      if (awaitingRequirements) {
+        const features = response.result?.requirements?.featureRequirements;
+        if (
+          response.error !== undefined ||
+          features == null ||
+          !["code_mode_host", "code_mode", "code_mode_only", "sleep_tool"].every(
+            (name) => Object.hasOwn(features, name) && features[name] === false,
+          )
+        ) {
+          settle(automationFailure);
+        } else {
+          settle();
+        }
+      } else if (response.error !== undefined) {
         settle("Codex app-server initialize request failed");
       } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
         settle("Codex app-server initialize response is invalid");
-      } else {
+      } else if (!requireAutomationRequirements) {
         // No later RPC needs an initialized notification (which Codex logs).
         settle();
+      } else {
+        awaitingRequirements = true;
+        // The local native server accepts this read after initialize without an
+        // initialized notification. Never project its response or transport token.
+        socket.send(JSON.stringify({ id: 2, method: "configRequirements/read", params: {} }));
       }
     });
-    socket.on("close", () => settle("Codex app-server closed before initialization completed"));
+    socket.on("close", () => settle(awaitingRequirements
+      ? automationFailure
+      : "Codex app-server closed before initialization completed"));
     socket.on("error", () => settle("Codex app-server WebSocket unavailable"));
   });
 }
@@ -4609,7 +4638,12 @@ ${
   }
 ${
   computeOwned
-    ? "  return codexReadinessFailure(codexAppServerUrl(), token).then((reason) => reason === undefined);"
+    ? String.raw`  const policy = process.env.OCE_CODEX_AUTOMATION_REQUIREMENTS;
+  if (policy !== undefined && policy !== "required") {
+    return false;
+  }
+  return codexReadinessFailure(codexAppServerUrl(), token, policy === "required")
+    .then((reason) => reason === undefined);`
     : String.raw`  return new Promise((resolve) => {
     let settled = false;
     let timeout;

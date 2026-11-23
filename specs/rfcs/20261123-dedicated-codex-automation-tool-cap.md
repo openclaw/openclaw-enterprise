@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -161,6 +161,9 @@ launcher variant, ConfigMap, or native RPC proxy is needed. No infrastructure si
 
 ## Delivery and verification
 
-Submit this RFC for human review before implementing the changed Compute Driver behavior. The linked
-plan records implementation and genuine runtime qualification. Source inspection and fixture-only
-diagnostics do not satisfy AC2.
+This RFC was submitted for human review in
+[PR #6942](https://github.com/openclaw/openclaw-enterprise/pull/6942) before the Compute Driver
+change. The source implementation is present; the
+[current reference](../../docs/reference/agent-automations.md) owns supported behavior. Merge
+requires genuine QA on the exact candidate commit for both packaged Harnesses and independent
+review. Source inspection and fixture-only diagnostics do not satisfy AC2.

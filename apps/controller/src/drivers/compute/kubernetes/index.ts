@@ -282,7 +282,7 @@ import {
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
-import { nativeAutomationPolicy } from "../agent-automations-policy.ts";
+import { dedicatedAutomationOptIn, nativeAutomationPolicy } from "../agent-automations-policy.ts";
 import { AGENT_AUTOMATION_OPENCLAW_VERSION } from "../agent-automation-guard.ts";
 import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../../gateway/agent-automations-runtime.ts";
 import {
@@ -762,6 +762,8 @@ const MANAGED_OPENSHELL_ADMISSION_PREFIX = "openshell-managed:v1:";
 interface PluginRuntimeSnapshot {
   readonly name: string;
   readonly runtime: PluginRuntimeSpec;
+  readonly automationRequirements?: true;
+  readonly automationRequirementsUid?: string;
 }
 
 interface PluginRuntimeStatus {
@@ -1347,6 +1349,7 @@ const AUTOMATION_TRUST_VOLUME = "automation-trust";
 const AUTOMATION_TRUST_DIRECTORY = "/etc/openclaw-automation-trust";
 const AUTOMATION_TRUST_ANNOTATION = "openclaw.dev/automation-trust-sha256";
 const AUTOMATION_CONFIGURATION_UID_ANNOTATION = "openclaw.dev/automation-configuration-uid";
+const AUTOMATION_REQUIREMENTS_UID_ANNOTATION = "openclaw.dev/automation-requirements-uid";
 
 function automationEndpointCaFile(fingerprint: string): string {
   return `automation-ca-${fingerprint}.pem`;
@@ -1356,7 +1359,17 @@ function automationEndpointCaPath(fingerprint: string): string {
   return `${AUTOMATION_TRUST_DIRECTORY}/${automationEndpointCaFile(fingerprint)}`;
 }
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
+const AUTOMATION_CODEX_REQUIREMENTS_FILE = "requirements.toml";
+const AUTOMATION_CODEX_REQUIREMENTS_PATH = "/etc/codex/requirements.toml";
+const AUTOMATION_CODEX_REQUIREMENTS_ENVIRONMENT = "OCE_CODEX_AUTOMATION_REQUIREMENTS";
+const AUTOMATION_CODEX_REQUIREMENTS = `[features]
+code_mode_host = false
+code_mode = false
+code_mode_only = false
+sleep_tool = false
+`;
 const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
+  AUTOMATION_CODEX_REQUIREMENTS_ENVIRONMENT,
   "OPENCLAW_AGENT_REVISION_ID",
   "OPENCLAW_RUNTIME_STATUS_CONTAINER",
   "OPENCLAW_RUNTIME_STATUS_PORT",
@@ -3508,7 +3521,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       revision.compute.id !== this.id ||
       revision.compute.implementation !== this.implementation ||
-      (revision.harness.mode === "embedded" && revision.configuration.meta !== undefined)
+      (revision.harness.mode === "embedded" && revision.configuration.meta !== undefined) ||
+      (revision.harness.mode === "dedicated" && this.lifecycle.contributesLaunchEnvironment)
     ) {
       return undefined;
     }
@@ -3804,6 +3818,574 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
   }
 
+  private verifyAutomationReadinessProbe(
+    probe: Record<string, unknown> | undefined,
+    http: Record<string, unknown> | undefined,
+    ports: unknown,
+  ): boolean {
+    if (!probe || !http || !Array.isArray(ports)) {
+      return false;
+    }
+    const named = ports.map(asRecord).filter((port) => port?.name === "plugin-status");
+    return (
+      Object.keys(probe).every((key) =>
+        [
+          "httpGet",
+          "periodSeconds",
+          "timeoutSeconds",
+          "successThreshold",
+          "failureThreshold",
+          "initialDelaySeconds",
+        ].includes(key),
+      ) &&
+      Object.keys(http).every((key) =>
+        ["path", "port", "host", "scheme", "httpHeaders"].includes(key),
+      ) &&
+      http.path === RUNTIME_READINESS_PATH &&
+      http.port === "plugin-status" &&
+      (http.host === undefined || http.host === "") &&
+      (http.scheme === undefined || http.scheme === "HTTP") &&
+      (http.httpHeaders === undefined ||
+        (Array.isArray(http.httpHeaders) && http.httpHeaders.length === 0)) &&
+      probe.periodSeconds === 2 &&
+      probe.timeoutSeconds === 3 &&
+      (probe.successThreshold === undefined || probe.successThreshold === 1) &&
+      (probe.failureThreshold === undefined || probe.failureThreshold === 3) &&
+      (probe.initialDelaySeconds === undefined || probe.initialDelaySeconds === 0) &&
+      named.length === 1 &&
+      named[0]?.containerPort === PLUGIN_RUNTIME_STATUS_PORT &&
+      (named[0]?.protocol === undefined || named[0]?.protocol === "TCP") &&
+      named[0]?.hostPort === undefined &&
+      named[0]?.hostIP === undefined
+    );
+  }
+
+  private verifyAutomationAgentTopology(
+    revision: AgentRevision,
+    spec: Record<string, unknown>,
+    agent: Record<string, unknown>,
+    snapshot: PluginRuntimeSnapshot,
+  ): boolean {
+    const podSecurity = asRecord(spec.securityContext);
+    const expectedPodSecurity = {
+      runAsNonRoot: true,
+      runAsUser: 1000,
+      runAsGroup: 1000,
+      fsGroup: 1000,
+      fsGroupChangePolicy: "OnRootMismatch",
+      seccompProfile: { type: "RuntimeDefault" },
+    };
+    const security = asRecord(agent.securityContext);
+    const expectedSecurity = {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+      ...(this.options.runtime?.codexSeccompProfile === undefined
+        ? {}
+        : {
+            seccompProfile: {
+              type: "Localhost",
+              localhostProfile: this.options.runtime.codexSeccompProfile,
+            },
+          }),
+    };
+    const cleanSecurity = (value: Record<string, unknown> | undefined) => {
+      if (!value) {
+        return undefined;
+      }
+      const { privileged, ...rest } = value;
+      return privileged === undefined || privileged === false ? rest : value;
+    };
+    if (
+      !isDeepStrictEqual(podSecurity, expectedPodSecurity) ||
+      !isDeepStrictEqual(cleanSecurity(security), expectedSecurity) ||
+      (Array.isArray(spec.ephemeralContainers) && spec.ephemeralContainers.length > 0)
+    ) {
+      return false;
+    }
+    const inits = Array.isArray(spec.initContainers) ? spec.initContainers.map(asRecord) : [];
+    if (
+      inits.length < 1 ||
+      inits.length > 2 ||
+      inits[0]?.name !== "prepare-private-state" ||
+      (inits.length === 2 && inits[1]?.name !== "initialize-workspace")
+    ) {
+      return false;
+    }
+    const expectedPrivate = this.privateStateInitContainer(
+      "agent",
+      this.workloadImages(revision, "agent").runtime,
+      false,
+      false,
+      snapshot.runtime.kind === "codex" ? snapshot.runtime.publicGithubRead?.skillPath : undefined,
+    );
+    (expectedPrivate.volumeMounts as V1VolumeMount[]).push({
+      name: HARNESS_WORKSPACE_VOLUME,
+      mountPath: "/harness-workspace-state",
+    });
+    (expectedPrivate.args as string[])[0] +=
+      "\n" +
+      harnessWorkspacePreparationScript(
+        HARNESS_RETAINED_DIRECTORIES.map(({ name }) => "/harness-workspace-state/" + name),
+      );
+    const withNode =
+      this.hostsWorkspaceNode(revision.harness) && this.getGatewayEndpoint(revision) !== undefined;
+    if (withNode) {
+      const nodeStatePath = "/harness-workspace-state/" + this.workspaceNodeName(revision);
+      (expectedPrivate.args as string[])[0] +=
+        "\nmkdirSync(" +
+        JSON.stringify(nodeStatePath) +
+        ", { recursive: true, mode: 0o700 });" +
+        "\nchmodSync(" +
+        JSON.stringify(nodeStatePath) +
+        ", 0o700);";
+    }
+    const normalizeMounts = (value: unknown) =>
+      Array.isArray(value)
+        ? value.map((entry) => {
+            const mount = asRecord(entry);
+            if (!mount) {
+              return undefined;
+            }
+            const { readOnly, mountPropagation, recursiveReadOnly, ...rest } = mount;
+            if (
+              (mountPropagation !== undefined && mountPropagation !== "None") ||
+              (recursiveReadOnly !== undefined && recursiveReadOnly !== "Disabled")
+            ) {
+              return undefined;
+            }
+            return { ...rest, readOnly: readOnly === true };
+          })
+        : undefined;
+    const actualMounts = Array.isArray(agent.volumeMounts) ? agent.volumeMounts.map(asRecord) : [];
+    const nodeSetup = actualMounts.some((mount) => mount?.name === NODE_SETUP_VOLUME);
+    if (nodeSetup && !withNode) {
+      return false;
+    }
+    const scratch = this.scratchAdmission(revision).binding;
+    const expectedMounts: V1VolumeMount[] = [
+      { name: PLUGIN_RUNTIME_VOLUME, mountPath: PLUGIN_RUNTIME_DIRECTORY, readOnly: true },
+      {
+        name: PLUGIN_RUNTIME_VOLUME,
+        mountPath: AUTOMATION_CODEX_REQUIREMENTS_PATH,
+        subPath: AUTOMATION_CODEX_REQUIREMENTS_FILE,
+        readOnly: true,
+      },
+      ...(snapshot.runtime.kind === "codex" && snapshot.runtime.publicGithubRead !== undefined
+        ? [
+            {
+              name: PLUGIN_RUNTIME_VOLUME,
+              mountPath: snapshot.runtime.publicGithubRead.skillPath,
+              subPath: PUBLIC_GITHUB_READ_SKILL,
+              readOnly: true,
+            },
+          ]
+        : []),
+      ...(this.options.servicePrincipalCredentials.mode === "projectedServiceAccountToken"
+        ? [{ name: "openclaw-service-principal", mountPath: TOKEN_PATH, readOnly: true }]
+        : []),
+      { name: "runtime-state", mountPath: "/home/node", subPath: "home" },
+      { name: "runtime-temporary", mountPath: "/tmp", subPath: "tmp" },
+      ...this.harnessWorkspaceVolumeMounts(HARNESS_RETAINED_DIRECTORIES),
+      ...(scratch === undefined
+        ? []
+        : [
+            {
+              name: "openclaw-scratch",
+              mountPath: "/sandbox/scratch",
+              subPath: "scratch",
+              readOnly: false,
+            },
+          ]),
+      ...(nodeSetup
+        ? [{ name: NODE_SETUP_VOLUME, mountPath: NODE_SETUP_DIRECTORY, readOnly: true }]
+        : []),
+      ...(withNode
+        ? [
+            {
+              name: HARNESS_WORKSPACE_VOLUME,
+              mountPath: NODE_STATE_PATH,
+              subPath: this.workspaceNodeName(revision),
+              readOnly: false,
+            },
+          ]
+        : []),
+    ];
+    if (!isDeepStrictEqual(normalizeMounts(agent.volumeMounts), normalizeMounts(expectedMounts))) {
+      return false;
+    }
+    const volumes = Array.isArray(spec.volumes) ? spec.volumes.map(asRecord) : [];
+    const volume = (name: string) => {
+      const selected = volumes.filter((entry) => entry?.name === name);
+      return selected.length === 1 ? selected[0] : undefined;
+    };
+    if (
+      !isDeepStrictEqual(asRecord(volume("runtime-state")?.emptyDir), {
+        sizeLimit: RUNTIME_STATE_VOLUME_SIZE,
+      }) ||
+      !isDeepStrictEqual(asRecord(volume("runtime-temporary")?.emptyDir), { sizeLimit: "64Mi" }) ||
+      asRecord(volume(HARNESS_WORKSPACE_VOLUME)?.persistentVolumeClaim)?.claimName !==
+        this.harnessWorkspaceClaimName(revision.agentId) ||
+      (scratch !== undefined &&
+        asRecord(volume("openclaw-scratch")?.persistentVolumeClaim)?.claimName !==
+          scratch.claimName)
+    ) {
+      return false;
+    }
+    if (nodeSetup) {
+      const secret = asRecord(volume(NODE_SETUP_VOLUME)?.secret);
+      if (
+        secret?.secretName !== this.workspaceNodeName(revision) ||
+        secret.optional !== true ||
+        secret.defaultMode !== 0o440 ||
+        !isDeepStrictEqual(secret.items, [{ key: "setupCode", path: NODE_SETUP_FILE }])
+      ) {
+        return false;
+      }
+    }
+    const initMatches = (
+      observed: Record<string, unknown> | undefined,
+      expected: KubernetesRecord,
+    ) =>
+      !!observed &&
+      observed.image === expected.image &&
+      observed.imagePullPolicy === expected.imagePullPolicy &&
+      isDeepStrictEqual(observed.command, expected.command) &&
+      isDeepStrictEqual(observed.args, expected.args) &&
+      isDeepStrictEqual(observed.env ?? [], expected.env ?? []) &&
+      (!Array.isArray(observed.envFrom) || observed.envFrom.length === 0) &&
+      isDeepStrictEqual(
+        normalizeMounts(observed.volumeMounts),
+        normalizeMounts(expected.volumeMounts),
+      ) &&
+      isDeepStrictEqual(
+        cleanSecurity(asRecord(observed.securityContext)),
+        expected.securityContext,
+      ) &&
+      observed.lifecycle === undefined &&
+      observed.workingDir === undefined &&
+      (!Array.isArray(observed.volumeDevices) || observed.volumeDevices.length === 0) &&
+      observed.restartPolicy === undefined &&
+      observed.readinessProbe === undefined &&
+      observed.livenessProbe === undefined &&
+      observed.startupProbe === undefined;
+    if (!initMatches(inits[0], expectedPrivate)) {
+      return false;
+    }
+    if (inits.length === 2) {
+      const mounts = Array.isArray(agent.volumeMounts) ? agent.volumeMounts : [];
+      const expectedWorkspace: KubernetesRecord = {
+        image: this.workloadImages(revision, "agent").workspaceSetup,
+        imagePullPolicy: "IfNotPresent",
+        command: [...SETUP_WRAPPER_COMMAND],
+        args: [WORKSPACE_SETUP_RUNTIME],
+        env: [
+          { name: "HOME", value: "/home/node" },
+          { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
+          { name: "OPENCLAW_WORKSPACE_SETUP_PATH", value: "/run/workspace-setup/setup.json" },
+          { name: "OPENCLAW_WORKSPACE_DIR", value: "/home/node/workspace" },
+          { name: "OPENCLAW_EXECUTABLE", value: "/app/openclaw.mjs" },
+        ],
+        volumeMounts: [
+          ...mounts.filter((entry) =>
+            [
+              "runtime-state",
+              "runtime-temporary",
+              HARNESS_WORKSPACE_VOLUME,
+              CONFIGURATION_VOLUME,
+            ].includes(String(asRecord(entry)?.name)),
+          ),
+          { name: "workspace-setup", mountPath: "/run/workspace-setup", readOnly: true },
+        ],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      };
+      if (!initMatches(inits[1], expectedWorkspace)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private async verifyDedicatedAutomationRequirements(
+    revision: AgentRevision,
+    gatewayPod: KubernetesRecord,
+  ): Promise<
+    { podUid: string; containerId: string; imageId: string; requirementsUid: string } | undefined
+  > {
+    if (!dedicatedAutomationOptIn(revision)) {
+      return undefined;
+    }
+    const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+    const snapshot = this.pluginRuntimeSnapshot(revision);
+    if (!snapshot?.automationRequirements || snapshot.runtime.kind !== "codex") {
+      return undefined;
+    }
+    const owner = this.pluginRuntimeOwnership(revision);
+    const map = await this.getOwned("ConfigMap", snapshot.name, namespace, owner);
+    const expectedMap = this.pluginRuntimeConfigMap(snapshot, owner, namespace);
+    if (
+      map?.immutable !== true ||
+      !isNonEmptyString(map.metadata.uid) ||
+      !isDeepStrictEqual(map.data, expectedMap.data) ||
+      Object.keys(map.binaryData ?? {}).length !== 0
+    ) {
+      return undefined;
+    }
+    const pods = (await this.revisionPods(revision, namespace, "agent")).filter(
+      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
+    );
+    if (pods.length !== 1) {
+      return undefined;
+    }
+    const pod = pods[0]!;
+    const metadata = asRecord(pod.metadata);
+    const spec = asRecord(pod.spec);
+    const status = asRecord(pod.status);
+    const containers = Array.isArray(spec?.containers) ? spec.containers.map(asRecord) : [];
+    const agents = containers.filter((container) => container?.name === "agent");
+    const agent = agents[0];
+    const observed = findContainerStatus(status?.containerStatuses, "agent");
+    const conditions = Array.isArray(status?.conditions) ? status.conditions.map(asRecord) : [];
+    const ready = conditions.filter((condition) => condition?.type === "Ready");
+    const probe = asRecord(agent?.readinessProbe);
+    const http = asRecord(probe?.httpGet);
+    if (
+      agents.length !== 1 ||
+      containers.length !== 1 ||
+      !agent ||
+      !isNonEmptyString(metadata?.uid) ||
+      asRecord(metadata.annotations)?.[AUTOMATION_REQUIREMENTS_UID_ANNOTATION] !==
+        map.metadata.uid ||
+      (Array.isArray(spec?.ephemeralContainers) && spec.ephemeralContainers.length !== 0) ||
+      spec?.hostNetwork === true ||
+      spec?.hostPID === true ||
+      spec?.hostIPC === true ||
+      spec?.shareProcessNamespace === true ||
+      status?.phase !== "Running" ||
+      ready.length !== 1 ||
+      ready[0]?.status !== "True" ||
+      observed?.ready !== true ||
+      !isNonEmptyString(observed.containerID) ||
+      !isNonEmptyString(observed.imageID) ||
+      agent.image !== this.workloadImages(revision, "agent").runtime ||
+      !this.verifyAutomationPodIdentity(revision, pod, agent, "agent") ||
+      !this.verifyAutomationAgentTopology(revision, spec!, agent, snapshot) ||
+      agent.lifecycle !== undefined ||
+      agent.livenessProbe !== undefined ||
+      agent.startupProbe !== undefined ||
+      agent.workingDir !== undefined ||
+      (Array.isArray(agent.volumeDevices) && agent.volumeDevices.length > 0) ||
+      asRecord(agent.securityContext)?.readOnlyRootFilesystem !== true ||
+      !isDeepStrictEqual(agent.command, RUNTIME_WRAPPER_COMMAND) ||
+      !this.verifyAutomationAgentProgram(agent.args, revision) ||
+      !this.verifyAutomationReadinessProbe(probe, http, agent.ports) ||
+      (Array.isArray(agent.envFrom) && agent.envFrom.length > 0)
+    ) {
+      return undefined;
+    }
+    const expectedDeployment = this.deployment({
+      name: "agent-" + sha256Hex(revision.agentId, 12) + "-rev-" + sha256Hex(revision.id, 12),
+      ownership: owner,
+      namespace,
+      images: this.workloadImages(revision, "agent"),
+      serviceAccountName: "agent-" + sha256Hex(revision.agentId, 12),
+      role: "agent",
+      environment: {},
+      loggingLevel: this.gatewayConfiguration(revision).loggingLevel,
+      harnessAuth: {
+        loginMode: "api_key",
+        environment: [
+          {
+            name: MODEL_API_KEY,
+            valueFrom: {
+              secretKeyRef: {
+                name: this.harnessSecretsName(revision.agentId, revision.id),
+                key: MODEL_API_KEY,
+              },
+            },
+          },
+          { name: "CODEX_LOGIN_MODE", value: "api_key" },
+        ],
+      },
+      pluginRuntime: { ...snapshot, automationRequirementsUid: map.metadata.uid },
+      codexLaunch: {
+        ...this.codexLaunch(revision, this.sandboxDriverForRevision(revision)),
+        withNode: false,
+      },
+      scratch: this.scratchAdmission(revision).binding,
+    });
+    const withNode =
+      this.hostsWorkspaceNode(revision.harness) && this.getGatewayEndpoint(revision) !== undefined;
+    if (withNode) {
+      const nodeSetup =
+        Array.isArray(agent.volumeMounts) &&
+        agent.volumeMounts.some((entry) => asRecord(entry)?.name === NODE_SETUP_VOLUME);
+      this.addWorkspaceNode(
+        expectedDeployment,
+        this.workspaceNodeName(revision),
+        await this.readNodeCa?.(),
+        revision,
+        nodeSetup,
+      );
+    }
+    const expectedSpec = asRecord(asRecord(expectedDeployment.spec)?.template);
+    const expectedPod = asRecord(expectedSpec?.spec);
+    const expectedAgent = Array.isArray(expectedPod?.containers)
+      ? asRecord(expectedPod.containers[0])
+      : undefined;
+    const normalizeEnvironment = (value: unknown) =>
+      Array.isArray(value)
+        ? value.map((entry) => {
+            const item = asRecord(entry);
+            const from = asRecord(item?.valueFrom);
+            const field = asRecord(from?.fieldRef);
+            const secret = asRecord(from?.secretKeyRef);
+            if (field) {
+              const { apiVersion, ...rest } = field;
+              if (apiVersion !== undefined && apiVersion !== "v1") {
+                return undefined;
+              }
+              return { ...item, valueFrom: { ...from, fieldRef: rest } };
+            }
+            if (secret) {
+              const { optional, ...rest } = secret;
+              if (optional !== undefined && optional !== false) {
+                return undefined;
+              }
+              return { ...item, valueFrom: { ...from, secretKeyRef: rest } };
+            }
+            return item;
+          })
+        : undefined;
+    const normalizePorts = (value: unknown) =>
+      Array.isArray(value)
+        ? value.map((entry) => {
+            const port = asRecord(entry);
+            if (!port) {
+              return undefined;
+            }
+            const { protocol, ...rest } = port;
+            return protocol === undefined || protocol === "TCP" ? rest : port;
+          })
+        : undefined;
+    if (
+      !isDeepStrictEqual(
+        normalizeEnvironment(agent.env),
+        normalizeEnvironment(expectedAgent?.env),
+      ) ||
+      !isDeepStrictEqual(normalizePorts(agent.ports), normalizePorts(expectedAgent?.ports))
+    ) {
+      return undefined;
+    }
+    const volumes = Array.isArray(spec?.volumes) ? spec.volumes.map(asRecord) : [];
+    const selected = volumes.filter((volume) => volume?.name === PLUGIN_RUNTIME_VOLUME);
+    const source = asRecord(selected[0]?.configMap);
+    const expectedItems = [
+      { key: PLUGIN_RUNTIME_MANIFEST, path: PLUGIN_RUNTIME_MANIFEST },
+      ...(snapshot.runtime.publicGithubRead === undefined
+        ? []
+        : [{ key: PUBLIC_GITHUB_READ_SKILL, path: PUBLIC_GITHUB_READ_SKILL }]),
+      { key: PLUGIN_RUNTIME_CODEX_CONFIG, path: PLUGIN_RUNTIME_CODEX_CONFIG },
+      { key: AUTOMATION_CODEX_REQUIREMENTS_FILE, path: AUTOMATION_CODEX_REQUIREMENTS_FILE },
+    ];
+    if (
+      selected.length !== 1 ||
+      source?.name !== snapshot.name ||
+      source.optional !== false ||
+      (source.defaultMode !== undefined && source.defaultMode !== 0o644) ||
+      !isDeepStrictEqual(source.items, expectedItems)
+    ) {
+      return undefined;
+    }
+    const gatewaySpec = asRecord(gatewayPod.spec);
+    const gatewayVolumes = Array.isArray(gatewaySpec?.volumes)
+      ? gatewaySpec.volumes.map(asRecord)
+      : [];
+    const gatewayContainers = [
+      ...(Array.isArray(gatewaySpec?.containers) ? gatewaySpec.containers : []),
+      ...(Array.isArray(gatewaySpec?.initContainers) ? gatewaySpec.initContainers : []),
+      ...(Array.isArray(gatewaySpec?.ephemeralContainers) ? gatewaySpec.ephemeralContainers : []),
+    ].map(asRecord);
+    const gatewayIsSeparate =
+      !gatewayVolumes.some((volume) => {
+        const disclosesRequirements = (source: unknown) => {
+          const projected = asRecord(source);
+          return (
+            projected?.name === snapshot.name &&
+            (!Array.isArray(projected.items) ||
+              projected.items.some(
+                (item) => asRecord(item)?.key === AUTOMATION_CODEX_REQUIREMENTS_FILE,
+              ))
+          );
+        };
+        const exposesModel = (source: unknown, projectedSource = false) => {
+          const secret = asRecord(source);
+          const name = projectedSource ? secret?.name : secret?.secretName;
+          return (
+            name === this.harnessSecretsName(revision.agentId, revision.id) &&
+            (!Array.isArray(secret?.items) ||
+              secret.items.some((item) => asRecord(item)?.key === MODEL_API_KEY))
+          );
+        };
+        const projected = asRecord(volume?.projected);
+        return (
+          disclosesRequirements(volume?.configMap) ||
+          exposesModel(volume?.secret) ||
+          (Array.isArray(projected?.sources) &&
+            projected.sources.some(
+              (source) =>
+                disclosesRequirements(asRecord(source)?.configMap) ||
+                exposesModel(asRecord(source)?.secret, true),
+            ))
+        );
+      }) &&
+      !gatewayContainers.some(
+        (container) =>
+          (Array.isArray(container?.envFrom) && container.envFrom.length > 0) ||
+          (Array.isArray(container?.env) &&
+            container.env.map(asRecord).some((entry) => {
+              const from = asRecord(entry?.valueFrom);
+              const secret = asRecord(from?.secretKeyRef);
+              const config = asRecord(from?.configMapKeyRef);
+              return (
+                (secret?.name === this.harnessSecretsName(revision.agentId, revision.id) &&
+                  secret.key === MODEL_API_KEY) ||
+                (config?.name === snapshot.name &&
+                  config.key === AUTOMATION_CODEX_REQUIREMENTS_FILE) ||
+                [
+                  AUTOMATION_CODEX_REQUIREMENTS_ENVIRONMENT,
+                  MODEL_API_KEY,
+                  "CODEX_ACCESS_TOKEN",
+                  "OCE_CODEX_CHATGPT_ACCOUNT",
+                ].includes(String(entry?.name))
+              );
+            })) ||
+          (Array.isArray(container?.volumeMounts) &&
+            container.volumeMounts
+              .map(asRecord)
+              .some(
+                (mount) =>
+                  typeof mount?.mountPath === "string" &&
+                  (mount.mountPath === "/" ||
+                    mount.mountPath === "/etc" ||
+                    mount.mountPath === "/etc/codex" ||
+                    mount.mountPath.startsWith("/etc/codex/")),
+              )),
+      );
+    return gatewayIsSeparate
+      ? {
+          podUid: metadata.uid,
+          containerId: observed.containerID,
+          imageId: observed.imageID,
+          requirementsUid: map.metadata.uid,
+        }
+      : undefined;
+  }
+
   private async verifyAgentAutomationRuntime(revision: Readonly<AgentRevision>): Promise<boolean> {
     const binding = this.agentAutomationGuardBinding(revision);
     if (!binding) {
@@ -3934,6 +4516,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ) {
         return undefined;
       }
+      const dedicated =
+        qualification && revision.harness.mode === "dedicated"
+          ? await this.verifyDedicatedAutomationRequirements(revision as AgentRevision, pod)
+          : undefined;
+      if (qualification && revision.harness.mode === "dedicated" && dedicated === undefined) {
+        return undefined;
+      }
       if (
         qualification &&
         qualification.grant.tools.length > 0 &&
@@ -3946,6 +4535,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         uid: metadata.uid,
         containerId: observed.containerID,
         imageId: observed.imageID,
+        ...(dedicated === undefined ? {} : { dedicated }),
       };
     };
     let initial;
@@ -8249,13 +8839,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return { ...result, repositoryCredentialMaterialMissing: material.missing };
     }
     const repositoryMaterial = material?.spec;
-    const pluginRuntime = this.pluginRuntimeSnapshot(
+    let pluginRuntime = this.pluginRuntimeSnapshot(
       admittedRevision,
       this.codexRepositoryBrokerNetworkPolicy(
         admittedRevision,
         repositoryConsumer,
         repositoryMaterial,
       ),
+      revision,
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -8347,9 +8938,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     });
     if (pluginRuntime !== undefined) {
+      const selectedRuntime = pluginRuntime;
       await this.prepareRevisionStage("plugin_runtime", () =>
-        this.reconcilePluginRuntimeConfigMap(pluginRuntime, pluginOwnership, namespace),
+        this.reconcilePluginRuntimeConfigMap(selectedRuntime, pluginOwnership, namespace),
       );
+      if (pluginRuntime.automationRequirements) {
+        const map = await this.getOwned(
+          "ConfigMap",
+          pluginRuntime.name,
+          namespace,
+          pluginOwnership,
+        );
+        const uid = map?.metadata.uid;
+        if (map?.immutable !== true || !isNonEmptyString(uid)) {
+          throw new DependencyUnavailableError(
+            "The automation requirements identity is unavailable.",
+          );
+        }
+        pluginRuntime = { ...pluginRuntime, automationRequirementsUid: uid };
+      }
     }
     const gatewayAccountName = embedded ? agentName : gatewayName;
     const gatewayAccountOwnership = embedded ? agentOwnership : gatewayOwnership;
@@ -9621,6 +10228,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           repositoryConsumer,
           repositoryMaterial,
         ),
+        revision,
       );
       if (
         currentRevisionId !== revision.id ||
@@ -9732,6 +10340,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      revision,
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -17438,6 +18047,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private pluginRuntimeSnapshot(
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+    authorityRevision: AgentRevision = revision,
   ): PluginRuntimeSnapshot | undefined {
     const provider = savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
@@ -17496,6 +18106,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
+      ...(dedicatedAutomationOptIn(authorityRevision) ? { automationRequirements: true } : {}),
     };
   }
 
@@ -17516,7 +18127,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       ...this.manifest("v1", "ConfigMap", snapshot.name, ownership, namespace),
       immutable: true,
-      data: pluginRuntimeConfigMapData(snapshot.runtime),
+      data: {
+        ...pluginRuntimeConfigMapData(snapshot.runtime),
+        ...(snapshot.automationRequirements
+          ? { [AUTOMATION_CODEX_REQUIREMENTS_FILE]: AUTOMATION_CODEX_REQUIREMENTS }
+          : {}),
+      },
     };
   }
 
@@ -17533,7 +18149,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ownership,
       namespace,
       undefined,
-      pluginRuntimeEarlierConfigMapData(snapshot.runtime),
+      snapshot.automationRequirements ? [] : pluginRuntimeEarlierConfigMapData(snapshot.runtime),
     );
   }
 
@@ -19625,6 +20241,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 }),
           }
         : {};
+    const automationRequirementsAnnotations =
+      role === "agent" && pluginRuntime?.automationRequirementsUid !== undefined
+        ? { [AUTOMATION_REQUIREMENTS_UID_ANNOTATION]: pluginRuntime.automationRequirementsUid }
+        : {};
     const revisionLabels =
       role === "gateway" && configuration !== undefined
         ? { "openclaw.dev/revision": configuration.revisionId }
@@ -19911,6 +20531,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             ...(pluginRuntime.runtime.kind === "codex" && role === "agent"
               ? [{ key: PLUGIN_RUNTIME_CODEX_CONFIG, path: PLUGIN_RUNTIME_CODEX_CONFIG }]
               : []),
+            ...(pluginRuntime.automationRequirements && role === "agent"
+              ? [
+                  {
+                    key: AUTOMATION_CODEX_REQUIREMENTS_FILE,
+                    path: AUTOMATION_CODEX_REQUIREMENTS_FILE,
+                  },
+                ]
+              : []),
           ],
           optional: false,
         },
@@ -19920,6 +20548,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         mountPath: PLUGIN_RUNTIME_DIRECTORY,
         readOnly: true,
       });
+      if (pluginRuntime.automationRequirements && role === "agent") {
+        variables.push({ name: AUTOMATION_CODEX_REQUIREMENTS_ENVIRONMENT, value: "required" });
+        volumeMounts.push({
+          name: PLUGIN_RUNTIME_VOLUME,
+          mountPath: AUTOMATION_CODEX_REQUIREMENTS_PATH,
+          subPath: AUTOMATION_CODEX_REQUIREMENTS_FILE,
+          readOnly: true,
+        });
+      }
       if (publicGithubRead !== undefined) {
         // The Gateway discovers its managed skill; the Harness needs the same
         // read-only file for native Codex. Neither uses the durable workspace.
@@ -20336,6 +20973,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         annotations: {
           ...metadata.annotations,
           ...configurationAnnotations,
+          ...automationRequirementsAnnotations,
           ...automationTrustAnnotations,
           ...(repositoryMaterial === undefined
             ? {}
@@ -20356,6 +20994,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             annotations: {
               ...workloadMetadata.annotations,
               ...configurationAnnotations,
+              ...automationRequirementsAnnotations,
               ...automationTrustAnnotations,
               ...(repositoryMaterial === undefined
                 ? {}
@@ -20422,7 +21061,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                       }
                     : { httpGet: { path: "/readyz", port } }),
                   periodSeconds: 2,
-                  ...(nativeRuntime === undefined ? {} : { timeoutSeconds: 3 }),
+                  ...(nativeRuntime !== undefined ||
+                  (role === "agent" && pluginRuntime?.automationRequirements)
+                    ? { timeoutSeconds: 3 }
+                    : {}),
                 },
                 resources:
                   role === "gateway"

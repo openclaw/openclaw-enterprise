@@ -227,7 +227,12 @@ no sibling-operation, second-server or file-write effect. They also exercise
 service denial, missing or changed endpoint records, replacement of the deployed
 guard binding, and refusal of unsupported tool sources. A paused automation keeps
 its immutable grant: incompatible narrowing or binding changes must remain blocked
-until the automation is deleted and its grant is retired. Recovery proof must
+until the automation is deleted and its grant is retired. Dedicated evidence must
+bind the API-key revision opt-in, Agent-only requirements mount, and Agent-local
+readiness with all four effective feature constraints off. Require the exact direct
+approved declaration and call; a native `exec` wrapper or sleep tool does not
+qualify. Refuse repository credentials and protected Git for empty and finite
+dedicated caps. Recovery proof must
 also cover the paged `view=pending` response and reservation cancellation while
 the native runtime is unavailable, creator and administrator isolation, the
 bind/cancel race, and a delayed add that remains disabled. See

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { Check } from "typebox/value";
 import {
   AgentAutomationSchema,
@@ -18,6 +19,7 @@ import { registerQaSecret } from "./qa-secrets.ts";
 import {
   qaCodexObservationLimits,
   readQaAutomationRunEvidence,
+  readQaCodexAutomationRequirements,
   startQaCodexToolObservation,
 } from "./qa-automation-evidence.ts";
 
@@ -29,6 +31,114 @@ export async function verifyQaAgentAutomations(
   f: Fixture,
   agent: Agent,
 ): Promise<{ observationLimits: string[] }> {
+  if (agent.preset !== "Codex") {
+    return verifyQaAgentAutomationsAtRevision(f, agent);
+  }
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const path = `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`;
+  const original = structuredClone((await f.api("GET", path)).values);
+  const values = structuredClone(original);
+  const appServer = asRecord(asRecord(asRecord(values.plugins?.entries?.codex)?.config)?.appServer);
+  const proxy = asRecord(appServer?.networkProxy);
+  assert.equal(appServer?.mode, "guardian");
+  assert.equal(appServer?.approvalsReviewer, "user");
+  assert.equal(proxy?.enabled, true);
+  assert.equal(proxy?.baseProfile, "workspace");
+  assert.equal(proxy?.mode, "limited");
+  // Model-only scheduling needs its own explicit dedicated opt-in revision. The
+  // preceding MCP scenario restores the Standard Preset before this scenario.
+  delete values.mcp;
+  delete values.env;
+  const safePlugins = ["codex", "file-transfer", "memory-core"];
+  const entries = Object.fromEntries(
+    Object.entries(values.plugins?.entries ?? {}).filter(([id]) => safePlugins.includes(id)),
+  );
+  values.plugins = { allow: safePlugins, entries };
+  values.gateway.nodes = {
+    ...values.gateway.nodes,
+    pluginTools: { enabled: false },
+    allowSkills: false,
+  };
+  values.agents.entries = { main: { tools: { allow: [] } } };
+  values.tools = {
+    ...values.tools,
+    codeMode: false,
+    toolSearch: false,
+    gatewayPolicy: {
+      allow: [],
+      automations: { scope: "caller", allowCommandJobs: false },
+    },
+  };
+  let changed = false;
+  const retirement = { confirmed: true };
+  let outcome: { observationLimits: string[] } | undefined;
+  const failures: unknown[] = [];
+  try {
+    try {
+      agent.configuration = await f.api("PATCH", path, { values });
+      changed = true;
+    } catch (error) {
+      // A lost PATCH response must be reconciled by reading current state, never replayed.
+      const current = await f.api("GET", path);
+      if (isDeepStrictEqual(current.values, values)) {
+        agent.configuration = current;
+        changed = true;
+      } else if (!isDeepStrictEqual(current.values, original)) {
+        retirement.confirmed = false;
+        throw new AggregateError([error], "Model-only configuration outcome is unresolved", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
+    await f.deployAndWait(agent);
+    const requirements = await readQaCodexAutomationRequirements(f, agent);
+    await f.record(`automations-${agent.id}-model-only-native-requirements`, {
+      revisionId: agent.revision.id,
+      markerRequired: requirements.markerRequired,
+      revisionMatches: requirements.revisionMatches,
+      reviewedOpenClawSourceMatches: requirements.reviewedOpenClawSourceMatches,
+      codexMetadataPresent: requirements.codexMetadataPresent,
+      podIdentityMatches: requirements.podIdentityMatches,
+      selectedIndexDigest: requirements.selectedIndexDigest,
+      observedImageDigest: requirements.observedImageDigest,
+      disabled: requirements.disabled,
+    });
+    retirement.confirmed = false;
+    outcome = await verifyQaAgentAutomationsAtRevision(f, agent, retirement);
+  } catch (error) {
+    failures.push(error);
+  }
+  if (changed && retirement.confirmed) {
+    try {
+      agent.configuration = await f.api("PATCH", path, { values: original });
+      await f.deployAndWait(agent);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (changed && !retirement.confirmed) {
+    failures.push(
+      new Error("Preset restoration refused because automation retirement is unconfirmed."),
+    );
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Model-only automation proof or preset restoration failed", {
+      cause: failures[0],
+    });
+  }
+  assert.ok(outcome);
+  return outcome;
+}
+
+async function verifyQaAgentAutomationsAtRevision(
+  f: Fixture,
+  agent: Agent,
+  retirement?: { confirmed: boolean },
+): Promise<{ observationLimits: string[] }> {
   const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
   const session = await signInWithEmailPassword({
     ...f.credentials,
@@ -39,13 +149,19 @@ export async function verifyQaAgentAutomations(
   registerQaSecret(session.cookie);
   const headers = authenticatedHeaders(session, { origin: f.consoleUrl });
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}/automations`;
-  const pending = new Set<string>();
+  const pending = new Map<string, string | undefined>();
+  let uncertainCreation = false;
+  let uncertainCreationId: string | undefined;
   async function request(
     method: string,
     suffix = "",
     body?: unknown,
     selectedHeaders: Record<string, string> = headers,
   ) {
+    if (method === "POST") {
+      uncertainCreation = true;
+      uncertainCreationId = undefined;
+    }
     const result = await transport.rawRequest(method, base + suffix, {
       headers: selectedHeaders,
       body,
@@ -56,7 +172,25 @@ export async function verifyQaAgentAutomations(
     if (method === "POST" && location?.startsWith(base + "/")) {
       const id = location.slice(base.length + 1);
       if (/^[0-9a-f-]{36}$/u.test(id)) {
-        pending.add(id);
+        const revision = asRecord(envelope?.data)?.configRevision;
+        pending.set(id, typeof revision === "string" ? revision : undefined);
+        uncertainCreationId = id;
+      }
+    }
+    if (method === "POST") {
+      const data = asRecord(envelope?.data);
+      if (result.response.status === 201 && typeof data?.id === "string") {
+        pending.set(
+          data.id,
+          typeof data.configRevision === "string" ? data.configRevision : undefined,
+        );
+      }
+      if (
+        asRecord(envelope?.error)?.code !== "UNKNOWN_OUTCOME" &&
+        (result.response.status !== 201 || (typeof data?.id === "string" && pending.has(data.id)))
+      ) {
+        uncertainCreation = false;
+        uncertainCreationId = undefined;
       }
     }
     return { status: result.response.status, envelope };
@@ -92,7 +226,7 @@ export async function verifyQaAgentAutomations(
   }
   async function create(input: AgentAutomationCreateInput) {
     const saved = job(await call("POST", "", input, 201));
-    pending.add(saved.id);
+    pending.set(saved.id, saved.configRevision);
     return saved;
   }
   async function update(current: AgentAutomationData, patch: Record<string, unknown>) {
@@ -501,19 +635,34 @@ export async function verifyQaAgentAutomations(
   }
   {
     try {
-      for (const id of pending) {
+      for (const [id, lastRevision] of pending) {
         const response = await request("GET", `/${id}`);
-        if (response.status === 404) {
-          continue;
-        }
-        assert.equal(response.status, 200, "cleanup must resolve current automation state");
-        const current = job(response.envelope?.data);
+        assert.ok(
+          response.status === 200 || response.status === 404,
+          "cleanup must resolve current automation state",
+        );
+        const revision =
+          response.status === 200 ? job(response.envelope?.data).configRevision : lastRevision;
+        assert.equal(
+          typeof revision,
+          "string",
+          "cleanup must know the exact standing grant revision",
+        );
         await call(
           "DELETE",
-          `/${id}?expectedConfigRevision=${encodeURIComponent(current.configRevision)}`,
+          `/${id}?expectedConfigRevision=${encodeURIComponent(revision!)}`,
           undefined,
-          204,
+          response.status === 404 ? 404 : 204,
         );
+        pending.delete(id);
+        if (uncertainCreationId === id) {
+          uncertainCreation = false;
+          uncertainCreationId = undefined;
+        }
+      }
+      assert.equal(uncertainCreation, false, "an uncertain creation may have left a live job");
+      if (retirement) {
+        retirement.confirmed = true;
       }
     } catch (cleanupError) {
       failures.push(cleanupError);

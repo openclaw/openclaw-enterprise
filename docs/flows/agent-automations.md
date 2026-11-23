@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
-updated: "2026-11-22"
-last_updated_session: "authoring-run/7fb7cb15-5b9d-496d-b268-bba1a49025fd"
+updated: "2026-11-23"
+last_updated_session: "authoring-run/f0021451-cfe1-4e04-af91-2de6924aab4b"
 ---
 
 # Agent automation broker flow
@@ -127,7 +127,7 @@ unbound `${EXECUTION_RELEASE}-execution-tenant-automation-observer` to its API
 ServiceAccount in the Agent namespace for ConfigMaps and NetworkPolicies `get`.
 Workers never write RBAC.
 
-The native adapter checks bounded, nonempty handshake boot ID and same-socket
+The native adapter checks nonempty 1–128-character handshake boot ID and same-socket
 `system.info` process-instance ID plus positive PID. Only the hostname is compared
 with the expected Pod name; boot/process IDs have no prior expected value.
 Mutations require the captured identity and the same handshake boot ID.
@@ -135,43 +135,52 @@ It rechecks the transport before requests. Connection closure stops the client; 
 selects another Gateway. The Agent-wide route is excluded.
 
 `apps/controller/src/drivers/compute/agent-automations-policy.ts:nativeAutomationPolicy`
-qualifies the static provisioning and policy. The Kubernetes implementation owns
-the exact anonymous HTTPS endpoint attestation, translated host CIDRs and optional
-public CA bundle. For nonempty grants, `nativeAutomationPolicy` prevalidates every enabled server as
-attested `streamable-http` and binds the full canonical server/transport/attestation
-map into each selected tool binding. Policy refuses more than 64 enabled routes;
-endpoint configuration rejects equivalent duplicate IPv6 host CIDRs, and Compute
-refuses nonempty qualification when Gateway port 47730/47731 conflicts with the
-reserved listener. Model-only capability remains unaffected. Adding or changing an enabled sibling or its
-URL/CIDR/CA invalidates that grant even if the sibling has no selected tool. Native
-catalog setup may initialize/list siblings before scheduled cap filtering; this
-does not permit forbidden tool calls. Compute renders one revision-selected Gateway
-endpoint policy. A separate Gateway-only `automation-trust` volume mounts exact
-fingerprint-named CA files read-only. Verification checks immutable CA data,
-ordered key/path scalars without `mode`, mount, annotation hash and absence after revocation; it rejects
-automation-derived `NODE_EXTRA_CA_CERTS` while preserving unrelated provider trust.
-Preparation removes owned stale Agent automation policy/CA assets; verification
-rejects Agent automation-specific policy, CA map, Pod volume/mount, environment or
-annotation. Independent Agent model/workload routes and Codex trust remain separate.
-Stdio is ineligible. Literal raw operations map to canonical
-aliases; unsupported credentials, approval controls, transports or ambiguous names
-refuse qualification. For dedicated execution, only ordinary Kubernetes
-deployment-backed Codex can qualify; provider-owned Sandbox, protected-egress and credential variants
-fail closed. OCC revision admission inserts the sole main entry
-`identity.name`; the policy validates and binds its exact public value. Embedded
-OpenClaw admits an identity-only main entry. Dedicated Codex also requires the
-exact main tool allow list and intersects each alias with the literal
-MCP filter, Gateway allow list and canonical `agents.entries.main.tools.allow`. It
-requires server approval and the qualified Standard guardian WebSocket configuration.
-`qualifiedCodexPluginConfig` preserves reviewer `user`, on-request approval,
-workspace-write sandbox and the limited workspace proxy. It rejects unsafe proxy
-flags, noncanonical domains, sockets and unknown keys. The canonical grant binds
-reviewer, sorted domains, proxy flags, filesystem permissions and ordered
-server-owned `readOnlyPaths` alongside workspace, transport/authentication provenance, exclusions
-and immutable images; it stores no raw app-server token or URL. Proxy domains do
-not authorize the independent Gateway MCP callback. Unsupported qualification refuses without fallback; qualified model-only paths
-remain available. Genuine HTTPS execution proof is a separate qualification gate.
-Code Mode and tool search must already be disabled. This does not modify ordinary chat.
+prevalidates each enabled server as Installation-attested anonymous HTTPS
+`streamable-http`, then binds the full server/transport/attestation map to every
+tool. More than 64 routes, equivalent duplicate IPv6 host CIDRs or Gateway port
+47730/47731 conflict refuse nonempty qualification. Sibling URL/CIDR/CA changes
+invalidate the grant. Catalog setup may initialize/list siblings before filtering,
+but cannot call forbidden tools. Compute renders Gateway endpoint policy and
+read-only fingerprint-named CA files in `automation-trust`. Verification checks
+immutable CA data, ordered key/path scalars, mount, annotation hash and absence
+after revocation; it rejects automation-derived `NODE_EXTRA_CA_CERTS` without
+changing unrelated trust. Agent endpoint/CA projections are refused.
+
+`dedicatedAutomationOptIn` checks the raw immutable dedicated revision before
+any grant, including model-only: ordinary deployment, `harnessAuth.method === "api_key"`,
+`tools.codeMode === false`, and explicit caller-scoped automation
+policy with command jobs off. It refuses repository credentials, repository
+NetworkPolicy and protected Git for empty and finite caps. Before returning an
+empty grant, `nativeAutomationPolicy` also refuses alternate active plugin, default
+namespace, node/skill, tool-search, environment and Secret authority.
+`apps/controller/src/drivers/compute/lifecycle-hooks.ts:ComputeLifecycleHooks.contributesLaunchEnvironment`
+refuses selected Driver
+`beforeWorkloadStart` callbacks for dedicated qualification. Rendered Gateway
+defaults do not opt in.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot`
+adds the requirements file to the existing immutable revision ConfigMap. Only the
+Agent projects and read-only mounts it at `/etc/codex/requirements.toml`; its
+fixed internal selector is `OCE_CODEX_AUTOMATION_REQUIREMENTS=required`.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentRuntimeReady`
+calls Agent-local `configRequirements/read` and requires the four effective
+Code Mode/sleep constraints to be `false`. `verifyDedicatedAutomationRequirements`
+checks the exact Ready Pod, `verifyAutomationReadinessProbe` (`/readyz`,
+`plugin-status` port 18791, timeout 3 seconds), requirements ConfigMap and mount, image, source and Gateway absence for every
+dedicated grant. The Agent Pod annotation `openclaw.dev/automation-requirements-uid`
+must match the immutable ConfigMap UID. Qualified transport captures that UID and
+the Agent Pod/container/image identity; `assertCurrent` compares the complete
+observation. These restrictions also affect ordinary Agent chat; readiness loss
+does not close an established Gateway connection or stop cron.
+
+OCC inserts and binds the sole main `identity.name`. Embedded permits identity
+alone; dedicated intersects literal MCP operations with Gateway and main alias
+allowlists, server approval and the qualified Standard guardian WebSocket.
+`qualifiedCodexPluginConfig` binds reviewer `user`, on-request approval,
+workspace-write sandbox, limited proxy, filesystem permissions and server-owned
+`readOnlyPaths`; it rejects unsafe flags, domains, sockets and unknown keys.
+Proxy domains do not authorize Gateway MCP callbacks. Approved dedicated MCP uses
+a direct dynamic-tool declaration; native `exec` does not qualify. Genuine
+packaged HTTPS execution remains a separate gate.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:projectEmbeddedAutomationMarker`
 projects server-owned `meta.lastTouchedVersion: "2026.11.5"` only for the embedded
@@ -338,6 +347,8 @@ for each selected Harness/runtime. Testing procedures belong in the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 12:49: Trace uncommitted dedicated API-key opt-in, managed requirements and readiness (authoring-run/f0021451-cfe1-4e04-af91-2de6924aab4b - abce29ecaacc5e3c85a7e8de95fa7611f2481b7d)
 
 - 2026-11-22 14:03: Trace uncommitted pending recovery and dedicated MCP qualification (authoring-run/7fb7cb15-5b9d-496d-b268-bba1a49025fd - dc328404503ca35be4e042540307388a5141e2d0)
 

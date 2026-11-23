@@ -6,6 +6,7 @@ import { inflateRawSync } from "node:zlib";
 import { Check } from "typebox/value";
 import {
   AgentAutomationSchema,
+  AgentAutomationPendingReservationSchema,
   AgentAutomationRunsPageSchema,
   ERROR_CODES,
   type AgentAutomationData,
@@ -17,7 +18,11 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import type { createQaInstallation, createQaAgent } from "./qa-installation.mjs";
 import { registerQaSecret } from "./qa-secrets.ts";
-import { readQaAutomationMcpRunEvidence } from "./qa-automation-evidence.ts";
+import { verifyQaCodexAutomationReadinessRefusal } from "./qa-agent-automation-readiness.ts";
+import {
+  readQaAutomationMcpRunEvidence,
+  readQaCodexAutomationRequirements,
+} from "./qa-automation-evidence.ts";
 
 type Fixture = Awaited<ReturnType<typeof createQaInstallation>> & {
   configuration: {
@@ -164,18 +169,20 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     };
     values.tools = {
       profile: "full",
-      gatewayPolicy: { allow: ["approved__parity_probe"] },
+      gatewayPolicy: {
+        allow: ["approved__parity_probe"],
+        ...(agent.preset === "Codex"
+          ? { automations: { scope: "caller", allowCommandJobs: false } }
+          : {}),
+      },
       codeMode: false,
       toolSearch: false,
     };
     if (agent.preset === "Codex") {
+      assert.equal(agent.harnessAuth.method, "api_key");
       // Codex projects configured MCP as dynamic tools only under an explicit Agent policy.
       // Keep that policy finite and equal to the Gateway-approved alias.
-      const main = values.agents.entries?.main ?? {};
-      values.agents.entries = {
-        ...values.agents.entries,
-        main: { ...main, tools: { ...main.tools, allow: ["approved__parity_probe"] } },
-      };
+      values.agents.entries = { main: { tools: { allow: ["approved__parity_probe"] } } };
     }
     const safe =
       agent.preset === "Codex"
@@ -748,6 +755,40 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       native = await observer();
       try {
         await waitAutomationReady();
+        await verifyQaCodexAutomationReadinessRefusal(f, agent, {
+          nativeJobs,
+          peerCalls: async () => (await networkPeer!.read()).length,
+          pendingReservations: async () => {
+            const response = await request("GET", "?view=pending&limit=100");
+            assert.equal(response.status, 200);
+            const page = asRecord(response.data);
+            assert.ok(Array.isArray(page?.pendingReservations));
+            assert.equal(
+              page.nextOffset,
+              null,
+              "readiness proof must observe the complete pending view",
+            );
+            return page.pendingReservations.map((row: unknown) => {
+              assert.ok(Check(AgentAutomationPendingReservationSchema, row));
+              return { id: row.id, configRevision: row.configRevision };
+            });
+          },
+          cancelPending: async (row) => {
+            const response = await request(
+              "DELETE",
+              `/${row.id}?expectedConfigRevision=${encodeURIComponent(row.configRevision)}`,
+            );
+            assert.equal(response.status, 204, "the exact unbound reservation must be cancelled");
+          },
+          createPaused: () =>
+            request("POST", "", {
+              ...input("Readiness refusal control"),
+              enabled: false,
+              schedule: { kind: "every", everyMs: 86_400_000 },
+            }),
+          readRequirements: () => readQaCodexAutomationRequirements(f, agent),
+        });
+        await waitAutomationReady();
         const sessions = asRecord(
           await native.client.request("sessions.list", {
             agentId: "main",
@@ -1280,6 +1321,21 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       await patchSelector(originalSelector);
     }
     await waitAutomationReady();
+    if (agent.preset === "Codex") {
+      // Requirements are a managed ceiling, not a complete per-thread tool inventory.
+      const requirements = await readQaCodexAutomationRequirements(f, agent);
+      await f.record(`automations-${agent.id}-native-requirements`, {
+        revisionId: agent.revision.id,
+        markerRequired: requirements.markerRequired,
+        revisionMatches: requirements.revisionMatches,
+        reviewedOpenClawSourceMatches: requirements.reviewedOpenClawSourceMatches,
+        codexMetadataPresent: requirements.codexMetadataPresent,
+        podIdentityMatches: requirements.podIdentityMatches,
+        selectedIndexDigest: requirements.selectedIndexDigest,
+        observedImageDigest: requirements.observedImageDigest,
+        disabled: requirements.disabled,
+      });
+    }
     const restored = await create("Restored revision Service control", {
       enabled: false,
       schedule: { kind: "every", everyMs: 86_400_000 },
@@ -1369,8 +1425,13 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     const calls = await collect();
     assert.equal(calls.length, 2, "the sibling and second server must receive no tools/call");
     assert.deepEqual(
-      { server: calls[1]!.server, tool: calls[1]!.tool, nonce: calls[1]!.nonce },
-      { server: "approved", tool: "parity_probe", nonce: scheduled },
+      {
+        server: calls[1]!.server,
+        tool: calls[1]!.tool,
+        nonce: calls[1]!.nonce,
+        denied: calls[1]!.denied,
+      },
+      { server: "approved", tool: "parity_probe", nonce: scheduled, denied: false },
     );
     if (networkPeer) {
       assert.equal(

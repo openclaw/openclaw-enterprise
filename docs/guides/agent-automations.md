@@ -30,7 +30,9 @@ MCP execution also requires immutable images and the restricted core-plugin
 namespace, without channel entries, unrelated Agent plugins or local plugin paths.
 Set `gateway.nodes.pluginTools.enabled` and `gateway.nodes.allowSkills` to `false`;
 environment overrides, Secret bindings and repository credentials are ineligible.
-These are operator configuration choices that affect ordinary chat; creating an
+Apply these tool, plugin, namespace and node restrictions to dedicated Codex even
+for a model-only automation. For model-only, set
+`tools.gatewayPolicy.allow` and `agents.entries.main.tools.allow` to `[]`. These are operator configuration choices that affect ordinary chat; creating an
 automation does not change those settings. An empty MCP include list can expose
 all operations. Never use it to revoke access. Tool-only qualification rejects
 `resources_list`, `resources_read`, `prompts_list` and `prompts_get` in enabled
@@ -39,8 +41,13 @@ operation `daily`, not `reports__daily`: native can treat that own-prefix value
 as an alias selector. The check ignores case and refuses admission before policy
 subsets, without probing or fallback. An unrelated raw `foo__bar` remains valid.
 
-For ordinary Kubernetes deployment-backed dedicated Codex, retain the enabled
-Codex plugin and its guardian WebSocket
+For every ordinary Kubernetes deployment-backed dedicated Codex automation, select
+API-key Harness authentication and set both `tools.codeMode: false` and the explicit
+caller-scoped automation policy shown below in the Agent revision. OAuth, ChatGPT,
+runtime, PAT and credential-source modes do not qualify. Use an ordinary Agent
+without repository credentials, repository NetworkPolicy or protected native Git,
+even for a model-only turn. Wait until the Agent is Ready: its managed requirements remove Code Mode and native sleep from ordinary
+chat as well as scheduling. Retain the enabled Codex plugin and guardian WebSocket
 configuration from the selected Harness preset. Each HTTPS server needs
 `codex.defaultToolsApprovalMode: "approve"`. Put each approved native alias in both
 `agents.entries.main.tools.allow` and `tools.gatewayPolicy.allow`; its raw operation
@@ -65,7 +72,10 @@ needs the exact tool allow list:
   },
   "tools": {
     "profile": "full",
-    "gatewayPolicy": { "allow": ["reports__daily"] },
+    "gatewayPolicy": {
+      "allow": ["reports__daily"],
+      "automations": { "scope": "caller", "allowCommandJobs": false }
+    },
     "codeMode": false,
     "toolSearch": false
   }
@@ -154,7 +164,8 @@ return 404; a generic 404 does not prove retirement. `UNKNOWN_OUTCOME` does not
 release the grant. See the [retirement contract](../reference/agent-automations.md#policy-changes-and-retained-grants)
 for the distinction between a retired grant and retained history.
 
-Removing an endpoint attestation alone does not stop a running native scheduler.
+Removing an endpoint attestation or losing Agent readiness does not close an
+established Gateway connection or stop native cron.
 Disable or delete affected jobs to stop future schedules. Use service-side denial
 to stop further provider calls; a call already issued can complete.
 

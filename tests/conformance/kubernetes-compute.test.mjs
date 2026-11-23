@@ -718,7 +718,10 @@ test("automation qualification binds Standard Codex reviewer and limited proxy p
   draft.plugins.entries.codex.config.appServer = appServer;
   draft.tools = {
     profile: "full",
-    gatewayPolicy: { allow: ["qa__probe"] },
+    gatewayPolicy: {
+      allow: ["qa__probe"],
+      automations: { scope: "caller", allowCommandJobs: false },
+    },
     codeMode: false,
     toolSearch: false,
   };
@@ -739,6 +742,47 @@ test("automation qualification binds Standard Codex reviewer and limited proxy p
   );
   assert.equal(appServer.approvalsReviewer, "user");
   assert.equal(appServer.networkProxy.enabled, true);
+  // The public immutable opt-in, API-key auth, reviewer/proxy posture, and
+  // absence of repository authority are required even without approved tools.
+  const modelOnly = structuredClone(revision);
+  delete modelOnly.configuration.mcp;
+  modelOnly.configuration.agents.entries.main.tools.allow = [];
+  modelOnly.configuration.tools.gatewayPolicy.allow = [];
+  assert.deepEqual((await driver.evaluateAgentAutomationPolicy(modelOnly))?.grant.tools, []);
+  for (const change of [
+    (value) => delete value.configuration.tools.gatewayPolicy.automations,
+    (value) => {
+      value.configuration.tools.codeMode = true;
+    },
+    (value) => {
+      value.harnessAuth = { method: "credential_source" };
+    },
+    (value) => {
+      value.repositoryCredentials = {};
+    },
+    (value) => {
+      value.sandboxPolicy = { repositoryNetworkPolicy: {} };
+    },
+    (value) => {
+      value.configuration.plugins.entries.codex.config.appServer.approvalsReviewer = "auto_review";
+    },
+    (value) => {
+      value.configuration.plugins.entries.codex.config.appServer.networkProxy.mode = "full";
+    },
+    (value) => {
+      value.configuration.tools.toolSearch = true;
+    },
+    (value) => {
+      value.configuration.gateway.nodes.pluginTools.enabled = true;
+    },
+    (value) => {
+      value.configuration.plugins.entries.unreviewed = { enabled: true };
+    },
+  ]) {
+    const changed = structuredClone(modelOnly);
+    change(changed);
+    assert.equal(await driver.evaluateAgentAutomationPolicy(changed), undefined);
+  }
   const changedDomain = await evaluate((value) => {
     value.networkProxy.domains["github.com"] = "deny";
   });
@@ -1166,7 +1210,10 @@ test("dedicated automation MCP grants endpoint egress and private CA trust only 
   );
   draft.tools = {
     profile: "full",
-    gatewayPolicy: { allow: ["qa__probe"] },
+    gatewayPolicy: {
+      allow: ["qa__probe"],
+      automations: { scope: "caller", allowCommandJobs: false },
+    },
     codeMode: false,
     toolSearch: false,
   };
@@ -1245,6 +1292,40 @@ test("dedicated automation MCP grants endpoint egress and private CA trust only 
 
   const agent = fixture.read("Deployment", fixture.agentName).spec.template;
   const container = agent.spec.containers.find(({ name }) => name === "agent");
+  const runtimeVolume = agent.spec.volumes.find(({ name }) => name === "openclaw-plugin-runtime");
+  const runtimeMap = fixture.read("ConfigMap", runtimeVolume.configMap.name);
+  assert.equal(runtimeMap.immutable, true);
+  assert.equal(
+    agent.metadata.annotations["openclaw.dev/automation-requirements-uid"],
+    runtimeMap.metadata.uid,
+  );
+  assert.deepEqual(container.readinessProbe, {
+    httpGet: { path: "/readyz", port: "plugin-status" },
+    periodSeconds: 2,
+    timeoutSeconds: 3,
+  });
+  assert.deepEqual(
+    container.ports.find(({ name }) => name === "plugin-status"),
+    { name: "plugin-status", containerPort: 18791 },
+  );
+  assert.equal(
+    runtimeMap.data["requirements.toml"],
+    "[features]\ncode_mode_host = false\ncode_mode = false\ncode_mode_only = false\nsleep_tool = false\n",
+  );
+  assert.ok(runtimeVolume.configMap.items.some(({ key }) => key === "requirements.toml"));
+  assert.deepEqual(
+    container.volumeMounts.find(({ mountPath }) => mountPath === "/etc/codex/requirements.toml"),
+    {
+      name: "openclaw-plugin-runtime",
+      mountPath: "/etc/codex/requirements.toml",
+      subPath: "requirements.toml",
+      readOnly: true,
+    },
+  );
+  assert.deepEqual(
+    container.env.filter(({ name }) => name === "OCE_CODEX_AUTOMATION_REQUIREMENTS"),
+    [{ name: "OCE_CODEX_AUTOMATION_REQUIREMENTS", value: "required" }],
+  );
   assert.equal(agent.metadata.annotations?.["openclaw.dev/automation-trust-sha256"], undefined);
   assert.ok(!agent.spec.volumes.some(({ name }) => name === "automation-trust"));
   assert.ok(!container.volumeMounts.some(({ name }) => name === "automation-trust"));
@@ -1266,6 +1347,11 @@ test("dedicated automation MCP grants endpoint egress and private CA trust only 
   assert.equal(gatewayConfiguration.data["automation-ca.pem"], undefined);
   const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template;
   const gatewayContainer = gateway.spec.containers.find(({ name }) => name === "gateway");
+  const gatewayRuntime = gateway.spec.volumes.find(
+    ({ name }) => name === "openclaw-plugin-runtime",
+  );
+  assert.ok(!gatewayRuntime.configMap.items.some(({ key }) => key === "requirements.toml"));
+  assert.ok(!gatewayContainer.env.some(({ name }) => name === "OCE_CODEX_AUTOMATION_REQUIREMENTS"));
   const trustVolume = gateway.spec.volumes.find(({ name }) => name === "automation-trust");
   assert.deepEqual(trustVolume.configMap.items, [{ key: caFile, path: caFile }]);
   assert.deepEqual(

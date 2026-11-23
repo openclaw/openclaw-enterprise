@@ -32,7 +32,10 @@ export async function startDispatchProvider({
   function selectTool(tools) {
     const entries = toolEntries(tools);
     const find = (name, type) => entries.find((tool) => tool.name === name && tool.type === type);
-    const tool = find(probe, probe === "exec" ? "custom" : "function");
+    // A managed Codex Agent cannot advertise native Code Mode. For the custom
+    // exec rejection probe, prove the provider can invoke ordinary direct shell
+    // execution first, then inject the unavailable custom call in the cron turn.
+    const tool = find(probe === "exec" ? "exec_command" : probe, "function");
     assert.ok(tool, "ordinary chat must advertise a supported real write/shell tool");
     return {
       name: tool.name,
@@ -249,19 +252,21 @@ export async function startDispatchProvider({
       !cases.has(phase),
       "a tool call must return correlated dispatch output, not silently restart",
     );
+    const requested =
+      phase === "negative" && probe === "exec" ? { name: "exec", type: "custom" } : selected;
     const file = fileFor(phase);
     const marker = markerFor(phase);
     const command = `printf '%s' '${marker}' > '${file}'`;
     const call = {
       id: `tool_${randomUUID()}`,
       call_id: `call_${phase}_${nonce}`,
-      name: selected.name,
-      type: selected.type === "custom" ? "custom_tool_call" : "function_call",
+      name: requested.name,
+      type: requested.type === "custom" ? "custom_tool_call" : "function_call",
       status: "completed",
     };
-    if (selected.name === "write") {
-      call.arguments = JSON.stringify({ [selected.pathField]: file, content: marker });
-    } else if (selected.name === "exec_command") {
+    if (requested.name === "write") {
+      call.arguments = JSON.stringify({ [requested.pathField]: file, content: marker });
+    } else if (requested.name === "exec_command") {
       call.arguments = JSON.stringify({
         cmd: command,
         login: false,
@@ -269,7 +274,7 @@ export async function startDispatchProvider({
       });
     } else {
       assert.equal(harness, "codex");
-      assert.equal(selected.name, "exec");
+      assert.equal(requested.name, "exec");
       call.input = `// @exec: {"yield_time_ms": 10000}\ntext(await tools.exec_command(${JSON.stringify({ cmd: command, login: false, sandbox_permissions: "use_default" })}));`;
     }
     cases.set(phase, { complete: false, callId: call.call_id });

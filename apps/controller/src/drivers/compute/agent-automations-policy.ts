@@ -491,7 +491,6 @@ function agentToolOverrides(
     !tools ||
     Object.keys(tools).some((key) => key !== "allow") ||
     !Array.isArray(allow) ||
-    allow.length === 0 ||
     allow.some(
       (name) =>
         typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_-]*__[A-Za-z][A-Za-z0-9_-]*$/u.test(name),
@@ -512,6 +511,28 @@ function agentToolOverrides(
   return { identityName, workspace, mainAllow: allow as string[] };
 }
 
+/** The public, immutable revision must explicitly select Agent-wide native restrictions. */
+export function dedicatedAutomationOptIn(revision: Readonly<AgentRevision>): boolean {
+  const tools = asRecord(revision.configuration.tools);
+  const automations = asRecord(asRecord(tools?.gatewayPolicy)?.automations);
+  return (
+    revision.harness.id === "codex" &&
+    revision.harness.mode === "dedicated" &&
+    revision.harnessAuth.method === "api_key" &&
+    revision.executionAdmission.mode === "unprotected" &&
+    revision.sandboxDriverId === undefined &&
+    revision.egressPlan === undefined &&
+    revision.credentialDeployment === undefined &&
+    revision.repositoryCredentials === undefined &&
+    revision.sandboxPolicy?.repositoryNetworkPolicy === undefined &&
+    tools?.codeMode === false &&
+    automations !== undefined &&
+    Object.keys(automations).length === 2 &&
+    automations.scope === "caller" &&
+    automations.allowCommandJobs === false
+  );
+}
+
 /**
  * This policy admits only static, Agent-shared MCP endpoints for which the
  * provisioned revision contains the full authority descriptor. Other native
@@ -528,6 +549,16 @@ export function nativeAutomationPolicy(
   ) {
     return undefined;
   }
+  const codexEntry = asRecord(asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex);
+  if (
+    revision.harness.mode === "dedicated" &&
+    (!dedicatedAutomationOptIn(revision) ||
+      !qualifiedCodexPluginConfig(codexEntry?.config) ||
+      runtimeImages.agent === undefined ||
+      Object.values(runtimeImages).some((image) => !immutableImage.test(image)))
+  ) {
+    return undefined;
+  }
   const configuration = revision.configuration;
   const mcp = asRecord(configuration.mcp);
   const servers = asRecord(mcp?.servers);
@@ -537,6 +568,28 @@ export function nativeAutomationPolicy(
   if (mcp && (!servers || Object.keys(mcp).some((key) => key !== "servers"))) {
     return undefined;
   }
+  const tools = asRecord(configuration.tools);
+  const gatewayPolicy = asRecord(tools?.gatewayPolicy);
+  const allow = gatewayPolicy?.allow;
+  const dedicatedCodex = revision.harness.mode === "dedicated";
+  const gateway = asRecord(configuration.gateway);
+  const nodeControls = asRecord(gateway?.nodes);
+  const nodePluginTools = asRecord(nodeControls?.pluginTools);
+  if (
+    dedicatedCodex &&
+    (tools?.toolSearch !== false ||
+      !Array.isArray(allow) ||
+      !agentToolOverrides(configuration, true, servers ?? {}, allow) ||
+      !publicPluginActivation(configuration.plugins, true) ||
+      !defaultNamespaceIsStaticOnly(revision) ||
+      nodePluginTools?.enabled !== false ||
+      nodeControls?.allowSkills !== false ||
+      (configuration.env !== undefined &&
+        Object.keys(asRecord(configuration.env) ?? { invalid: true }).length > 0) ||
+      Object.keys(revision.secretBindings ?? {}).length > 0)
+  ) {
+    return undefined;
+  }
   if (
     !servers ||
     Object.keys(servers).length === 0 ||
@@ -544,20 +597,13 @@ export function nativeAutomationPolicy(
   ) {
     return { grant: { tools: [] }, bindings: [] };
   }
-  const tools = asRecord(configuration.tools);
-  const gatewayPolicy = asRecord(tools?.gatewayPolicy);
-  const allow = gatewayPolicy?.allow;
   if (!tools || !Array.isArray(allow) || allow.some((entry) => typeof entry !== "string")) {
     return undefined;
   }
-  const dedicatedCodex = revision.harness.mode === "dedicated";
   const agentOverrides = agentToolOverrides(configuration, dedicatedCodex, servers, allow);
   if (!agentOverrides) {
     return undefined;
   }
-  const gateway = asRecord(configuration.gateway);
-  const nodeControls = asRecord(gateway?.nodes);
-  const nodePluginTools = asRecord(nodeControls?.pluginTools);
   const names = new Set<string>();
   const aliases = new Set<string>();
   const bindings: AgentAutomationPolicyBinding[] = [];
