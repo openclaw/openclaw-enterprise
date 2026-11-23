@@ -1,7 +1,7 @@
 ---
 created: 2026-11-17
-updated: 2026-11-17
-last_updated_session: authoring-run/1fb1a0ad-cb02-4500-9594-80a9f5879665
+updated: 2026-11-23
+last_updated_session: authoring-run/478550df-dd9a-46d4-8e4f-5e41484ff01b
 ---
 
 # Local credential preparation for installation
@@ -32,14 +32,17 @@ operator procedure.
 graph TD
   A["Freeze target, chart and values"] --> B{"Credential mode"}
   B -->|generate| C["Resolve hook with Helm"]
-  C --> D{"Release and Secret absent"}
+  C -->|pass| D{"Release and Secret absent"}
+  C -->|fail| X["Stop before intent"]
   D -->|yes| E["Persist intent and private inputs"]
-  D -->|no or unknown| X["Stop without generation"]
+  D -->|no or unknown| X
   E --> F["Record create dispatch"]
   F --> G["Create namespaced Secret"]
   G -->|verified response| H["Record Secret UID"]
   G -->|failed or unknown| Y["Preserve inputs and reconcile"]
-  B -->|existing| I["Require unused release; persist intent"]
+  B -->|existing| M["Render with Helm offline"]
+  M -->|pass| I["Require unused release; persist intent"]
+  M -->|fail| X
   H --> J["Record Helm dispatch; install once"]
   I --> J
   J --> K["Record Helm outcome and observed Job UID"]
@@ -48,7 +51,7 @@ graph TD
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class A,E,I,K input
-  class C,F,G,H,J,L operation
+  class C,F,G,H,J,L,M operation
   class B,D,X,Y blocked
 ```
 
@@ -56,11 +59,21 @@ Solid arrows describe implemented source paths, not deployment evidence.
 
 ## Execution Trace
 
+`internal/occcli/installation_values.go:installationMigrateValuesCommand`
+prepares values for a future fresh install. It resolves the bootstrap Job
+against the original values, then compares manifests from both renders of the
+same target chart. With `--out`, it publishes a new file after the comparison
+passes. The installation command receives the copy as new inputs. Retain the
+original values with the previous attempt's receipt.
+
 ### 1. Freeze and check the selected target
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
 the trusted kubeconfig, local chart and values. Helm Kubernetes environment
-overrides are rejected. Generated mode calls
+overrides are rejected.
+`internal/occcli/installation_credentials.go:noticeLegacyInstallationBootstrap`
+warns if it detects older PVC output settings in the snapshot. Both credential
+modes render with Helm before persisting intent. Generated mode calls
 `internal/occcli/installation_credentials.go:resolveInstallationBootstrap`:
 offline Helm rendering resolves defaults and overrides, including Secret name
 and both key names. The rendered Job must include empty-database migration and
@@ -70,8 +83,8 @@ The installer checks all Helm release states. In generated mode,
 `requireAbsentBootstrapSecret` also checks the named Secret. An existing or
 unreadable Secret stops before credential generation. These point-in-time reads
 are not locks: the eventual Secret POST and Helm install still arbitrate races.
-Existing mode skips local generation and Secret creation; the operator owns its
-configured inputs.
+For existing mode, the operator provisions the credential Secret. A render
+failure stops before the installer records intent or dispatches the installation.
 
 ### 2. Prepare protected inputs and evidence
 
@@ -149,4 +162,5 @@ that identity; normal Namespace and Agent operations remain API/IAM-owned.
 
 ## Changelog
 
+- 2026-11-23 23:07: Trace the retired-output warning, offline render and candidate values preparation. (authoring-run/478550df-dd9a-46d4-8e4f-5e41484ff01b - 07040d08297857d5be32a6456482d25e5beb0157)
 - 2026-11-17 17:39: Trace automatic local inputs and pre-hook Secret creation in the accompanying change. (authoring-run/1fb1a0ad-cb02-4500-9594-80a9f5879665 - 270c7be633c4c6bcdc262c7d298d37dcaaab9b29)

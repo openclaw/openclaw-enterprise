@@ -8,13 +8,12 @@ and the [OCC CLI](../cli.md#connect-to-your-installation).
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
-1. [Prepare the release](#prepare-the-release), live baseline and [required backups](upgrade-checklist.md).
-2. [Preflight](#rehearse-before-the-maintenance-window) and
-   [compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
+1. [Prepare the release](#prepare-the-release) and live baseline. Take [required backups](upgrade-checklist.md).
+2. [Preflight](#rehearse-before-the-maintenance-window) and [compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
 3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane)
    or [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
 4. [Verify](#verify-the-release) with a real workload.
-5. [Recover](#recover-from-a-partial-failure) before retrying.
+5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
 Use `--controller-image` for API and worker. Repository credentials also require
 `--broker-image`; restarting the broker can interrupt existing Agents.
@@ -36,16 +35,17 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-Send a unique nonsecret marker to the test chat through the approved interface.
-Privately record the Agent and chat.
+For retained conversations, send a unique nonsecret marker through the approved
+interface. Privately record its Agent and location.
 
-- [Published](../../release/containers.md#prepare-and-publish) or built images with
+- [Published](../../release/containers.md#prepare-and-publish) or built images pinned by
   lowercase `@sha256:` digest from the reviewed commit with passing checks.
-- Clean checkout at the full `RELEASE_SOURCE_SHA`. Run from its root.
-- Matching [OCC CLI](../cli.md#connect-to-your-installation) at `--occ`.
-  Build with `go build -trimpath -o bin/occ ./cmd/occ`.
+- Clean checkout at `RELEASE_SOURCE_SHA`. Run the helper from its root.
+- Matching [OCC CLI](../cli.md#connect-to-your-installation) at `--occ`. To build
+  it, run `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout.
 - [Baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and database state.
-- Protected kubeconfig, Helm values, Installation YAML, OCC service key and optional CA bundle.
+- Protected production kubeconfig, Helm values, Installation YAML, OCC service key
+  and optional CA bundle.
 - Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
   jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
   Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
@@ -64,15 +64,12 @@ Privately record the Agent and chat.
 - PostgreSQL backups for controller migrations and Agent-volume backups for
   runtime releases that can require data restoration.
 
-Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey`. For fresh
-installs, copy the values and remove both keys. Set `bootstrap.credentials.secretName`
-to a precreated Secret.
-
-Identify the old PVC by release namespace and effective `bootstrap.password.claimName`
-or saved initializer hook. Keep it through [verification](#verify-the-release)
-and the rollback or old-chart reapplication window. Before deletion,
-secure needed credentials outside the claim. Check that no live workload,
-retained Helm manifest or hook references it. If unsure, keep it.
+Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey`.
+Keep original values and the legacy PVC through [verification](#verify-the-release)
+and the rollback window. Find the claim in the release namespace using the
+effective `bootstrap.password.claimName` or saved initializer hook. Preserve
+needed credentials outside the claim. Verify no workload, retained Helm
+manifest, or hook references it before deletion.
 
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
