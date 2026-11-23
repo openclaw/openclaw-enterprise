@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
-import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
+import { gatewayLogsThroughReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   runGatewaySmoke,
   runtimeImageModel,
@@ -66,7 +66,7 @@ export async function verifyDedicatedGatewayAssets(
   }: GatewayAssetAssertions,
 ): Promise<void> {
   const configurationPath = await temporaryGatewayConfiguration(t, "codex");
-  const { logs, containerName } = await runGatewaySmoke(t, "codex", {
+  const { containerName } = await runGatewaySmoke(t, "codex", {
     configurationPath: "/etc/openclaw/openclaw.json",
     entrypoint,
     extraEnvironment: ["OPENCLAW_WORKSPACE_DIR=/home/node/workspace", "OPENCLAW_LOG_LEVEL=error"],
@@ -77,8 +77,7 @@ export async function verifyDedicatedGatewayAssets(
     volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
   });
 
-  assert.ok(typeof logs === "string");
-  const entries: unknown[] = jsonLogEntries(logs);
+  const { logs, entries } = await gatewayLogsThroughReady(containerName);
   assertGatewayReadyLog(entries);
   assertGatewayModelLog(entries, `codex/${runtimeImageModel}`);
   await assertGatewayRuntimeAssets(containerName);
