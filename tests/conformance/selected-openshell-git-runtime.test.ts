@@ -4730,6 +4730,32 @@ test("native Git releases a lent Source's hold on every path that writes nothing
   assert.ok(allReleased(), "a failed fence check releases the hold");
 });
 
+test("native Git confirms a lent Source's delivery once per Source version, not at each renewal", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const confirmed = () =>
+    f.events
+      .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
+      .map(({ credentialSourceVersion }) => credentialSourceVersion);
+  await reconcile();
+  assert.deepEqual(confirmed(), ["version-1"]);
+  // The 7.5-minute renewal is new material with the same Source version.
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.equal(activity.updates, 2, "the renewal is rotated in");
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(confirmed(), ["version-1"], "a renewal is not a new delivery");
+});
+
 test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {
   const { f, revision, prepare, store, noCredentials } = await selectedV5(t, true);
   const calls = structuredClone(f.calls);

@@ -248,6 +248,8 @@ interface Entry extends OpenShellGitObservationEntry {
         readonly at: number;
       }
     | undefined;
+  /** The lent Source version whose delivery this route last confirmed. */
+  confirmedSourceVersion?: string | undefined;
   blocked?: OpenShellGitRouteBlockReason;
   /** Only this terminal record can be retried, never the uncertain preview operation. */
   previewClosure?:
@@ -2268,8 +2270,13 @@ export class OpenShellGitRuntime {
             credentialSource?: string;
             credentialSourceVersion?: string;
           };
-          if (lent.credentialSource !== undefined) {
+          if (
+            lent.credentialSource !== undefined &&
+            lent.credentialSourceVersion !== entry.confirmedSourceVersion
+          ) {
             // Replacement was committed when the PATCH returned; this is the revision's delivery.
+            // A renewal of the same version is new material but not a new delivery.
+            entry.confirmedSourceVersion = lent.credentialSourceVersion;
             this.emit?.({
               event: "worker.openshell-git-delivery-confirmed",
               credentialSourceId: lent.credentialSource,

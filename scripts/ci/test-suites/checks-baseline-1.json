@@ -969,7 +969,8 @@
         "a fresh Git route uses the execution ID admitted before gateway reads",
         "native Git writes a lent Source only after the holding session confirms its hold",
         "native Git dispatches a lent Source only while its hold holds, and settles the hold after the write",
-        "native Git releases a lent Source's hold on every path that writes nothing"
+        "native Git releases a lent Source's hold on every path that writes nothing",
+        "native Git confirms a lent Source's delivery once per Source version, not at each renewal"
       ]
     },
     {
