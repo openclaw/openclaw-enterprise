@@ -398,8 +398,92 @@ test("a Source loan compares the revision's deployed access with the ceiling, no
   assert.equal(await reader.readWarm(undefined, lent("agent-b")), undefined);
   assert.deepEqual(
     refusals.map(({ reason }) => reason),
-    ["source_access_exceeded", "source_access_exceeded"],
+    ["source_access_exceeded", "source_ceiling_exceeded"],
   );
+});
+
+test("a Source loan checks the ceiling against the saved grants, not every bound repository", async () => {
+  // The Agent is bound to fixture/a and fixture/b through the same Source. The Source ceiling
+  // holds only fixture/a:read and the saved policy grants only fixture/a:read, which save and
+  // deploy admit. The network policy is compiled from the saved grants, so fixture/b is never
+  // reachable; the loan must not refuse the whole revision for it.
+  const fake = custodyFake({ repositories: "fixture/a:read" });
+  const bound = {
+    ...lent("agent-b"),
+    grant: {
+      ...lent("agent-b").grant,
+      repositories: [
+        { repository: "fixture/a", repositoryId: "1" },
+        { repository: "fixture/b", repositoryId: "2" },
+      ],
+    },
+  };
+  fake.admitted.set("revision-agent-b", [{ repository: "fixture/a", access: "read" }]);
+  const { reader, refusals } = loanReader(fake);
+  const { material, hold } = await lend(reader, bound);
+  await hold.release();
+  assert.equal(material.sourceVersion, "version-1");
+  // The read and write limits still hold per saved grant.
+  for (const [grants, reason] of [
+    [[{ repository: "fixture/a", access: "write" }], "source_access_exceeded"],
+    [
+      [
+        { repository: "fixture/a", access: "read" },
+        { repository: "fixture/b", access: "read" },
+      ],
+      "source_ceiling_exceeded",
+    ],
+  ] as const) {
+    fake.admitted.set("revision-agent-b", [...grants]);
+    assert.equal(await reader.readWarm(undefined, bound), undefined, reason);
+    assert.equal(refusals.at(-1)?.reason, reason);
+  }
+  assert.equal(fake.counts.shared, 0);
+});
+
+test("a Source loan never lasts past 15 minutes after its last successful check", async () => {
+  const fake = custodyFake();
+  const now = { value: start + 1 };
+  const { reader } = loanReader(fake, now);
+  // About a Worker's 10-second refresh. It does not divide the 7.5-minute window, so the passes
+  // fall on every phase of it.
+  const step = 10_007;
+  let installed: { preparationAttemptId: string; materialVersion: string } | undefined;
+  let usableUntil = 0;
+  let lastCheck = 0;
+  let loans = 0;
+  for (let pass = 0; pass < 300; pass += 1) {
+    now.value += step;
+    // As the runtime does: keep the installed loan while it is current, else lend again.
+    const current = installed && (await reader.current(undefined, lent(), installed));
+    if (current) {
+      usableUntil = current.usableUntil;
+    } else {
+      const { material, hold } = await lend(reader);
+      await hold.release();
+      loans += 1;
+      installed = {
+        preparationAttemptId: material.preparationAttemptId,
+        materialVersion: material.materialVersion,
+      };
+      usableUntil = material.usableUntil;
+    }
+    lastCheck = now.value;
+    assert.ok(usableUntil > lastCheck, `pass ${pass}: usable when checked`);
+    assert.ok(usableUntil - lastCheck <= repositorySourceLoanMaximumMs, `pass ${pass}`);
+  }
+  assert.ok(loans > 3, "the passes span several loans");
+  // Authority is lost after the last pass: every later check refuses, so nothing renews the
+  // installed loan. It ends no more than 15 minutes after the last check that passed.
+  fake.operable.delete("agent-a");
+  assert.ok(installed);
+  for (let elapsed = step; elapsed <= repositorySourceLoanMaximumMs; elapsed += step) {
+    now.value = lastCheck + elapsed;
+    assert.equal(await reader.readWarm(undefined, lent()), undefined);
+    assert.equal(await reader.current(undefined, lent(), installed), undefined);
+  }
+  assert.ok(usableUntil - lastCheck <= repositorySourceLoanMaximumMs);
+  assert.equal(fake.counts.shared, 0);
 });
 
 test("a refused loan is reported once per revision, even while a peer revision's loans succeed", async () => {

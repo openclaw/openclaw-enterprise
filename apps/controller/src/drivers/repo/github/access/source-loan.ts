@@ -80,7 +80,7 @@ const reasons = {
   source_unavailable: "is missing or not ready",
   source_not_owned: "is not a Source of this Installation's TokenService",
   source_preset_refused: "is not a github Source",
-  source_ceiling_exceeded: "no longer covers every repository of the revision",
+  source_ceiling_exceeded: "no longer covers every repository the revision's saved policy grants",
   source_access_exceeded: "no longer allows the access the revision was deployed with",
   operate_denied: "is not operable by the Agent principal",
   token_class_refused: "holds a token other than a fine-grained token",
@@ -122,13 +122,13 @@ function loanUuid(...parts: readonly string[]): string {
 type LentSource = {
   readonly key: { readonly source: { readonly id: string } };
   readonly session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>;
-  readonly grant: Pick<GitHubRepositorySourceGrant, "credentialSource" | "repositories">;
+  readonly grant: Pick<GitHubRepositorySourceGrant, "credentialSource">;
 };
 
 /**
  * The native material reader for a TokenService Source, in place of App token rows: no copy of
  * the value is kept in the database and no migration is needed. At each loan it rechecks the
- * Source's state, owner, preset and ceiling (repositories and the revision's deployed access),
+ * Source's state, owner, preset and ceiling (against the revision's saved grants),
  * the Agent principal's `operate` and the token class,
  * then lends the value for at most 15 minutes. Ids derive from the source key, the loan window
  * and the custody version, so a replaced value is new material and the runtime rotates it in.
@@ -210,18 +210,22 @@ export function createRepositorySourceMaterialReader<
       } catch {
         throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
       }
-      if (source.grant.repositories.some(({ repository }) => !ceiling.has(repository))) {
+      // Save and deploy admitted the saved grants within the ceiling, and the network policy
+      // enforces only those grants: a bound repository without a saved grant is never reachable,
+      // so the loan compares the saved grants, not every bound repository. The ceiling may have
+      // been lowered since deploy (its change is refused only while the API server's registry
+      // names the Source), so each loan compares them again.
+      const admitted = await custody.admitted(source.session);
+      if (!admitted?.length) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
+      }
+      if (admitted.some(({ repository }) => !ceiling.has(repository))) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
       }
-      // The ceiling may have been lowered since deploy (its change is refused only while the
-      // API server's registry names the Source), so the deployed access is compared again.
-      const admitted = await custody.admitted(source.session);
       if (
-        !admitted?.length ||
-        admitted.some(({ repository, access }) => {
-          const limit = ceiling.get(repository);
-          return limit === undefined || (limit === "read" && access !== "read");
-        })
+        admitted.some(
+          ({ repository, access }) => access !== "read" && ceiling.get(repository) === "read",
+        )
       ) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
       }
