@@ -15,7 +15,7 @@ export const PushAgentCredentialsBody = Type.Object(
       ],
       {
         description:
-          "Select all eligible sources or name each source to retry. Eligible sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on the source.",
+          "Select 'all' or 1–64 distinct Source IDs to retry. Eligible Sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on each Source.",
       },
     ),
   },
@@ -23,7 +23,7 @@ export const PushAgentCredentialsBody = Type.Object(
     $id: "PushAgentCredentialsBody",
     additionalProperties: false,
     description:
-      "Proposed manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
+      "Manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
   },
 );
 
@@ -56,7 +56,7 @@ export const PushAgentCredentialsResponse = Type.Object(
     $id: "PushAgentCredentialsResponse",
     additionalProperties: false,
     description:
-      "Proposed response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+      "Response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
   },
 );
 

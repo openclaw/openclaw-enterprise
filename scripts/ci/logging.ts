@@ -610,7 +610,11 @@ async function prepareLogging({
   const image = env.OCC_TEST_LOGGING_COLLECTOR_IMAGE ?? (await readDefaultCollectorImage(root));
   assertImmutableImageReference(image, "OCC_TEST_LOGGING_COLLECTOR_IMAGE");
 
-  const containerName = ownedName("openclaw-ci-otel", laneName, { fallbackLabel: "backend" });
+  const containerName = ownedName("openclaw-ci-otel", laneName, {
+    fallbackLabel: "backend",
+    // The cluster also uses this name for the Helm release.
+    ...(ownedCluster ? { maxLength: 53 } : {}),
+  });
   assertOwnedContainerName(containerName);
   const namespace = ownedCluster ? containerName : undefined;
   const baseDirectory = resolve(

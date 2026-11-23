@@ -7,6 +7,7 @@ import { describe, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { formatBaselineRuntimeBuildNotice } from "../../scripts/ci/image-build-cache.ts";
 import {
   assertStderrMatch,
   fixtureImageCommands,
@@ -531,6 +532,13 @@ process.exit(73);
       await commands.cleanupSuccessfully();
     });
   }
+
+  test("formats the elapsed baseline runtime image build time", () => {
+    assert.equal(
+      formatBaselineRuntimeBuildNotice(3210),
+      "::notice title=Baseline runtime image build 3.2s::Elapsed time for the pinned upgrade image.\n",
+    );
+  });
 
   const warmCacheEnv = {
     GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",

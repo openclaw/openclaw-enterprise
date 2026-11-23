@@ -87,14 +87,14 @@ export function registerPreparedGitInstallationCases(): void {
     predecessor.observed.credentials_installed = false;
     predecessor.observed.launch_environment_installed = false;
     state.status = predecessor;
-    assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+    assert.equal(await binding.observePredecessor(standing, installed, signal()), installed);
     assert.equal(await binding.observe(standing, "sandbox-id", signal()), undefined);
     state.status = structuredClone(predecessor);
     state.status.observed_time = {
       ...predecessor.evaluated_time,
       seconds: String(Number(predecessor.evaluated_time.seconds) - 14),
     };
-    assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+    assert.equal(await binding.observePredecessor(standing, installed, signal()), installed);
     // Fractional wire timestamps cross a second boundary, with time for two real RPCs.
     const fractional = structuredClone(predecessor);
     fractional.evaluated_time.nanos = 100_000;
@@ -103,7 +103,7 @@ export function registerPreparedGitInstallationCases(): void {
       nanos: 900_000,
     };
     state.status = fractional;
-    assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+    assert.equal(await binding.observePredecessor(standing, installed, signal()), installed);
     for (const mutate of [
       (status: WireInstalledStatus) => {
         status.reason = "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD";

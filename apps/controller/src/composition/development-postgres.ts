@@ -2,7 +2,10 @@ import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationControllerOptions } from "./installation-config.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "./installation-config.ts";
 import { installTokenServiceDriver } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
@@ -189,6 +192,7 @@ export async function composePostgresDevelopment(
       {
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation),
+        credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
@@ -235,7 +239,7 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    await installTokenServiceDriver(controller, drivers);
+    await installTokenServiceDriver(controller, drivers, state);
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
