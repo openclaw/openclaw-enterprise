@@ -3424,25 +3424,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
                   : {}),
         schema,
-        onRequest: async (request, reply) => {
+        onRequest: async (request) => {
           await admit(request, operation);
           if (authorizesBeforeBody(operation)) {
             await resolveIdentity(request, operation);
             await authorizeBeforeBody(request, operation);
-            if (isPluginReleaseUpload(operation)) {
-              const context = contexts.get(request)!;
-              const retryAfter = pluginUploadRateLimit.consume(context.actorId);
-              if (retryAfter !== undefined) {
-                reply.header("retry-after", String(retryAfter));
-                throw failure(
-                  429,
-                  "RATE_LIMITED",
-                  "Too many plugin upload requests. Wait before retrying.",
-                );
-              }
-            }
           }
         },
+        ...(isPluginReleaseUpload(operation)
+          ? {
+              preParsing: async (
+                request: FastifyRequest,
+                reply: FastifyReply,
+                payload: NodeJS.ReadableStream,
+              ) => {
+                const context = contexts.get(request)!;
+                const retryAfter = pluginUploadRateLimit.consume(context.actorId);
+                if (retryAfter !== undefined) {
+                  reply.header("retry-after", String(retryAfter));
+                  throw failure(
+                    429,
+                    "RATE_LIMITED",
+                    "Too many plugin upload requests. Wait before retrying.",
+                  );
+                }
+                return payload;
+              },
+            }
+          : {}),
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||

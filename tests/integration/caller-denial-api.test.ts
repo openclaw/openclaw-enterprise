@@ -643,6 +643,7 @@ test("a permitted Namespace member can still create a Secret and delete an empty
       secrets: { create: canCreateSecret },
       installation: { administer: false },
       delete: canDeleteNamespace,
+      publishPlugins: false,
     });
   }
   const secret = { name: "Shared model", value: "synthetic-value" };

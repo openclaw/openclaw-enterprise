@@ -13,6 +13,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformOperation, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import {
   adminEmail,
   createDurableController,
@@ -22,6 +23,7 @@ import {
   spawnWorker,
   startController,
 } from "../helpers/postgres-platform-state.ts";
+import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
 export async function refuseUninitializedInstallation(context: TestContext): Promise<void> {
   const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
@@ -218,6 +220,86 @@ export async function persistNamespaceLifecycle(context: TestContext): Promise<v
   );
   assert.deepEqual(persistedReady.rows, [{ status: "ready", deleted_at: null }]);
 
+  const { OCCPluginDriver } = await import("../../apps/controller/src/drivers/plugin/index.ts");
+  const pluginDriver = new OCCPluginDriver();
+  controller.registerDriver(pluginDriver);
+  controller.selectDriver("plugin", pluginDriver.id);
+  const singleton = await state.loadInstallation();
+  assert.ok(singleton);
+  const archiveBase64 = await importedPluginPackage(context, "namespace-lifecycle");
+  const preview = await controller.importPluginRelease(principalId, namespaceId, { archiveBase64 });
+  const published = await controller.importPluginRelease(
+    principalId,
+    namespaceId,
+    { archiveBase64 },
+    {
+      digest: preview.digest,
+      archiveSha256: preview.archiveSha256,
+      audit: (digest) => ({
+        ...auditEvent(singleton.id, namespaceId, principalId, "openclaw.plugin_releases.publish", {
+          kind: "namespace",
+          id: namespaceId,
+          namespaceId,
+        }),
+        details: { digest },
+      }),
+    },
+  );
+  assert.equal(published.digest, preview.digest);
+  const releaseRows = () =>
+    pool.query("SELECT digest FROM occ.plugin_releases WHERE namespace_id = $1", [namespaceId]);
+  assert.deepEqual((await releaseRows()).rows, [{ digest: published.digest }]);
+  assert.equal((await pool.query("SELECT current_user AS role")).rows[0]?.role, "occ_app");
+
+  // A compromised application-role caller cannot use the restricted purge before deletion.
+  await assert.rejects(
+    pool.query("SELECT occ.purge_namespace_plugin_releases($1)", [namespaceId]),
+    {
+      code: "23514",
+    },
+  );
+
+  // Normal Namespace deletion refuses Agents. Simulate an app-role writer bypassing that
+  // check inside one transaction; purge must still refuse, and the transaction rolls back.
+  const rollback = new Error("roll back the simulated app-role bypass");
+  await assert.rejects(
+    state.transact(async (unit) => {
+      const createdAt = new Date().toISOString();
+      const configurationId = `cfg_${randomUUID()}`;
+      await unit.configurations.createConfiguration({
+        id: configurationId,
+        namespaceId,
+        kind: "agent",
+        generation: 1,
+        createdAt,
+      });
+      await unit.agents.createAgent({
+        id: `agt_${randomUUID()}`,
+        namespaceId,
+        name: "Namespace purge guard",
+        configurationId,
+        backendId: null,
+        harnessAuth: null,
+        executionMode: "embedded",
+        gatewayManagedMode: true,
+        servicePrincipalId: `service-agent-${randomUUID()}`,
+        desiredRuntimeState: "stopped",
+        status: "active",
+        createdAt,
+      });
+      await unit.namespaces.transitionNamespaceStatus(namespaceId, "ready", "deleting");
+      await assert.rejects(
+        state.queryInTransaction(unit, "SELECT occ.purge_namespace_plugin_releases($1)", [
+          namespaceId,
+        ]),
+        { code: "23514" },
+      );
+      throw rollback;
+    }),
+    (error) => error === rollback,
+  );
+  assert.deepEqual((await releaseRows()).rows, [{ digest: published.digest }]);
+
   const deleting = await request(process, "DELETE", `/namespaces/${namespaceId}`);
   assert.equal(deleting.status, 202);
   assert.ok(Check(NamespaceResponse.properties.data, deleting.data));
@@ -258,6 +340,7 @@ export async function persistNamespaceLifecycle(context: TestContext): Promise<v
   assert.equal(tombstone?.status, "deleting");
   assert.ok(tombstone.deleted_at instanceof Date);
   assert.equal(tombstone.deleted_at.toISOString(), tombstoned.deletedAt);
+  assert.equal((await releaseRows()).rowCount, 0);
 
   const hidden = await request(process, "GET", `/namespaces/${namespaceId}`);
   assert.equal(hidden.status, 404);

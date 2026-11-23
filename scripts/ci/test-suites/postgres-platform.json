@@ -506,6 +506,7 @@
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
         "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
+        "bundled OpenShell custody discovers and prepares a native v9 repository session",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",

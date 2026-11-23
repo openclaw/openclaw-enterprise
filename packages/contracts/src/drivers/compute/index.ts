@@ -150,9 +150,9 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
-  /** Only v8: credentials, effective network policy, and launch inputs are ready before Harness startup. */
+  /** Standalone v8 has staged credentials and verified launch inputs and the effective network policy. */
   readonly preparedForCredentialActivation?: true;
-  /** Only v6: select this execution for material while its launcher and user work remain held. */
+  /** Protected v6 and native Git v9 hold the launcher and user work until Git material is installed. */
   readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
   readonly runtimeFailure?: RuntimeFailureEvidence;
@@ -241,12 +241,18 @@ export type RepositoryWorkerRestartDisposition =
 
 /** Current desired topology and exact proposed policy, when saving. */
 export interface ProtectedRepositoryNetworkPolicySaveContext {
+  readonly nativeGit?: "v1";
+  /** Saved Agent placement and its authorized Configuration, for local topology checks. */
+  readonly placement?: Pick<
+    AgentRevision,
+    "agentId" | "namespaceId" | "gatewayManagedMode" | "configuration"
+  >;
   readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
   readonly sandboxDriverId: string;
   /** The selected registration that owns both Sandbox and Credential Proxy. */
   readonly protectedDriver: DriverRegistrationRef;
   readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
-  /** GET can probe an explicit empty list. PUT supplies the complete proposed list for admission. */
+  /** The complete proposed policy, including an explicit empty list when applicable. */
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
   readonly harnessCredentialSource: Readonly<{
     type: string;
@@ -278,9 +284,15 @@ export interface ComputeDriver extends Driver {
     source?: SelectedDriverRegistration | "stored",
   ): void;
   /**
-   * Confirm support for protected repository policies on the selected topology with inspected
-   * transport. When supplied, admit the exact proposed policy. Use only local Driver state.
-   * Only an affirmative result admits a save. Release still requires frozen revision admission.
+   * Optionally qualify the selected topology for editing when several policy lists are possible.
+   * Use only local Driver state. This hint is independent of any particular list.
+   */
+  supportsProtectedRepositoryNetworkPolicyPlacement?(
+    context: Omit<ProtectedRepositoryNetworkPolicySaveContext, "repositoryNetworkPolicy">,
+  ): true | false;
+  /**
+   * Admit the exact proposed policy using local Driver state. Only an affirmative result admits
+   * a save. Release still requires frozen revision admission.
    */
   admitsProtectedRepositoryNetworkPolicySave?(
     context: ProtectedRepositoryNetworkPolicySaveContext,

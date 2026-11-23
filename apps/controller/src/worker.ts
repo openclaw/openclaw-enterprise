@@ -1661,12 +1661,24 @@ export class ControllerWorker {
       },
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
     });
-    this.resolveRevisionSecretContext = createRevisionCredentialResolver({
+    const resolveRevisionSecretContext = createRevisionCredentialResolver({
       state: this.state,
       compute: this.compute,
       ...this.revisionHarnessCredentialDependencies,
       credentialDeliveryRef: this.credentialDeliveryRegistration?.ref,
     });
+    this.resolveRevisionSecretContext = async (revision, operation) => {
+      // A refused native deployment must not resolve material. Withdrawal still has to work
+      // when the selected Sandbox can no longer enforce the revision's policy.
+      if (operation === "reconcile") {
+        try {
+          this.validateNativeRepositorySandbox(revision);
+        } catch {
+          return { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } };
+        }
+      }
+      return resolveRevisionSecretContext(revision, operation);
+    };
   }
 
   async start(): Promise<void> {
@@ -2252,6 +2264,7 @@ export class ControllerWorker {
       }
       validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
       await validateRepositoryNetworkPolicy(this.compute, revision);
+      this.validateNativeRepositorySandbox(revision);
     }
     signal.throwIfAborted();
     const applyStage = async () => {
@@ -2375,6 +2388,7 @@ export class ControllerWorker {
     }
     validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
     await validateRepositoryNetworkPolicy(this.compute, revision);
+    this.validateNativeRepositorySandbox(revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
@@ -5965,7 +5979,9 @@ export class ControllerWorker {
         ((revision.executionAdmission.version === 6 &&
           revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
           (revision.executionAdmission.version === 5 &&
-            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request") ||
+          (revision.executionAdmission.version === 9 &&
+            revision.egressPlan?.repositoryGitAuthorization === "network-policy")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&
@@ -6081,6 +6097,25 @@ export class ControllerWorker {
       failureLogFields,
     );
     return true;
+  }
+
+  private validateNativeRepositorySandbox(revision: Readonly<AgentRevision>): void {
+    if (
+      revision.executionAdmission.version !== 9 ||
+      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+    ) {
+      return;
+    }
+    const sandbox = this.sandbox;
+    if (
+      sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
+      sandbox.id !== revision.sandboxDriverId
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected Sandbox cannot enforce this repository network policy.",
+      );
+    }
+    sandbox.validateProtectedRepositoryNetworkPolicy(revision);
   }
 
   private revisionPluginDriverAvailable(revision: Readonly<AgentRevision>): boolean {
@@ -6665,7 +6700,9 @@ export class ControllerWorker {
           resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
           (activated.executionAdmission.version === 6 ||
             (activated.executionAdmission.version === 5 &&
-              activated.egressPlan?.repositoryGitAuthorization === "online-request"))
+              activated.egressPlan?.repositoryGitAuthorization === "online-request") ||
+            (activated.executionAdmission.version === 9 &&
+              activated.egressPlan?.repositoryGitAuthorization === "network-policy"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this
           // deployment ready, retire a predecessor, or release traffic at the held boundary.

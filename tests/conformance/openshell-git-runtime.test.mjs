@@ -152,7 +152,7 @@ async function observedGitRoute(
     policy: async () => sourcePolicy,
     execution: async () => "original-execution",
   };
-  const gitRule = new OpenShellPreparedGitProvider(f.client, {
+  const observedProvider = new OpenShellPreparedGitProvider(f.client, {
     ...f.entry.authorization.delivery,
     workspace: f.sandbox.workspace,
     workspaceId: "workspace-id",
@@ -161,7 +161,9 @@ async function observedGitRoute(
     gitOrigin: "https://github.com",
     apiOrigin: "https://api.github.com",
     binaries: ["/usr/bin/git"],
-  }).previewNetworkRule();
+  });
+  const gitRule = observedProvider.previewNetworkRule();
+  f.provider.withEnrollment = observedProvider.withEnrollment.bind(observedProvider);
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
   let environment;
