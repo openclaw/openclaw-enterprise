@@ -651,7 +651,9 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           repositoryNetworkPolicy,
         );
       }
-      const admittedEdit = repositoryOnly ? qualifiedEdit?.admit(repositoryNetworkPolicy) : undefined;
+      const admittedEdit = repositoryOnly
+        ? qualifiedEdit?.admit(repositoryNetworkPolicy)
+        : undefined;
       if (!admittedEdit && (edit || additions.length > 0)) {
         if (await protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(

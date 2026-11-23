@@ -726,7 +726,10 @@ test("App grant identities keep their exact digest when the registry learns Sour
     repositoryRef: "application",
   });
   // Frozen from main before the Source field existed: an App revision admitted then stays current.
-  assert.equal(binding.grant.grantId, "sha256:8da8b1c566fa579dfcd3e129860419e4a740a5841e472fb1e33f18308edc3dde");
+  assert.equal(
+    binding.grant.grantId,
+    "sha256:8da8b1c566fa579dfcd3e129860419e4a740a5841e472fb1e33f18308edc3dde",
+  );
 });
 
 test("a registration selects a Source only for native Git with Git permissions", async (t) => {
@@ -738,7 +741,10 @@ test("a registration selects a Source only for native Git with Git permissions",
     "namespace-a",
     sourceBindings(registry, ["token", "token-peer"]),
   );
-  assert.deepEqual(scope.credential, { kind: "credential_source", sourceId: "cs_repository_token" });
+  assert.deepEqual(scope.credential, {
+    kind: "credential_source",
+    sourceId: "cs_repository_token",
+  });
   const refusals: Record<string, (input: ReturnType<typeof sourceRegistryInput>) => void> = {
     "no nativeGit": (input) => {
       delete input.repositories[0]!.namespaces[0]!.nativeGit;

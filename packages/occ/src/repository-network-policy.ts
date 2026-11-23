@@ -43,7 +43,10 @@ export type RepositoryGrantPolicy = {
     readonly grant: RepositoryNetworkGrant;
   }): boolean;
   /** Whether a registration of the Namespace selects this credential source. */
-  namesCredentialSource?(input: { readonly namespaceId: string; readonly sourceId: string }): boolean;
+  namesCredentialSource?(input: {
+    readonly namespaceId: string;
+    readonly sourceId: string;
+  }): boolean;
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {

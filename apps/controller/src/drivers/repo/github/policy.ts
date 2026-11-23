@@ -144,7 +144,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   }
 
   /** Whether a registration of this Namespace selects the Source, so it must stay in place. */
-  namesCredentialSource(input: { readonly namespaceId: string; readonly sourceId: string }): boolean {
+  namesCredentialSource(input: {
+    readonly namespaceId: string;
+    readonly sourceId: string;
+  }): boolean {
     return this.#registry.repositories.some((repository) =>
       repository.namespaces.some(
         (policy) =>

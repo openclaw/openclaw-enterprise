@@ -291,7 +291,11 @@ export function createAgentCredentialAccess({
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
   ): Promise<void> {
-    const ref = { kind: "credential_source", namespaceId: agent.namespaceId, id: sourceId } as const;
+    const ref = {
+      kind: "credential_source",
+      namespaceId: agent.namespaceId,
+      id: sourceId,
+    } as const;
     // Authorize before the lookup, so a caller without the grant learns nothing about the Source.
     await authorizeSourceOperate(principalId, agent.namespaceId, sourceId);
     const source = await state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId);

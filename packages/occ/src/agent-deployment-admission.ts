@@ -1208,7 +1208,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const result = Object.freeze({
         revision,
         authorization,
-        ...(repositorySourceId !== undefined && { repositoryCredentialSourceId: repositorySourceId }),
+        ...(repositorySourceId !== undefined && {
+          repositoryCredentialSourceId: repositorySourceId,
+        }),
       });
       if (auditEvent) {
         await state.audit.append(auditEvent(result));
