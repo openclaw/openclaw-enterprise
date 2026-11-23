@@ -6,6 +6,7 @@ import {
   type CredentialSourceMetadata,
   type CredentialSourceStatus,
   type CredentialWithdrawalStatus,
+  type PushAgentCredentialsBody,
   type SecretReference,
   type SourceProviderPresetId,
 } from "@openclaw-enterprise/contracts";
@@ -77,6 +78,14 @@ function clientCredentialWithdrawal(
     withdrawalInProgress: withdrawal.withdrawalInProgress,
   };
 }
+
+const credentialPushFailures = {
+  resolution_failed: {
+    event: "credential.resolution_failed",
+    code: "CREDENTIAL_RESOLUTION_FAILED",
+  },
+  delivery_failed: { event: "credential.delivery_failed", code: "CREDENTIAL_DELIVERY_FAILED" },
+} as const;
 
 export const credentialSourceHandlers = {
   async createCredentialSource({
@@ -253,6 +262,50 @@ export const credentialSourceHandlers = {
     );
     const source = clientCredentialSource(rotated);
     reply.send({ data: source, meta: { requestId: request.id } });
+  },
+  async pushAgentCredentials({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    body,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const agentId = params.agentId as string;
+    const agent = { kind: "agent" as const, id: agentId, namespaceId };
+    const results = await controller.pushAgentCredentials(
+      context.actorId,
+      {
+        namespaceId,
+        agentId,
+        sources: (body as PushAgentCredentialsBody).sources,
+      },
+      {
+        started: () => phaseAudit(mutationEvent(agent), "delivery_retry_started"),
+        empty: () => mutationEvent(agent),
+        result: (result) => {
+          const source = { kind: "credential_source" as const, id: result.sourceId, namespaceId };
+          return result.outcome === "succeeded"
+            ? mutationEvent(source, { agentId })
+            : mutationEvent(source, { agentId }, undefined, {
+                reasonCode: credentialPushFailures[result.outcome].code,
+              });
+        },
+      },
+    );
+    for (const result of results) {
+      if (result.outcome !== "succeeded") {
+        request.log.warn({
+          ...credentialPushFailures[result.outcome],
+          requestId: request.id,
+          namespaceId,
+          credentialSourceId: result.sourceId,
+        });
+      }
+    }
+    reply.send({ data: { results }, meta: { requestId: request.id } });
   },
   async withdrawAgentCredentialSource({
     controller,
