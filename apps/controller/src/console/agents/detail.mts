@@ -2164,7 +2164,7 @@ export async function renderAgentDetail(
       return null;
     }
     const state = latestRecordedStatus === "queued" ? "queued" : "in progress";
-    return `v${pending.revision} was ${state} at the last check. Deploying again creates a new version.`;
+    return `v${pending.revision} was ${state} at the last check.`;
   }
 
   // The newest version once its deployment completed, while the Agent reread that would make it

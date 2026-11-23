@@ -3198,8 +3198,8 @@ test("Unchanged deployment polls preserve selected Draft readiness text", async 
   const actions = page.locator(".agent-draft-actions .card-actions");
   const status = actions.getByRole("status");
   const deploy = actions.getByRole("button", { name: "Deploy new version" });
-  const queued = "v2 was queued at the last check. Deploying again creates a new version.";
-  const running = "v2 was in progress at the last check. Deploying again creates a new version.";
+  const queued = "v2 was queued at the last check.";
+  const running = "v2 was in progress at the last check.";
   await page.locator(settledView).waitFor();
   await expectDeploymentOutcome(page, "Queued", { reveal: false });
   await waitForEnabled(deploy);
@@ -3271,7 +3271,7 @@ test("Draft shows deployment in progress for the selected version until it compl
   const actions = page.locator(".agent-draft-actions .card-actions");
   const status = actions.getByRole("status");
   const deploy = actions.getByRole("button", { name: "Deploy new version" });
-  const running = "v1 was in progress at the last check. Deploying again creates a new version.";
+  const running = "v1 was in progress at the last check.";
   await waitForEnabled(deploy);
   await waitForIdleFetches(page);
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
