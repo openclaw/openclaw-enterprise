@@ -1,6 +1,7 @@
 import type { SourceProviderPresetId } from "./model-providers.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
   type RepositoryNetworkPolicyCeiling,
 } from "./repository-network-policy.ts";
 
@@ -51,13 +52,19 @@ export class SourceRepositoryCeilingError extends Error {
   }
 }
 
+// The ceiling is configuration, not secret, so an error may quote the entry it refuses.
+function entryError(texts: readonly string[], index: number, message: string) {
+  return new SourceRepositoryCeilingError(
+    `Repository entry ${index + 1} (${JSON.stringify(texts[index])}): ${message}`,
+  );
+}
+
 function parseCeiling(value: string): RepositoryNetworkPolicyCeiling {
-  const entries = value.split(",").map((entry) => {
+  const texts = value.split(",");
+  const entries = texts.map((entry, index) => {
     const parts = entry.split(":");
     if (parts.length !== 2) {
-      throw new SourceRepositoryCeilingError(
-        "Write each repository as owner/name:read or owner/name:write, separated by commas.",
-      );
+      throw entryError(texts, index, "Write it as owner/name:read or owner/name:write.");
     }
     return { repository: parts[0], access: parts[1] };
   });
@@ -65,9 +72,13 @@ function parseCeiling(value: string): RepositoryNetworkPolicyCeiling {
   try {
     ceiling = parseRepositoryNetworkPolicyCeiling(entries);
   } catch (error) {
-    throw new SourceRepositoryCeilingError(
-      error instanceof Error ? error.message : "The repository ceiling is invalid.",
-    );
+    if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+      throw new SourceRepositoryCeilingError("The repository ceiling is invalid.");
+    }
+    const index = /^\/repositoryNetworkPolicyCeiling\/(\d+)(?:\/|$)/.exec(error.path)?.[1];
+    throw index === undefined
+      ? new SourceRepositoryCeilingError(error.message)
+      : entryError(texts, Number(index), error.message);
   }
   if (ceiling.length === 0) {
     throw new SourceRepositoryCeilingError("A github Source requires at least one repository.");
