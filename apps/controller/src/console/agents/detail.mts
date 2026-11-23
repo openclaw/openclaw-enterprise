@@ -456,15 +456,19 @@ function summary(
   details: [string, string | Node | null | undefined][],
 ) {
   const primary = configuredModel(values);
-  // A grid of label-over-value cells, a few to a row. A long value (a JSON document, many
-  // repositories) takes a whole row so it does not wrap in a narrow cell.
+  // A grid of label-over-value cells, a few to a row. A long value (many repositories) or a
+  // document that opens in place (Harness settings) takes a whole row so it does not wrap in a
+  // narrow cell.
   const list = element("dl", { className: "configuration-summary configuration-summary-grid" });
   const rows: typeof details = [
     ["Model", typeof primary === "string" ? primary : "Not specified"],
     ...details,
   ];
   for (const [name, value] of rows) {
-    const wide = typeof value === "string" && value.length > SUMMARY_WIDE_VALUE;
+    const wide =
+      typeof value === "string"
+        ? value.length > SUMMARY_WIDE_VALUE
+        : value instanceof HTMLDetailsElement;
     list.append(
       element(
         "div",

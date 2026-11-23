@@ -3148,10 +3148,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   grid-template-columns: 160px minmax(0, 1fr);
   gap: var(--space-4) var(--space-5);
 }
-.agent-settings-summary {
-  grid-template-columns: fit-content(40%) minmax(0, 1fr);
-  row-gap: var(--space-3);
-}
 .configuration-summary dt {
   color: var(--muted);
 }
@@ -4354,11 +4350,16 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 /* The Agent Configuration tab is a stack of cards: the summary, Settings, Collaboration and
    safety, and Gateway managed mode. The summary is a grid of label-over-value cells, a few to a
-   row; a long value takes a whole row. */
+   row; a long value or a document that opens in place takes a whole row. */
 .configuration-summary-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: var(--space-4) var(--space-6);
   margin-block: 0;
+}
+/* A version's heading row holds the draft links and a short heading margin, so the grid keeps
+   the gap a card heading gives it. */
+.agent-version-heading + .configuration-summary-grid {
+  margin-top: var(--space-3);
 }
 .configuration-summary-grid > div {
   min-width: 0;
