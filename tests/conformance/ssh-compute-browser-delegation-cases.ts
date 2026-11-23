@@ -29,7 +29,12 @@ test("chat and admin use the same principal but distinct authority", () => {
 
 test("browser requests require a matching private listener; no shared endpoint fallback", () => {
   const requested = { ...target, port: 18000 };
-  const listener = { ...requested, localTlsPort: 28000, credential: "a".repeat(64) };
+  const listener = {
+    ...requested,
+    localTlsPort: 28000,
+    revisionCertificate: "fixture",
+    credential: "a".repeat(64),
+  };
   const call = (value: typeof listener | undefined) =>
     sshBrowserRequest(requested, value, "p", "chat");
   assert.equal(call(undefined), undefined);
@@ -38,6 +43,7 @@ test("browser requests require a matching private listener; no shared endpoint f
     { revisionId: "other" },
     { localTlsPort: 0 },
     { credential: "" },
+    { revisionCertificate: "" },
   ]) {
     assert.equal(call({ ...listener, ...change }), undefined);
   }

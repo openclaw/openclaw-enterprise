@@ -480,6 +480,7 @@ export interface ComputeDriver extends Driver {
   ): Promise<
     | {
         readonly endpoint: string;
+        readonly revisionCertificate?: string;
         readonly subject: string;
         readonly headers: Readonly<Record<string, string>>;
       }

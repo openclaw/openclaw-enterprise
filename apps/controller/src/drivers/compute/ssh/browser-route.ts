@@ -43,6 +43,7 @@ export function sshBrowserDelegation(
 export type SshBrowserListener = Target & {
   port: number;
   localTlsPort: number;
+  revisionCertificate: string;
   credential: string;
 };
 export type SshBrowserTransport = (
@@ -58,6 +59,7 @@ export function sshBrowserRequest(
 ) {
   if (
     !listener ||
+    !listener.revisionCertificate?.trim() ||
     listener.port !== target.port ||
     !Number.isSafeInteger(listener.localTlsPort) ||
     listener.localTlsPort < 1024 ||
@@ -68,6 +70,7 @@ export function sshBrowserRequest(
   const authority = sshBrowserDelegation(target, listener, principalId, mode);
   if (!authority) return undefined;
   return {
+    revisionCertificate: listener.revisionCertificate,
     endpoint: `wss://127.0.0.1:${listener.localTlsPort}/`,
     subject: authority.subject,
     headers: {

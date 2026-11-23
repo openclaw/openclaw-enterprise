@@ -1,3 +1,4 @@
+import { browserRevisionTls } from "./browser-revision-tls.ts";
 import http from "node:http";
 import https from "node:https";
 import type { Socket } from "node:net";
@@ -8,6 +9,7 @@ export interface NativeAdminProxyContext {
   readonly gatewayBase: string;
   readonly agentOrigin: string;
   readonly apiKey: string;
+  readonly revisionCertificate?: string;
   readonly trustedHeaders?: Readonly<Record<string, string>>;
 }
 
@@ -388,7 +390,11 @@ export async function proxyNativeAdminHttp(options: {
   };
   const upstreamRequest = https.request(
     upstream,
-    { method: options.request.method, headers },
+    {
+      ...browserRevisionTls(options.context.revisionCertificate),
+      method: options.request.method,
+      headers,
+    },
     (upstreamResponse) => {
       upstreamResponse.once("error", fail);
       const headers = responseHeaders(upstreamResponse.headers, options.context);
@@ -570,7 +576,11 @@ export function proxyNativeAdminWebSocket(options: {
   let closed = false;
   let connected = false;
   let closeReason: NativeAdminWebSocketCloseReason | undefined;
-  const upstreamRequest = https.request(upstream, { method: "GET", headers });
+  const upstreamRequest = https.request(upstream, {
+    ...browserRevisionTls(options.context.revisionCertificate),
+    method: "GET",
+    headers,
+  });
   const close = (reason: NativeAdminWebSocketCloseReason, upstreamClosed = false) => {
     if (closeReason === undefined) {
       closeReason = reason;
