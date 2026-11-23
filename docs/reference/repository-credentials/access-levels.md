@@ -172,8 +172,12 @@ Registry validation refuses:
 - without the App's `appId` and `githubInstallationId`: a registration without
   `credentialSource`, standing approvals, and `installationAccess`.
 
-An Installation without a GitHub App must still supply the App key fields of
-the Worker's `repository.preparedGitHub` configuration, such as `privateKeyPath`.
+An Installation without a GitHub App leaves the chart's
+`repositoryCredentials.appKeySecretName` empty, so the Worker gets no App key.
+The repository broker (`repositoryCredentials.enabled`) still requires it. Keep
+the Worker's `repository.preparedGitHub.privateKeyPath`: the Worker reads the key
+only when the registry has the App. With the App and no readable key, the Worker
+does not start and logs `PREPARED_GITHUB_APP_KEY_INVALID`.
 
 An Agent's bindings must resolve to one credential: the App, or one Source.
 Naming another Source changes the grant, so earlier revisions go stale.
@@ -191,9 +195,11 @@ Saving the repository policy and deploying check the Source again:
 
 The Worker lends the value for at most 15 minutes and renews it every 7.5 minutes.
 At each loan it checks the Source's state, owner, preset and ceiling, the Agent
-principal's `operate` and the token class. The ceiling check covers the access
-the revision was deployed with: a ceiling lowered since then refuses the loan
-with reason `source_access_exceeded`; redeploy within it. A refused loan logs
+principal's `operate` and the token class. The ceiling check compares the
+revision's saved grants, not every bound repository. A ceiling lowered since
+deploy refuses the loan with reason `source_ceiling_exceeded` (a granted
+repository left out) or `source_access_exceeded` (write lowered to read);
+redeploy within it. A refused loan logs
 `REPOSITORY_SOURCE_LOAN_REFUSED` once per revision, Source version and reason, with the
 `reason`, `credentialSourceId` and `credentialSourceVersion` and never the value. The current loan stays in the
 Sandbox until it ends.

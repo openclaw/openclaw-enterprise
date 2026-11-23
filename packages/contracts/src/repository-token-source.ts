@@ -1,4 +1,7 @@
-import type { SourceProviderPresetId } from "./model-providers.ts";
+import {
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  type SourceProviderPresetId,
+} from "./model-providers.ts";
 import {
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
@@ -13,6 +16,16 @@ export const GITHUB_SOURCE_PRESET_ID = "github" satisfies SourceProviderPresetId
  * separated by commas. OCC stores it in canonical repository order.
  */
 export const SOURCE_REPOSITORIES_CONFIG_KEY = "repositories";
+
+/**
+ * Whether a stored Source holds a repository token. The purpose is fixed at registration, so a
+ * repository token never gets a model Provider copy, model delivery or workload projection.
+ */
+export function isRepositoryTokenSource(source: {
+  readonly config: Readonly<Record<string, string>>;
+}): boolean {
+  return source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID;
+}
 
 // The documented prefix of a GitHub fine-grained personal access token.
 const FINE_GRAINED_TOKEN_PREFIX = "github_pat_";
@@ -34,25 +47,20 @@ export class SourceRepositoryCeilingError extends Error {
   }
 }
 
-// The ceiling is configuration, not secret, so an error may quote the entry it refuses.
-function entryError(texts: readonly string[], index: number, message: string) {
-  return new SourceRepositoryCeilingError(
-    `Repository entry ${index + 1} (${JSON.stringify(texts[index])}): ${message}`,
-  );
+function entryError(index: number, message: string) {
+  return new SourceRepositoryCeilingError(`Repository entry ${index + 1}: ${message}`);
 }
 
 function parseCeiling(value: string): RepositoryNetworkPolicyCeiling {
-  const texts = value.split(",");
-  const entries = texts.map((entry, index) => {
+  const entries = value.split(",").map((entry, index) => {
     const parts = entry.split(":");
     if (parts.length !== 2) {
-      throw entryError(texts, index, "Write it as owner/name:read or owner/name:write.");
+      throw entryError(index, "Write it as owner/name:read or owner/name:write.");
     }
     return { repository: parts[0], access: parts[1] };
   });
-  let ceiling: RepositoryNetworkPolicyCeiling;
   try {
-    ceiling = parseRepositoryNetworkPolicyCeiling(entries);
+    return parseRepositoryNetworkPolicyCeiling(entries);
   } catch (error) {
     if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
       throw new SourceRepositoryCeilingError("The repository ceiling is invalid.");
@@ -60,12 +68,8 @@ function parseCeiling(value: string): RepositoryNetworkPolicyCeiling {
     const index = /^\/repositoryNetworkPolicyCeiling\/(\d+)(?:\/|$)/.exec(error.path)?.[1];
     throw index === undefined
       ? new SourceRepositoryCeilingError(error.message)
-      : entryError(texts, Number(index), error.message);
+      : entryError(Number(index), error.message);
   }
-  if (ceiling.length === 0) {
-    throw new SourceRepositoryCeilingError("A github Source requires at least one repository.");
-  }
-  return ceiling;
 }
 
 /** Reads a stored ceiling; an invalid value throws SourceRepositoryCeilingError. */

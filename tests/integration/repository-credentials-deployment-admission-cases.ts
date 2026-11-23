@@ -1374,6 +1374,18 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       resource: { kind: "credential_source", id: repositorySourceId },
     });
 
+    // Placement is stubbed as in the other admission cases.
+    stubAdmissionCompute(t, fixtureCompute, selected);
+    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    // A Source is scoped only by the saved network policy. Without one, deploy refuses with a
+    // named reason; it never falls back to the App's route.
+    const unsaved = checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
+    assert.match(unsaved.error.message, /selects a credential source, which needs a saved/);
+    assert.deepEqual(
+      unsaved.error.details?.map(({ path: detailPath }) => detailPath),
+      ["/repositoryNetworkPolicy"],
+    );
+
     // The registry allows write, but the Source ceiling does not.
     const beyond = checkedEnvelope(await save([writeGrant]), ErrorResponse, 409);
     assert.deepEqual(
@@ -1450,9 +1462,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       409,
     );
 
-    // Deploy passes the same checks; placement is stubbed as in the other admission cases.
-    stubAdmissionCompute(t, fixtureCompute, selected);
-    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    // Deploy passes the same checks.
     const deployed = checkedEnvelope(
       await f.request("POST", path + "/deploy"),
       AgentRevisionResponse,

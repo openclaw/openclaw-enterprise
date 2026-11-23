@@ -586,9 +586,13 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if ne $credentials.authority "prepared-git" -}}
 {{- fail "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching to authority prepared-git and worker Token Service custody; do not transfer keys or replay uncertain work" -}}
 {{- end -}}
+{{- /* Protected Git without a GitHub App leaves appKeySecretName empty: its registry holds only
+Source-backed registrations, and the worker refuses an App registration without a readable key. */ -}}
+{{- if or $credentials.appKeySecretName $repositoryBroker -}}
 {{- if not $credentials.appKeySecretName -}}{{- fail "repositoryCredentials.appKeySecretName is required when enabled" -}}{{- end -}}
 {{- if not $credentials.appKeyKey -}}{{- fail "repositoryCredentials.appKeyKey is required when enabled" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.appKeyKey" "value" $credentials.appKeyKey) -}}
+{{- end -}}
 {{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
 {{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
 {{- end -}}
