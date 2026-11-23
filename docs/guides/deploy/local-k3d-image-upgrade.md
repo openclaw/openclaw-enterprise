@@ -285,14 +285,14 @@ script, and a compatible installed `occ` CLI. Confirm
 `git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
 overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
 and Python 3. Follow `engines.node` in this checkout's `package.json` even without
-repository credentials. Use a fresh
-`UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
-interrupted release. The script changes the protected
-input files as well as the cluster; it saves their previous contents in that
-private evidence directory before cluster mutation.
+repository credentials. Keep a fresh private `UPGRADE_EVIDENCE` directory per
+release through resume. The helper backs up protected inputs there before
+updating them or the cluster.
 
-Privately copy older `dev-up` values, removing only
-`agentNativeAdmin.sharedCookieDomain`. Keep the original and copy for recovery.
+Legacy `dev-up` copies omit only `agentNativeAdmin.sharedCookieDomain`.
+Record any `$candidate` path. Keep that private file unchanged. On `--resume`,
+skip this block even if `VALUES` changed. Reuse the exact `--candidate-values` path
+only if originally supplied.
 
 ```bash
 CANDIDATE_ARGS=()
