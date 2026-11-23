@@ -40,7 +40,7 @@ occ_get() {
   ' "$OCC_SERVICE_KEY_FILE")" || return
   response="$(
     printf 'x-api-key: %s\n' "$_occ_quickstart_service_key" |
-      curl --silent --show-error --header @- \
+      curl -q --silent --show-error --header @- \
         --write-out '\n%{http_code}' "$OCC_URL$1"
   )" || return
   status="${response##*$'\n'}"
@@ -74,6 +74,7 @@ occ_get() {
 The helper passes the key through stdin so it does not appear in `curl`'s
 command-line arguments. It accepts only a `2xx` response with the JSON fields
 used by these GET operations; redirects and malformed or empty responses fail.
+Keep `-q` first so curl ignores its default configuration file, which can enable redirects.
 When OCC returns a JSON error, the helper prints its error code, message, and
 request ID to stderr. If the Installation uses a private certificate authority, set
 `CURL_CA_BUNDLE` to its PEM bundle; do not disable TLS verification.
