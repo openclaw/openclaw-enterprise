@@ -91,7 +91,7 @@ interface HttpResponse {
 }
 
 type Request = (
-  method: "GET" | "POST" | "PATCH" | "PUT",
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
   path: string,
   payload?: unknown,
 ) => Promise<HttpResponse>;
@@ -1047,7 +1047,16 @@ interface ProtectedPolicyDeploymentFixtures {
       readonly gatewayVersion: string;
       readonly credentialGateway: true;
       readonly repositoryNetworkPolicyCeiling: readonly RepositoryNetworkGrant[];
-      configureRegistry(registry: GitHubRepositoryRegistry): GitHubRepositoryRegistry;
+      configureRegistry(
+        registry: GitHubRepositoryRegistry,
+        prepared?: string,
+      ): GitHubRepositoryRegistry;
+      readonly tokenService?: boolean;
+      readonly prepareRegistry?: (context: {
+        readonly request: Request;
+        readonly namespace: { readonly id: string };
+        readonly state: ProtectedPolicyFixture["state"];
+      }) => Promise<string>;
     },
   ): Promise<ProtectedPolicyFixture>;
   seedRepositoryPolicy(
@@ -1092,13 +1101,20 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       bindings: configuredBindings,
       ceiling,
       configureRegistry = selectedRepositoryRegistry("read", { nativeGit }),
+      repositorySourceCeiling,
     }: {
       nativeGit?: "v1";
       bindings?: readonly RepositoryBindingSelection[];
       ceiling?: readonly RepositoryNetworkGrant[];
-      configureRegistry?: (registry: GitHubRepositoryRegistry) => GitHubRepositoryRegistry;
+      configureRegistry?: (
+        registry: GitHubRepositoryRegistry,
+        repositorySourceId?: string,
+      ) => GitHubRepositoryRegistry;
+      /** Selects the OCC TokenService and creates a github Source with this ceiling first. */
+      repositorySourceCeiling?: string;
     } = {},
   ) {
+    let repositorySourceId: string | undefined;
     const selected = { repository: "example/selected", access: "read" } as const;
     const writeGrant = { ...selected, access: "write" } as const;
     const unselected = { repository: "example/project", access: "read" } as const;
@@ -1115,13 +1131,34 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       repositoryNetworkPolicyCeiling: ceiling ?? [writeGrant, unselected, foreign],
       configureRegistry,
       inspected: nativeGit === "v1",
+      ...(repositorySourceCeiling !== undefined && {
+        tokenService: true,
+        // The registry names the Source by its ID, so the Source exists before the registry.
+        async prepareRegistry({ request, namespace, state }) {
+          await state.transact((unit) =>
+            unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+          );
+          const created = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+            name: "repository-token",
+            type: "static",
+            config: { provider_preset: "github", repositories: repositorySourceCeiling },
+            // A synthetic fine-grained token, built from parts.
+            secret: { token: ["github", "pat", "x".repeat(36)].join("_") },
+          });
+          assert.equal(created.status, 201, JSON.stringify(created));
+          repositorySourceId = (created.data as { id: string }).id;
+          return repositorySourceId;
+        },
+      }),
     });
     const fixtureCompute = f.controller.selectedDriver("compute");
     const sandbox = f.controller.selectedDriver("sandbox");
     assert.ok(sandbox);
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-    );
+    if (repositorySourceId === undefined) {
+      await f.state.transact((unit) =>
+        unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+      );
+    }
     const namespacePath = `/namespaces/${f.namespace.id}`;
     const { data: secret } = checkedEnvelope(
       await f.request("POST", `${namespacePath}/secrets`, {
@@ -1175,6 +1212,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       createSelectedAgent,
       sourceId,
       bindings,
+      repositorySourceId,
     };
   }
 
@@ -1274,6 +1312,100 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       );
       assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
     }
+  });
+
+  test("a registry-selected Source is checked at policy save, deploy and retirement", async (t) => {
+    selectFixtureRelease(t);
+    const fixture = await scopedFixture(t, {
+      nativeGit: "v1",
+      repositorySourceCeiling: "example/selected:read",
+      // The selected repository's registration names the Source; the others stay on the App.
+      configureRegistry: (registry, repositorySourceId) => {
+        assert.ok(repositorySourceId);
+        const withGit = selectedRepositoryRegistry("write", { nativeGit: "v1" })(registry);
+        return {
+          ...withGit,
+          repositories: withGit.repositories.map((repo) =>
+            repo.repositoryRef === "selected"
+              ? {
+                  ...repo,
+                  namespaces: repo.namespaces.map((policy) => ({
+                    ...policy,
+                    credentialSource: repositorySourceId,
+                  })),
+                }
+              : repo,
+          ),
+        };
+      },
+    });
+    const { f, selected, writeGrant, createSelectedAgent, fixtureCompute, sandbox } = fixture;
+    const repositorySourceId = fixture.repositorySourceId;
+    assert.ok(repositorySourceId);
+    const agent = await createSelectedAgent();
+    const path = `${f.collection}/${agent.id}`;
+    const policyPath = `${path}/sandbox-policy/networking`;
+    const sourcesPath = `/namespaces/${f.namespace.id}/credential-sources`;
+    assert.equal(
+      (await f.request("PATCH", policyPath + "/editing", { enabled: true })).status,
+      200,
+    );
+    const save = async (repositoryNetworkPolicy: readonly RepositoryNetworkGrant[]) => {
+      const { data: before } = checkedEnvelope(
+        await f.request("GET", policyPath),
+        SandboxPolicyViewResponse,
+        200,
+      );
+      return f.request("PUT", policyPath, {
+        expectedVersion: before.policy.version,
+        additions: [],
+        repositoryNetworkPolicy,
+      });
+    };
+
+    // The Agent principal has operate only on its model Source, so the save is forbidden.
+    checkedEnvelope(await save([selected]), ErrorResponse, 403);
+    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+    grantRole(f.iamState, principal.servicePrincipalId, {
+      id: `repository-token-for-${agent.id}`,
+      namespaceId: f.namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: repositorySourceId },
+    });
+
+    // The registry allows write, but the Source ceiling does not.
+    const beyond = checkedEnvelope(await save([writeGrant]), ErrorResponse, 409);
+    assert.deepEqual(
+      beyond.error.details?.map(({ path: detailPath }) => detailPath),
+      ["/repositoryNetworkPolicy"],
+    );
+    checkedEnvelope(await save([selected]), SandboxPolicyResponse, 200);
+
+    // While the loaded registry names the Source, it can be neither deleted nor re-scoped.
+    checkedEnvelope(
+      await f.request("DELETE", `${sourcesPath}/${repositorySourceId}`),
+      ErrorResponse,
+      409,
+    );
+    checkedEnvelope(
+      await f.request("PATCH", `${sourcesPath}/${repositorySourceId}`, {
+        config: { provider_preset: "github", repositories: `${selected.repository}:write` },
+      }),
+      ErrorResponse,
+      409,
+    );
+
+    // Deploy passes the same checks; placement is stubbed as in the other admission cases.
+    stubAdmissionCompute(t, fixtureCompute, selected);
+    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    checkedEnvelope(await f.request("POST", path + "/deploy"), AgentRevisionResponse, 202);
+
+    // A Source that is no longer ready refuses the next save and deploy.
+    await f.state.transact((unit) =>
+      unit.credentialSources.markCredentialSourceDeleting(f.namespace.id, repositorySourceId),
+    );
+    checkedEnvelope(await save([selected]), ErrorResponse, 409);
+    checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
   });
 
   function stubAdmissionCompute(
