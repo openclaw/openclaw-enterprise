@@ -159,7 +159,8 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
         (template) =>
-          template.current.oauthClientId !== undefined &&
+          (template.current.mode === "static_bearer" ||
+            template.current.oauthClientId !== undefined) &&
           (template.namespaceId === undefined || template.namespaceId === namespaceId),
       );
     });
@@ -193,6 +194,9 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
+      if (version.mode === "static_bearer") {
+        throw new ResourceStateConflictError("A static template cannot start an OAuth connection.");
+      }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       const client = await connectionClientForVersion(state, namespaceId, version);
       const createdAt = deps.timestamp();
@@ -653,7 +657,11 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
     const template = await state.connectionTemplates.findConnectionTemplate(
       account.connectionTemplateId,
     );
-    if (!template || template.current.issuer !== account.issuer) {
+    if (
+      !template ||
+      template.current.mode === "static_bearer" ||
+      template.current.issuer !== account.issuer
+    ) {
       return [];
     }
     if (template.current.mode === "manual") {

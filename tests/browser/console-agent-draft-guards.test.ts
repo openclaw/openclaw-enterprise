@@ -1200,6 +1200,10 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
         repositoryBindings.length === 1 ||
         policy.grants.length === 2),
     validateProtectedRepositoryNetworkPolicy() {},
+    // This custom Compute fixture has no bundled native Git runtime inputs to freeze.
+    snapshotRuntimeInputs() {
+      return undefined;
+    },
   } satisfies Pick<
     ComputeDriver,
     | "validateRepositoryCredentials"
@@ -1207,6 +1211,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     | "validateExecutionAdmission"
     | "admitsProtectedRepositoryNetworkPolicySave"
     | "validateProtectedRepositoryNetworkPolicy"
+    | "snapshotRuntimeInputs"
   >);
   Object.assign(sandbox, {
     admitRepositoryNetworkPolicy: (_policy, network) => network.defaults,

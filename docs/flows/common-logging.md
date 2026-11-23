@@ -247,12 +247,10 @@ identity. Stage, error class, status, and message stay local.
 keeps its SQLSTATE or transport code as `occ.code`. `device_authorization.start_failed`
 keeps `request.id`, `occ.device_authorization.reason` (`unreachable` or `unavailable`)
 and its failure class of at most 64 allowed characters (such as `TimeoutError`) as `occ.device_authorization.failure`.
-`agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
-resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
-Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
-`request.id`. The Driver's reason stays local. `http.dependency_unavailable`
-keeps only `request.id`. The API returns generic `503 DEPENDENCY_UNAVAILABLE`
-text. Its route, error class, message, and causes stay local.
+`agent_runtime_credentials.cluster_denied` keeps only `request.id`; denied verb,
+resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` keeps only `request.id`; the caller cannot fix the Compute refusal, whose reason stays local.
+`http.dependency_unavailable` keeps only `request.id`; OCC returns generic `503 DEPENDENCY_UNAVAILABLE`. Route, error class, message, and causes stay local.
+`credential.resolution_failed` and `credential.delivery_failed` export WARN, `request.id`, `occ.namespace.id`, `occ.code`, and a `cs_` UUIDv4 as `occ.credential_source.id`.
 `native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and Agent revision IDs. `native_admin.http_denial_audit_failed`
 and `native_admin.websocket_denial_audit_failed` carry no request, user, error or payload

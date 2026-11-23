@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-25
-last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
+updated: 2026-11-22
+last_updated_session: authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d
 ---
 
 # Container package bootstrap flow
@@ -118,8 +118,8 @@ publication. `scripts/ci/container-resume.ts:verifyPreparation` checks the
 current recovery workflow's main-push CI separately from the original image
 source. The original producer must be the trusted publication workflow on main,
 completed at the unchanged selected attempt, with successful validation, all four
-native platform jobs and both image assembly jobs on the original source SHA. A
-complete older run that prepared each image in one job is still accepted. Exactly
+native preparation jobs, both runtime smoke jobs, and both image assembly jobs
+on the original source SHA. Exactly
 named, nonexpired artifacts must belong to that run
 and source; the workflow downloads their validated IDs with digest checks.
 
@@ -171,6 +171,8 @@ without deleting the original archives or rerunning their producer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 23:03: Corrected container recovery job requirements (authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 
 - 2026-10-25: Recovery requires validation, four native platform jobs and two image assemblies, matching the release guide after #3654. (finding 2490)
 

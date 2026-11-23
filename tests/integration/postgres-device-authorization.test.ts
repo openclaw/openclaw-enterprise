@@ -65,6 +65,29 @@ test(
     const namespaceId = created.json().data.id;
     await first.controller.handleNamespaceLifecycle(first.principal.id, namespaceId, "ready");
     const path = `/namespaces/${namespaceId}/agents/device-authorizations`;
+    const staticTemplate = await first.inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "Static Bearer",
+      mode: "static_bearer",
+      destinations: [{ method: "POST", host: "api.example.test", port: 443, path: "/v1/**" }],
+    });
+    assert.equal(staticTemplate.statusCode, 201, staticTemplate.body);
+    // The OAuth caller must reject a static template without reserving a source or consent state.
+    const refused = await first.inject("POST", `/namespaces/${namespaceId}/connections`, {
+      connectionTemplateId: staticTemplate.json().data.id,
+    });
+    assert.equal(refused.statusCode, 409, refused.body);
+    const reservations = await first.pool.query(
+      `SELECT (SELECT count(*)::int FROM occ.credential_sources WHERE namespace_id=$1) AS sources,
+              (SELECT count(*)::int FROM occ.authentication_states WHERE namespace_id=$1) AS states`,
+      [namespaceId],
+    );
+    assert.deepEqual(reservations.rows, [{ sources: 0, states: 0 }]);
+    const removedStatic = await first.inject(
+      "DELETE",
+      `/connection-templates/${staticTemplate.json().data.id}`,
+    );
+    assert.equal(removedStatic.statusCode, 204, removedStatic.body);
     const issuer = "https://accounts.example.test";
     const template = await first.inject("POST", "/connection-templates", {
       namespaceId,

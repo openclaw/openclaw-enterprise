@@ -335,7 +335,7 @@ async function lockLiveSession(
 type LockedSession = {
   session: PreparedRepositorySession;
   end_ms: string;
-  authorization: "online-request" | "request-hook-observed" | null;
+  authorization: "online-request" | "request-hook-observed" | "network-policy" | null;
 };
 type Authorization = LockedSession["authorization"];
 type GitUse = Pick<
@@ -762,6 +762,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       online: delivery("online-request", onlineAllow),
       ...(this.proxy.policy?.observedHook && {
         observedHook: delivery("request-hook-observed", onlineAllow).githubInstallation!,
+        networkPolicy: {
+          readMaterial: delivery("network-policy", onlineAllow).githubRepository!.readMaterial,
+        },
       }),
     });
   }

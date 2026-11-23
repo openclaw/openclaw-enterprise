@@ -46,7 +46,7 @@ Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
-- [Managed channel egress](kubernetes-compute/channel-egress.md): per-Agent Envoy listeners, provider destinations and revocation.
+- [Managed channel egress](kubernetes-compute/channel-egress.md): per-Agent Envoy listeners, optional upstream proxies, provider destinations and revocation.
 
 ## Lifecycle
 
@@ -100,7 +100,7 @@ Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-p
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
 retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
-absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source and Provider copy.
+absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source; the [OpenShell Proxy](credential-proxy.md) retires its delivery copy after the last binding is removed.
 
 ### Plugin startup status
 

@@ -1997,7 +1997,7 @@ for (const scenario of [
     const { fixture, namespace, agent, page, editor, draft, requests, readCount, agentPath, url } =
       await openRefocusDraft(t, openNativeTabBrowser);
     let selectedId = "";
-    const backward = scenario === "second return";
+    const backward = scenario === "foreground completion" || scenario === "second return";
     const original = await editor.evaluateHandle((node, backward) => {
       if (!(node instanceof HTMLTextAreaElement)) {
         throw new Error("Expected the Advanced Configuration textarea");
@@ -2165,6 +2165,10 @@ for (const scenario of [
       scenario !== "moved focus" && scenario !== "selected Agent ID",
       "keyboard focus after admission",
     );
+    if (scenario === "foreground completion") {
+      await page.keyboard.press("Shift+ArrowLeft");
+      assert.deepEqual((await editorState()).range, [2, 7], "extend from the original anchor");
+    }
     assert.deepEqual(restored, { ...selected, focused: restored.focused });
   });
 }

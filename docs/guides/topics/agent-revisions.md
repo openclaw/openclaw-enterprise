@@ -52,9 +52,11 @@ The commands below also use `jq`.
 
    When replacing an active revision, if either revision uses managed credential
    delivery, [complete Stop](../../reference/agents/deployment.md#stop-and-resume)
-   first. Stop requires `operate` on the Agent. Replacing the Source credential
-   after Stop can leave the retained Provider using its previous value; see
-   [credential implementation status](../../reference/credential-sources.md#implementation-status).
+   first. Stop requires `operate` on the Agent. The OpenShell Proxy removes its
+   delivery copy after the last binding is removed; the Source remains available
+   for redeployment. Source credential rotation does not require Stop. See
+   [credential implementation status](../../reference/credential-sources.md#implementation-status)
+   for delivery recovery limits.
 
    ```bash
    occ agent deploy "$AGENT_ID" --output json

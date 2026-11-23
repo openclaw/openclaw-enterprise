@@ -152,7 +152,7 @@ async function observedGitRoute(
     policy: async () => sourcePolicy,
     execution: async () => "original-execution",
   };
-  const gitRule = new OpenShellPreparedGitProvider(f.client, {
+  const observedProvider = new OpenShellPreparedGitProvider(f.client, {
     ...f.entry.authorization.delivery,
     workspace: f.sandbox.workspace,
     workspaceId: "workspace-id",
@@ -161,7 +161,9 @@ async function observedGitRoute(
     gitOrigin: "https://github.com",
     apiOrigin: "https://api.github.com",
     binaries: ["/usr/bin/git"],
-  }).previewNetworkRule();
+  });
+  const gitRule = observedProvider.previewNetworkRule();
+  f.provider.withEnrollment = observedProvider.withEnrollment.bind(observedProvider);
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
   let environment;
@@ -459,6 +461,30 @@ async function observedGitRoute(
     });
     assert.equal(f.store.rows.get(revision.id).blocked, "material_mismatch");
     assert.equal(f.calls.rotate, 0, "foreign supplier material never reaches the provider");
+    await expectDenied(f, "route_blocked");
+    return;
+  }
+  if (narrowRepository === "another-api-origin") {
+    // repository.openShell binds only github.com: the refusal names the origin and the fix.
+    f.owner.material = { ...f.owner.material, apiOrigin: "https://ghe.example.test:8443" };
+    await f.reconcile();
+    await f.entry.previewClosure?.confirming;
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "material_mismatch",
+    });
+    assert.equal(f.calls.rotate, 0, "material for another origin never reaches the provider");
+    assert.deepEqual(
+      f.errors().map(({ code, reason, message }) => ({ code, reason, message })),
+      [
+        {
+          code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
+          reason: "material_mismatch",
+          message:
+            "repository.openShell reaches only https://github.com and https://api.github.com but repository.preparedGitHub.apiOrigin is ghe.example.test:8443. Remove apiOrigin to use github.com: repository.openShell supports no other GitHub origin.",
+        },
+      ],
+    );
     await expectDenied(f, "route_blocked");
     return;
   }
@@ -821,6 +847,7 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
     "material-push-ref",
     "delivery-push-ref",
     "foreign-repository-id",
+    "another-api-origin",
   ]) {
     await observedGitRoute(2, { narrowRepository });
   }

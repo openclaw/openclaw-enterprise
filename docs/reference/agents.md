@@ -19,6 +19,8 @@ returns the saved `AgentRevision`. Stop sets
 `desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
 See [API schemas, envelopes, and permissions](api.md).
 
+An Agent can select a [Gateway channel Network proxy](agents/network-proxy.md) for its next deployment.
+
 Responses include immutable `servicePrincipalId` for
 [Namespace IAM bindings](authorization.md#manage-namespace-policy). Do not derive
 it from the Agent ID; create/update reject caller-supplied values.
@@ -169,11 +171,11 @@ an account does not issue its credential or change the model, Harness, or Backen
 
 **Development upgrade limitation:** migration `0049` rejects retained
 `chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
-or provisioning plans, and rolls back without converting them. No API deletes a
-Agent revision or provisioning request on its own: delete each affected Agent, which
-also deletes its Agent revisions and requests, and create it again after the upgrade.
-Changing the binding does not clear historical Agent revisions. For a request that
-never created an Agent, see
+or provisioning plans, and rolls back without converting them. An authorized
+operator can clear a retired binding held only in the editable Agent draft if the
+installed pre-upgrade Controller supports that update. A retired binding in any
+saved Agent revision or provisioning plan still blocks migration. For draft
+bindings and requests that never created an Agent, see
 [clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 For dedicated OpenClaw or Codex, use

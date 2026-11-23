@@ -65,7 +65,9 @@ Create the namespace with the derived name. Compute refuses it unless it is
 | Label      | `app.kubernetes.io/managed-by`                             | `openclaw-enterprise`                                                          |
 | Label      | `openclaw.dev/namespace`, `openclaw.dev/gateway-namespace` | the Namespace ID                                                               |
 | Label      | `openclaw-enterprise.io/gateway`                           | first 12 hexadecimal characters of SHA-256(`<gatewayNamespace>/<gatewayName>`) |
-| Label      | `pod-security.kubernetes.io/enforce`, `audit`, `warn`      | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/enforce`                       | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/audit`                         | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/warn`                          | `restricted`                                                                   |
 
 The gateway label is the selector of the Gateway's `https` listener; see
 [Gateway routing](../../gateway-routing.md). Also add the OpenShell Sandbox

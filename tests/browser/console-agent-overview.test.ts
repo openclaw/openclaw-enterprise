@@ -3176,6 +3176,56 @@ async function pendingDeploy(
   return { page, recordUrl, agent, pending, open };
 }
 
+test("Unchanged deployment polls preserve selected Draft readiness text", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { page, recordUrl, pending, open } = await pendingDeploy(
+    t,
+    { width: 1440, height: 900 },
+    "Draft readiness",
+  );
+  const running = deploymentStatusResponse(pending, { status: "running" });
+  const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
+  let statusCode = 200;
+  await page.route(recordUrl, async (route, request) => {
+    if (request.method() !== "GET") {
+      return route.fallback();
+    }
+    await route.fulfill(statusCode === 200 ? running : unavailable);
+  });
+  await open("In progress", "configuration");
+  await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
+  const status = page.locator(".agent-draft-actions .card-actions").getByRole("status");
+  const ready = "Ready to deploy.";
+  await status.filter({ hasText: ready }).waitFor();
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  await status.selectText();
+  const selection = () => page.evaluate(() => globalThis.getSelection()?.toString());
+  assert.equal(await selection(), ready);
+
+  for (const expectedStatus of [200, 503]) {
+    statusCode = expectedStatus;
+    const read = page.waitForResponse(
+      (result) => result.url() === recordUrl && result.request().method() === "GET",
+    );
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    assert.equal((await read).status(), expectedStatus);
+    await waitForIdleFetches(page);
+    assert.equal(await status.textContent(), ready);
+    assert.equal(
+      await selection(),
+      ready,
+      `Draft readiness text remains selected after a ${expectedStatus} deployment read`,
+    );
+  }
+
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  const editor = page.locator("#configuration-json");
+  await editor.fill(`${await editor.inputValue()}\n`);
+  await status.filter({ hasText: CONFIGURATION_EDITS_PENDING }).waitFor();
+});
+
 // A deploy in progress rewrote the deployment record and diagnostics on every 5 s poll, about half
 // of them unchanged, and moved Share Agent twice: down when the first attempt was recorded and
 // up when the deploy settled, CLS 0.024 (finding 1598). An unchanged poll now touches no node, a
