@@ -664,7 +664,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     name: "Google credential",
     ownerCapability: "token_service",
     tokenServiceInstanceId: "tokens",
-    type: "static",
+    type: "oauth2-refresh-token",
     config: {},
     secrets: {},
     state: "ready",
@@ -673,14 +673,14 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
   const pluginGrant = {
     id: "google-egress",
     binary: google.binaryPath,
-    host: "gmail.googleapis.com",
+    host: "www.googleapis.com",
     ports: [{ from: 443, to: 443 }],
   };
   const pluginRequest = {
     binary: pluginGrant.binary,
     host: pluginGrant.host,
     ports: pluginGrant.ports,
-    requestPolicy: { type: "http", method: "GET", path: "/gmail/v1/users/**" },
+    requestPolicy: { type: "http", method: "GET", path: "/calendar/v3/colors" },
   };
   const pluginBinding = {
     bindingRef: "google-default",
@@ -790,6 +790,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
   const modelSource = {
     ...pluginSource,
     id: stagedAuth.sourceId,
+    type: stagedAuth.sourceType,
     config: { provider_preset: "openai" },
   };
   const context = {
@@ -809,7 +810,11 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       agentId: "agent-mixed",
       harnessAuth,
       credentialSources: [
-        { sourceId: pluginSource.id, sourceType: "static", tokenServiceInstanceId: "tokens" },
+        {
+          sourceId: pluginSource.id,
+          sourceType: pluginSource.type,
+          tokenServiceInstanceId: "tokens",
+        },
         {
           sourceId: stagedAuth.sourceId,
           sourceType: "static",

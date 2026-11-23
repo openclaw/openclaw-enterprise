@@ -1,5 +1,6 @@
 import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
 import {
+  verifyStagedGooglePolicy,
   verifyStagedHarnessActivation,
   verifyStagedModelPolicyObservation,
 } from "./sandbox-driver-staged-harness-cases.ts";
@@ -51,6 +52,11 @@ registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
 test(
   "OpenShell observes and applies the canonical model-only staged policy",
   verifyStagedModelPolicyObservation,
+);
+
+test(
+  "OpenShell applies the admitted Google route after Provider attachment without a legacy guard",
+  verifyStagedGooglePolicy,
 );
 
 test(

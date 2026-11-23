@@ -7,6 +7,8 @@ import type { TestContext } from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import {
   compileOpenShellCredentialPolicy,
   openShellCredentialProviderName,
@@ -15,7 +17,10 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  DeploymentCredentialBinding,
+} from "../../packages/contracts/src/index.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
@@ -136,6 +141,167 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
 }
 
+export async function verifyStagedGooglePolicy(): Promise<void> {
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, openShellWorkspaceHarnessConfiguration());
+  const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
+  fixture.requirements.credentialAttachments = [];
+  const sourceRef = (id: string) => ({
+    kind: "credential_source" as const,
+    namespaceId: fixture.revision.namespaceId,
+    id,
+  });
+  const model: DeploymentCredentialBinding = {
+    bindingRef: "model",
+    sourceRef: sourceRef("cs_model"),
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  const google = managedGoogleInstall;
+  const googleSource = sourceRef("cs_google");
+  const selection = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: google.releaseSha256,
+      credentials: { account: googleSource.id },
+    },
+  };
+  const description = await new OCCPluginDriver().describeDeployment({
+    plugin: { catalog: "driver", pluginId: google.id },
+    selection,
+    connections: { account: { default: googleSource } },
+  });
+  const account = description.credentials.account?.default;
+  assert.ok(account);
+  // Use an exact reviewed request permitted by the account's Template, as frozen by admission.
+  const googleRequest = description.networkRequirements.find(
+    ({ id, match }) =>
+      account.networkRequirementIds.includes(id) &&
+      match.host === "www.googleapis.com" &&
+      match.requestPolicy?.type === "http" &&
+      match.requestPolicy.method === "GET" &&
+      match.requestPolicy.path === "/calendar/v3/colors",
+  )?.match;
+  assert.ok(googleRequest);
+  const discovery = description.networkRequirements
+    .filter(({ id }) => !account.networkRequirementIds.includes(id))
+    .map(({ match }) => match);
+  const plugin: DeploymentCredentialBinding = {
+    bindingRef: JSON.stringify(["plugin", google.id, "account", "default"]),
+    sourceRef: account.sourceRef,
+    consumer: {
+      kind: "plugin",
+      pluginId: google.id,
+      requirement: "account",
+      connection: "default",
+    },
+    projection: account.projection,
+  };
+  const grant = {
+    id: "model",
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const modelRequest = {
+    binary: grant.binary,
+    host: grant.host,
+    ports: grant.ports,
+    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  };
+  const revision: AgentRevision = {
+    ...completeSandboxRevision(fixture.revision, {
+      method: "credential_source",
+      sourceId: model.sourceRef.id,
+      sourceType: "static",
+      tokenServiceInstanceId: "tokens",
+    }),
+    plugins: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: { [google.id]: selection },
+    },
+    credentialSources: [
+      { sourceId: model.sourceRef.id, sourceType: "static", tokenServiceInstanceId: "tokens" },
+      {
+        sourceId: googleSource.id,
+        sourceType: "oauth2-refresh-token",
+        tokenServiceInstanceId: "tokens",
+      },
+    ],
+    executionAdmission: { version: 8, mode: "standalone" },
+    sandboxPolicy: driver.admitNetworkPolicy([grant], 1),
+    credentialDeployment: {
+      driver: {
+        id: driver.id,
+        implementation: driver.implementation,
+        configurationId: "a".repeat(64),
+      },
+      proxyDriverId: driver.id,
+      networkAccessPolicy: {
+        allowed: [
+          { binary: grant.binary, host: grant.host, ports: grant.ports },
+          googleRequest,
+          ...discovery,
+        ],
+      },
+      bindings: [model, plugin],
+      injectionPolicies: [
+        { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
+        { bindingRef: plugin.bindingRef, allowedRequests: [googleRequest] },
+      ],
+    },
+  };
+  const context = { ...fixture.context, revision, requirements: fixture.requirements };
+  gateway.createSandbox = async (request) => {
+    const sandbox = storedSandbox(request, {
+      id: "sandbox-fixture",
+      resourceVersion: "1",
+      serviceUrls: {},
+    });
+    gateway.sandboxes.set(sandbox.name, sandbox);
+    return sandbox;
+  };
+  await driver.ensureNamespace(context);
+  await driver.provisionStagedHarness(context);
+  const sandbox = [...gateway.sandboxes.values()][0]!;
+  const spec = sandbox.spec!;
+  const baseline = spec.policy as { network_middlewares?: Record<string, unknown> };
+  assert.deepEqual(
+    baseline.network_middlewares ?? {},
+    {},
+    "the staged Sandbox has no legacy guard",
+  );
+
+  // The controlled Gateway reflects the Proxy attachments that precede policy apply.
+  const routes = compileOpenShellCredentialPolicy(revision.credentialDeployment!).credentialRoutes;
+  const googleRoute = routes.find(({ binding }) => binding.bindingRef === plugin.bindingRef);
+  assert.ok(googleRoute);
+  gateway.sandboxes.set(sandbox.name, {
+    ...sandbox,
+    resourceVersion: "2",
+    spec: { ...spec, providers: [...new Set(routes.map(({ provider }) => provider))] },
+  });
+  gateway.updatePolicy = async ({ policy, expectedResourceVersion }) => {
+    assert.equal(expectedResourceVersion, "2");
+    const current = gateway.sandboxes.get(sandbox.name)!;
+    gateway.sandboxes.set(sandbox.name, { ...current, spec: { ...current.spec!, policy } });
+  };
+  await driver.applyNetworkPolicy(context, {
+    snapshot: revision.sandboxPolicy!,
+    expectedProviderVersion: "2",
+    operationId: revision.id,
+  });
+  assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+  const applied = gateway.sandboxes.get(sandbox.name)!.spec!.policy as {
+    network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
+  };
+  const endpoint = Object.values(applied.network_policies)
+    .flatMap(({ endpoints }) => endpoints)
+    .find(({ host, path }) => host === googleRequest.host && path === "/calendar/v3/colors");
+  assert.deepEqual(endpoint?.credential_binding, { provider: googleRoute.provider });
+  assert.deepEqual(endpoint?.rules, [{ allow: { method: "GET", path: "/calendar/v3/colors" } }]);
+}
+
 export async function verifyStagedHarnessActivation(t: TestContext): Promise<void> {
   const directory = await temporaryDirectory(t, "staged-harness-");
   const marker = join(directory, "harness.json");
@@ -177,7 +343,13 @@ setInterval(() => {}, 1000);
 return;
 ${NATIVE_WORKER_ENTRYPOINT}
 })();`);
-  const base = completeSandboxRevision(fixture.revision);
+  const modelSourceId = "cs_fixture";
+  const base = completeSandboxRevision(fixture.revision, {
+    method: "credential_source",
+    sourceId: modelSourceId,
+    sourceType: "static",
+    tokenServiceInstanceId: "tokens",
+  });
   const grant = {
     id: "model",
     binary: "/app/bin/model-client",
@@ -198,13 +370,12 @@ ${NATIVE_WORKER_ENTRYPOINT}
     sourceRef: {
       kind: "credential_source" as const,
       namespaceId: base.namespaceId,
-      id: "cs_fixture",
+      id: modelSourceId,
     },
     consumer: { kind: "model" as const, providerId: "openai" },
     projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
   };
-  // The Plugin uses the same Source and HTTPS destination as the model, but has a
-  // separate projection and disjoint reviewed routes.
+  // The Plugin has a separate Source and disjoint routes on the model's HTTPS destination.
   const pluginRequest = {
     binary: "/app/bin/plugin-client",
     host: grant.host,
@@ -221,7 +392,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
   };
   const pluginBinding = {
     bindingRef: "plugin-account",
-    sourceRef: binding.sourceRef,
+    sourceRef: { ...binding.sourceRef, id: "cs_plugin" },
     consumer: {
       kind: "plugin" as const,
       pluginId: "example",
@@ -232,6 +403,14 @@ ${NATIVE_WORKER_ENTRYPOINT}
   };
   const revision: AgentRevision = {
     ...base,
+    credentialSources: [
+      { sourceId: modelSourceId, sourceType: "static", tokenServiceInstanceId: "tokens" },
+      {
+        sourceId: pluginBinding.sourceRef.id,
+        sourceType: "static",
+        tokenServiceInstanceId: "tokens",
+      },
+    ],
     executionAdmission: { version: 8, mode: "standalone" },
     sandboxPolicy: driver.admitNetworkPolicy([grant], 1),
     credentialDeployment: {
@@ -699,11 +878,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
     resourceVersion: "1",
   });
   const pluginProvider = openShellCredentialProviderName(pluginBinding);
-  assert.notEqual(
-    pluginProvider,
-    provider,
-    "same-Source projections need separate Provider identities",
-  );
+  assert.notEqual(pluginProvider, provider);
   gateway.providers.set(pluginProvider, {
     name: pluginProvider,
     type: "openai",
@@ -824,8 +999,8 @@ ${NATIVE_WORKER_ENTRYPOINT}
   await driver.prepareStagedHarness(context, projections);
   await driver.activateStagedHarness(context);
 
-  // Both projections share a Source. Revoking the Plugin binding must leave the model and
-  // credential-free discovery routes active, and replay must avoid another UpdateConfig.
+  // Revocation leaves the model and credential-free discovery routes active. Replay
+  // must avoid another UpdateConfig.
   const activePolicy = structuredClone(policyRevision);
   const retainedNetworks = Object.fromEntries(
     Object.entries(activePolicy.network_policies).filter(([, { endpoints }]) =>
