@@ -563,7 +563,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     const target = { kind: "agent", id: agentId, namespaceId } as const;
     const sandboxPolicy = policyResource(namespaceId, agentId);
     const explicitList = repositoryNetworkPolicy !== undefined;
-    return transact(async (state) => {
+    const save = async (state: PlatformUnitOfWork) => {
       if (explicitList) {
         await holdAuthority(state);
       }
@@ -600,6 +600,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         await state.sandboxPolicies.find(namespaceId, agentId),
         expectedVersion,
       );
+      // An empty list can start scoped policy or withdraw it. Check read access
+      // before branching on the saved list so a caller cannot tell which applies.
       if (clearsRepository) {
         await authorize(principalId, "read", sandboxPolicy, iam, decide);
       }
@@ -668,7 +670,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         throw new ResourceStateConflictError("The policy changed.");
       }
       return updated;
-    });
+    };
+    return transact(save, { readCommitted: explicitList });
   }
 
   async function applyAgentSandboxPolicy(
@@ -903,6 +906,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     sandbox: SandboxDriver | undefined,
     executionAdmission: ExecutionAdmission,
     repositoryCredentials: boolean,
+    policyAlreadyAuthorized = false,
   ): Promise<SandboxPolicySnapshot | undefined> {
     const policyScope = { repositoryCredentials };
     // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
@@ -912,11 +916,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
     const protectedExecution = executionAdmission.mode === "protected";
     if (policy !== undefined && policy.additions.length > 0) {
-      await dependencies.authority.authorize(principalId, "read", {
-        kind: "sandbox_policy",
-        id: policy.id,
-        namespaceId: agent.namespaceId,
-      });
+      if (!policyAlreadyAuthorized) {
+        await dependencies.authority.authorize(principalId, "read", {
+          kind: "sandbox_policy",
+          id: policy.id,
+          namespaceId: agent.namespaceId,
+        });
+      }
       if (protectedExecution) {
         throw new ProtectedExecutionNetworkPolicyError("deploy");
       }

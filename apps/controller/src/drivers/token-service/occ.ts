@@ -4,6 +4,7 @@ import { isName, SecretValue } from "@openclaw-enterprise/contracts";
 import type {
   AccessBinding,
   CredentialRefreshStatus,
+  CredentialProxyDriver,
   CredentialSource,
   CredentialSourceReference,
   ErrorDetail,
@@ -20,6 +21,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   ResourceStateConflictError,
+  CredentialDeliveryFailedError,
   ScopeViolationError,
   TokenServiceSourceInputError,
 } from "@openclaw-enterprise/occ";
@@ -37,7 +39,10 @@ function checkLifecycle(config: SourceLifecycleConfig): void {
   }
 }
 
-function encodeCredential(secret: SourceRegistrationInput["secret"]): string {
+function encodeCredential(secret: SourceRegistrationInput["secret"]): {
+  stored: string;
+  version: string;
+} {
   const fields = Object.values(secret);
   const value = fields[0];
   if (
@@ -50,13 +55,14 @@ function encodeCredential(secret: SourceRegistrationInput["secret"]): string {
       "A static source requires one nonempty UTF-8 credential value.",
     );
   }
-  const encoded = JSON.stringify({ credential: value, version: randomUUID() });
+  const version = randomUUID();
+  const encoded = JSON.stringify({ credential: value, version });
   if (Buffer.byteLength(encoded, "utf8") > maxSecretValueBytes) {
     throw new TokenServiceSourceInputError(
       "The encoded credential exceeds the Secret storage limit.",
     );
   }
-  return encoded;
+  return { stored: encoded, version };
 }
 
 function decodeCredential(value: string): ResolvedCredential {
@@ -90,6 +96,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   private readonly store: InstallationSecretStore;
   private readonly tokenServiceInstanceId: string;
   private readonly state: PlatformStateStore;
+  private readonly credentialProxy:
+    Pick<CredentialProxyDriver, "notifyCredentialUpdated"> | undefined;
 
   constructor(
     id: string,
@@ -97,6 +105,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     store: InstallationSecretStore,
     tokenServiceInstanceId: string,
     state: PlatformStateStore,
+    credentialProxy?: Pick<CredentialProxyDriver, "notifyCredentialUpdated">,
   ) {
     if (!isNonEmptyString(tokenServiceInstanceId)) {
       throw new ResourceStateConflictError("The TokenService instance identity is unavailable.");
@@ -106,6 +115,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     this.store = store;
     this.tokenServiceInstanceId = tokenServiceInstanceId;
     this.state = state;
+    this.credentialProxy = credentialProxy;
   }
 
   private ownedRef(source: TokenServiceSourceInstance): CredentialSourceReference {
@@ -180,7 +190,9 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         secrets: {},
         createdAt: new Date().toISOString(),
       });
-      await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
+      await withComputeAbortSignal(signal, () =>
+        this.store.create(this.storageRef(ref), stored.stored),
+      );
       signal.throwIfAborted();
       return source;
     });
@@ -196,7 +208,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     if (update.lifecycleConfig) {
       checkLifecycle(update.lifecycleConfig);
     }
-    return this.state.transact(async ({ namespaces, credentialSources }) => {
+    let version: string | undefined;
+    const updated = await this.state.transact(async ({ namespaces, credentialSources }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
@@ -209,7 +222,10 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       }
       if (update.secret) {
         const stored = encodeCredential(update.secret);
-        await withComputeAbortSignal(signal, () => this.store.update(this.storageRef(ref), stored));
+        await withComputeAbortSignal(signal, () =>
+          this.store.update(this.storageRef(ref), stored.stored),
+        );
+        version = stored.version;
       } else if (update.lifecycleConfig) {
         await withComputeAbortSignal(signal, () =>
           this.store.withValue(this.storageRef(ref), async () => undefined),
@@ -218,6 +234,21 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       signal.throwIfAborted();
       return found;
     });
+    if (version && this.credentialProxy) {
+      if (!this.credentialProxy.notifyCredentialUpdated) {
+        throw new CredentialDeliveryFailedError();
+      }
+      try {
+        await this.credentialProxy.notifyCredentialUpdated(
+          { sourceRef: ref, version },
+          () => this.resolveCredential(source, signal),
+          signal,
+        );
+      } catch {
+        throw new CredentialDeliveryFailedError();
+      }
+    }
+    return updated;
   }
 
   async resolveCredential(

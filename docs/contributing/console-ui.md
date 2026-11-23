@@ -21,7 +21,12 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 - **Collections.** Agents and Secrets put search and the primary action in a
   `.collection-toolbar`. Give the search input an accessible name. It comes
   first in markup and in tab order, even when the action wraps below it.
-  Use `.resource-id` for an identifier people may need to read or copy.
+  Use `.resource-list` and `.resource-list-header` for grouped rows. Table
+  headings share `--color-collection-header` and `--color-collection-label`
+  with list headings. Emphasize the resource name, set identifiers in
+  `.resource-id`, and use the body font for status messages. Keep the full ID
+  selectable. Highlight the row around a focused control and retain the
+  control's own focus indicator.
 - **Actions.** Use `button(label, action, { tone: "primary" })` for the main
   action, a plain button for a secondary action, and a link for a destination.
 - **Forms and dialogs.** `field({ label, control, help })` connects a label
@@ -49,7 +54,9 @@ the primary action, and `--focus-ring` for keyboard focus. Inherit the body
 font, pair type sizes with their line heights (for example, `--text-md` with
 `--text-md--line-height`), and use the spacing and radius scales.
 The [token checks](../../tests/conformance/console-design-tokens.test.ts)
-cover these scales and the supported breakpoints.
+cover these scales and the supported 520, 760 and 1100 px viewport breakpoints.
+Run `node --test tests/conformance/console-design-tokens.test.ts` locally before
+pushing CSS changes.
 
 Navigation pairs the wordmark with a
 [mascot for dark surfaces](../../apps/controller/src/console/oce-mascot-inverse.png).

@@ -97,6 +97,7 @@ type AgentDetailScenario = {
   cleanupCompletes?: true;
   bootstrapRuntime?: true;
   harness?: AgentRuntimeHarnessStatus;
+  harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
   agentName?: string;
   mobile?: true;
   clipboard?: "unavailable";
@@ -316,7 +317,8 @@ export function createAgentDetailScenarios({
         description:
           "Submit requested overrides and inspect the resolved settings after deployment.",
         steps: [
-          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy.",
+          "In Configuration snapshot, expand View overrides and View settings. Compare the destinations in the two JSON documents.",
         ],
         gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
       },
@@ -432,6 +434,7 @@ export function createAgentDetailScenarios({
           "The permission answer denies Configuration update, so a version's Configuration tab offers Open draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
         steps: [
           "Find Open draft below the Configuration snapshot, and no Edit current Configuration.",
+          "Choose Draft repositories beside the snapshot heading. Check that the Repositories tab opens read-only. Use Back and check that Draft repositories has focus.",
           "Choose Open draft: the draft opens read-only, with no Edit Configuration button.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -448,6 +451,7 @@ export function createAgentDetailScenarios({
           "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+          "Beside Configuration snapshot, choose Draft credentials. Check that Credentials has focus and the draft shows the authentication source. Use Back and check that Draft credentials has focus on the snapshot. Repeat with Draft repositories.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
         ],
         nextStory: "authSaveHoldsNavigation",
@@ -563,7 +567,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: shareExistingPerson,
         description:
-          "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+          "The sharing acknowledgment explains that removing the Agent grant leaves the separate Namespace discovery grant in place. Other grants may still provide access.",
       },
       agentSharingHoldsNavigation: {
         group: "Pages/Agent detail",
@@ -1499,12 +1503,12 @@ export function createAgentDetailScenarios({
         description:
           "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
         steps: [
-          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration. The conflict moves focus to Reload draft, which is described by the alert.",
           "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
           "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
           "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
         ],
-        gap: "Simulated preflight conflict only; the browser regression checks a real Controller PATCH race.",
+        gap: "Simulated preflight conflict. The browser regression covers a real Controller PATCH conflict arriving during a return-to-tab access check.",
       },
       admitted: {
         group: "Pages/Agent detail",
@@ -1889,17 +1893,72 @@ export function createAgentDetailScenarios({
       deploymentBootstrapCleanup: {
         group: "Pages/Agent detail",
         name: "Bootstrap failure with cleanup pending",
-        path: `${candidateVersion}&tab=deployment`,
+        path: `${candidateVersion}&tab=configuration`,
         deployed: true,
         candidateDeploymentStatus: "failed",
         bootstrapFailure: true,
         cleanupStatus: "queued",
         cleanupCompletes: true,
+        rules: [
+          // Match the first queued record. Later reads use the failed bootstrap and its cleanup.
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            once: true,
+            data: (
+              [
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000007",
+                  revision: 7,
+                  deploymentStatus: "queued",
+                  createdAt: "2026-09-26T22:52:53.000Z",
+                },
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000006",
+                  revision: 6,
+                  configurationGeneration: 1,
+                  createdAt: "2026-09-25T12:00:00.000Z",
+                  deploymentStatus: "succeeded",
+                },
+              ] satisfies AgentRevisionSummaryWire[]
+            ).map((summary) => ({
+              ...summary,
+              harness: {
+                ...summary.harness,
+                configuration: {
+                  modelProvider: {
+                    baseUrl: "https://api.openai.com/v1",
+                    protocol: "openai-responses",
+                    supportsStandaloneWebSearch: false,
+                  },
+                },
+              },
+            })),
+          },
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            once: true,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: newerDeployment.namespaceId,
+              agentId: newerDeployment.agentId,
+              status: "queued",
+              cleanup: null,
+              progress: { lastAttempt: null, nextAttemptAt: "2026-09-26T22:53:01.000Z" },
+              error: null,
+              warnings: [],
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
         description:
-          "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+          "A poll changes the Configuration notice from queued to cleanup pending. The deployment remains failed after cleanup and its recorded evidence stays visible.",
         steps: [
+          "On Configuration, tab to View deployment while the notice says a deployment is queued or in progress.",
+          "Wait for the notice to say Deployment resource cleanup needs attention. Press Enter with focus still on the link to open Deployment for v7.",
           "Read the failing oauth-bootstrap exit status beside the successful init container.",
-          "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
+          "After cleanup completes, check that the deployment still shows failed and the evidence remains visible.",
         ],
       },
     } satisfies Record<string, AgentDetailScenario>,
@@ -1940,7 +1999,7 @@ export function createAgentDetailScenarios({
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
@@ -1954,16 +2013,23 @@ export function createAgentDetailScenarios({
       sandboxRunning: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox running",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
-          "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+          "Returning to the Agent refreshes the Sandbox record for the same active version.",
+        steps: [
+          "Confirm Live serving shows Not verified with Sandbox running below it.",
+          "Switch to another window and return without reloading the story.",
+          "Confirm the same Agent and version show Sandbox lost and Deploy a new version.",
+        ],
+        gap: "The Sandbox records are simulated.",
       },
       sandboxStatusUnknown: {
         group: "Pages/Agent detail",
         name: "Sandbox status unknown",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "unknown", code: "UNAVAILABLE" },
         description:

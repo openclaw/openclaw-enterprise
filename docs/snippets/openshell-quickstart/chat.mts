@@ -19,13 +19,38 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-function gatewayAuthority(startup: unknown): string {
+async function gatewayAuthority(startup: unknown): Promise<string> {
   const message = "Invalid installation Gateway route";
   const config = object(startup, message);
   const drivers = object(config.drivers, message);
   const compute = object(drivers.compute, message);
   const configuration = object(compute.configuration, message);
-  const { hostname, endpointPort } = object(configuration.gatewayRouting, message);
+  const routing = object(configuration.gatewayRouting, message);
+  let { hostname } = routing;
+  if (hostname === undefined || hostname === "") {
+    const { gatewayName, gatewayNamespace, envoyNamespace } = routing;
+    const {
+      isKubernetesNamespaceName,
+      isKubernetesResourceName,
+    }: typeof import("../../../apps/controller/src/drivers/compute/kubernetes/resource-name.ts") =
+      await import(require.resolve("./src/drivers/compute/kubernetes/resource-name.ts"));
+    if (
+      typeof gatewayName !== "string" ||
+      !isKubernetesResourceName(gatewayName) ||
+      typeof gatewayNamespace !== "string" ||
+      !isKubernetesNamespaceName(gatewayNamespace) ||
+      typeof envoyNamespace !== "string" ||
+      !isKubernetesNamespaceName(envoyNamespace)
+    ) {
+      throw new Error(message);
+    }
+    const {
+      gatewayRoutingHostname,
+    }: typeof import("../../../apps/controller/src/drivers/compute/kubernetes/gateway-routing-hostname.ts") =
+      await import(require.resolve("./src/drivers/compute/kubernetes/gateway-routing-hostname.ts"));
+    hostname = gatewayRoutingHostname({ gatewayName, gatewayNamespace, envoyNamespace });
+  }
+  const { endpointPort } = routing;
   const port = endpointPort ?? 443;
   if (
     typeof hostname !== "string" ||
@@ -53,7 +78,7 @@ const { loadYaml }: Pick<typeof import("@kubernetes/client-node"), "loadYaml"> =
 );
 // Read the installed private Gateway route inside the API container.
 const config = loadYaml<unknown>(readFileSync(requiredEnv("OCC_CONFIG_PATH"), "utf8"));
-const host = gatewayAuthority(config);
+const host = await gatewayAuthority(config);
 const namespace = requiredEnv("OCE_TEST_NAMESPACE_ID");
 const agent = requiredEnv("OCE_TEST_AGENT_ID");
 const prompt = requiredEnv("OCE_TEST_PROMPT");
