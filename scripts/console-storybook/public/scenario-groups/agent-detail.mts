@@ -1836,6 +1836,7 @@ export function createAgentDetailScenarios({
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
           'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+          "Open draft and select the text “Ready to deploy.” beside Deploy new version. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {

@@ -4012,76 +4012,74 @@ export async function renderAgentDetail(
         deployFeedbackIsSecretRefusal = Boolean(secretReason);
       }
       if (!deployPending) {
+        let deployMessage: string | undefined;
         if (callerPermissions?.deploy === false) {
-          deployStatus.textContent = AGENT_DEPLOY_DENIED;
+          deployMessage = AGENT_DEPLOY_DENIED;
         } else if (secretReason) {
           // A refused deployment's alert already says it.
           const deployReason = deployFeedback.textContent === secretReason ? "" : secretReason;
-          deployStatus.textContent = rejectedAccess
+          deployMessage = rejectedAccess
             ? [modelCredentialRejectedReadOnly(rejectedAccess), deployReason]
                 .filter(Boolean)
                 .join(" ")
             : deployReason;
         } else if (deployReloadMessage) {
-          deployStatus.textContent = deployReloadMessage;
+          deployMessage = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
-          deployStatus.textContent = "Wait for the authentication save to finish before deploying.";
+          deployMessage = "Wait for the authentication save to finish before deploying.";
         } else if (authenticationSaveState === "uncertain") {
-          deployStatus.textContent =
-            "Authentication may have been saved. Reload this draft before deploying.";
+          deployMessage = "Authentication may have been saved. Reload this draft before deploying.";
         } else if (harnessGrantChecking) {
           // A read that settles within 250 ms never shows this text (finding 2576).
           setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
         } else if (proxyUnknown) {
-          deployStatus.textContent = "Reload the Network proxy draft before deploying.";
+          deployMessage = "Reload the Network proxy draft before deploying.";
         } else if (networkProxySaving) {
-          deployStatus.textContent = "Wait for the Network proxy save before deploying.";
+          deployMessage = "Wait for the Network proxy save before deploying.";
         } else if (proxyDirty) {
-          deployStatus.textContent = "Save or cancel Network proxy edits before deploying.";
+          deployMessage = "Save or cancel Network proxy edits before deploying.";
         } else if (authenticationPending || harnessGrantMissing) {
-          deployStatus.textContent =
+          deployMessage =
             "Confirm authentication and Secret access in Credentials before deploying.";
         } else if (authenticationUnsaved) {
-          deployStatus.textContent =
+          deployMessage =
             "Save or reload the authentication source in Credentials before deploying.";
         } else if (retainedConfiguration.reloadRequired) {
-          deployStatus.textContent = "Reload the Configuration draft before deploying.";
+          deployMessage = "Reload the Configuration draft before deploying.";
         } else if (retainedConfiguration.dirty) {
-          deployStatus.textContent = "Save or cancel Configuration edits before deploying.";
+          deployMessage = "Save or cancel Configuration edits before deploying.";
         } else if (draftEditorState.outcomeUnknown) {
-          deployStatus.textContent = `Reload this draft before deploying because the last ${editedSubject()} save outcome is unknown.`;
+          deployMessage = `Reload this draft before deploying because the last ${editedSubject()} save outcome is unknown.`;
         } else if (draftEditorState.reloadRequired) {
-          deployStatus.textContent = "Reload this draft before deploying.";
+          deployMessage = "Reload this draft before deploying.";
         } else if (draftEditorState.saving) {
-          deployStatus.textContent = `Wait for ${editedSubject()} save to finish before deploying.`;
+          deployMessage = `Wait for ${editedSubject()} save to finish before deploying.`;
         } else if (draftEditorState.dirty) {
-          deployStatus.textContent = `Save or cancel ${editedSubject()} edits before deploying.`;
+          deployMessage = `Save or cancel ${editedSubject()} edits before deploying.`;
         } else if (pluginEditorState.outcomeUnknown) {
-          deployStatus.textContent =
+          deployMessage =
             "Refresh this Agent before deploying because the last plugin save outcome is unknown.";
         } else if (pluginEditorState.reloadRequired) {
-          deployStatus.textContent = "Reload plugin selections before deploying.";
+          deployMessage = "Reload plugin selections before deploying.";
         } else if (pluginEditorState.saving) {
-          deployStatus.textContent =
-            "Wait for plugin selections to finish saving before deploying.";
+          deployMessage = "Wait for plugin selections to finish saving before deploying.";
         } else if (pluginEditorState.dirty) {
-          deployStatus.textContent = "Save or discard plugin changes before deploying.";
+          deployMessage = "Save or discard plugin changes before deploying.";
         } else if (deployFeedback?.textContent) {
-          deployStatus.textContent = "";
+          deployMessage = "";
         } else if (configurationRefusal() !== null) {
-          deployStatus.textContent = configurationRefusal()?.message ?? "";
+          deployMessage = configurationRefusal()?.message ?? "";
         } else if (computeEntryKeyChecking) {
           // A check that settles within 250 ms never shows this text, as for credential access.
           setDelayedText(deployStatus, "", CHECKING_COMPUTE_CONFIGURATION);
         } else if (revisionResult.status !== "fulfilled") {
-          deployStatus.textContent =
-            "Version history is required before deploying this new version.";
+          deployMessage = "Version history is required before deploying this new version.";
         } else if (!agent.harnessAuth) {
-          deployStatus.textContent =
+          deployMessage =
             "Select a harness authentication source in Credentials before deployment.";
         } else if (runtimeAuth) {
           // A rejected operator-managed credential is fixed on the runtime host, not by Deploy.
-          deployStatus.textContent = credentialRejected()
+          deployMessage = credentialRejected()
             ? "The last deployment's model credential was rejected; ask an operator to replace it on the runtime host before deploying again."
             : "Configured on the runtime host; OpenClaw Enterprise does not check it. Gateway readiness does not confirm model access.";
         } else {
@@ -4102,11 +4100,14 @@ export async function renderAgentDetail(
             // A read that settles within 250 ms never shows this text (finding 2576).
             setDelayedText(deployStatus, "", status);
           } else {
-            deployStatus.textContent =
+            deployMessage =
               draftReadOnly() && status !== "Ready to deploy." && !credentialRejected()
                 ? `${status} Your access does not include changing this version draft.`
                 : status;
           }
+        }
+        if (deployMessage !== undefined) {
+          setText(deployStatus, deployMessage);
         }
       }
       // An unavailable Deploy is described by the line that says why, or by a refused
