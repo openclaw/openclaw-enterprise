@@ -108,11 +108,11 @@ Proposed flow. The class check runs before the commit: a refused token leaves th
 
 ### Serialize Provider writes
 
-OCC releases its metadata lock before the TokenService write, so that lock cannot order Provider writes. TokenService holds an exclusive lock on the Source's catalog row while it writes custody, and OCC marks a Source `deleting` under the same lock. The Worker holds a shared lock on that row, with a bounded wait, from its state and version check until the Provider write returns. The write also requires the Provider resource version the Worker last observed and runs under the runtime's existing write fence. A Worker that finds a newer version, a Source that is not `ready` or a changed Provider writes nothing.
+OCC releases its metadata lock before the TokenService write, so that lock cannot order Provider writes. TokenService holds an exclusive lock on the Source's catalog row while it writes custody, and OCC marks a Source `deleting` under the same lock. The Worker holds a shared lock on that row, with a bounded wait, from its state and version check until the Provider write returns. The database ends a hold that stays idle past 60 seconds, so a frozen or partitioned Worker cannot block replacement or retirement for longer, and the Worker confirms the hold on its database session immediately before the write. The write also requires the Provider resource version the Worker last observed and runs under the runtime's existing write fence. A Worker that finds a newer version, a Source that is not `ready` or a changed Provider writes nothing.
 
 ### Revocation, stale Sources and Stop
 
-A Source that becomes unauthorized or stale, for example when the Agent principal loses `operate`, is refused at the next save, deploy and loan. The Worker logs a named code once per version and reason. The installed loan stays usable until it ends, so access lapses within the provisional 15-minute bound.
+A Source that becomes unauthorized or stale, for example when the Agent principal loses `operate`, is refused at the next save, deploy and loan. The Worker logs a named code once per revision, version and reason. A revision whose saved access exceeds the Source's current limits is refused the same way. The installed loan stays usable until it ends, so access lapses within the provisional 15-minute bound.
 
 Stop retires the Sandbox, as on the App path, and the Worker renews no loan for a stopped revision. The token stays valid at GitHub; OCE cannot revoke it there.
 
@@ -122,7 +122,7 @@ Stop retires the Sandbox, as on the App path, and the Worker renews no loan for 
 
 ### Attribution and audit
 
-GitHub attributes pushes to the token's owner, not to the Agent. OCC already audits Source create, update and delete without the value. Deploy adds the Source ID. Worker logs carry the Source ID and version for loans, refusals and delivery, never the value or a digest of it.
+GitHub attributes pushes to the token's owner, not to the Agent. OCC already audits Source create, update and delete without the value. Deploy adds the Source ID. Worker logs carry the Source ID and version for refusals and confirmed delivery, never the value or a digest of it.
 
 ## Interface changes
 
