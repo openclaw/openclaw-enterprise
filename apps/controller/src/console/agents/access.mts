@@ -101,7 +101,7 @@ export function renderAgentAccess(
       "label",
       { className: "agent-access-consent" },
       acknowledge,
-      "I understand this grants full native administration of this Agent.",
+      "I understand this grants full native administration of this Agent. Removing the Agent grant leaves the Namespace discovery grant in place.",
     ),
     element("div", { className: "form-actions" }, share),
   );
@@ -135,7 +135,7 @@ export function renderAgentAccess(
       element(
         "p",
         { className: "muted" },
-        "Sharing adds read access to this Namespace for discovery and read plus native administration for this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
+        "Sharing creates or reuses a Namespace read grant for discovery and a separate grant for read access and native administration of this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
       ),
       feedback,
       form,
@@ -154,7 +154,7 @@ export function renderAgentAccess(
     ),
   );
 
-  function render() {
+  function render({ sharing = false } = {}) {
     const blocked = state.pending || !state.loaded || state.needsRefresh;
     refresh.disabled = state.pending;
     // The form shows disabled while the policy loads, instead of popping in above the grants
@@ -183,13 +183,13 @@ export function renderAgentAccess(
     if (refusal) {
       setStatusTone(refusal, "danger");
     }
-    // After a refused or failed change the form waits for Refresh sharing, and the refusal says
-    // so: each control stays in the Tab order, described by it (class of finding 2899). Without
-    // that refusal (pending or not loaded yet) they stay natively disabled, even with focus.
+    // A refusal keeps the controls reachable so it can explain why they are unavailable.
+    // While sharing, keep focus on the submit button and block repeat activation.
     const reason = state.needsRefresh ? refusal : null;
     for (const control of [principal, acknowledge, share]) {
-      setUnavailable(control, blocked && reason !== null, reason);
-      if (blocked && reason === null) {
+      const canKeepFocus = reason !== null || (sharing && control === share);
+      setUnavailable(control, blocked && canKeepFocus, reason);
+      if (blocked && !canKeepFocus) {
         control.disabled = true;
       }
     }
@@ -408,7 +408,7 @@ export function renderAgentAccess(
     state.progress = [];
     state.saved = false;
     let mutationStarted = false;
-    render();
+    render({ sharing });
     onWriting?.(true);
     try {
       // Read first so explicit retries reuse current policy; writes are never replayed automatically.
@@ -424,8 +424,7 @@ export function renderAgentAccess(
       if (context.isCurrent()) {
         state.pending = false;
         render();
-        // Share disables while it runs, which dropped focus to the page and left a refusal
-        // above the form unread; it takes focus and comes into view (findings 1862, 1864).
+        // Bring refusals above the form into view while focus is still in this panel or on the page.
         revealStatus(feedback.querySelector("[role=alert]"), section);
       }
     }
@@ -470,7 +469,7 @@ export function renderAgentAccess(
         "Namespace discovery",
       );
       state.progress.push("Namespace discovery is enabled.");
-      render();
+      render({ sharing: true });
       await ensureGrant(
         subjectId,
         "agent",

@@ -258,6 +258,9 @@ export function createOpenShellOnlineHttpAuthority(
   };
   let pending = 0;
   const sandboxPending = new Map<string, number>();
+  // Waiting for a WebSocket frame must never consume HTTP authorization slots.
+  let pendingPreflights = 0;
+  const sandboxPreflights = new Map<string, number>();
   server.addService(service.SupervisorMiddleware!.service, {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       const description =
@@ -284,16 +287,83 @@ export function createOpenShellOnlineHttpAuthority(
     },
     ...(options.httpPolicySet !== undefined && {
       EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
+        const startedAt = performance.now();
+        const expiresAt = startedAt + Math.min(budgetMs, Number(call.getDeadline()) - Date.now());
+        const expired = () => !(performance.now() < expiresAt);
         const sandboxId = supervisor(claims(call));
-        call.once("data", (event: Wire) => {
-          const preflight = record(event.preflight);
-          if (!sandboxId || record(preflight.context).sandbox_id !== sandboxId) {
-            call.emit("error", { code: status.PERMISSION_DENIED, message: "Supervisor required." });
-            return;
-          }
+        const denyUpgrade = () => {
           call.write({ preflight_decision: { action: 3, reason_code: "http_only" } });
           call.end();
-        });
+        };
+        const refuseIdentity = () =>
+          call.emit("error", {
+            code: status.PERMISSION_DENIED,
+            message: "Supervisor required.",
+          });
+
+        if (call.cancelled) {
+          return;
+        }
+        if (!sandboxId) {
+          refuseIdentity();
+          return;
+        }
+        const held = sandboxPreflights.get(sandboxId) ?? 0;
+        if (
+          expired() ||
+          pendingPreflights >= pendingDecisionCapacity ||
+          held >= pendingDecisionSandboxShare
+        ) {
+          denyUpgrade();
+          return;
+        }
+
+        pendingPreflights += 1;
+        sandboxPreflights.set(sandboxId, held + 1);
+        let settled = false;
+        const release = () => {
+          if (settled) {
+            return false;
+          }
+          settled = true;
+          clearTimeout(timer);
+          pendingPreflights -= 1;
+          const remaining = sandboxPreflights.get(sandboxId)! - 1;
+          if (remaining === 0) {
+            sandboxPreflights.delete(sandboxId);
+          } else {
+            sandboxPreflights.set(sandboxId, remaining);
+          }
+          call.removeListener("cancelled", release);
+          call.removeListener("error", release);
+          call.removeListener("data", onData);
+          return true;
+        };
+        const onData = (event: Wire) => {
+          if (!release() || call.cancelled) {
+            return;
+          }
+          // A delayed timer cannot make an expired frame an identity failure.
+          if (!expired() && record(record(event.preflight).context).sandbox_id !== sandboxId) {
+            refuseIdentity();
+            return;
+          }
+          denyUpgrade();
+        };
+        const timer = setTimeout(
+          () => {
+            if (release() && !call.cancelled) {
+              denyUpgrade();
+            }
+          },
+          Math.max(0, Math.ceil(expiresAt - performance.now())),
+        );
+        call.once("cancelled", release);
+        call.once("error", release);
+        call.once("data", onData);
+        if (call.cancelled) {
+          release();
+        }
       },
     }),
     EvaluateHttpRequest(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {

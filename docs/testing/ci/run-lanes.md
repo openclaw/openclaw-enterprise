@@ -29,7 +29,7 @@ the check pages distinguish ordinary CI, manual/advisory workflows, and lanes
 with [no GitHub workflow](../manual-tests.md). Each manifest is the exact file and selector inventory.
 
 On eligible pull requests and main pushes, Checks and Conformance 2 emits a test-graph
-advisory after the required workspace typecheck. It reports TypeScript owner hints,
+advisory after the required workspace typecheck. It reports owner hints for indexed TypeScript and runtime changes in ordinary and Full Integration-only lanes,
 index coverage, fallback reasons, and zero test omissions. The notice is untrusted
 evidence from the tested checkout. Type-only edges can overselect; JavaScript and
 runtime relationships remain incomplete. CI Impact still selects actual checks. If

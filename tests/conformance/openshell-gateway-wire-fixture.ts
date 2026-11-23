@@ -54,6 +54,7 @@ type SandboxPolicy = {
   network_policies?: Record<string, NetworkPolicy>;
 };
 type SandboxSpec = {
+  template?: { image?: string; resources?: unknown; driver_config?: unknown };
   policy?: SandboxPolicy;
   providers?: string[];
   restart_policy?: string;

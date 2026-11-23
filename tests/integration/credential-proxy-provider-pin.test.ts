@@ -1,7 +1,7 @@
 import type { OpenShellCredentialGatewaySelection } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type {
   CredentialProviderDefinition,
   ComputeDriver,
@@ -20,6 +20,26 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
+
+function editProviderCatalog(t: TestContext, catalog: readonly CredentialProviderDefinition[]) {
+  const providers = catalog as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((provider) => provider.sourceType.type === "openai");
+  assert.ok(original, "the fixture registers an OpenAI provider");
+  return { providers, original };
+}
+
+function editProviderSlot(t: TestContext, catalog: readonly CredentialProviderDefinition[]) {
+  const providers = catalog as CredentialProviderDefinition[];
+  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
+  const original = providers[index];
+  assert.ok(original, "the fixture registers an OpenAI provider");
+  t.after(() => {
+    providers[index] = original;
+  });
+  return { providers, index, original };
+}
 
 test("classification diagnostics reject contradictory reports and preserve audit-write refusal", async (t) => {
   // This checks the shared registry's provider and audit ports. The PostgreSQL
@@ -107,10 +127,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
 test("fresh static source refuses duplicate provider identity in either catalog order", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const injections = [0, 0];
   const entries = injections.map((_, index): CredentialProviderDefinition => ({
     ...original,
@@ -161,10 +178,7 @@ test("fresh static source refuses duplicate provider identity in either catalog 
 test("fresh static source keeps catalog order for distinct provider identities", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const injections: string[] = [];
   const make = (id: string): CredentialProviderDefinition => ({
     ...original,
@@ -202,10 +216,7 @@ test("fresh static source keeps catalog order for distinct provider identities",
 test("fresh static source refuses a provider duplicate added during material resolution", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   let injections = 0;
   const provider: CredentialProviderDefinition = {
     ...original,
@@ -278,10 +289,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
       }),
   });
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   let classifiers = 0;
   const healthy: CredentialProviderDefinition = {
     ...original,
@@ -392,10 +400,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
 
 test("static deployment refuses ambiguous or incompatible providers without redirecting its exact binding", async (t) => {
   const f = await staticEgressFixture(t, { admitRevision: false });
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const alternate = { ...original, ref: { ...original.ref, id: "another-provider" } };
   const deploy = () =>
     f.request("POST", `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`);
@@ -517,10 +522,7 @@ test("static deployment refuses ambiguous or incompatible providers without redi
 test("credential exchange refuses duplicate and substituted providers before material access", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const duplicate = { ...original, ref: { ...original.ref, label: "conflicting label" } };
   const reads = f.secretReads;
   for (const entries of [
@@ -573,9 +575,7 @@ test("credential exchange refuses duplicate and substituted providers before mat
 test("credential exchange refuses provider replacement during a pending Secret read", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   let substituteCalls = 0;
   const replacement = {
     ...original,
@@ -588,9 +588,6 @@ test("credential exchange refuses provider replacement during a pending Secret r
       return Reflect.apply(original.inject, this, args);
     },
   };
-  t.after(() => {
-    providers[index] = original;
-  });
   const reads = f.secretReads;
   const release = f.pauseSecretReads();
   t.after(release);
@@ -618,7 +615,8 @@ test("credential exchange withholds a response after provider method replacement
   assert.ok("egress" in f);
   const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
   const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
-  const registered = providers[index]!;
+  const registered = providers[index];
+  assert.ok(registered, "the fixture registers an OpenAI provider");
   let classifications = 0;
   let injections = 0;
   const provider: CredentialProviderDefinition = {
@@ -688,12 +686,7 @@ test("credential exchange preserves the original possible-send receipt after pro
       }),
   });
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   const captured = f.capture();
   const { ready } = await f.resolve(captured);
   assert.ok(ready);
@@ -741,12 +734,7 @@ test("credential exchange withholds an observed response after provider replacem
       }),
   });
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   const captured = f.capture();
   const { ready } = await f.resolve(captured);
   assert.ok(ready);
@@ -765,12 +753,7 @@ test("credential exchange withholds an observed response after provider replacem
 test("credential exchange cuts a cached stream lease after provider replacement", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   const captured = f.capture();
   const { ready } = await f.resolve(captured);
   assert.ok(ready);
@@ -786,10 +769,7 @@ test("credential exchange cuts a cached stream lease after provider replacement"
 test("an unbound source update keeps its admitted provider when same-type providers reorder", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const validations: string[] = [];
   const instrument = (id: string): CredentialProviderDefinition => ({
     ...original,
@@ -868,12 +848,7 @@ test("an unbound source update keeps its admitted provider when same-type provid
 test("a source update withholds resolved material after its provider or injector changes", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
-  const original = providers[index]!;
-  t.after(() => {
-    providers[index] = original;
-  });
+  const { providers, index, original } = editProviderSlot(t, f.egress.sourceControl.providers);
   let originalCalls = 0;
   let replacementCalls = 0;
   const a: CredentialProviderDefinition = {
@@ -1242,10 +1217,7 @@ test("live static registration losing to DELETE preserves its deleting row witho
 test("capability discovery omits only conflicting static provider types", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
-  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-  const saved = [...providers];
-  t.after(() => providers.splice(0, providers.length, ...saved));
-  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const catalog = await gateway.listSourceTypes({ signal: AbortSignal.timeout(1000) });
   const model = catalog.find((entry) => entry.type === "openai")!;
@@ -1419,10 +1391,7 @@ test("live adoption keeps catalog order for distinct provider identities", async
     assert.ok("egress" in f);
     assert.ok(f.legacySource);
     assert.equal(f.legacySource.egress, undefined);
-    const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
-    const saved = [...providers];
-    t.after(() => providers.splice(0, providers.length, ...saved));
-    const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+    const { providers, original } = editProviderCatalog(t, f.egress.sourceControl.providers);
     const entries = order.map((id): CredentialProviderDefinition => ({
       ...original,
       ref: { ...original.ref, id },

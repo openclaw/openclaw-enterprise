@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
+import { execFile, spawnSync, type ExecFileOptionsWithStringEncoding } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -12,6 +13,7 @@ import { promisify } from "node:util";
 
 import { selfSigned } from "../helpers/certificates.ts";
 import {
+  createGitAclEnvironmentGuard,
   gitRemovalDenialCategory,
   gitRemovalDenialCommand,
 } from "../helpers/openshell-git-denial.ts";
@@ -191,4 +193,41 @@ export function registerGitDenialCommandCases(): void {
       });
     },
   );
+
+  test("Git ACL environment guard refuses an embedded credential without echoing it", () => {
+    const token = randomBytes(32).toString("hex");
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    const alias = `openshell:resolve:env:s${"a".repeat(64)}_GITHUB_TOKEN`;
+    const url = new URL("https://github.com/");
+    url.username = "x-access-token";
+    url.password = token;
+    const guard = createGitAclEnvironmentGuard(token);
+    assert.ok(
+      !guard.includes(token) && !guard.includes(basic),
+      "Only fingerprints reach the guest",
+    );
+
+    // Use the same shell prefix as the installed test and check whether the next command runs.
+    for (const [name, value, failure] of [
+      ["clean", "safe-value", ""],
+      ["credential embedded in a URL", url.href, "ACL_CREDENTIAL_IN_ENVIRONMENT\n"],
+      [
+        "Basic credential embedded in JSON",
+        JSON.stringify({ header: `Basic ${basic}` }),
+        "ACL_CREDENTIAL_IN_ENVIRONMENT\n",
+      ],
+    ] as const) {
+      const result = spawnSync("sh", ["-ceu", `${guard}; printf continued`, "--"], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, GITHUB_TOKEN: alias, OTHER: value },
+        timeout: 5000,
+        maxBuffer: 1024,
+      });
+      assert.ok(result.error === undefined, name);
+      // A failing assertion must never render potentially credential-bearing output.
+      assert.ok(result.status === (failure ? 1 : 0), name);
+      assert.ok(result.stdout === (failure ? "" : "continued"), name);
+      assert.ok(result.stderr === failure, name);
+    }
+  });
 }

@@ -918,14 +918,17 @@ test(
         path: join(workspaceRoot, "USER.md"),
         content: retainedFiles["USER.md"],
       };
-      const proofOptions = {
+      const proofOptions = (revisionId) => ({
         stateDirectory,
         state: recorded,
         environment: env,
         namespaceId: nativeNamespace.id,
         agentId: nativeAgent.id,
         workspaceFile,
-      };
+        credentialProxyScope: stack.ownsInstallation
+          ? { actorId: nativeAgent.servicePrincipalId, sourceId: nativeSource.id, revisionId }
+          : undefined,
+      });
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
         const pods = await readKubernetesJson(
           kube,
@@ -1083,7 +1086,7 @@ test(
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
         assertNativeWorkerProofInController(nativeContext, {
-          ...proofOptions,
+          ...proofOptions(initialRevisionId),
           expectedNodeId: initialProvider.expectedNodeId,
         }),
       );
@@ -1159,7 +1162,7 @@ test(
         "native-resumed-model",
         () =>
           assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions,
+            ...proofOptions(replacement.id),
             expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,
@@ -1413,6 +1416,44 @@ test(
         ...gatewaySelector,
         "openclaw.dev/revision": revisionId,
       });
+      // The Service inventory cannot prove where the revision's HTTP chat route
+      // sends traffic. Bind that exact POST path to the observed Service and port.
+      const routes = await readKubernetesJson(
+        kube,
+        [
+          "get",
+          "httproutes",
+          "--namespace",
+          namespaces.items[0].metadata.name,
+          "--selector",
+          `openclaw.dev/agent=${agentId}`,
+        ],
+        "the Agent revision's HTTP chat route",
+      );
+      const chatPath = `/http-chat/namespaces/${first.namespaceId}/agents/${agentId}/revisions/${revisionId}/v1/chat/completions`;
+      const chatRoutes = routes.items.filter((route) =>
+        route.spec.rules.some((rule) =>
+          rule.matches.some((match) => match.path?.value === chatPath),
+        ),
+      );
+      assert.equal(chatRoutes.length, 1);
+      const chatRoute = chatRoutes[0];
+      assert.equal(chatRoute.metadata.annotations["openclaw.dev/agent-revision-id"], revisionId);
+      assert.equal(chatRoute.spec.rules.length, 1);
+      const chatRule = chatRoute.spec.rules[0];
+      assert.deepEqual(chatRule.matches, [
+        { method: "POST", path: { type: "Exact", value: chatPath } },
+      ]);
+      assert.equal(chatRule.backendRefs.length, 1);
+      const chatBackend = chatRule.backendRefs[0];
+      assert.equal(chatBackend.kind, "Service");
+      assert.equal(chatBackend.group, "");
+      assert.equal(chatBackend.name, chatService.metadata.name);
+      assert.equal(
+        chatBackend.namespace ?? chatRoute.metadata.namespace,
+        chatService.metadata.namespace,
+      );
+      assert.equal(chatBackend.port, chatService.spec.ports[0].port);
     }
     const reuseEnv = { ...env };
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;

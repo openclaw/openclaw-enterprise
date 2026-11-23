@@ -58,11 +58,12 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
     ["read", "agent"],
     ["read", "configuration"],
   ]);
+  const expectedAgentBlocker: RemainingResource = { kind: "Agents", count: 1, ids: [agent.id] };
   const blocked = await expectBlockedDeletion();
   const resources: RemainingResource[] = blocked.remainingResources;
   assert.deepEqual(
     resources.find(({ kind }) => kind === "Agents"),
-    { kind: "Agents", count: 1, ids: [agent.id] },
+    expectedAgentBlocker,
   );
   const configurations = resources.find(({ kind }) => kind === "Configurations");
   assert.ok(configurations);
@@ -84,7 +85,11 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
 
   // Deleting the Agent does not empty its Namespace until teardown actually removes the Agent.
   assert.equal((await fixture.request("DELETE", `${path}/agents/${agent.id}`)).status, 202);
-  await expectBlockedDeletion();
+  const deletingResources: RemainingResource[] = (await expectBlockedDeletion()).remainingResources;
+  assert.deepEqual(
+    deletingResources.find(({ kind }) => kind === "Agents"),
+    expectedAgentBlocker,
+  );
   assert.equal((await fixture.request("GET", path)).data.status, "ready");
 });
 

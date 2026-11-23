@@ -76,21 +76,23 @@ export function registerGatewayPasswordProjection(): void {
         target,
       ]);
       const gateway = callKubernetesFixtureMethod(driver, "deployment", [
-        `gateway-${suffix}`,
-        { namespaceId: namespace.id, agentId },
-        target,
         {
-          runtime: "openclaw-enterprise/gateway-fixture:local",
-          workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+          name: `gateway-${suffix}`,
+          ownership: { namespaceId: namespace.id, agentId },
+          namespace: target,
+          images: {
+            runtime: "openclaw-enterprise/gateway-fixture:local",
+            workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+          },
+          serviceAccountName: `agent-${suffix}`,
+          role: "gateway",
+          environment: {},
+          loggingLevel,
+          configuration: snapshot,
+          embedded: true,
+          workloadServicePrincipalId: revision.servicePrincipalId,
+          harnessAuth: auth,
         },
-        `agent-${suffix}`,
-        "gateway",
-        {},
-        loggingLevel,
-        snapshot,
-        true,
-        revision.servicePrincipalId,
-        auth,
       ]);
       const template = asRecord(asRecord(asRecord(gateway)?.spec)?.template);
       const containers = asRecord(template?.spec)?.containers;
