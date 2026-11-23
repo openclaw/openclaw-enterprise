@@ -1,5 +1,6 @@
 import type {
   AgentCredentialSourceBinding,
+  AgentNetworkProxy,
   AgentDeploymentStatusWire,
   AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
@@ -49,6 +50,8 @@ type AgentDetailScenario = {
   harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
+  agentNetworkProxy?: AgentNetworkProxy;
+  extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   pluginDiscoveryCredential?: "none";
@@ -115,7 +118,13 @@ type AgentDetailScenario = {
   stopElsewhereOnReread?: true;
   diagnosticsState?: "noSlack" | "unknown";
   runtimePod?:
-    "startupWarnings" | "dedicatedPair" | "missingAgent" | "none" | "replaced" | "rollover";
+    | "startupWarnings"
+    | "dedicatedPair"
+    | "missingAgent"
+    | "none"
+    | "replaced"
+    | "rollover"
+    | "scaleDown";
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
@@ -407,6 +416,124 @@ export function createAgentDetailScenarios({
           "Inspect the admitted version and its deployment activity.",
         ],
         gap: "The fixture simulates saves, admission, and worker completion; it does not run a live Agent or Gateway.",
+      },
+      networkProxyEmpty: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy empty",
+        path: draft,
+        deployed: true,
+        description:
+          "The draft has no upstream proxy. The editor labels its Gateway-channel-only scope and the next-deployment lifecycle.",
+        steps: [
+          "Enter an HTTP or HTTPS endpoint and optionally select a proxy credential Secret.",
+          "Save the setting, then inspect the current version to confirm its snapshot did not change.",
+        ],
+        gap: "Simulated UI proof; no proxy, Secret backend, or Gateway runs.",
+      },
+      networkProxySaved: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy saved",
+        path: draft,
+        deployed: true,
+        agentNetworkProxy: {
+          url: "https://proxy.example:8443",
+          credentialSecretId: "sec_00000000-0000-4000-8000-000000000010",
+        },
+        extraSecrets: [
+          { id: "sec_00000000-0000-4000-8000-000000000010", name: "Proxy credential (simulated)" },
+        ],
+        description:
+          "The draft shows the endpoint and a safe Secret reference. Clearing applies only to the next deployment.",
+        steps: ["Clear the proxy, inspect the current version, then deploy the cleared draft."],
+        gap: "Simulated UI proof; revision and deployment results are fixture state.",
+      },
+      networkProxyValidation: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy validation",
+        path: draft,
+        deployed: true,
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "socks5://proxy.example:1080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description: "The editor rejects an unsupported proxy URL before sending an Agent update.",
+        gap: "Simulated UI proof; server admission is separate.",
+      },
+      networkProxySaveError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy save error",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              "The Network proxy endpoint is not configured by the Installation. Select an installed endpoint.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "A refused save keeps the edit visible and leaves Deploy blocked until it is fixed or canceled.",
+        gap: "Simulated UI refusal; no Compute admission runs.",
+      },
+      networkProxyEnforcementUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy enforcement unavailable",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+            message:
+              "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "An enforcement outage shows safe recovery guidance and requires a draft reload before another save.",
+        gap: "Simulated UI refusal; no Envoy fleet is stopped.",
+      },
+      networkProxyPermission: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy permission",
+        path: draft,
+        deployed: true,
+        agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+        description:
+          "A viewer can inspect the saved selection but cannot edit it without exact Agent update permission.",
+        gap: "Simulated permission response.",
+      },
+      networkProxySecretLoading: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets loading",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000 }],
+        description:
+          "The existing Secret selector reports loading while its Namespace list is pending.",
+        gap: "Simulated delayed Secret list.",
+      },
+      networkProxySecretError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets error",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+        description:
+          "The existing Secret selector reports an unavailable list without treating it as empty.",
+        gap: "Simulated Secret list failure.",
       },
       editCurrentConfiguration: {
         group: "Pages/Agent detail",
@@ -1715,6 +1842,7 @@ export function createAgentDetailScenarios({
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
           'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+          "Open draft and select the text “Ready to deploy.” beside Deploy new version. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {
@@ -2981,6 +3109,18 @@ export function createAgentDetailScenarios({
         steps: [
           "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
           "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
+        ],
+      },
+      runtimeLogOnePodRemains: {
+        ...runtimeLogsPage,
+        name: "One Pod remains while reading logs",
+        runtimePod: "scaleDown",
+        description:
+          "The selected Pod keeps serving logs when the other Pod disappears. The Pod / container picker is no longer needed.",
+        steps: [
+          "Tab from Source to Pod / container. Leave the first Pod selected.",
+          "After the next status update, check that the picker disappears, Source has focus, and the same output remains visible. Tab to Previous instance.",
+          "Reload and tab to Previous instance before the update. Focus should stay there.",
         ],
       },
       runtimeLogPodReplaced: {
