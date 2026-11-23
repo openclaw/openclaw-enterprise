@@ -102,11 +102,14 @@ the check reports disabled patch policies or incompatible dependencies, have
 that controller's owner repair them before continuing. This command does not
 alter existing dependencies. Continue installation only after the check passes.
 
-If Kubernetes Compute uses legacy Helm `slackProxy` and matching
-`runtime.channels.managedProxy`, follow the [Envoy channel-egress upgrade](one-off-upgrades.md#envoy-channel-egress).
-When legacy channels are enabled, fresh setup skips the required Agent
-transitions. For other supported installations,
-use the [installation change procedure](production-installation-changes.md). Saving an
+For a Kubernetes Compute installation that predates channel egress, check the
+[Envoy one-off upgrade](one-off-upgrades.md#envoy-channel-egress) before
+changing either file. Enabled legacy channels require the matching chart-managed
+Slack proxy. With channels disabled and no active proxy settings, the one-off
+removes obsolete settings without provisioning Envoy or redeploying Agents.
+The target chart rejects `slackProxy` even when disabled. For installations
+already using `channelEgress`, follow the
+[installation change procedure](production-installation-changes.md). Saving an
 Agent's Slack settings cannot enable installation-level egress.
 
 ## Configure upstream proxy endpoints
