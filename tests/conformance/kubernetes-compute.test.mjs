@@ -345,36 +345,10 @@ test("repository capability admits only configured Compute-owned native topologi
     },
   });
   const driver = new KubernetesComputeDriver(configured);
+  const routed = twoClusterOptions();
   const dualCluster = new KubernetesComputeDriver({
-    ...configured,
-    gatewayRouting: {
-      hostname: "gateway.example.test",
-      gatewayName: "gateway",
-      gatewayNamespace: "system",
-      envoyNamespace: "envoy",
-    },
-    network: Object.fromEntries(
-      Object.entries(configured.network).filter(([key]) => key !== "gatewayClients"),
-    ),
-    executionCluster: {
-      authentication: {
-        mode: "kubeconfig",
-        kubeconfigPath: "/fixture/execution",
-        context: "execution",
-      },
-      harnessRouting: {
-        hostname: "harness.example.test",
-        gatewayName: "harness",
-        gatewayNamespace: "system",
-        envoyNamespace: "envoy",
-      },
-      network: {
-        dns: configured.network.dns,
-        harnessEndpointCidrs: ["192.0.2.2/32"],
-        gatewayEndpointCidrs: ["192.0.2.1/32"],
-        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
-      },
-    },
+    ...routed,
+    network: { ...routed.network, repositoryCredentials: configured.network.repositoryCredentials },
   });
   assert.throws(
     () => dualCluster.validateRepositoryCredentialSupport(),
@@ -4441,23 +4415,13 @@ test("native channel settings require readable Secret bindings", async () => {
   };
   revision.configuration = createHarnessConfiguration("codex", "gpt-5");
   admitRevisionHarness(driver, revision);
+  const envBinding = (id) => ({
+    source: { kind: "secret", namespaceId: tenant.id, id },
+    delivery: { type: "env" },
+  });
   const secretBindings = Object.freeze({
-    SLACK_APP_TOKEN: {
-      source: {
-        kind: "secret",
-        namespaceId: tenant.id,
-        id: "sec_00000000-0000-4000-8000-000000000001",
-      },
-      delivery: { type: "env" },
-    },
-    SLACK_BOT_TOKEN: {
-      source: {
-        kind: "secret",
-        namespaceId: tenant.id,
-        id: "sec_00000000-0000-4000-8000-000000000002",
-      },
-      delivery: { type: "env" },
-    },
+    SLACK_APP_TOKEN: envBinding("sec_00000000-0000-4000-8000-000000000001"),
+    SLACK_BOT_TOKEN: envBinding("sec_00000000-0000-4000-8000-000000000002"),
   });
 
   // Real Gateway/Harness projection and revocation now run in the credentialed
@@ -4479,25 +4443,21 @@ test("native channel settings require readable Secret bindings", async () => {
     { message: unsupportedChannelRefusal("channels.discord") },
   );
 
+  const validate = (configuration, bindings) =>
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, configuration, bindings);
+  const envRef = (id) => ({ source: "env", provider: "default", id });
   const slackToken = (botToken) => ({
     agents: { defaults: { model: "codex/gpt-5" } },
-    channels: {
-      slack: {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken,
-      },
-    },
+    channels: { slack: { appToken: envRef("SLACK_APP_TOKEN"), botToken } },
+  });
+  const slackAccount = (account) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: { slack: { accounts: { ops: account } } },
   });
   const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
 
   assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
-        { ...appBinding },
-      ),
+    () => validate(slackToken(envRef("SLACK_BOT_TOKEN")), { ...appBinding }),
     // A row stored before Configuration save checked it: admission names the setting and the
     // missing binding, as save does.
     {
@@ -4506,12 +4466,7 @@ test("native channel settings require readable Secret bindings", async () => {
     },
   );
   // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
-  driver.validateHarnessAuth(
-    revision.harness,
-    revision.harnessAuth,
-    slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
-    null,
-  );
+  validate(slackToken(envRef("SLACK_BOT_TOKEN")), null);
   // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
   // env SecretRef id that is not a plain name, or is longer than 32 characters, is quoted and
   // shortened, so the message keeps its 256-character cap.
@@ -4522,15 +4477,10 @@ test("native channel settings require readable Secret bindings", async () => {
     ["slack-bot", '"slack-bot"'],
     ["SLACK_BOT_TOKEN_FOR_THE_WORKSPACE_ACCOUNT", '"SLACK_BOT_TOKEN_FOR_THE_WORKSPA…"'],
   ]) {
-    const values = {
-      agents: { defaults: { model: "codex/gpt-5" } },
-      channels: {
-        slack: { accounts: { ops: { botToken: { source: "env", provider: "default", id } } } },
-      },
-    };
-    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, null);
+    const values = slackAccount({ botToken: envRef(id) });
+    validate(values, null);
     assert.throws(
-      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, {}),
+      () => validate(values, {}),
       (error) => {
         assert.equal(error.name, "ConfigurationHarnessError");
         // A long name shortens the setting path to fit the cap.
@@ -4558,13 +4508,7 @@ test("native channel settings require readable Secret bindings", async () => {
     " $SLACK_BOT_TOKEN ",
   ]) {
     assert.throws(
-      () =>
-        driver.validateHarnessAuth(
-          revision.harness,
-          revision.harnessAuth,
-          slackToken(botToken),
-          appBinding,
-        ),
+      () => validate(slackToken(botToken), appBinding),
       {
         name: "ConfigurationHarnessError",
         message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
@@ -4573,12 +4517,7 @@ test("native channel settings require readable Secret bindings", async () => {
     );
   }
   for (const botToken of ["xoxb-$${SLACK_BOT_TOKEN}", "$SLACK_APP_TOKEN"]) {
-    driver.validateHarnessAuth(
-      revision.harness,
-      revision.harnessAuth,
-      slackToken(botToken),
-      appBinding,
-    );
+    validate(slackToken(botToken), appBinding);
   }
   // A `${` the runtime does not substitute would reach Slack as written: a secret-input field
   // refuses it whatever the bindings hold (finding 2477). That text may be the token itself, so
@@ -4600,7 +4539,7 @@ test("native channel settings require readable Secret bindings", async () => {
   ]) {
     assert.throws(
       () =>
-        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackToken(botToken), {
+        validate(slackToken(botToken), {
           ...appBinding,
           slack_bot: secretBindings.SLACK_BOT_TOKEN,
           SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
@@ -4614,46 +4553,22 @@ test("native channel settings require readable Secret bindings", async () => {
     );
   }
   // Named Slack accounts have the same secret-input fields, nested `relay.authToken` included.
-  const slackAccount = (account) => ({
-    agents: { defaults: { model: "codex/gpt-5" } },
-    channels: { slack: { accounts: { ops: account } } },
+  assert.throws(() => validate(slackAccount({ botToken: "$OPS_BOT" }), {}), {
+    name: "ConfigurationHarnessError",
+    message: unboundReferenceRefusal("channels.slack.accounts.ops.botToken", "OPS_BOT"),
   });
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackAccount({ botToken: "$OPS_BOT" }),
-        {},
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: unboundReferenceRefusal("channels.slack.accounts.ops.botToken", "OPS_BOT"),
-    },
-  );
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackAccount({ relay: { authToken: "${relay}" } }),
-        {},
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: unsubstitutedReferenceRefusal(
-        "channels.slack.accounts.ops.relay.authToken",
-        "${relay}",
-      ),
-    },
-  );
+  assert.throws(() => validate(slackAccount({ relay: { authToken: "${relay}" } }), {}), {
+    name: "ConfigurationHarnessError",
+    message: unsubstitutedReferenceRefusal(
+      "channels.slack.accounts.ops.relay.authToken",
+      "${relay}",
+    ),
+  });
   // Admission refuses a Slack token SecretRef the Slack Channel Driver cannot read, as save does
   // (finding 2514).
   assert.throws(
     () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
+      validate(
         slackAccount({ botToken: { source: "file", provider: "default", id: "/run/slack/bot" } }),
         {},
       ),
@@ -4665,7 +4580,7 @@ test("native channel settings require readable Secret bindings", async () => {
   // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a
   // `:-fallback` fills an unset name, so none of them needs a binding.
   for (const name of ["$OPS", "${x}", "${OPS_NAME:-ops}"]) {
-    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackAccount({ name }), {});
+    validate(slackAccount({ name }), {});
   }
 });
 
