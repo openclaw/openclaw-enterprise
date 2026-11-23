@@ -253,9 +253,15 @@ const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 // Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
 // maintenance run names, and a Configuration a refused provisioning job left behind.
 const INSTALLATION_ID = new RegExp(`^ins_${UUID_V4}$`);
+// A repository token Source's delivery and refusal name the Source and its TokenService custody
+// version: a random UUID written with the value, never derived from it.
 const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
   ["installationId", INSTALLATION_ID],
   ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
+  ["credentialSourceId", new RegExp(`^cs_${UUID_V4}$`)],
+  ["credentialSourceVersion", new RegExp(`^${UUID_V4}$`)],
+  // The class a refused Source's token was read as, from its documented prefix only.
+  ["tokenClass", /^(?:fine-grained|classic|oauth|app-user|app-installation|unknown)$/],
 ]);
 // On authentication events, the ID the API gives a request and answers with (`req_<UUID>`, or
 // `nar_<UUID>` for a native admin check), so a line matches the response a caller saw. Other

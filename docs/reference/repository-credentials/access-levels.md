@@ -172,6 +172,9 @@ Registry validation refuses:
 - without the App's `appId` and `githubInstallationId`: a registration without
   `credentialSource`, standing approvals, and `installationAccess`.
 
+An Installation without a GitHub App must still supply the App key fields of
+the Worker's `repository.preparedGitHub` configuration, such as `privateKeyPath`.
+
 An Agent's bindings must resolve to one credential: the App, or one Source.
 Naming another Source changes the grant, so earlier revisions go stale.
 
@@ -187,15 +190,20 @@ Saving the repository policy and deploying check the Source again:
 
 The Worker lends the value for at most 15 minutes and renews it every 7.5 minutes.
 At each loan it checks the Source's state, owner, preset and ceiling, the Agent
-principal's `operate` and the token class. A refused loan logs
-`REPOSITORY_SOURCE_LOAN_REFUSED` once per Source version and reason, with the
-Source ID and version and never the value. The current loan stays in the
+principal's `operate` and the token class. The ceiling check covers the access
+the revision was deployed with: a ceiling lowered since then refuses the loan
+with reason `source_access_exceeded`; redeploy within it. A refused loan logs
+`REPOSITORY_SOURCE_LOAN_REFUSED` once per revision, Source version and reason, with the
+`reason`, `credentialSourceId` and `credentialSourceVersion` and never the value. The current loan stays in the
 Sandbox until it ends.
 
 - **Replacement.** `PATCH` of the Source's `secret` commits the replacement.
   The Worker's next refresh (every 10 seconds) rotates it into the same Provider,
-  with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with the
-  Source ID and version once OpenShell reports it installed. Revoke the old token
+  with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with
+  `credentialSourceId` and `credentialSourceVersion` once OpenShell reports it
+  installed. Read these in the Worker's own log: the Collector does not export them.
+  The log keeps the Source ID only as a `cs_` UUID and the version only as a
+  UUID, which TokenService picks at random for each value. Revoke the old token
   at GitHub once every running Agent that uses the Source has logged that event
   for the new version, or 15 minutes after the replacement. A `github` Source has
   no Credential Proxy Provider, so
@@ -211,7 +219,10 @@ Sandbox until it ends.
 
 A loan holds the Source's catalog row from its checks until the Provider write
 returns, so replacement and retirement wait for an in-flight write. A hold ends
-after at most 60 seconds, and a Worker paused past it sends nothing.
+about 60 seconds after it was taken: the Worker commits it, and when the Worker
+is frozen or cut off from the database, PostgreSQL ends its idle session. Right
+before the write the Worker confirms the hold on that session, so a Worker that
+resumes after the database ended its hold writes nothing from that loan.
 
 ## Console access levels
 

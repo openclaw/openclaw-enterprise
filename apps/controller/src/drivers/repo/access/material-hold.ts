@@ -4,8 +4,17 @@
  * check until the Provider write returns; the writer sends nothing once the hold has ended.
  */
 export interface MaterialWriteHold {
-  /** True until release starts; the Provider write is dispatched only while it holds. */
+  /**
+   * True until release starts or the hold limit passes; the Provider write is dispatched only
+   * while it holds. A local answer: it cannot see a lock the database has already ended.
+   */
   held(): boolean;
+  /**
+   * Asks the lock's owner whether the hold still stands (for a row lock, a round trip on the
+   * holding session), and ends the hold when it does not. Called right before the write.
+   * Never throws.
+   */
+  confirm(): Promise<boolean>;
   /** Ends the hold. Idempotent; never throws. */
   release(): Promise<void>;
 }

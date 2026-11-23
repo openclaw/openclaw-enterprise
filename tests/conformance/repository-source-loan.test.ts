@@ -25,6 +25,7 @@ interface SourceRow {
   credential: string;
   version: string;
   lockTimesOut?: boolean;
+  lockFails?: boolean;
   unreadable?: boolean;
 }
 
@@ -43,6 +44,11 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
     ...initial,
   };
   const operable = new Set(["agent-a", "agent-b"]);
+  // The access each revision was deployed with: its saved repository network policy grants.
+  const admitted = new Map<string, { repository: string; access: "read" | "write" }[] | undefined>([
+    ["revision-agent-a", [{ repository: "fixture/a", access: "write" }]],
+    ["revision-agent-b", [{ repository: "fixture/a", access: "read" }]],
+  ]);
   const counts = { locks: 0, resolves: 0, shared: 0 };
   const waiting: (() => void)[] = [];
   const exclusive = async (change: () => void) => {
@@ -55,7 +61,10 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
     async lock() {
       counts.locks += 1;
       if (row.lockTimesOut) {
-        throw new Error("lock timeout");
+        return undefined;
+      }
+      if (row.lockFails) {
+        throw new Error("connection refused");
       }
       counts.shared += 1;
       let open = true;
@@ -72,6 +81,7 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
               },
         hold: {
           held: () => open,
+          confirm: async () => open,
           async release() {
             if (open) {
               open = false;
@@ -96,10 +106,14 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
     async operate({ agentId }) {
       return operable.has(agentId);
     },
+    async admitted({ revisionId }) {
+      return admitted.get(revisionId);
+    },
   };
   return {
     row,
     operable,
+    admitted,
     counts,
     custody,
     replace: (credential: string, version: string) =>
@@ -116,7 +130,7 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
 
 const lent = (agentId = "agent-a") => ({
   key: { source: { id: `revision-key-${agentId}` } },
-  session: { namespaceId: "namespace-a", agentId },
+  session: { namespaceId: "namespace-a", agentId, revisionId: `revision-${agentId}` },
   grant: {
     credentialSource: { namespaceId: "namespace-a", sourceId: "cs_fixture_token" },
     repositories: [{ repository: "fixture/a", repositoryId: "1" }],
@@ -195,10 +209,21 @@ test("every loan refusal releases the row, names a code, and is reported once pe
       (fake) => (fake.row.repositories = "fixture/b:read"),
       "source_ceiling_exceeded",
     ],
+    [
+      "ceiling lowered below the deployed access",
+      (fake) => (fake.row.repositories = "fixture/a:read,fixture/b:read"),
+      "source_access_exceeded",
+    ],
+    [
+      "revision without a saved repository policy",
+      (fake) => fake.admitted.set("revision-agent-a", undefined),
+      "source_access_exceeded",
+    ],
     ["lost operate", (fake) => fake.operable.delete("agent-a"), "operate_denied"],
     ["classic token", (fake) => (fake.row.credential = classic), "token_class_refused"],
     ["unreadable", (fake) => (fake.row.unreadable = true), "source_unreadable"],
     ["lock wait ended", (fake) => (fake.row.lockTimesOut = true), "source_locked"],
+    ["database unreachable", (fake) => (fake.row.lockFails = true), "source_lock_failed"],
   ];
   for (const [name, change, reason] of cases) {
     const fake = custodyFake();
@@ -229,6 +254,7 @@ test("every loan refusal releases the row, names a code, and is reported once pe
         "source_unavailable",
         "source_not_owned",
         "source_preset_refused",
+        "source_access_exceeded",
         "operate_denied",
       ].includes(reason)
     ) {
@@ -347,4 +373,52 @@ test("a Worker holding a loan delays replacement and retirement until its write 
     assert.deepEqual(sent, ["version-1"]);
     assert.equal(fake.counts.shared, 0);
   }
+});
+
+test("a Source loan compares the revision's deployed access with the ceiling, not only its repositories", async () => {
+  // Deployed with write on fixture/a; the ceiling was later lowered to read while the
+  // registration was out of the registry, then restored with the same grant identity.
+  const fake = custodyFake({ repositories: "fixture/a:read" });
+  const { reader, refusals } = loanReader(fake);
+  assert.equal(await reader.readWarm(undefined, lent("agent-a")), undefined);
+  assert.equal(fake.counts.resolves, 0, "the value is not read");
+  assert.equal(fake.counts.shared, 0);
+  assert.deepEqual(
+    refusals.map(({ reason }) => reason),
+    ["source_access_exceeded"],
+  );
+  // A revision deployed with read on the same repository is still lent.
+  const peer = await lend(reader, lent("agent-b"));
+  await peer.hold.release();
+  // A saved grant outside the ceiling is refused as well.
+  fake.admitted.set("revision-agent-b", [
+    { repository: "fixture/a", access: "read" },
+    { repository: "fixture/c", access: "read" },
+  ]);
+  assert.equal(await reader.readWarm(undefined, lent("agent-b")), undefined);
+  assert.deepEqual(
+    refusals.map(({ reason }) => reason),
+    ["source_access_exceeded", "source_access_exceeded"],
+  );
+});
+
+test("a refused loan is reported once per revision, even while a peer revision's loans succeed", async () => {
+  const fake = custodyFake();
+  const { reader, refusals } = loanReader(fake);
+  fake.operable.delete("agent-a");
+  for (let pass = 0; pass < 3; pass += 1) {
+    // Each refresh reads every revision that names the Source.
+    assert.equal(await reader.readWarm(undefined, lent("agent-a")), undefined);
+    await (await lend(reader, lent("agent-b"))).hold.release();
+  }
+  assert.deepEqual(
+    refusals.map(({ reason }) => reason),
+    ["operate_denied"],
+  );
+  // The revision's own successful loan clears its record.
+  fake.operable.add("agent-a");
+  await (await lend(reader, lent("agent-a"))).hold.release();
+  fake.operable.delete("agent-a");
+  assert.equal(await reader.readWarm(undefined, lent("agent-a")), undefined);
+  assert.equal(refusals.length, 2);
 });

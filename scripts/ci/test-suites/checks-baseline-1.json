@@ -156,6 +156,7 @@
     "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.ts",
     "tests/conformance/repository-source-loan.test.ts",
+    "tests/conformance/repository-source-custody.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -965,7 +966,11 @@
         "selected route readiness separates no material, access refusal, and replacement",
         "Git preparation refuses broad or noncanonical workspace trust before provider writes",
         "Git preparation refuses missing admission or plan identity before gateway calls",
-        "a fresh Git route uses the execution ID admitted before gateway reads"
+        "a fresh Git route uses the execution ID admitted before gateway reads",
+        "native Git writes a lent Source only after the holding session confirms its hold",
+        "native Git dispatches a lent Source only while its hold holds, and settles the hold after the write",
+        "native Git releases a lent Source's hold on every path that writes nothing",
+        "native Git confirms a lent Source's delivery once per Source version, not at each renewal"
       ]
     },
     {
@@ -1044,12 +1049,23 @@
       ]
     },
     {
+      "path": "tests/conformance/repository-source-custody.test.ts",
+      "expectedTests": [
+        "a Source hold bounds its lock wait, its statements and its idle time on the session",
+        "a Source hold ends when its session is lost, and confirms only on a live session",
+        "a Source hold is over at its limit even before its timer runs",
+        "a Source lock reports an ended lock wait apart from other failures"
+      ]
+    },
+    {
       "path": "tests/conformance/repository-source-loan.test.ts",
       "expectedTests": [
         "a Source loan lends its value once under a held row, and a replaced value is new material",
         "every loan refusal releases the row, names a code, and is reported once per Source version and reason",
         "a Source loan lasts at most 15 minutes, is renewed half way, and a peer Agent's loan is unaffected",
-        "a Worker holding a loan delays replacement and retirement until its write returns"
+        "a Worker holding a loan delays replacement and retirement until its write returns",
+        "a Source loan compares the revision's deployed access with the ceiling, not only its repositories",
+        "a refused loan is reported once per revision, even while a peer revision's loans succeed"
       ]
     },
     {

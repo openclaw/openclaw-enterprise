@@ -245,6 +245,68 @@ export function registerWorkerCases(): void {
       assert.equal(Object.hasOwn(logAt(output.lines, -1), key), false, `${key}: ${String(value)}`);
     }
   });
+
+  test("worker log names a repository token Source and its custody version on delivery and refusal", () => {
+    const output = captureLogs("occ-worker");
+    const emit = createWorkerLogEmitter(output.logger);
+    const credentialSourceId = `cs_${randomUUID()}`;
+    // TokenService's custody version: a random UUID written with the value, never derived from it.
+    const credentialSourceVersion = randomUUID();
+
+    // The shapes the OpenShell Git runtime and the Worker's loan refusal report emit.
+    const kept = [
+      {
+        event: "worker.openshell-git-delivery-confirmed",
+        credentialSourceId,
+        credentialSourceVersion,
+        namespaceId: "ns_test",
+        agentId: "agt_test",
+        revisionId: "rev_test",
+      },
+      {
+        event: "worker.error",
+        code: "REPOSITORY_SOURCE_LOAN_REFUSED",
+        reason: "source_access_exceeded",
+        credentialSourceId,
+        credentialSourceVersion,
+      },
+      {
+        event: "worker.error",
+        code: "REPOSITORY_SOURCE_LOAN_REFUSED",
+        reason: "token_class_refused",
+        credentialSourceId,
+        credentialSourceVersion,
+        tokenClass: "classic",
+      },
+    ];
+    for (const event of kept) {
+      emit(event);
+      const line = logAt(output.lines, -1);
+      for (const [key, value] of Object.entries(event)) {
+        assert.equal(line[key], value, `${event.event} keeps ${key}`);
+      }
+    }
+
+    // Only the OCC-assigned shapes pass: anything else, a token shape above all, is dropped.
+    const token = ["github", "pat", "11ABCDEFG0123456789".padEnd(40, "x")].join("_");
+    const rejected: ReadonlyArray<readonly [field: string, value: unknown]> = [
+      ["credentialSourceId", "cs_fixture"],
+      ["credentialSourceId", token],
+      ["credentialSourceId", randomUUID()],
+      ["credentialSourceVersion", token],
+      ["credentialSourceVersion", "version 3"],
+      ["credentialSourceVersion", `cs_${randomUUID()}`],
+      ["credentialSourceVersion", 3],
+      ["tokenClass", "sentinel private message"],
+      ["tokenClass", token],
+    ];
+    for (const [key, value] of rejected) {
+      emit({ event: "worker.error", code: "REPOSITORY_SOURCE_LOAN_REFUSED", [key]: value });
+      const line = logAt(output.lines, -1);
+      assert.equal(Object.hasOwn(line, key), false, `${key}: ${typeof value}`);
+      assert.doesNotMatch(JSON.stringify(line), /github_pat_/);
+    }
+  });
 }
 
 export function registerBootstrapAttemptCase(): void {

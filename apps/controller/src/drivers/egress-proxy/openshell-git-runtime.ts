@@ -248,6 +248,8 @@ interface Entry extends OpenShellGitObservationEntry {
         readonly at: number;
       }
     | undefined;
+  /** The lent Source version whose delivery this route last confirmed. */
+  confirmedSourceVersion?: string | undefined;
   blocked?: OpenShellGitRouteBlockReason;
   /** Only this terminal record can be retried, never the uncertain preview operation. */
   previewClosure?:
@@ -2163,49 +2165,61 @@ export class OpenShellGitRuntime {
               // so its replacement or retirement waits; once released, nothing is dispatched.
               const hold = writeHoldOf(current);
               const held = () => isCurrent() && (hold === undefined || hold.held());
-              if (
-                current &&
-                !("absent" in current) &&
-                isDeepStrictEqual(material, current) &&
-                held()
-              ) {
-                if (entry.authorization.repositoryNetworkPolicy !== undefined) {
-                  if (
-                    entry.preview.native &&
-                    !(await entry.client.readExclusivePreviewWorkspace?.(
-                      recipient.workspace,
-                      recipient.sandboxId,
-                      signal,
-                      recipient.provider,
-                    ))
-                  ) {
+              // Every exit that does not hand the hold to the Provider's settle releases it here.
+              let lent = false;
+              try {
+                if (
+                  current &&
+                  !("absent" in current) &&
+                  isDeepStrictEqual(material, current) &&
+                  held()
+                ) {
+                  if (entry.authorization.repositoryNetworkPolicy !== undefined) {
+                    if (
+                      entry.preview.native &&
+                      !(await entry.client.readExclusivePreviewWorkspace?.(
+                        recipient.workspace,
+                        recipient.sandboxId,
+                        signal,
+                        recipient.provider,
+                      ))
+                    ) {
+                      return;
+                    }
+                    // The material snapshot can arrive after a different worker withdraws it.
+                    await this.fenced(entry, signal);
+                    if (!held()) {
+                      return;
+                    }
+                  }
+                  // The database may have ended the hold while this Worker was frozen or cut off;
+                  // only the holding session can tell, so ask it last before the write.
+                  if (hold && !((await hold.confirm()) && held())) {
                     return;
                   }
-                  // The material snapshot can arrive after a different worker withdraws it.
-                  await this.fenced(entry, signal);
-                  if (!held()) {
-                    await hold?.release();
-                    return;
-                  }
+                  lent = hold !== undefined;
+                  return {
+                    value: current.value,
+                    expiresAt: entry.preview.native
+                      ? new Date(
+                          Math.min(
+                            Date.parse(current.expiresAt),
+                            entry.revision.repositoryCredentials!.deadlineWallMs,
+                          ),
+                        ).toISOString()
+                      : current.expiresAt,
+                    ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
+                      isCurrent: held,
+                    }),
+                    ...(hold && { settle: () => hold.release() }),
+                  };
                 }
-                return {
-                  value: current.value,
-                  expiresAt: entry.preview.native
-                    ? new Date(
-                        Math.min(
-                          Date.parse(current.expiresAt),
-                          entry.revision.repositoryCredentials!.deadlineWallMs,
-                        ),
-                      ).toISOString()
-                    : current.expiresAt,
-                  ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
-                    isCurrent: held,
-                  }),
-                  ...(hold && { settle: () => hold.release() }),
-                };
+                entry.absent = current && "absent" in current ? current.absent : undefined;
+              } finally {
+                if (!lent) {
+                  await hold?.release();
+                }
               }
-              await hold?.release();
-              entry.absent = current && "absent" in current ? current.absent : undefined;
             },
             signal,
           );
@@ -2256,8 +2270,13 @@ export class OpenShellGitRuntime {
             credentialSource?: string;
             credentialSourceVersion?: string;
           };
-          if (lent.credentialSource !== undefined) {
+          if (
+            lent.credentialSource !== undefined &&
+            lent.credentialSourceVersion !== entry.confirmedSourceVersion
+          ) {
             // Replacement was committed when the PATCH returned; this is the revision's delivery.
+            // A renewal of the same version is new material but not a new delivery.
+            entry.confirmedSourceVersion = lent.credentialSourceVersion;
             this.emit?.({
               event: "worker.openshell-git-delivery-confirmed",
               credentialSourceId: lent.credentialSource,
