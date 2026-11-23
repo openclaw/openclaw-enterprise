@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-22
-last_updated_session: authoring-run/f17221b4-d087-4cf1-a8eb-a201b2662720
+last_updated_session: authoring-run/1addf51b-6904-4124-bfe7-9e103a974c29
 ---
 
 # Controller Worker Flow
@@ -54,7 +54,6 @@ graph TD
         I -->|invalid or exhausted| H
         K --> D
         L --> D
-        H -->|"Initiating caller repeats Agent DELETE"| A
     end
 ```
 
@@ -410,6 +409,7 @@ the active runtime) or yielded predecessor stop (`PREDECESSOR_STOP_RECOVERY`).
 
 ## Changelog
 
+- 2026-11-22 23:55: Remove unrelated retry edge. (authoring-run/1addf51b-6904-4124-bfe7-9e103a974c29 - 003f7f0740756b4d685b5d737f6203a626dcd16a)
 - 2026-11-22 20:25: Trace revision work key validation and cleanup transfer in the accompanying change. (authoring-run/f17221b4-d087-4cf1-a8eb-a201b2662720 - 6e87869c03b7db12a22a2ec1b13d9b1fe3e01798)
 - 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)
 - 2026-11-22 10:32: Trace revision finalization through the committed result. (authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
