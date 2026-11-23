@@ -9,6 +9,8 @@ import {
   allowsGitHubRepositoryNetworkGrant,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
+  resolveSelectedRepositoryGrant,
+  resolveSelectedRepositoryScope,
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
@@ -659,5 +661,233 @@ test("selected repository standing approval binds permissions and rechecks deliv
       ),
     /Standing repository policy/,
     "standing approval never authorizes multiple bindings",
+  );
+});
+
+// A registry whose Namespace registrations select TokenService Sources: "token" names one Source
+// and "other" another, both native Git with Git-only permissions.
+function sourceRegistryInput(): Record<string, unknown> & {
+  repositories: (Record<string, unknown> & { namespaces: Record<string, unknown>[] })[];
+} {
+  const registration = (credentialSource: string) => ({
+    namespaceId: "namespace-a",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", contents: "write" },
+    nativeGit: "v1",
+    credentialSource,
+  });
+  return {
+    version: 1,
+    backendId: "github-primary",
+    providerInstanceId: "github-com-primary",
+    maximumDurationSeconds: 3600,
+    repositories: [
+      {
+        repositoryRef: "token",
+        repositoryId: "101",
+        repository: "fixture/token",
+        namespaces: [registration("cs_repository_token")],
+      },
+      {
+        repositoryRef: "token-peer",
+        repositoryId: "102",
+        repository: "fixture/token-peer",
+        namespaces: [registration("cs_repository_token")],
+      },
+      {
+        repositoryRef: "other",
+        repositoryId: "103",
+        repository: "fixture/other",
+        namespaces: [registration("cs_other_token")],
+      },
+    ],
+  };
+}
+
+function sourceBindings(
+  registry: ReturnType<typeof validateGitHubRepositoryRegistry>,
+  repositoryRefs: readonly string[],
+) {
+  return repositoryRefs.map((repositoryRef) =>
+    resolveGitHubRepositoryBinding(registry, { namespaceId: "namespace-a", repositoryRef }),
+  );
+}
+
+test("App grant identities keep their exact digest when the registry learns Source selection", () => {
+  const input = registryInput();
+  input.repositories[0].namespaces[0] = {
+    namespaceId: "namespace-a",
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", contents: "write" },
+    nativeGit: "v1",
+  };
+  const binding = resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(input), {
+    namespaceId: "namespace-a",
+    repositoryRef: "application",
+  });
+  // Frozen from main before the Source field existed: an App revision admitted then stays current.
+  assert.equal(binding.grant.grantId, "sha256:8da8b1c566fa579dfcd3e129860419e4a740a5841e472fb1e33f18308edc3dde");
+});
+
+test("a registration selects a Source only for native Git with Git permissions", async (t) => {
+  const registry = validateGitHubRepositoryRegistry(sourceRegistryInput(), "github-primary");
+  assert.equal(registry.appId, undefined);
+  assert.equal(registry.githubInstallationId, undefined);
+  const scope = resolveSelectedRepositoryScope(
+    registry,
+    "namespace-a",
+    sourceBindings(registry, ["token", "token-peer"]),
+  );
+  assert.deepEqual(scope.credential, { kind: "credential_source", sourceId: "cs_repository_token" });
+  const refusals: Record<string, (input: ReturnType<typeof sourceRegistryInput>) => void> = {
+    "no nativeGit": (input) => {
+      delete input.repositories[0]!.namespaces[0]!.nativeGit;
+    },
+    "scoped REST": (input) => {
+      input.repositories[0]!.namespaces[0]!.scopedRest = "v1";
+    },
+    "issues permission": (input) => {
+      input.repositories[0]!.namespaces[0]!.permissions = {
+        metadata: "read",
+        contents: "write",
+        issues: "read",
+      };
+    },
+    "pull request permission": (input) => {
+      input.repositories[0]!.namespaces[0]!.permissions = {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+      };
+    },
+    "standing approval": (input) => {
+      input.repositories[0]!.namespaces[0]!.allowStandingApproval = true;
+    },
+    "push ref allowlist": (input) => {
+      input.repositories[0]!.namespaces[0]!.pushRefAllowlist = ["refs/heads/agent"];
+    },
+    transport: (input) => {
+      input.repositories[0]!.namespaces[0]!.transport = "git-only";
+    },
+    "pull request base": (input) => {
+      input.repositories[0]!.namespaces[0]!.pullRequestBase = "main";
+    },
+    "draft pull limit": (input) => {
+      input.repositories[0]!.namespaces[0]!.draftPullLimit = "none";
+    },
+    "a legacy profile": (input) => {
+      input.repositories[0]!.namespaces[0]!.profiles = ["git-write"];
+      delete input.repositories[0]!.namespaces[0]!.permissions;
+    },
+    "a Source ID of another kind": (input) => {
+      input.repositories[0]!.namespaces[0]!.credentialSource = "sec_repository_token";
+    },
+    "only one App field": (input) => {
+      input.appId = "12345";
+    },
+    "an App-less registration without a Source": (input) => {
+      delete input.repositories[2]!.namespaces[0]!.credentialSource;
+    },
+    "an App-less legacy profile": (input) => {
+      input.repositories[2]!.namespaces[0] = {
+        namespaceId: "namespace-a",
+        profiles: ["git-write"],
+        pushRefAllowlist: ["refs/heads/agent"],
+        transport: "git-only",
+      };
+    },
+    "App-less standing approvals": (input) => {
+      input.allowStandingApprovals = true;
+    },
+    "App-less Installation access": (input) => {
+      input.installationAccess = {
+        repositoryRef: "all",
+        namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+      };
+    },
+  };
+  for (const [name, mutate] of Object.entries(refusals)) {
+    await t.test(name, () => {
+      const input = sourceRegistryInput();
+      mutate(input);
+      assert.throws(() => validateGitHubRepositoryRegistry(input), /invalid-repository-registry/);
+    });
+  }
+  // With the App, a Source registration and an App registration share one registry.
+  const mixed = sourceRegistryInput();
+  Object.assign(mixed, { appId: "12345", githubInstallationId: "67890" });
+  delete mixed.repositories[2]!.namespaces[0]!.credentialSource;
+  assert.equal(validateGitHubRepositoryRegistry(mixed).appId, "12345");
+});
+
+test("one revision resolves to one credential: App and Source, or two Sources, are refused", () => {
+  const sources = validateGitHubRepositoryRegistry(sourceRegistryInput());
+  assert.throws(
+    () =>
+      resolveSelectedRepositoryScope(
+        sources,
+        "namespace-a",
+        sourceBindings(sources, ["token", "other"]),
+      ),
+    /selected-repository-credentials-differ/,
+  );
+  const input = sourceRegistryInput();
+  Object.assign(input, { appId: "12345", githubInstallationId: "67890" });
+  delete input.repositories[2]!.namespaces[0]!.credentialSource;
+  const appAndSource = validateGitHubRepositoryRegistry(input);
+  assert.throws(
+    () =>
+      resolveSelectedRepositoryScope(
+        appAndSource,
+        "namespace-a",
+        sourceBindings(appAndSource, ["token", "other"]),
+      ),
+    /selected-repository-credentials-differ/,
+  );
+  assert.deepEqual(
+    resolveSelectedRepositoryScope(
+      appAndSource,
+      "namespace-a",
+      sourceBindings(appAndSource, ["other"]),
+    ).credential,
+    { kind: "github_app" },
+  );
+});
+
+test("a changed Source selection is a changed grant, so earlier revisions go stale", () => {
+  const registry = validateGitHubRepositoryRegistry(sourceRegistryInput());
+  const [binding] = sourceBindings(registry, ["token"]);
+  assert.ok(binding);
+  const changed = sourceRegistryInput();
+  changed.repositories[0]!.namespaces[0]!.credentialSource = "cs_replacement_token";
+  const [rebound] = sourceBindings(validateGitHubRepositoryRegistry(changed), ["token"]);
+  assert.notEqual(rebound?.grant.grantId, binding.grant.grantId);
+});
+
+test("until Source delivery exists, a Source-backed revision gets no credential, never the App's", () => {
+  const input = sourceRegistryInput();
+  // The App is present too: the refusal must not fall back to it.
+  Object.assign(input, { appId: "12345", githubInstallationId: "67890" });
+  const registry = validateGitHubRepositoryRegistry(input);
+  const bindings = sourceBindings(registry, ["token"]);
+  const revision = {
+    id: "rev_source",
+    namespaceId: "namespace-a",
+    repositoryCredentials: {
+      driver: { id: "repository-credentials", implementation: "github" },
+      deadlineWallMs: Date.now() + 3_600_000,
+      bindings,
+    },
+    sandboxPolicy: {
+      repositoryNetworkPolicy: { grants: [{ repository: "fixture/token", access: "write" }] },
+    },
+  } as unknown as AgentRevision;
+  assert.throws(
+    () => createGitHubRepositoryDeliveryResolver(registry)(revision),
+    /repository-source-delivery-unavailable/,
+  );
+  assert.throws(
+    () => resolveSelectedRepositoryGrant(registry, "namespace-a", "rev_source", bindings),
+    /repository-source-delivery-unavailable/,
   );
 });
