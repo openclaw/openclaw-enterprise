@@ -1089,16 +1089,24 @@ export async function renderAgentDetail(
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   // A recorded outcome is the version and a status badge (spec 3.5). The separator stays in the
   // text for screen readers and text matching ("v7 · Failed"); the badge's gap shows it.
-  function setDeploymentOutcome(node: HTMLElement, version: string, label: string, tone?: string) {
-    const text = `${version} · ${label}`;
-    const badge = node.querySelector<HTMLElement>(":scope > .badge");
-    if (node.textContent === text && badge && (badge.dataset.tone ?? "") === (tone ?? "")) {
+  function setDeploymentOutcome(revision: Revision, label: string, tone?: string) {
+    const href = context.pageUrl(target(revision.id, "deployment"));
+    const link = latestDeploymentValue.querySelector(":scope > a");
+    const badge = latestDeploymentValue.querySelector<HTMLElement>(":scope > .badge");
+    if (badge && link?.getAttribute("href") === href) {
+      // Keep the version link mounted so a status update does not take away keyboard focus.
+      if (badge.dataset.tone !== tone) {
+        if (tone) {
+          badge.dataset.tone = tone;
+        } else {
+          delete badge.dataset.tone;
+        }
+      }
+      setText(badge, label);
       return;
     }
-    node.replaceChildren(
-      ...(visibleRevisions[0] && version === `v${visibleRevisions[0].revision}`
-        ? [versionLink(version, visibleRevisions[0].id, "deployment")]
-        : [version]),
+    latestDeploymentValue.replaceChildren(
+      versionLink(`v${revision.revision}`, revision.id, "deployment"),
       element("span", { className: "visually-hidden" }, " · "),
       element("span", { className: "badge", ...(tone ? { "data-tone": tone } : {}) }, label),
     );
@@ -2792,8 +2800,7 @@ export async function renderAgentDetail(
       setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
       setDeploymentOutcome(
-        latestDeploymentValue,
-        `v${latest.revision}`,
+        latest,
         label ?? (latestDeploymentUnavailable ? "Unavailable" : "Loading…"),
         latestDeploymentStatus ? DEPLOYMENT_OUTCOME_TONES[latestDeploymentStatus] : undefined,
       );

@@ -770,6 +770,7 @@ export function createAgentDetailScenarios({
           "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
         steps: [
           "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
+          "Select a few characters with Shift+Left. Switch browser tabs and return. After the access check, press Shift+Left again. The selection extends one more character to the left.",
           "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
           "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
           "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
@@ -1738,6 +1739,7 @@ export function createAgentDetailScenarios({
           'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
           "Before the status poll lands, focus Viewing version without changing its v7 selection.",
           'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+          "Reset. Tab to v7 under Latest visible deployment before completion. When the badge reads Completed, the focus outline stays visible. Press Enter to open Deployment for v7.",
           "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
           "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
         ],

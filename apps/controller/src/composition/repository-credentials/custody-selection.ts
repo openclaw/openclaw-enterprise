@@ -40,6 +40,7 @@ const openShellSnapshot: CustodyPolicy = Object.freeze({
     WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
     WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
     WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
+    WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'network-policy' THEN '9'
     WHEN NOT (p.installation->'plan' ? 'repositoryGitAuthorization') THEN '4'
     END`,
   observedHook: true,
