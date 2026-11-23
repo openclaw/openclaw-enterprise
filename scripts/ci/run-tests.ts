@@ -4,6 +4,7 @@ import { availableParallelism, cpus } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import type { RequireJournal } from "./cleanup.ts";
 import { sanitizeError } from "./failure-redaction.ts";
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
@@ -146,6 +147,7 @@ async function runFile(
   { statePath, prepareFile, preparationId }: FilePreparation,
   setup: Setup,
   testName?: unknown,
+  requireJournal?: RequireJournal,
 ) {
   const issues: RunnerIssue[] = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -187,22 +189,21 @@ async function runFile(
   const modelInputs = mergeEnv(inputs, file.env);
   if (prepareFile) {
     try {
-      const result =
-        (await setup(() =>
-          withinLimit(
-            () =>
-              prepareFile({
-                lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
-                file,
-                statePath,
-                modelSelectors: {
-                  OCC_TEST_OPENSHELL_HARNESS: modelInputs.OCC_TEST_OPENSHELL_HARNESS,
-                  OCC_TEST_OPENSHELL_MODEL_BASE_URL: modelInputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
-                },
-              }),
-            prepareLimitMs(),
-          ),
-        )) ?? {};
+      const prepare = () => {
+        requireJournal?.(true);
+        const options = {
+          lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
+          file,
+          statePath,
+          modelSelectors: {
+            OCC_TEST_OPENSHELL_HARNESS: modelInputs.OCC_TEST_OPENSHELL_HARNESS,
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: modelInputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
+          },
+          requireJournal,
+        };
+        return prepareFile(options);
+      };
+      const result = (await setup(() => withinLimit(prepare, prepareLimitMs()))) ?? {};
       const cleanup = optionalReporterField(result, "cleanup") ?? null;
       if (cleanup !== null && !isFileCleanup(cleanup)) {
         throw new Error("prepareFile cleanup must be a function");
@@ -390,7 +391,10 @@ async function runFile(
     const { cleanup } = prepared;
     if (cleanup) {
       try {
-        await setup(() => withinLimit(cleanup, cleanupLimitMs()));
+        await setup(() => {
+          requireJournal?.(true);
+          return withinLimit(cleanup, cleanupLimitMs());
+        });
         cleanupResult = { status: "passed" };
       } catch (error) {
         if (error instanceof StepTimeoutError) {
@@ -582,6 +586,7 @@ async function runLane(
   resultsPath: unknown,
   selectedFile: unknown,
   testName: unknown,
+  requireJournal?: RequireJournal,
 ) {
   const source = sourceEvidence(root);
   const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
@@ -645,6 +650,7 @@ async function runLane(
         { statePath, prepareFile, preparationId },
         setup,
         testName,
+        requireJournal,
       );
       // Round both ends, so start + duration is the rounded end and never passes a
       // later file's start.
@@ -807,17 +813,25 @@ async function completePhaseChild() {
   });
   let exitCode = 1;
   let uncertain = false;
-  let phaseError: { code: "phase-failed"; reason?: "docker-subnet-exhausted" } | undefined;
+  let journalMissing = false;
+  const requireJournal: RequireJournal = (present) => {
+    if (!present || journalMissing) {
+      // Remember the loss even if the resource owner subsequently reports another error.
+      journalMissing = true;
+      throw new Error("Expected cleanup journal is missing.");
+    }
+  };
+  let phaseError:
+    | { code: "phase-failed"; reason?: "docker-subnet-exhausted" }
+    | { code: "cleanup-state-missing" }
+    | undefined;
   try {
     // Null has no fields. Other JSON values with no phase leave the default reply.
     if (request === null || request === undefined) {
       throw new TypeError("Missing lifecycle phase request.");
     }
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isRecord(
-      request,
-    )
-      ? request
-      : {};
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName, expectState } =
+      isRecord(request) ? request : {};
     if (phase === "prepare") {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
@@ -839,8 +853,13 @@ async function completePhaseChild() {
       if (!isRecord(owner) || typeof owner.cleanupState !== "function") {
         throw new Error("Invalid lifecycle cleanup owner.");
       }
-      const cleaned: unknown = Reflect.apply(owner.cleanupState, owner, [statePath]);
-      await cleaned;
+      const cleaned: unknown = Reflect.apply(owner.cleanupState, owner, [
+        statePath,
+        { requireJournal: expectState === true ? requireJournal : undefined },
+      ]);
+      if ((await cleaned) === false && expectState === true) {
+        requireJournal(false);
+      }
       exitCode = 0;
     } else if (phase === "run") {
       if (typeof manifestPath !== "string") {
@@ -850,7 +869,16 @@ async function completePhaseChild() {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
       }
-      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
+      exitCode = await runLane(
+        root,
+        manifest,
+        lane,
+        statePath,
+        resultsPath,
+        file,
+        testName,
+        requireJournal,
+      );
       uncertain = abandonedSteps > 0;
     }
   } catch (error) {
@@ -866,6 +894,10 @@ async function completePhaseChild() {
     ) {
       phaseError.reason = "docker-subnet-exhausted";
     }
+    exitCode = 1;
+  }
+  if (journalMissing) {
+    phaseError = { code: "cleanup-state-missing" };
     exitCode = 1;
   }
   process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error: phaseError });
