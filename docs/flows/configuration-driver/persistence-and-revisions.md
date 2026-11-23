@@ -70,17 +70,16 @@ Create calls
 `replaceNamespacedConfigMap` with the observed `resourceVersion`, and delete
 calls `deleteNamespacedConfigMap` with the observed object identity when
 available. Creation starts at generation `1`. PATCH replaces the native
-document and advances its stored generation by one. If a failed update left
-the document up to 100 generations ahead of the metadata, the next PATCH can skip
-generation numbers in the metadata.
+document and advances its stored generation by one. If the document remains ahead of
+OCC metadata after rollback, GET and fresh deployment return `503 DEPENDENCY_UNAVAILABLE`.
+See [how to recover with PATCH](../../reference/drivers/configuration.md#troubleshooting).
 
-OCC registers compensation before each Driver write. It skips compensation
-when the PostgreSQL commit outcome is unknown. After rollback, even if the
-Driver's reply was lost, OCC checks `inspectExact` before attempting to undo a
-create on an exact match or a delete on confirmed absence. Without `inspectExact`, as with the
-filesystem development Driver, OCC attempts either only after reported success.
-For an update, OCC uses `read` and attempts to restore the prior document only
-if the stored generation matches the attempted one. Failed compensation
+OCC registers compensation before each Driver write and skips it when the
+PostgreSQL commit outcome is unknown. Even after a lost reply, `inspectExact`
+lets OCC attempt to undo a create on an exact match or a delete on confirmed
+absence. Without it, as with the filesystem development Driver, OCC attempts
+either only after reported success. Update compensation restores the prior
+document only if `read` finds the attempted generation. Failed compensation
 returns `503`.
 
 Rollback releases the row locks. Before restoring a deleted or updated document,
@@ -209,9 +208,10 @@ is not writable, so OpenClaw skips its last-known-good backup. It never mounts
 the mutable Configuration Driver ConfigMap; each changed admitted generation
 selects a new immutable snapshot and rolls the stable Agent gateway.
 
-After updating the gateway Deployment template, Compute can remove the older
-revision's gateway ConfigMap once its dedicated Harness Deployment and Agent Pods
-are gone, even before its gateway Pods terminate or the successor is ready.
+During embedded repair or activation, Compute can update the gateway Deployment
+template and remove the older revision's gateway ConfigMap once its dedicated
+Harness Deployment and Agent Pods are gone. This can precede gateway Pod
+termination and successor readiness. Dedicated activation skips this early cleanup.
 Stop and retirement wait for that revision's gateway Pods to terminate.
 The saved Agent revision retains its configuration.
 
