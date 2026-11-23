@@ -7,6 +7,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"github.com/spf13/cobra"
 )
 
@@ -280,16 +281,7 @@ func (app *application) iamRoleCommand() *cobra.Command {
 		Use:   "delete ID",
 		Short: "Delete an unreferenced Namespace IAM Role",
 		Args:  opaqueIDArgs("Role"),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteIAMRole(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("iam role", args[0])
-		},
+		RunE:  app.deleteHandler("iam role", (*occclient.Client).DeleteIAMRole),
 	}
 
 	command.AddCommand(create, list, get, deleteCommand)
@@ -358,16 +350,7 @@ func (app *application) iamAccessBindingCommand() *cobra.Command {
 		Use:   "delete ID",
 		Short: "Delete a Namespace IAM AccessBinding",
 		Args:  opaqueIDArgs("AccessBinding"),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteIAMAccessBinding(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("iam access-binding", args[0])
-		},
+		RunE:  app.deleteHandler("iam access-binding", (*occclient.Client).DeleteIAMAccessBinding),
 	}
 
 	command.AddCommand(create, list, get, deleteCommand)

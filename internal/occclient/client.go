@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"iter"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -527,27 +528,42 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 	return page, nil
 }
 
-// LatestAgentRevision returns the newest revision summary the caller can read,
-// or nil when there is none. A cursor reflects a read check in its issuing request;
-// a later page may be empty if access changes. The loop also supports older servers.
-func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
-	cursor := ""
-	limit := 1
-	for {
-		page, err := client.ListAgentRevisions(namespaceID, agentID, limit, cursor)
-		if err != nil {
-			return nil, err
+// AgentRevisions yields readable summaries newest first, following each cursor
+// at most once. A cursor reflects access when it was issued. Access changes
+// and older servers can leave empty pages between readable revisions.
+func (client *Client) AgentRevisions(namespaceID, agentID string, firstLimit int) iter.Seq2[any, error] {
+	return func(yield func(any, error) bool) {
+		cursor := ""
+		limit := firstLimit
+		seen := make(map[string]bool)
+		for {
+			page, err := client.ListAgentRevisions(namespaceID, agentID, limit, cursor)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for _, revision := range page.Revisions {
+				if !yield(revision, nil) {
+					return
+				}
+			}
+			cursor = page.NextCursor
+			if cursor == "" || seen[cursor] {
+				return
+			}
+			seen[cursor] = true
+			limit = 100
 		}
-		if len(page.Revisions) > 0 {
-			return page.Revisions[0], nil
-		}
-		if page.NextCursor == "" || page.NextCursor == cursor {
-			return nil, nil
-		}
-		cursor = page.NextCursor
-		// Older servers may return empty pages across a gap in readable revisions.
-		limit = 100
 	}
+}
+
+// LatestAgentRevision returns the newest revision summary the caller can read,
+// or nil when there is none.
+func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
+	for revision, err := range client.AgentRevisions(namespaceID, agentID, 1) {
+		return revision, err
+	}
+	return nil, nil
 }
 
 // GetAgentRevision reads the immutable settings and number of an exact revision.

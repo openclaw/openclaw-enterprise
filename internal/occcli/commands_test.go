@@ -1524,40 +1524,99 @@ func TestAgentRevisionsRefusesAPageWithoutData(t *testing.T) {
 	}
 }
 
-// The default revision lookup stops when OCC hands back the cursor it was sent, as
-// older servers can, instead of asking for the same empty page forever.
-func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
-	responses := agentRevisionResponses()
-	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
-	fake := &fakeOCC{responses: responses}
-	var lists []string
-	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == agentPath+"/revisions" {
-			lists = append(lists, request.URL.RawQuery)
-			if len(lists) > 3 {
-				// Bound a looping client so a regression fails instead of hanging.
-				writer.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
-		}
-		fake.ServeHTTP(writer, request)
-	})
-	_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
-	if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
-		t.Fatalf("error = %v, want the no readable revision refusal", err)
+// Only the page that closes the cycle can contain a result. Bound requests so
+// a client that follows the same cursor twice fails instead of hanging.
+func serveRevisionCycle(t *testing.T, w http.ResponseWriter, page int, cursors []string, summaries []any) {
+	if page > len(cursors) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
 	}
-	if want := []string{"limit=1", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
-		t.Fatalf("revision list queries = %q, want %q", lists, want)
+	if page < len(cursors) || summaries == nil {
+		summaries = []any{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.MarshalWrite(w, map[string]any{
+		"data": summaries, "meta": map[string]any{"requestId": "test", "nextCursor": cursors[page-1]},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	readable := map[string]any{"id": testRevision1ID, "revision": 1, "agentId": testAgentID, "namespaceId": testNamespaceID}
+	for _, test := range []struct {
+		name      string
+		cursors   []string
+		summaries []any
+	}{
+		{"immediate repeat", []string{"A", "A"}, nil},
+		{"empty cycle", []string{"A", "B", "A"}, nil},
+		{"readable revision on last page", []string{"A", "B", "A"}, []any{readable}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			responses := agentRevisionResponses()
+			deployment := "GET " + agentPath + "/deployments/" + testRevision1ID
+			responses[deployment] = `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"}`
+			fake := &fakeOCC{responses: responses}
+			var lists []string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == agentPath+"/revisions" {
+					lists = append(lists, r.URL.RawQuery)
+					serveRevisionCycle(t, w, len(lists), test.cursors, test.summaries)
+					return
+				}
+				fake.ServeHTTP(w, r)
+			})
+			out, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+			want := []string{"limit=1", "cursor=A&limit=100", "cursor=B&limit=100"}[:len(test.cursors)]
+			if !slices.Equal(lists, want) {
+				t.Fatalf("revision list queries = %q, want %q", lists, want)
+			}
+			if test.summaries == nil {
+				if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
+					t.Fatalf("error = %v, want the no readable revision refusal", err)
+				}
+			} else if err != nil || !slices.Contains(fake.requested, deployment) || !strings.Contains(out, testRevision1ID) {
+				t.Fatalf("deployment status = %q, %v (requests %v)", out, err, fake.requested)
+			}
+		})
+	}
+}
+
+func TestDeleteReportsTheSelectedNamespaceResource(t *testing.T) {
+	for _, test := range []struct{ kind, collection, id string }{
+		{"configuration", "configurations", "cfg_00000000-0000-4000-8000-000000000001"},
+		{"secret", "secrets", "sec_00000000-0000-4000-8000-000000000002"},
+		{"credential-source", "credential-sources", "cs_00000000-0000-4000-8000-000000000003"},
+		{"iam role", "iam/roles", "role_custom.v2"},
+		{"iam access-binding", "iam/access-bindings", "binding_custom.v2"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			want := "DELETE /namespaces/" + testNamespaceID + "/" + test.collection + "/" + test.id
+			args := append([]string{"--namespace", testNamespaceID}, strings.Fields(test.kind)...)
+			out, requested, err := runOCC(t, map[string]string{want: ""}, append(args, "delete", test.id)...)
+			if err != nil || !slices.Equal(requested, []string{want}) || out != "Deleted "+test.kind+" "+test.id+".\n" {
+				t.Fatalf("delete printed %q after %v, error = %v", out, requested, err)
+			}
+		})
 	}
 }
 
 // OCC answers a delete with a bodyless 204; any other success is malformed.
 func TestDeleteRefusesASuccessOtherThanNoContent(t *testing.T) {
-	path := "/namespaces/" + testNamespaceID + "/configurations/cfg_00000000-0000-4000-8000-000000000001"
-	_, _, err := runOCC(t, map[string]string{"DELETE " + path: "raw:200 "}, "--namespace", testNamespaceID, "configuration", "delete", "cfg_00000000-0000-4000-8000-000000000001")
-	if err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" {
-		t.Fatalf("error = %v, want the invalid empty response refusal", err)
+	const id = "cfg_00000000-0000-4000-8000-000000000001"
+	request := "DELETE /namespaces/" + testNamespaceID + "/configurations/" + id
+	args := []string{"--namespace", testNamespaceID, "configuration", "delete", id}
+	out, _, err := runOCC(t, map[string]string{request: "raw:200 "}, args...)
+	if out != "" || err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" {
+		t.Fatalf("empty 200 printed %q, error = %v", out, err)
+	}
+
+	out, _, err = runOCCAgainst(t, &fakeOCC{refuse: "delete denied"}, args...)
+	var apiErr *occclient.APIError
+	if out != "" || !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("denied delete printed %q, error = %v", out, err)
 	}
 }
 
@@ -2096,10 +2155,12 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 	}
 	descriptor := map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated"}
 	provider := map[string]any{"modelProvider": map[string]any{"protocol": "openai-responses", "baseUrl": "https://evaluation.example.com/v1"}}
+	foreign := summary(descriptor)
+	foreign["agentId"] = "agt_00000000-0000-4000-8000-000000000001"
 	for _, test := range []struct {
 		name     string
 		revision map[string]any
-		// summaries is the revision list page; nil means the CLI must not list.
+		// summaries is the final revision list page; nil means the CLI must not list.
 		summaries []any
 		// body is the deploy request body; nil means none. OCC treats a missing
 		// body as no overrides, and servers older than Harness overrides refuse a body.
@@ -2127,6 +2188,14 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 			notice:    "notice: revision " + testRevision1ID + " has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: harnessAuth); retaining the Harness overrides that its revision summary records.\n",
 		},
 		{
+			name: "empty summary cycle", revision: unreadable, summaries: []any{},
+			refusal: "revision " + testRevision1ID + " has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: harnessAuth) and the Agent's revision list has no Harness summary for it, so its requested Harness overrides are unknown; pass them with --harness-overrides instead",
+		},
+		{
+			name: "summary for a different Agent", revision: unreadable, summaries: []any{foreign},
+			refusal: "OCC returned a revision summary that does not match the requested Namespace and Agent",
+		},
+		{
 			name:     "no Harness settings",
 			revision: map[string]any{"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "revision": 1},
 			refusal:  "the selected revision has no Harness settings",
@@ -2139,8 +2208,9 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls []string
+			page := 0
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls = append(calls, r.Method+" "+r.URL.Path)
+				calls = append(calls, r.Method+" "+r.URL.RequestURI())
 				w.Header().Set("Content-Type", "application/json")
 				var data any
 				meta := map[string]any{"requestId": "test"}
@@ -2148,8 +2218,9 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 				case "GET " + base + "/revisions/" + testRevision1ID:
 					data = test.revision
 				case "GET " + base + "/revisions":
-					data = test.summaries
-					meta["nextCursor"] = nil
+					page++
+					serveRevisionCycle(t, w, page, []string{"A", "B", "A"}, test.summaries)
+					return
 				case "POST " + base + "/deploy":
 					raw, err := io.ReadAll(r.Body)
 					if err != nil {
@@ -2184,11 +2255,12 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 			out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deploy", testAgentID, "--retain-harness-overrides", testRevision1ID)
 			want := []string{"GET " + base + "/revisions/" + testRevision1ID}
 			if test.summaries != nil {
-				want = append(want, "GET "+base+"/revisions")
+				list := "GET " + base + "/revisions?"
+				want = append(want, list+"limit=100", list+"cursor=A&limit=100", list+"cursor=B&limit=100")
 			}
 			if test.refusal != "" {
 				if err == nil || err.Error() != test.refusal {
-					t.Fatalf("error = %v, want %q", err, test.refusal)
+					t.Fatalf("error = %v, want %q (requests %v)", err, test.refusal, calls)
 				}
 			} else {
 				if err != nil {
