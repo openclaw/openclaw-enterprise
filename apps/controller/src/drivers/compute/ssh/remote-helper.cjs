@@ -1006,6 +1006,12 @@ async function run(input) {
       if (server.command !== input.runtime.codexBinary.path)
         throw new ConfigurationFailure("Unexpected Codex executable.");
       await verifyCodexBinary(input.runtime.codexBinary);
+      const helper = inspect(join(dirname(server.command), "codex-code-mode-host"));
+      if (!helper?.isFile() || helper.uid !== 0 || !(helper.mode & 0o001) || (helper.mode & 0o6022)) {
+        throw new ConfigurationFailure(
+          "Install codex-code-mode-host from the matching Codex package alongside the pinned executable.",
+        );
+      }
     }
   }
   const nsDir = namespaceDirectory(input);

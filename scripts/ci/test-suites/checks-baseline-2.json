@@ -19,6 +19,7 @@
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.ts",
+    "tests/conformance/ssh-embedded-codex.test.ts",
     "tests/conformance/module-boundaries.test.ts",
     "tests/integration/repository-credentials-router.test.ts",
     "tests/conformance/module-policy.test.ts",
@@ -518,6 +519,9 @@
     },
     {
       "path": "tests/integration/container-promote.test.ts"
+    },
+    {
+      "path": "tests/conformance/ssh-embedded-codex.test.ts"
     },
     {
       "path": "tests/conformance/ssh-compute.test.ts"

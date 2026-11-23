@@ -347,3 +347,17 @@ settings. It does not install software or supply provider credentials. Stdio
 uses a private child process, not an unauthenticated TCP listener. Gateway
 readiness does not establish model access or tool isolation; qualify each
 installed build on an isolated host before enabling the route.
+
+For the pinned private Codex installation, install the matching
+`codex-code-mode-host` executable beside `codex` with the same ownership and
+permission protections. Preparation and activation check its presence without
+running it as the SSH administrator. A gateway can be ready even when a tool
+cannot start.
+
+To smoke-test a deployment, use a non-root agent and two synthetic workspace
+files: one readable control with a known heading and one empty root-owned file
+with mode 000. In a single private chat turn request two separate Read calls.
+Expand the tool cards and verify the control heading and the failed Read on the
+exact protected basename. A model refusal without a tool call does not count.
+This tests filesystem permissions, not an operator approval denial or an
+outside-workspace policy.
