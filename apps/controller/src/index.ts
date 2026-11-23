@@ -2096,7 +2096,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       }
       await relayAgentAutomation({
         controller,
-        installationId,
         actorId: context.actorId,
         operation,
         request,

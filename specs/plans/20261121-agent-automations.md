@@ -18,8 +18,9 @@ do not add an OCC job store, scheduler, or execution qualification system.
 ## Work
 
 1. Define the six route schemas and generate the OpenAPI reference.
-2. Require a human session and exact-Agent `administer`, then use the selected
-   revision's existing native admin transport for the corresponding cron method.
+2. Require a human session and exact-Agent `operate`, resolve the selected
+   revision, and privately use the shared Gateway machine identity for the
+   corresponding cron method.
 3. Preserve Origin/CSRF checks, mutation audit, native revision conflicts, and
    `UNKNOWN_OUTCOME` without automatic retry.
 4. Update the current [reference](../../docs/reference/agent-automations.md)

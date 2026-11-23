@@ -20,11 +20,16 @@ running revision, forwards one allowed cron request, and records mutation audit
 evidence. OpenClaw owns job IDs, definitions, schedule normalization, execution,
 and run history. OCC does not add a scheduler or persist a second job record.
 
-Each operation requires a human session with exact-Agent `administer`.
-The existing native admin transport delegates `operator.admin`; granting that
-transport to an `operate`-only user would expand the user's authority. All
-administrators of the Agent can manage its native jobs. The API does not provide
-creator-specific ownership or visibility.
+Each operation requires a human session with exact-Agent `operate`. As with
+[workspace file access](../../docs/flows/workspace-files.md#5-occ-admits-one-exact-agent-file-operation),
+OCC authorizes the exact resource and operation before it privately uses the
+shared trusted Gateway machine identity. That identity has `operator.admin`;
+the human does not receive it. OCC limits this API to the six cron methods.
+
+An operator can manage all native jobs for the Agent, regardless of creator, and
+can create persistent trusted native runs that use the Agent's native tools.
+The API does not enforce creator-only access or guarantee that a scheduled run
+has authority equivalent to the caller.
 
 ## Interface
 
@@ -47,7 +52,7 @@ Native cron owns revision conflicts and history retention.
 
 ## Security and failure behavior
 
-OCC checks the exact Agent permission before it opens the native admin transport.
+OCC checks exact-Agent `operate` before it opens the private Gateway transport.
 Service keys cannot use these human-session routes. Mutations retain existing
 Origin and CSRF checks. OCC limits native requests to the six methods above and
 does not expose a general RPC endpoint. Audit records identify the caller,

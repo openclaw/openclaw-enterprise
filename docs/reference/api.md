@@ -6415,11 +6415,11 @@ List an Agent's native cron automations
 
 **Operation ID:** `listAgentAutomations`
 
-**Permissions:** Requires administer permission on the requested Agent.
+**Permissions:** Requires operate permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -6472,11 +6472,11 @@ Create a native cron automation for an Agent
 
 **Operation ID:** `createAgentAutomation`
 
-**Permissions:** Requires administer permission on the requested Agent.
+**Permissions:** Requires operate permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -6567,11 +6567,11 @@ Delete a native cron automation
 
 **Operation ID:** `deleteAgentAutomation`
 
-**Permissions:** Requires administer permission on the requested Agent.
+**Permissions:** Requires operate permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -6603,11 +6603,11 @@ Get a native cron automation
 
 **Operation ID:** `getAgentAutomation`
 
-**Permissions:** Requires administer permission on the requested Agent.
+**Permissions:** Requires operate permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -6665,11 +6665,11 @@ Update a native cron automation
 
 **Operation ID:** `updateAgentAutomation`
 
-**Permissions:** Requires administer permission on the requested Agent.
+**Permissions:** Requires operate permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -6747,11 +6747,11 @@ List native execution history for a cron automation
 
 **Operation ID:** `listAgentAutomationRuns`
 
-**Permissions:** Requires administer permission on the requested Agent.
+**Permissions:** Requires operate permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 

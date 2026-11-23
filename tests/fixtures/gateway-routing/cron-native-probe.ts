@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { prepareNativeAdminConfiguration } from "../../../apps/controller/src/gateway/native-admin.ts";
 import { createConsoleAppFixture } from "../../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../../helpers/development.ts";
 import { createHarnessConfiguration } from "../../helpers/harness-configuration.mjs";
@@ -14,19 +13,14 @@ assert.ok(endpoint && keyPath, "Native Gateway endpoint and private key path are
 const apiKey = await readFile(keyPath, "utf8");
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 const scope = { after: (cleanup: () => unknown | Promise<unknown>) => cleanups.push(cleanup) };
-let transportRequests = 0;
+let endpointRequests = 0;
+let keyRequests = 0;
 const compute = createReadyComputeDriver("native-cron-api-probe", {
   implementation: "native-cron-api-probe",
   validateHarnessAuth() {},
-  getGatewayEndpoint: () => endpoint,
-  async getGatewayBrowserRequest(_revision, { principalId, mode }) {
-    assert.equal(mode, "admin");
-    transportRequests++;
-    return {
-      endpoint,
-      subject: `test:${principalId}`,
-      headers: { "x-openclaw-scopes": "operator.admin" },
-    };
+  getGatewayEndpoint() {
+    endpointRequests++;
+    return endpoint;
   },
 });
 function record(value: unknown): Record<string, unknown> {
@@ -42,23 +36,15 @@ try {
     publicOrigin,
     authBaseURL: publicOrigin,
     development: { enabled: false },
-    nativeAdmin: { enabled: true, domain: "agents.oce.example.test" },
-    nativeAdminGatewayApiKey: async () => apiKey,
+    nativeAdminGatewayApiKey: async () => {
+      keyRequests++;
+      return apiKey;
+    },
   });
   await f.bootstrap("Native cron API");
   const namespace = await f.createNamespace("Cron API", { ready: true });
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
   const agent = await f.createAgent(namespace.id, "Cron Agent", values);
-  await f.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    prepareNativeAdminConfiguration(values, {
-      publicOrigin,
-      installationId: f.controller.installation.id,
-      agent,
-      domain: "agents.oce.example.test",
-    }),
-  );
   const revision = await f.deployAgent(namespace.id, agent.id);
   await f.activateRevision(namespace.id, agent.id, revision.id, undefined);
   const sibling = await f.createAgent(namespace.id, "Cron sibling", values);
@@ -88,36 +74,37 @@ try {
     schedule: { kind: "every", everyMs: 86_400_000 },
     prompt: "This disabled job must not run.",
   };
-  const beforeDenials = transportRequests;
-  // None of these callers can obtain native operator.admin transport.
-  assert.equal(
-    (await f.request("POST", base, { session: operatorSession, body: input })).status,
-    403,
-  );
-  assert.equal((await f.request("GET", siblingBase, { session: adminSession })).status, 403);
+  const beforeDenials = { endpointRequests, keyRequests };
+  // Neither an administer-only caller nor an operator on another Agent can open the private route.
+  assert.equal((await f.request("POST", base, { session: adminSession, body: input })).status, 403);
+  assert.equal((await f.request("GET", siblingBase, { session: operatorSession })).status, 403);
   const service = await issueServiceKeyForNativeAgent({ fixture: f, namespace, agent });
   assert.equal(
     (await f.request("GET", base, { session: null, headers: { "x-api-key": service.key } })).status,
     401,
   );
   const csrf = await f.rawRequest("POST", base, {
-    headers: { cookie: adminSession.cookie, origin: "https://untrusted.example.test" },
+    headers: { cookie: operatorSession.cookie, origin: "https://untrusted.example.test" },
     body: input,
   });
   assert.equal(csrf.response.status, 403);
-  assert.equal(transportRequests, beforeDenials, "Denied requests must not open native transport.");
+  assert.deepEqual(
+    { endpointRequests, keyRequests },
+    beforeDenials,
+    "Denied requests must not select a private endpoint or load its key.",
+  );
   assert.ok(
     f.auditSink.events.some(
       (event) =>
         event.kind === "authorization_denial" &&
         event.outcome === "denied" &&
-        event.actorId === operator.principal.id,
+        event.actorId === administrator.principal.id,
     ),
-    "The operate-only refusal must have attributable audit evidence.",
+    "The administer-only refusal must have attributable audit evidence.",
   );
 
   const call = (method: string, path: string, body?: unknown) =>
-    f.request(method, path, { session: adminSession, ...(body === undefined ? {} : { body }) });
+    f.request(method, path, { session: operatorSession, ...(body === undefined ? {} : { body }) });
   const created = await call("POST", base, input);
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const job = created.data as {
@@ -167,7 +154,7 @@ try {
         (event) =>
           event.action === `openclaw.agents.automations.${action}` &&
           event.outcome === "success" &&
-          event.actorId === administrator.principal.id,
+          event.actorId === operator.principal.id,
       ),
       `Expected attributable ${action} audit evidence.`,
     );

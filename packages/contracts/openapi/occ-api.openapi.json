@@ -23102,7 +23102,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/automations": {
       "get": {
-        "description": "Requires administer permission on the requested Agent.",
+        "description": "Requires operate permission on the requested Agent.",
         "operationId": "listAgentAutomations",
         "parameters": [
           {
@@ -23257,11 +23257,11 @@
         "summary": "List an Agent's native cron automations",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       },
       "post": {
-        "description": "Requires administer permission on the requested Agent.",
+        "description": "Requires operate permission on the requested Agent.",
         "operationId": "createAgentAutomation",
         "parameters": [
           {
@@ -23492,13 +23492,13 @@
         "summary": "Create a native cron automation for an Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}": {
       "delete": {
-        "description": "Requires administer permission on the requested Agent.",
+        "description": "Requires operate permission on the requested Agent.",
         "operationId": "deleteAgentAutomation",
         "parameters": [
           {
@@ -23628,11 +23628,11 @@
         "summary": "Delete a native cron automation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       },
       "get": {
-        "description": "Requires administer permission on the requested Agent.",
+        "description": "Requires operate permission on the requested Agent.",
         "operationId": "getAgentAutomation",
         "parameters": [
           {
@@ -23781,11 +23781,11 @@
         "summary": "Get a native cron automation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       },
       "patch": {
-        "description": "Requires administer permission on the requested Agent.",
+        "description": "Requires operate permission on the requested Agent.",
         "operationId": "updateAgentAutomation",
         "parameters": [
           {
@@ -24023,13 +24023,13 @@
         "summary": "Update a native cron automation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs": {
       "get": {
-        "description": "Requires administer permission on the requested Agent.",
+        "description": "Requires operate permission on the requested Agent.",
         "operationId": "listAgentAutomationRuns",
         "parameters": [
           {
@@ -24196,7 +24196,7 @@
         "summary": "List native execution history for a cron automation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },

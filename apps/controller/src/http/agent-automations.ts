@@ -125,7 +125,6 @@ async function nativeRequest(
 
 export async function relayAgentAutomation(input: {
   controller: OpenClawController;
-  installationId: string;
   actorId: string;
   operation: OccApiRoute;
   request: FastifyRequest;
@@ -137,7 +136,7 @@ export async function relayAgentAutomation(input: {
   const p = request.params as Record<string, string>;
   const q = request.query as Record<string, string | undefined>;
   const body = request.body as Record<string, unknown> | undefined;
-  const selection = await controller.getAdministerableActiveAgentRevision(
+  const selection = await controller.getOperableActiveAgentRevision(
     input.actorId,
     p.namespaceId!,
     p.agentId!,
@@ -152,12 +151,8 @@ export async function relayAgentAutomation(input: {
   ) {
     throw dependencyUnavailable();
   }
-  const transport = await compute.getGatewayBrowserRequest?.(
-    selection.revision,
-    { installationId: input.installationId, principalId: input.actorId, mode: "admin" },
-    AbortSignal.timeout(15_000),
-  );
-  if (transport === undefined) {
+  const endpoint = compute.getGatewayEndpoint?.(selection.revision);
+  if (endpoint === undefined) {
     throw dependencyUnavailable();
   }
   const key = await input.gatewayApiKey();
@@ -176,8 +171,8 @@ export async function relayAgentAutomation(input: {
   let result: unknown;
   try {
     result = await nativeRequest(
-      transport.endpoint,
-      { ...transport.headers, "x-api-key": key },
+      endpoint,
+      { "x-api-key": key },
       methods[id],
       mutation,
       (nativeAgentId) => {
