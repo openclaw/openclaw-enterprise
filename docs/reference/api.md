@@ -10779,7 +10779,7 @@ Remove an unreferenced credential source
 
 **Operation ID:** `deleteCredentialSource`
 
-**Permissions:** Requires delete permission on the requested CredentialSource.
+**Permissions:** Requires delete permission on this CredentialSource unless the caller owns the saved connection.
 
 | Action | Resource | Scope |
 | --- | --- | --- |

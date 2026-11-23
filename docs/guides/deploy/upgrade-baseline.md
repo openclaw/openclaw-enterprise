@@ -18,11 +18,11 @@ control-plane data.
 
 ```bash
 umask 077
-mkdir -p /secure/occ/upgrades
-export BASELINE="/secure/occ/upgrades/baseline-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p /secure/occ/upgrades || exit 1
+BASELINE="$(mktemp -d /secure/occ/upgrades/baseline-XXXXXXXX)" || exit 1
+export BASELINE
 export PGPASSFILE=/secure/occ/pgpass
 export OCC_MIGRATION_DATABASE_URL='postgresql://occ_migrator@<postgres-host>:5432/<database>?sslmode=verify-full&sslrootcert=/secure/occ/database-ca.pem'
-mkdir "$BASELINE"
 kube=(kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>')
 helm_args=(--kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' --namespace openclaw-system)
 occ_json=(/secure/occ/bin/occ --output json)
@@ -384,8 +384,7 @@ can contain Secrets.
   test -s "$comparison/installed.yaml"
   attempt="$UPGRADE_EVIDENCE/helm-attempts/$(jq -er .nonce "$UPGRADE_EVIDENCE/prepared-helm-attempt.json")"
   test -s "$attempt/rendered.yaml"
-  diff -u "$comparison/installed.yaml" "$attempt/rendered.yaml" \
-    >"$comparison/manifest.diff" || test "$?" -eq 1
+  { diff -u "$comparison/installed.yaml" "$attempt/rendered.yaml" || test "$?" -eq 1; } >"$comparison/manifest.diff"
   printf 'Review the private comparison in %s\n' "$comparison"
 )
 ```

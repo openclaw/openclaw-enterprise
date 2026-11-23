@@ -37874,7 +37874,7 @@
     },
     "/namespaces/{namespaceId}/credential-sources/{credentialSourceId}": {
       "delete": {
-        "description": "Requires delete permission on the requested CredentialSource.",
+        "description": "Requires delete permission on this CredentialSource unless the caller owns the saved connection.",
         "operationId": "deleteCredentialSource",
         "parameters": [
           {
@@ -37985,7 +37985,12 @@
         "summary": "Remove an unreferenced credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
-          { "action": "delete", "resourceKind": "credential_source", "scope": "requested" }
+          {
+            "action": "delete",
+            "condition": "unless_consent_owner",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          }
         ]
       },
       "get": {

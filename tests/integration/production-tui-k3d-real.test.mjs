@@ -45,6 +45,7 @@ import {
   assertInstallationVolume,
   assertLocalRehearsalSelection,
   measureUpgradeAvailability,
+  readGatewayContinuity,
   readImmutableInstallationSecret,
   rehearsePopulatedReturn,
   selectRehearsalControllers,
@@ -54,7 +55,9 @@ import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts"
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
-const returnSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const returnMode = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL;
+const ordinaryUpgrade = returnMode === "ordinary";
+const returnSelected = returnMode === "1" || ordinaryUpgrade;
 const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
 const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
 const protectedTuiSelection = {
@@ -78,6 +81,9 @@ function selectedTestTitle() {
   }
   if (onlineSelected) {
     return "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL";
+  }
+  if (ordinaryUpgrade) {
+    return "A populated production Helm Installation retains the acknowledged write after an ordinary upgrade and controller return";
   }
   if (returnSelected) {
     return "A populated production Helm Installation retains the acknowledged write after controller return";
@@ -1668,10 +1674,14 @@ test(
                 controllerEvidence,
                 "--occ",
                 occCli,
+                "--verify-agent",
+                agent.id,
+                "--verify-agent-namespace",
+                namespace.id,
                 "--timeout-seconds",
                 "600",
               ],
-              { timeout: 900_000, env: occEnv },
+              { timeout: 900_000, env: occEnv, protectedInput: true },
             ),
           (details) =>
             record("Independent controller upgrade API availability observations", details),
@@ -1680,7 +1690,15 @@ test(
         { run, kubeArgs, namespace: system, release, directory },
         upgradeController,
       );
-      assert.match(controllerOutput, /no Agent deployments were requested/u);
+      assert.ok(
+        controllerOutput.includes("no Agent deployments were requested"),
+        "Controller upgrade completion message was absent",
+      );
+      const gatewayContinuity = await readGatewayContinuity(controllerEvidence, {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        revisionId: finalGateway.revisionId,
+      });
       for (const component of ["api", "worker"]) {
         const deployment = `openclaw-enterprise-${component}`;
         await kubectl("-n", system, "rollout", "status", `deployment/${deployment}`);
@@ -1725,6 +1743,7 @@ test(
       );
       await record("Independent controller upgrade retained Agent revisions", {
         controllerImage: upgradeImages.controller,
+        ...gatewayContinuity,
       });
 
       // Configure a curated catalog and an unused documentation-range proxy in
@@ -2097,6 +2116,7 @@ test(
       }
       await rehearsePopulatedReturn({
         controllers: rehearsal,
+        ordinaryUpgrade,
         kubeconfig: selection.kubeconfigPath,
         context: selection.kubernetesContext,
         namespace: system,

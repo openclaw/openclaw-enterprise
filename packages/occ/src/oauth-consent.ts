@@ -152,7 +152,6 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      await authorizeCreate(principalId, input.namespaceId);
       const template = await state.connectionTemplates.lockConnectionTemplate(
         input.connectionTemplateId,
       );
@@ -224,7 +223,6 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      await authorizeCreate(principalId, session.namespaceId);
       const template = await state.connectionTemplates.findConnectionTemplate(
         session.connectionTemplateId,
       );

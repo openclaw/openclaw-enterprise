@@ -1488,7 +1488,8 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
-      [89, "preTokenServiceCredentialSources"],
+      [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1943,7 +1944,8 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
-      [89, "preTokenServiceCredentialSources"],
+      [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -1960,24 +1962,31 @@ test(
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
             : undefined;
-        const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
-        assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
-          ok: true,
-          history,
-        });
-        assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
-        await assertSourceOwners?.();
-        await assertCompletedHistory(db, receipts);
-        await assertUpgradedRevisionReadable(db);
-        assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
-        // Upgrading an existing revision must never invent a recoverable first-deployment intent.
-        const existingBindings = await db.app.query(
-          "SELECT first_deployment_digest FROM occ.agent_revisions",
-        );
-        assert.ok(existingBindings.rows.length > 0);
-        assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
-        await assertUpgradedAuthentication(db);
+        const upgrade = async () => {
+          const before = await canonicalData(db);
+          assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+            ok: true,
+            history,
+          });
+          assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
+          await assertSourceOwners?.();
+          await assertCompletedHistory(db, receipts);
+          if (history !== "preNativeGitDelivery") {
+            await assertUpgradedRevisionReadable(db);
+          }
+          assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+          // Upgrading an existing revision must never invent a recoverable first-deployment intent.
+          const existingBindings = await db.app.query(
+            "SELECT first_deployment_digest FROM occ.agent_revisions",
+          );
+          assert.ok(existingBindings.rows.length > 0);
+          assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
+          await assertUpgradedAuthentication(db);
+        };
+        if (history !== "preNativeGitDelivery") {
+          await upgrade();
+        }
         if (history === "preHumanAuthenticationResults") {
           await assertSignInResultStorage(db.app);
         }
@@ -2061,7 +2070,7 @@ test(
           ).rows[0].allowed,
           true,
         );
-        if (prefix === 87) {
+        if (prefix === 87 || history === "preNativeGitDelivery") {
           // An app-role writer can bypass OCC. A valid broader network allowance must still
           // cover every injected request, and standalone execution cannot add repository delivery.
           const original = (
@@ -2264,36 +2273,141 @@ test(
             version: currentPolicy.version + 1,
             repositoryNetworkPolicy: [],
           };
-          await db.app.query(
-            "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
-            [savedPolicy.version, savedPolicy, original.agent_id],
-          );
-          await assert.rejects(
-            insert(
-              {
-                ...spec,
-                execution_admission: {
-                  ...spec.execution_admission,
-                  repositoryNetworkPolicyVersion: 1,
-                },
-                sandbox_policy: {
-                  version: savedPolicy.version,
-                  repositoryNetworkPolicy: {
-                    version: 1,
-                    grants: [],
-                    identity: '{"version":1,"grants":[]}',
+          // Keep this refused write probe from changing the later upgrade's policy fixture.
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
+              [savedPolicy.version, savedPolicy, original.agent_id],
+            );
+            await assert.rejects(
+              insert(
+                {
+                  ...spec,
+                  execution_admission: {
+                    ...spec.execution_admission,
+                    repositoryNetworkPolicyVersion: 1,
+                  },
+                  sandbox_policy: {
+                    version: savedPolicy.version,
+                    repositoryNetworkPolicy: {
+                      version: 1,
+                      grants: [],
+                      identity: '{"version":1,"grants":[]}',
+                    },
                   },
                 },
-              },
-              4,
-            ),
-            { code: "23514", constraint: "agent_revisions_execution_admission" },
-          );
+                4,
+              ),
+              { code: "23514", constraint: "agent_revisions_execution_admission" },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
+        }
+        if (history === "preNativeGitDelivery") {
+          // Preserve populated standalone v8 snapshots that already passed the 0088 check.
+          await upgrade();
         }
       });
       subtests.push(subtest);
     }
     await Promise.all(subtests);
+  },
+);
+
+test(
+  "TokenService Source migration refuses a retained pending OAuth Source without mutation",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix: 90 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const clientId = `ccr_${randomUUID()}`;
+    const templateId = `ctp_${randomUUID()}`;
+    const sourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients
+         (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+       VALUES ($1,$2,'Namespace client','https://issuer.example.test','migration-client',
+         'https://issuer.example.test/token','none',now())`,
+      [clientId, namespaceId],
+    );
+    // The current Template version is a deferred foreign key, as it is during normal creation.
+    await db.app.query("BEGIN");
+    try {
+      await db.app.query(
+        `INSERT INTO occ.connection_templates(id,namespace_id,display_name,current_version,created_at)
+         VALUES($1,$2,'Migration template',1,now())`,
+        [templateId, namespaceId],
+      );
+      await db.app.query(
+        `INSERT INTO occ.oauth_connection_template_versions
+           (template_id,version,oauth_client_id,issuer,mode,authorization_url,token_url,scopes,
+            authorization_parameters,destinations,created_at)
+         VALUES($1,1,$2,'https://issuer.example.test','manual','https://issuer.example.test/auth',
+           'https://issuer.example.test/token',ARRAY['read'],'{}',
+           '[{"host":"api.example.test","port":443,"path":"/"}]',now())`,
+        [templateId, clientId],
+      );
+      await db.app.query("COMMIT");
+    } catch (error) {
+      await db.app.query("ROLLBACK");
+      throw error;
+    }
+    // Old OCC consumes the browser attempt before exchange. An uncertain exchange timeout
+    // retains this pending Source for retirement without an attempt or SavedConnection.
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at)
+       VALUES($1,$2,$3,'oauth2-refresh-token',$4::jsonb,'token_service','registering',now())`,
+      [
+        sourceId,
+        namespaceId,
+        `Connection ${randomUUID()}`,
+        JSON.stringify({
+          connection_template_id: templateId,
+          connection_template_version: "1",
+          oauth_client_id: clientId,
+        }),
+      ],
+    );
+    const sourceData = async () =>
+      (
+        await db.app.query(
+          "SELECT to_jsonb(s) AS source FROM occ.credential_sources s WHERE id=$1",
+          [sourceId],
+        )
+      ).rows;
+    const before = await historySnapshot(db);
+    const sourceBefore = await sourceData();
+    assert.equal(before.receipts.length, 90);
+    assert.equal(sourceBefore.length, 1);
+    // The exact PostgreSQL cause distinguishes the explicit preflight from a later failing CHECK.
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        assert.ok(error instanceof Error);
+        const failure = error.cause ?? error;
+        assert.ok(failure instanceof Error);
+        assert.ok("code" in failure);
+        assert.equal(failure.code, "55000");
+        assert.equal(
+          failure.message,
+          "Existing OAuth custody requires an approved transfer or confirmed reset before the selected TokenService can own OAuth Sources",
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await sourceData(), sourceBefore);
   },
 );
 
@@ -2488,7 +2602,8 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
-      [89, "preTokenServiceCredentialSources"],
+      [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2617,26 +2732,31 @@ test(
       assert.deepEqual(await logicalRestoreSnapshot(upgraded), current);
     }
 
-    // The immediately preceding completed archive must upgrade through the production command.
-    const staticPredecessor = await historyDatabase(context, fixture, "static_predecessor", {
-      prefix: 88,
-    });
-    const staticUpgrade = await restoreHistoryArchive(
-      context,
-      fixture,
-      await dumpHistoryArchive(fixture, staticPredecessor),
-    );
-    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production"), {
-      ok: true,
-      history: "preStaticConnectionTemplates",
-    });
-    context.diagnostic(
-      `Upgraded restored prefix 88: ${catalogDigest(await migrationCatalog(staticUpgrade.migrator))}`,
-    );
-    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production", "--check"), {
-      ok: true,
-      history: "completed",
-    });
+    // The production command must recognize archives from each predecessor.
+    for (const [prefix, history] of [
+      [88, "preStaticConnectionTemplates"],
+      [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
+    ]) {
+      await context.test(history, async (child) => {
+        const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
+          prefix,
+        });
+        const upgrade = await restoreHistoryArchive(
+          child,
+          fixture,
+          await dumpHistoryArchive(fixture, predecessor),
+        );
+        assert.deepEqual(await runHistoryCommand(upgrade, "production"), { ok: true, history });
+        child.diagnostic(
+          `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(upgrade.migrator))}`,
+        );
+        assert.deepEqual(await runHistoryCommand(upgrade, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
+      });
+    }
 
     // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
     const catalogRefusal = /catalog objects or effective grants differ/;
@@ -2781,7 +2901,8 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
-      [89, "preTokenServiceCredentialSources"],
+      [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2809,6 +2930,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [89, "CREATE FUNCTION"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
                 [86, "CREATE TRIGGER"],
@@ -2841,6 +2963,10 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 89) {
+          // Abort 0090 after replacing the execution check, while installing the session guard.
+          failAt =
+            "IF to_regprocedure('occ.repository_git_network_admission_is_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 88) {
           // Abort 0089 after it has created the static version table and its current-version FK.
           failAt =
@@ -3074,6 +3200,8 @@ test(
       join(migrationsDirectory, "0025_repository_credentials.sql"),
       "utf8",
     );
+    const completedCount = manifest.entries.length;
+    const nextTimestamp = manifest.entries.at(-1).when + 1;
     const cases = [
       ["partial", 19, null],
       [
@@ -3088,8 +3216,8 @@ test(
       ],
       [
         "future-receipt",
-        25,
-        "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('f',64),9999999999999)",
+        completedCount,
+        `INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('f',64),${nextTimestamp})`,
       ],
       ["catalog-object", 25, "CREATE TABLE occ.unexplained(id integer)"],
       [
@@ -3154,6 +3282,109 @@ test(
         },
       );
     }
+    const nativePreviewSql = await readFile(
+      join(
+        repositoryRoot,
+        "tests/fixtures/migrations/native-git-preview/0088_native_git_delivery.sql",
+      ),
+    );
+    const nativePreviewHash = "19319a8b5bf7d714437a563b863f6ab3ead8a4ecefc3ed1d065a62cfe1d4e5e1";
+    assert.equal(createHash("sha256").update(nativePreviewSql).digest("hex"), nativePreviewHash);
+    const nativeDeliverySql = await readFile(
+      join(migrationsDirectory, "0090_native_git_delivery.sql"),
+    );
+    const nativeDeliveryHash = "d8dd9f9b4b1fde20f9f1bb3819558e27fc08aa8518cc4b71c27f25240bed4dcb";
+    assert.equal(createHash("sha256").update(nativeDeliverySql).digest("hex"), nativeDeliveryHash);
+    void context.test("standalone and native Git receipts in reverse order", async (child) => {
+      const db = await historyDatabase(child, fixture, "reversed_native", {
+        prefix: manifest.entries.length,
+      });
+      const receipts = await historyReceipts(db.migrator);
+      const standalone = receipts[87];
+      const native = receipts[89];
+      assert.deepEqual(
+        [standalone, native].map(({ hash }) => hash),
+        [manifest.entries[87].sha256, nativeDeliveryHash],
+      );
+      // A correct final catalog cannot qualify receipts published in the wrong order.
+      await db.migrator.query(
+        `UPDATE drizzle.__drizzle_migrations
+           SET hash = CASE id WHEN $1 THEN $3 ELSE $4 END
+           WHERE id IN ($1, $2)`,
+        [standalone.id, native.id, native.hash, standalone.hash],
+      );
+      await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+    });
+    for (const [prefix, label, tag] of [
+      [85, "premerge repository ACL and native Git receipts", "0087_native_git_delivery"],
+      [
+        87,
+        "premerge native Git in standalone credential deployment slot",
+        "0088_native_git_delivery",
+      ],
+      [88, "premerge native Git in static connection templates slot", "0089_native_git_delivery"],
+    ]) {
+      void context.test(label, async (child) => {
+        const db = await historyDatabase(child, fixture, "oldnative", { prefix });
+        await seedCanonicalData(db, {
+          preset: true,
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        const directory = await mkdtemp(join(tmpdir(), "openclaw-premerge-native-"));
+        const entries = [];
+        const expected = [];
+        try {
+          await mkdir(join(directory, "meta"));
+          if (prefix === 85) {
+            // This preview installed repository policy and native Git one slot earlier.
+            const { sha256, ...policy } = manifest.entries[86];
+            const bytes = await readFile(join(migrationsDirectory, `${policy.tag}.sql`));
+            assert.equal(createHash("sha256").update(bytes).digest("hex"), sha256);
+            entries.push({
+              ...policy,
+              idx: 86,
+              when: policy.when - 1,
+              tag: "0086_repository_network_policy",
+            });
+            expected.push([sha256, entries[0].when]);
+            await writeFile(join(directory, `${entries[0].tag}.sql`), bytes);
+          }
+          const { sha256: occupiedHash, ...slot } = manifest.entries[prefix + entries.length];
+          const native = { ...slot, tag };
+          entries.push(native);
+          // The abandoned 0089 used the same SQL now in 0090, at the timestamp
+          // assigned to the static connection templates migration.
+          const [sql, hash] =
+            prefix === 88
+              ? [nativeDeliverySql, nativeDeliveryHash]
+              : [nativePreviewSql, nativePreviewHash];
+          assert.notEqual(occupiedHash, hash);
+          expected.push([hash, native.when]);
+          await writeFile(join(directory, `${native.tag}.sql`), sql);
+          await writeFile(
+            join(directory, "meta/_journal.json"),
+            JSON.stringify({ version: "7", dialect: "postgresql", entries }),
+          );
+          await migrate(drizzle(db.migrator), { migrationsFolder: directory });
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+        const before = await historySnapshot(db);
+        assert.equal(before.receipts.length, prefix + expected.length);
+        assert.deepEqual(
+          before.receipts
+            .slice(-expected.length)
+            .map(({ hash, created_at }) => [hash, Number(created_at)]),
+          expected,
+        );
+        const data = await canonicalData(db);
+        await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+        assert.deepEqual(await canonicalData(db), data);
+      });
+    }
+
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(

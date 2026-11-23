@@ -5,6 +5,7 @@ import {
   assertExecutionReleaseAllowed,
   credentialProxyRoutingDetails,
   credentialSourceMatchesSnapshot,
+  protectedRepositoryGitAdmission,
   validateDeploymentPolicy,
   type CredentialSource,
   type DeploymentPolicy,
@@ -113,6 +114,15 @@ export function registerDeploymentPolicyCases(): void {
       },
     } as const;
     assert.doesNotThrow(() => assertExecutionAdmission(staged));
+    assert.equal(protectedRepositoryGitAdmission(staged.executionAdmission), false);
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          ...staged,
+          executionAdmission: { version: 9, mode: "protected" },
+        }),
+      /own execution admission/,
+    );
     assert.throws(
       () =>
         assertExecutionAdmission({

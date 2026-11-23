@@ -20,6 +20,30 @@ External proxies, mixed old/new channel settings, and already-transitioned
 installations are refused. Disabled legacy channels remain disabled: obsolete
 keys are removed, with no Envoy provisioning or Agent transition.
 
+For enabled legacy channels with running Agents, check guarded Stop.
+`--preflight-only` skips Stop. In a trusted checkout, select `OCC_BINARY`.
+Set `INCUMBENT_SOURCE_REVISION` from the installed controller image’s verified
+source commit. Reserve `SOURCE_REVISION` for the target.
+
+```bash
+(
+  set -o pipefail
+  [[ ${INCUMBENT_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] &&
+    GIT_ALLOW_PROTOCOL= GIT_NO_LAZY_FETCH=1 git --no-replace-objects cat-file blob \
+      "${INCUMBENT_SOURCE_REVISION}^{commit}:packages/contracts/openapi/occ-api.openapi.json" |
+    jq -e '.paths["/namespaces/{namespaceId}/agents/{agentId}/stop"].post |
+      .operationId == "stopAgent" and
+      any(.parameters[]?; .in == "query" and .name == "expectedActiveRevisionId")' >/dev/null &&
+    "${OCC_BINARY:?Select the operator CLI}" agent stop --help |
+    grep -E '^[[:space:]]+--if-active-revision[[:space:]]' >/dev/null &&
+    printf '%s\n' 'Guarded Stop source and CLI checks passed.'
+) || { printf '%s\n' 'Hold the upgrade. Verify the installed controller and operator CLI.' >&2; false; }
+```
+
+Hold if provenance is missing or either check fails. Declared support cannot
+prove live enforcement. Older APIs can return HTTP 400 after the journal
+records `sending`. [Reconcile uncertain Stops](#recover-and-verify).
+
 **Target support:** use this checkout's controller image and stock chart from the
 same full Git commit. The shared upgrader checks image/source identity, installed
 migration history, candidate startup, and the selected Installation. Do not use
