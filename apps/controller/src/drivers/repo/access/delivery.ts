@@ -48,6 +48,7 @@ export function repositoryGitRestOperations(
       }
       return Object.freeze({
         repository,
+        access,
         available: Object.freeze(
           available.filter((action) => permitsRepositoryApiAction(apiActions, action)),
         ),

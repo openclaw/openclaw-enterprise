@@ -127,7 +127,7 @@ export const SandboxPolicyViewResponse = Type.Object(
           Type.Array(
             Type.Object(
               {
-                repository: RepositoryNetworkLimitSchema.properties.repository,
+                ...RepositoryNetworkLimitSchema.properties,
                 available: RepositoryActionList,
               },
               { additionalProperties: false },
@@ -135,7 +135,7 @@ export const SandboxPolicyViewResponse = Type.Object(
             {
               maxItems: maxRepositoryNetworkGrants,
               description:
-                "Selected repositories eligible for action filters and the actions permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
+                "Selected repositories eligible for action filters and the maximum access and actions permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
             },
           ),
         ),

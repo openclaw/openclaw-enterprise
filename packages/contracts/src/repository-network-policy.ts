@@ -11,8 +11,7 @@ export type RepositoryApiActions = Readonly<
   { allow: readonly RepositoryApiAction[] } | { deny: readonly RepositoryApiAction[] }
 >;
 
-export interface RepositoryApiActionFilterOption {
-  readonly repository: string;
+export interface RepositoryApiActionFilterOption extends RepositoryNetworkLimit {
   readonly available: readonly RepositoryApiAction[];
 }
 
@@ -82,7 +81,9 @@ export function parseRepositoryApiActions(
   if (actions.length !== raw.length) {
     throw invalid();
   }
-  if (key === "allow") return Object.freeze({ allow: actions });
+  if (key === "allow") {
+    return Object.freeze({ allow: actions });
+  }
   return actions.length ? Object.freeze({ deny: actions }) : undefined;
 }
 

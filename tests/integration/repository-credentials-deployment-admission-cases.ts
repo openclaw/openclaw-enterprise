@@ -1340,6 +1340,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
           200,
         );
         assert.equal(before.repositoryNetworkPolicySaveSupported, true);
+        assert.deepEqual(before.repositoryApiActionFilters, [{ ...selected, available: [] }]);
         const { data: saved } = checkedEnvelope(
           await f.request("PUT", policyPath, {
             expectedVersion: before.policy.version,
@@ -1434,7 +1435,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     );
     const options = [
       {
-        repository: writeGrant.repository,
+        ...writeGrant,
         available: ["issues:read", "pull_requests:read", "pull_requests:create"],
       },
     ];

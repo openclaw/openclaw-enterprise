@@ -351,16 +351,22 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       },
       actionFilters(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
         const options = resolution.repositoryApiActionFilters;
-        if (resolution.nativeGit !== "v1" || !options) return undefined;
+        if (resolution.nativeGit !== "v1" || !options) {
+          return undefined;
+        }
         // Project only selected, delegated names. Never forward provider metadata.
         return delegatedCeiling.flatMap(({ repository, access }) => {
           const option = options.find((item) => item.repository === repository);
-          if (!option || !fitsSelected({ repository, access: "read" })) return [];
+          if (!option || !fitsSelected({ repository, access: "read" })) {
+            return [];
+          }
           const write = access === "write" && fitsSelected({ repository, access });
           const available = repositoryApiActions.filter(
             (action) => (write || action.endsWith(":read")) && option.available.includes(action),
           );
-          return [{ repository, available }];
+          return [
+            { repository, access: write ? ("write" as const) : ("read" as const), available },
+          ];
         });
       },
       admit: admitEdit,

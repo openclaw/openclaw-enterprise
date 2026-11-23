@@ -33030,10 +33030,16 @@
                           "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
                         },
                         "repositoryApiActionFilters": {
-                          "description": "Selected repositories eligible for action filters and the actions permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
+                          "description": "Selected repositories eligible for action filters and the maximum access and actions permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
                               "available": {
                                 "items": {
                                   "anyOf": [
@@ -33054,7 +33060,7 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["repository", "available"],
+                            "required": ["repository", "access", "available"],
                             "type": "object"
                           },
                           "maxItems": 32,
