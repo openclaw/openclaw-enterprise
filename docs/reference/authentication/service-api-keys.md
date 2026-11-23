@@ -81,18 +81,34 @@ back to the cookie.
 
 ## Revoke or rotate a service key
 
-To revoke the key in `OCC_SERVICE_KEY_FILE` with the administrator session:
+Confirm the Installation, principal and non-secret key ID. Use the target's
+`serviceKeyId` from an audit event or the unsaved key ID from a CLI error.
+`actorServiceKeyId` identifies the caller. If you have the complete issuance
+file for that key, you can read just `data.id` from it. Never print the file
+or use `data.key` as the ID.
+
+Replace the placeholder with the confirmed ID. This command uses the
+administrator session and encodes the ID as one URL path segment.
 
 ```bash
-OCC_SERVICE_KEY_ID="$(python3 -c 'import json, os, pathlib; print(json.loads(pathlib.Path(os.environ["OCC_SERVICE_KEY_FILE"]).read_text())["data"]["id"])')"
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
-  -H "Origin: $OCC_ORIGIN" \
-  --request DELETE "$OCC_URL/api/auth/service-keys/$OCC_SERVICE_KEY_ID"
+OCC_SERVICE_KEY_ID='<confirmed-key-id>'
+key_path=$(python3 -c '
+import sys
+from urllib.parse import quote
+key_id = sys.argv[1]
+if key_id == "<confirmed-key-id>" or not key_id.strip(".") or "/" in key_id:
+    raise SystemExit("Enter the confirmed key ID")
+print(quote(key_id, safe=""))
+' "$OCC_SERVICE_KEY_ID") &&
+  curl -q --globoff --fail-with-body --silent --show-error \
+    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    --write-out '\nHTTP %{http_code}\n' \
+    --request DELETE "$OCC_URL/api/auth/service-keys/$key_path"
 ```
 
-`occ service-key revoke ID` makes the same request with a service-key file.
-Success returns HTTP `200` and `data.revoked: true`; subsequent use of the key
-returns `401`. To rotate without interrupting clients, issue a replacement to a
+With an authorized Installation service key, use `occ service-key revoke ID`.
+For the HTTP request, check for `200`, a matching `data.id` and
+`data.revoked: true`. Subsequent use of the revoked key returns `401`. To rotate without interrupting clients, issue a replacement to a
 new private file, switch the clients, verify access, then revoke the old key by
 its recorded ID. OCC does not rotate keys automatically.
 
@@ -223,11 +239,18 @@ If you know the key and principal IDs, have an authorized administrator
 
 A lost response or `503` during issuance can leave a usable key even if you
 received no ID and find no issuance audit event. OCC has no public key-list
-endpoint. Give an authorized administrator the Installation, Namespace if
-scoped, principal ID, key name, approximate time and any request ID. Compare
-non-secret key metadata, IAM bindings and available audit records. A name
-alone cannot identify the key. Revoke only a confirmed match. If the outcome
-remains uncertain, keep the file private and stop before issuing another key.
+endpoint. Installation administration alone grants no database access.
+
+Without a confirmed ID, ask a database operator with approved read-only
+access to the affected Installation to check non-secret service-key metadata.
+Supply the principal ID, scope, name, approximate issuance time and any
+request ID. Compare the key ID, principal reference, Installation, optional
+Namespace, name and creation time with IAM bindings and available audit
+records. A name alone cannot identify the key.
+
+If access is unavailable or the evidence cannot identify one record, keep
+any output file private and stop before issuing another key. Have an
+authorized administrator revoke only a confirmed match through OCC.
 Do not export key values, password hashes, sessions or full table dumps.
 
 A `503` during revocation can occur before or after deletion. A `404` means
