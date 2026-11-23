@@ -13,8 +13,8 @@ source authorization, persistence, deployment, or inference routing.
    the requested destination must follow the field.
 4. Select **Deploy new version**. In **Configuration snapshot**, use Tab and
    Enter to open **View overrides** and **View settings**. Confirm both JSON
-   documents show the submitted destination. At 1440 px, labels fit on one line.
-   At 390 px, labels sit above values and long JSON strings wrap. When you
+   documents show the submitted destination. Labels sit above values, and each
+   open document takes a whole row. At 390 px, long JSON strings wrap. When you
    deploy with the Installation default, **Requested Harness overrides** shows
    **None** and **View settings** still shows the resolved destination.
 5. Open **Harness deployment denied** and submit. Confirm the refusal is visible
