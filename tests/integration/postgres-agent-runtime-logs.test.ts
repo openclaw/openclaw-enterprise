@@ -203,5 +203,77 @@ test(
         ["authorization_denial", "denied"],
       ],
     );
+
+    // The production Fastify route must withhold an entire chunk whose reported
+    // instance changed during the read, even when its text passes the classifier.
+    const isolated = await deployAgent("Runtime log identity");
+    const isolatedLogs = `/namespaces/${isolated.namespace.id}/agents/${isolated.agent.id}/deployments/${isolated.revision.id}/runtime/logs?source=gateway`;
+    const marker = "replacement runtime operational output";
+    const viewAction = "openclaw.agents.runtime_logs.view";
+    const downloadAction = "openclaw.agents.runtime_logs.download";
+    // Count unexpected runtime-log actions too; the new row must match the requested action exactly.
+    const readIsolatedAudits = () =>
+      pool.query<
+        RuntimeLogAuditRow & {
+          id: AuditEvent["id"];
+          action: AuditEvent["action"];
+          namespace_id: AuditEvent["namespaceId"] | null;
+          resource_kind: AuditEvent["resource"]["kind"];
+          resource_id: AuditEvent["resource"]["id"];
+        }
+      >(
+        `SELECT id, action, actor_id, namespace_id, resource_kind, resource_id, kind, outcome, details
+         FROM occ.audit_events
+         WHERE resource_id = $1 AND action LIKE 'openclaw.agents.runtime_logs.%'`,
+        [isolated.agent.id],
+      );
+
+    // Each request must account for one fresh admission, even when a later read returns 503.
+    const auditIds = new Set<AuditEvent["id"]>();
+    assert.equal((await readIsolatedAudits()).rowCount, 0);
+    const assertNewIsolatedAudit = async (action: typeof viewAction | typeof downloadAction) => {
+      const { rows } = await readIsolatedAudits();
+      assert.equal(rows.length, auditIds.size + 1, "cumulative audit row count");
+      const added = rows.filter(({ id }) => !auditIds.has(id));
+      assert.equal(added.length, 1, "new audit row count");
+      const [row] = added;
+      assert.ok(row);
+      assert.equal(row.action, action, "audit action");
+      assert.equal(row.actor_id, principal.id, "audit actor");
+      assert.equal(row.namespace_id, isolated.namespace.id, "audit Namespace");
+      assert.equal(row.resource_kind, "agent", "audit resource kind");
+      assert.equal(row.resource_id, isolated.agent.id, "audit Agent");
+      assert.equal(row.kind, "access", "audit kind");
+      assert.equal(row.outcome, "success", "audit outcome");
+      assert.equal(row.details?.runtimeLogs?.revisionId, isolated.revision.id, "audit revision");
+      assert.equal(JSON.stringify(row.details).includes(marker), false, "audit contains log text");
+      auditIds.add(row.id);
+    };
+
+    computeDriver.state.lines = [{ time: "2026-09-30T12:00:03Z", raw: marker }];
+    const stable = await inject("GET", isolatedLogs);
+    assert.equal(stable.statusCode, 200, stable.body);
+    assert.ok(stable.body.includes(marker));
+    await assertNewIsolatedAudit(viewAction);
+    for (const identity of ["uid", "restart", "unavailable"] as const) {
+      delete computeDriver.state.readPodUid;
+      delete computeDriver.state.readRestartCount;
+      if (identity === "restart") {
+        computeDriver.state.readRestartCount = computeDriver.state.restartCount + 1;
+      } else {
+        computeDriver.state.readPodUid = identity === "uid" ? randomUUID() : "";
+      }
+      for (const download of [false, true]) {
+        const response = await inject("GET", `${isolatedLogs}${download ? "&download=true" : ""}`);
+        assert.equal(response.body.includes(marker), false, identity);
+        if (identity === "unavailable") {
+          assertApiError(response, 503, "RUNTIME_LOGS_UNAVAILABLE");
+        } else {
+          assert.equal(response.statusCode, 200, response.body);
+          assert.ok(response.body.includes("stream_replaced"));
+        }
+        await assertNewIsolatedAudit(download ? downloadAction : viewAction);
+      }
+    }
   },
 );

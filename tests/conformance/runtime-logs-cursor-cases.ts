@@ -297,7 +297,7 @@ export function registerRuntimeLogCursorCases() {
     assert.equal(lastRecord.time, timedLog("", 596).time);
     assert.equal(reader.position.lastTime, null);
 
-    // A stream replaced during the read is not a stalled read.
+    // A stream replaced during the read yields only its gap, even if the Driver reported a cut.
     const replaced = pollReader();
     await replaced.poll([timedLog("retrying in 0s", 0)]);
     const page = await replaced.poll([timedLog("retr", 500)], {
@@ -305,10 +305,8 @@ export function registerRuntimeLogCursorCases() {
       truncated: true,
       stream: { restartCount: 1 },
     });
-    assert.deepEqual(stalls(page), [
-      ["stream_replaced", false],
-      ["truncated", true],
-    ]);
+    assert.deepEqual(stalls(page), [["stream_replaced", false]]);
+    assert.equal(page.truncated, false);
   });
 
   test("runtime log cursor does not let an evicted same-time old END erase a later BEGIN", async () => {
@@ -384,13 +382,35 @@ export function registerRuntimeLogCursorCases() {
       ["previous instance", { query: { previous: true } }],
       ["new view", { query: { cursor: undefined } }],
       ["expired", { elapsed: RUNTIME_LOG_CURSOR_TTL_MS + 1 }],
-      ["mid-read UID", { stream: { podUid: "new-pod" } }],
-      ["mid-read restart", { stream: { restartCount: 1 } }],
     ] satisfies [string, PollOptions][]) {
       await t.test(name, async () => {
         const reader = await pemOpenReader();
         // A new/unknown tail cannot infer a BEGIN from the old stream/view.
         assertTailShown(await reader.poll([timedLog(syntheticPemTail, 1)], options));
+      });
+    }
+    for (const [name, stream, pod] of [
+      ["mid-read UID", { podUid: "new-pod" }, { uid: "new-pod" }],
+      ["mid-read restart", { restartCount: 1 }, { restartCount: 1 }],
+    ] as const) {
+      await t.test(name, async () => {
+        const reader = await pemOpenReader();
+        const { viewId } = reader.position;
+        const lines = [timedLog(syntheticPemTail, 600)];
+        // Discovery still names the old instance, so the read proves no safe content.
+        const replaced = await reader.poll(lines, { stream, query: { sinceSeconds: 60 } });
+        assert.deepEqual(summary(replaced), ["stream_replaced"]);
+        assert.ok(replaced.stream);
+        assert.partialDeepStrictEqual(replaced.stream, stream);
+        assert.equal(reader.position.lastTime, null);
+        assert.deepEqual(reader.position.lastHashes, []);
+
+        // Once discovery agrees, read the requested window without the old PEM context.
+        const verified = await reader.poll(lines, { pod, elapsed: 1_000 });
+        assert.deepEqual(summary(verified), [syntheticPemTail]);
+        assert.equal(reader.requests.at(-1)?.sinceSeconds, 60);
+        assert.equal(reader.position.viewId, viewId);
+        assert.equal(reader.admissions, 1);
       });
     }
   });

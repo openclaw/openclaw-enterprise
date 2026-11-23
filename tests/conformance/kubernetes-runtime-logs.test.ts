@@ -556,6 +556,8 @@ test("Kubernetes runtime log reads are bounded, timestamped and re-check the Pod
   fixture.state.restartDuringRead = true;
   const restarted = await fixture.readAgentRuntimeLogs(fixture.request("gateway"));
   assert.equal(restarted.stream.restartCount, 3);
+  assert.deepEqual(restarted.lines, []);
+  assert.equal(restarted.truncated, false);
   fixture.state.restartDuringRead = false;
 
   // Output that fills the byte limit is reported as truncated.
@@ -579,6 +581,47 @@ test("Kubernetes runtime log reads are bounded, timestamped and re-check the Pod
     fixture.calls.filter((entry) => entry.call === "readNamespacedPodLog").length,
     before,
   );
+});
+
+test("Kubernetes runtime log reads withhold bytes when the Pod changes during the read", async () => {
+  const marker = "foreign replacement operational output";
+  for (const afterLogRead of [
+    "foreign-pod",
+    "missing-pod",
+    "missing-uid",
+    "missing-restart-count",
+    "undeclared-container",
+  ] as const) {
+    const fixture = runtimeLogDriverFixture({ twoCluster: true });
+    fixture.state.afterLogRead = afterLogRead;
+    fixture.state.logs.gateway = `2026-09-30T12:00:00Z ${marker}\n`;
+    await assert.rejects(
+      fixture.readAgentRuntimeLogs(fixture.request("gateway")),
+      (error: unknown) => error instanceof DependencyUnavailableError,
+      afterLogRead,
+    );
+    assert.equal(
+      fixture.calls.filter((entry) => entry.call === "readNamespacedPodLog").length,
+      1,
+      "the refusal must follow the actual log read",
+    );
+  }
+
+  // A new Pod still owned by this revision supplies an observed UID, but its
+  // output cannot be attributed to the instance selected before the read.
+  const replaced = runtimeLogDriverFixture();
+  replaced.state.afterLogRead = "owned-pod";
+  replaced.state.logs.gateway = `2026-09-30T12:00:00Z ${marker}\n`;
+  const chunk = await replaced.readAgentRuntimeLogs(replaced.request("gateway"));
+  assert.equal(chunk.stream.podUid, "gateway-replacement-uid");
+  assert.deepEqual(chunk.lines, []);
+  assert.equal(chunk.truncated, false);
+
+  const unchanged = runtimeLogDriverFixture();
+  unchanged.state.logs.gateway = `2026-09-30T12:00:00Z ${marker}\n`;
+  assert.deepEqual((await unchanged.readAgentRuntimeLogs(unchanged.request("gateway"))).lines, [
+    { time: "2026-09-30T12:00:00Z", raw: marker },
+  ]);
 });
 
 test("Kubernetes runtime log reads normalize RFC3339 offsets without losing nanoseconds", async () => {
