@@ -41,6 +41,7 @@ import {
 import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness-auth-method.ts";
 import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
+import { manifestBrowserTransport } from "./browser-manifest.ts";
 import { sshBrowserRequest, type SshBrowserTransport } from "./browser-route.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
@@ -62,6 +63,7 @@ export interface SshComputeHost {
 }
 
 export interface SshComputeDriverOptions {
+  readonly managedBrowserListener?: boolean;
   readonly ssh: {
     readonly identityFile: string;
     readonly knownHostsFile: string;
@@ -364,6 +366,7 @@ export class SshComputeDriver implements ComputeDriver {
     additionalProperties: false,
     required: ["ssh", "hosts", "runtime", "network"],
     properties: {
+      managedBrowserListener: { type: "boolean" },
       ssh: {
         type: "object",
         additionalProperties: false,
@@ -537,7 +540,9 @@ export class SshComputeDriver implements ComputeDriver {
       selection.implementation ?? "occ/ssh",
       "SSH Compute implementation",
     );
-    this.browserTransport = selection.browserTransport;
+    this.browserTransport =
+      selection.browserTransport ??
+      (options.managedBrowserListener === true ? manifestBrowserTransport() : undefined);
     this.executor = selection.executor ?? new SystemSshCommandExecutor();
     this.lifecycle = new ComputeLifecycleDispatcher(selection.lifecycleDrivers ?? []);
   }

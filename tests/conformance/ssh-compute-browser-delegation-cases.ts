@@ -71,3 +71,38 @@ test("the SSH forward connects only the configured loopback TLS ports", async ()
     assert.throws(() => browserForwardArgs(host, 24443, port));
   }
 });
+
+test("SSH browser manifest is scoped to the observed revision and read with protected permissions", async (t) => {
+  const { manifestBrowserTransport } =
+    await import("../../apps/controller/src/drivers/compute/ssh/browser-manifest.ts");
+  const { selfSigned } = await import("../helpers/certificates.ts");
+  const { mkdtemp, writeFile, chmod, rm } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { createHash } = await import("node:crypto");
+  const dir = await mkdtemp(join(tmpdir(), "oce-manifest-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const resolver = manifestBrowserTransport(dir, process.getuid!());
+  const requested = { ...target, port: 18000 };
+  const signal = new AbortController().signal;
+  const path = join(
+    dir,
+    createHash("sha256")
+      .update(JSON.stringify(["i", "n", "a", "r"]))
+      .digest("hex") + ".json",
+  );
+  assert.equal(await resolver(requested, signal), undefined);
+  const descriptor = {
+    ...requested,
+    credential: "a".repeat(64),
+    revisionCertificate: (await selfSigned(dir)).cert,
+    localTlsPort: 28000,
+  };
+  await writeFile(path, JSON.stringify(descriptor), { mode: 0o600 });
+  assert.equal((await resolver(requested, signal))?.localTlsPort, 28000);
+  await chmod(path, 0o644);
+  assert.equal(await resolver(requested, signal), undefined);
+  await chmod(path, 0o600);
+  await writeFile(path, JSON.stringify({ ...descriptor, revisionId: "other" }));
+  assert.equal(await resolver(requested, signal), undefined);
+});
