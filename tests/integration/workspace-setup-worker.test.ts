@@ -23,7 +23,7 @@ import {
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
-} from "../helpers/development.mjs";
+} from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import {

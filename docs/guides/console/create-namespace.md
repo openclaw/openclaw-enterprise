@@ -14,12 +14,13 @@ the Installation. No model credentials are needed.
    currently be changed. Cancel or press Escape before submitting to leave
    without creating anything.
 3. **Namespace created** confirms that the request succeeded. Select **Open
-   Agents** to use the new Namespace, or **Done** to return to its card. If
-   your access does not include viewing the new Namespace, the confirmation
-   says so and offers only **Done**; ask an Installation administrator for access.
+   Agents** once the Console confirms you can view the Namespace, or **Done** to
+   return to Namespaces. **Check access again** repeats an inconclusive read.
+   If the Namespace is unavailable, follow the guidance in the confirmation.
 4. Select **Refresh** on Namespaces to check readiness. Provisioning continues
-   asynchronously. You can save Agent drafts while it provisions, but deployment
-   waits for readiness. See [Namespace lifecycle](../../reference/namespaces.md#lifecycle).
+   asynchronously. With Agent create permission, you can save drafts during
+   provisioning. Deployment requires a ready Namespace. See
+   [Namespace lifecycle](../../reference/namespaces.md#lifecycle).
 
 The form creates an ordinary OCE Namespace. To select an existing Kubernetes
 namespace, use the [API](../../reference/namespaces.md#ownership-and-supported-operations)
@@ -28,8 +29,10 @@ with Installation administration and operator-prepared infrastructure.
 ## Recover from a failed or uncertain request
 
 A name conflict preserves the input: choose another name and submit again.
-Deleted Namespaces reserve their names. A permission denial asks you to contact
-an administrator and disables resubmission. After you close the form,
+Deleted Namespaces reserve their names. A permission denial disables
+resubmission. Ask an Installation administrator to check your Namespace
+`create` permission. If you administer the Installation, check IAM Restrictions.
+After you close the form,
 **Create Namespace** stays disabled until you select **Refresh** or reload the page.
 
 While creation is pending, the form cannot be dismissed. If the response is

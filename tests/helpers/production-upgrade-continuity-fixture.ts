@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { Assert } from "typebox/value";
 import type { AgentWire } from "../../packages/contracts/src/api/resources.ts";
@@ -13,6 +14,7 @@ import type {
   AgentRuntimePodStatus,
 } from "../../packages/contracts/src/runtime-logs.ts";
 import type { RecoveryState } from "./production-upgrade-recovery-state.ts";
+import { spawnResult } from "./production-upgrade-recovery-tools.ts";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
 
@@ -135,7 +137,7 @@ type UpgradeFixture = {
   evidence: string;
   commands: readonly unknown[];
   readEvidence(name: string): Promise<string>;
-  run(...args: string[]): Promise<unknown>;
+  run(...args: string[]): Promise<{ stderr: string }>;
   state(): Promise<RecoveryState>;
   events(): Promise<string[]>;
   failNext(fault: string): Promise<void>;
@@ -198,6 +200,7 @@ type CompatibilityFileReceipt = {
   issues: readonly unknown[];
   cleanup: { status: "passed" | "failed" } | null;
   fileFailure?: { error: { message: string } };
+  measurements?: { kind: "released-controller-history"; status: "unsupported" }[];
 };
 
 type CompatibilityReceipt = {
@@ -494,13 +497,13 @@ export function registerUpgradeContinuityTests({
     assert.equal(state.dispatches, 0);
   });
 
-  test("Upgrade rejects inherited Helm target overrides before external calls or evidence writes", async (t) => {
+  test("Upgrade rejects inherited Helm Kubernetes overrides before external calls or evidence writes", async (t) => {
     for (const variable of helmTargetOverrides) {
       await t.test(variable, async (t) => {
-        const value = "private-target-override";
+        const value = "private-helm-override";
         const f = await fixture(t, { controllerOnly: true, environment: { [variable]: value } });
-        // Helm accepts these independently of --kubeconfig/--kube-context. Refuse
-        // before either command protocol or recovery evidence can use another target.
+        // Helm can use these with explicit kubeconfig and context flags. Refuse
+        // before either client can contact the cluster.
         await assert.rejects(f.run(), (error) => {
           assert.ok(
             error instanceof Error && "stderr" in error && typeof error.stderr === "string",
@@ -508,6 +511,8 @@ export function registerUpgradeContinuityTests({
           assert.match(error.stderr, new RegExp(`unset ${variable}`));
           assert.match(error.stderr, /selected kubeconfig/);
           assert.equal(error.stderr.includes(value), false);
+          assert.ok("stdout" in error);
+          assert.equal(error.stdout, "");
           return true;
         });
         assert.equal(f.commands.length, 0);
@@ -516,7 +521,29 @@ export function registerUpgradeContinuityTests({
     }
   });
 
-  test("Resume refuses inherited Helm target changes without altering accepted upgrade evidence", async (t) => {
+  test("Upgrade refuses a Helm bearer token without exposing it in Bash tracing", async (t) => {
+    const script =
+      process.env.OCC_UPGRADE_SCRIPT ??
+      fileURLToPath(new URL("../../scripts/upgrade-production-images", import.meta.url));
+    const value = "synthetic-helm-bearer-token";
+    const env = { HELM_KUBETOKEN: value, PATH: "/dev/null" };
+    // Use env after the test runner has stripped inherited shell startup options.
+    for (const [name, command, args] of [
+      ["SHELLOPTS=xtrace", "/usr/bin/env", ["SHELLOPTS=xtrace", "/bin/bash", "--", script]],
+      ["bash -x", "/bin/bash", ["-x", "--", script]],
+    ] as const) {
+      await t.test(name, async () => {
+        const { status, stdout, stderr } = await spawnResult(command, args, { env });
+        assert.equal(status, 1);
+        assert.match(stderr, /^\+ /m);
+        assert.match(stderr, /unset HELM_KUBETOKEN/);
+        assert.equal(stdout.includes(value), false, "stdout contains the token");
+        assert.equal(stderr.includes(value), false, "stderr contains the token");
+      });
+    }
+  });
+
+  test("Resume refuses inherited Helm Kubernetes overrides without altering accepted upgrade evidence", async (t) => {
     const environment: NodeJS.ProcessEnv = {};
     const f = await fixture(t, { controllerOnly: true, environment });
     await f.failNext("lost-helm-response");
@@ -528,15 +555,16 @@ export function registerUpgradeContinuityTests({
     // A changed shell environment must not redirect reconciliation of an accepted
     // submission, even when the recorded kubeconfig and all arguments still match.
     for (const variable of helmTargetOverrides) {
-      environment[variable] = "private-target-override";
+      environment[variable] = "private-helm-override";
       await assert.rejects(f.run("--resume"), new RegExp(`unset ${variable}`));
-      delete environment[variable];
+      environment[variable] = "";
       assert.equal(f.commands.length, commands);
       assert.deepEqual(await f.events(), events);
       assert.equal(await f.readEvidence("parameters.json"), parameters);
       assert.equal(await f.readEvidence("helm-started"), submission);
       assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
     }
+    // Empty overrides leave the selected kubeconfig in effect.
     await f.run("--resume");
     assert.ok(existsSync(join(f.evidence, "completed")));
     assert.equal((await f.state()).helmSubmissions, 1);
@@ -623,6 +651,22 @@ export function registerUpgradeContinuityTests({
       ],
     };
   }
+
+  test("controller compatibility warns about unsupported released migration history during preflight", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    const path = join(f.directory, "compatibility.json");
+    const receipt = controllerCompatibilityResults();
+    receipt.files[0].measurements = [
+      { kind: "released-controller-history", status: "unsupported" },
+    ];
+    await writeFile(path, JSON.stringify(receipt));
+    // The advisory must be visible while writers are still serving, with a successful rehearsal.
+    const { stderr } = await f.run("--preflight-only", "--controller-compatibility-results", path);
+    assert.match(
+      stderr,
+      /^warning: The released controller rejected the candidate migration history\. Qualify another recovery controller before maintenance\.$/m,
+    );
+  });
 
   test("controller compatibility preserves Agent continuity through interrupted upgrade recovery", async (t) => {
     const f = await controllerContinuityFixture(t, continuityFixture());

@@ -109,9 +109,10 @@ type NarrowPreparation = Pick<
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowPreparation) => Promise<void>,
 ) {
-  await repositoryGitJourney(t, import.meta.url, undefined, {}, exercise);
+  await repositoryGitJourney(t, testUrl, undefined, {}, exercise);
 }
 
 type NarrowPolicy = {
@@ -445,13 +446,15 @@ async function repositoryGitJourney(
   // kernel may hand a connection to the hold, which resets it.
   await authorityPort.release();
   await runtime["running"];
+  const standingSessionDurationSeconds = coldWorker ? 90 : 60;
+  const nonStandingSessionDurationSeconds = narrow && policy.draftPull === false ? 180 : 600;
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
     {
       sessionDurationSeconds:
         policy.sessionDurationSeconds ??
-        (standing ? 90 : narrow && policy.draftPull === false ? 180 : 600),
+        (standing ? standingSessionDurationSeconds : nonStandingSessionDurationSeconds),
     },
   );
   f.controller.registerDriver(driver);
@@ -998,30 +1001,35 @@ async function repositoryGitJourney(
       }),
       "installed",
     );
-    await runtime.releasePreview(revision.id, startupId, async () => {
-      assert.ok(lastCustody);
-      const installed = await release.current(context, lastCustody, async () => true);
-      assert.ok(state.installed, "the launcher cannot start before material installation");
-      const value = signComputeExecutionRelease(keys.privateKey, startupId, installed);
-      assert.deepEqual(value.challenge, { ...challenge, startupId });
-      assert.ok(
-        verify(
-          null,
-          Buffer.from(JSON.stringify([value.challenge, value.installation, value.expiresAt])),
-          keys.publicKey,
-          Buffer.from(value.signature, "base64url"),
-        ),
-      );
-      assert.ok(value.expiresAt > Date.now());
-      if (launching) {
-        signed = true;
-        nativeRelease.resolve(value);
-        askModel = await launching;
-      }
-      assert.equal(acked, false);
-      acked = true;
-      order.push("launcher-ack");
-      return true;
+    await runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {
+        assert.ok(lastCustody);
+        const installed = await release.current(context, lastCustody, async () => true);
+        assert.ok(state.installed, "the launcher cannot start before material installation");
+        const value = signComputeExecutionRelease(keys.privateKey, startupId, installed);
+        assert.deepEqual(value.challenge, { ...challenge, startupId });
+        assert.ok(
+          verify(
+            null,
+            Buffer.from(JSON.stringify([value.challenge, value.installation, value.expiresAt])),
+            keys.publicKey,
+            Buffer.from(value.signature, "base64url"),
+          ),
+        );
+        assert.ok(value.expiresAt > Date.now());
+        return value;
+      },
+      deliver: async (value) => {
+        if (launching) {
+          signed = true;
+          nativeRelease.resolve(value);
+          askModel = await launching;
+        }
+        assert.equal(acked, false);
+        acked = true;
+        order.push("launcher-ack");
+        return true;
+      },
     });
     assert.equal(acked, true);
     assert.ok(state.installed, "production owner material reached the authenticated recipient");
@@ -1347,6 +1355,15 @@ async function repositoryGitJourney(
         assert.equal(peer.gh.issuesOfTokens.length, 1, "cold verification issued no successor");
         assert.equal(wire.world.writes, writes, "cold verification did not replay credentials");
         assert.equal(state.installed, installed);
+
+        // The previous worker has joined. Let its replacement recover interrupted cleanup
+        // without waiting for this fixture revision's work lease to expire.
+        await expireWorkLease(f.observerPool, {
+          namespaceId: revision.namespaceId,
+          revisionId: revision.id,
+          keyLike: `agent_revision:${revision.id}:repository_cleanup:%`,
+          state: "claimed",
+        });
 
         // A second process recovers the durable cleanup handoff. Only the new expiry
         // cases supply the model attachment and use the driver’s OpenShell identity checks.
@@ -1766,20 +1783,20 @@ async function repositoryGitJourney(
               }),
             );
             await reconcile();
-            await runtime.releasePreview(revision.id, recoveredStartup, async () => {
-              const current = await release.current(context, lastCustody!, async () => true);
-              assert.deepEqual(
-                current,
-                admission,
-                "recovery retains the committed execution authorization",
-              );
-              const signed = signComputeExecutionRelease(
-                keys.privateKey,
-                recoveredStartup,
-                current,
-              );
-              assert.equal(signed.challenge.startupId, recoveredStartup);
-              return true;
+            await runtime.releasePreview(revision.id, recoveredStartup, {
+              prepare: async () => {
+                const current = await release.current(context, lastCustody!, async () => true);
+                assert.deepEqual(
+                  current,
+                  admission,
+                  "recovery retains the committed execution authorization",
+                );
+                return signComputeExecutionRelease(keys.privateKey, recoveredStartup, current);
+              },
+              deliver: async (signed) => {
+                assert.equal(signed.challenge.startupId, recoveredStartup);
+                return true;
+              },
             });
             assert.equal(wire.world.writes, writes, "recovery does not replay credential writes");
             assert.equal(peer.gh.issuesOfTokens.length, 1, "recovery does not issue a new token");

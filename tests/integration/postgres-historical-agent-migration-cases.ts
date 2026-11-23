@@ -543,23 +543,11 @@ type HistoricalRole = {
 };
 type PresetAction = "create" | "read" | "update" | "delete";
 type PresetPermission = { action: PresetAction; resourceKind: "preset" };
-type PresetPolicyInput = {
-  installationId: string;
-  namespaceId: string;
-  roles: unknown[];
-  stock: unknown;
-  reordered: unknown;
-  presetPermissions: unknown[];
-  principals: string[];
-};
 type PresetPolicyFixture = {
   installationId: string;
   namespaceId: string;
-  roles: HistoricalRole[];
-  stock: HistoricalRole;
-  reordered: HistoricalRole;
+  legacyPermissions: HistoricalPermission[];
   presetPermissions: PresetPermission[];
-  principals: [string, string];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -593,17 +581,6 @@ function isHistoricalPermission(value: unknown): value is HistoricalPermission {
   );
 }
 
-function isHistoricalRole(value: unknown): value is HistoricalRole {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    (value.namespace_id === null || typeof value.namespace_id === "string") &&
-    typeof value.name === "string" &&
-    isUnknownArray(value.permissions) &&
-    value.permissions.every(isHistoricalPermission)
-  );
-}
-
 function isPresetPermission(value: unknown): value is PresetPermission {
   return (
     isHistoricalPermission(value) &&
@@ -618,17 +595,53 @@ function assertPresetPolicyFixture(value: unknown): asserts value is PresetPolic
   assert.ok(isRecord(value));
   assert.equal(typeof value.installationId, "string");
   assert.equal(typeof value.namespaceId, "string");
-  assert.ok(isUnknownArray(value.roles) && value.roles.every(isHistoricalRole));
-  assert.ok(isHistoricalRole(value.stock));
-  assert.ok(isHistoricalRole(value.reordered));
+  assert.ok(
+    isUnknownArray(value.legacyPermissions) &&
+      value.legacyPermissions.every(isHistoricalPermission),
+  );
   assert.ok(
     isUnknownArray(value.presetPermissions) && value.presetPermissions.every(isPresetPermission),
   );
-  assert.ok(
-    isUnknownArray(value.principals) &&
-      value.principals.length === 2 &&
-      value.principals.every((principal) => typeof principal === "string"),
-  );
+}
+
+function historicalRole(
+  permissions: HistoricalPermission[],
+  overrides: Partial<Omit<HistoricalRole, "permissions">> = {},
+): HistoricalRole {
+  return {
+    id: `role_admin_${randomUUID()}`,
+    namespace_id: null,
+    name: "Installation administrator",
+    permissions,
+    ...overrides,
+  };
+}
+
+async function seedHistoricalRoles(
+  pool: Pool,
+  roles: HistoricalRole[],
+  boundRoles: HistoricalRole[],
+) {
+  for (const entry of roles) {
+    await pool.query<never, [string, string | null, string, string]>(
+      "INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)",
+      [entry.id, entry.namespace_id, entry.name, JSON.stringify(entry.permissions)],
+    );
+  }
+  const principals: string[] = [];
+  for (const entry of boundRoles) {
+    const principalId = `prn_${randomUUID()}`;
+    principals.push(principalId);
+    await pool.query<never, [string]>(
+      "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
+      [principalId],
+    );
+    await pool.query<never, [string, string, string]>(
+      "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
+      [`binding_admin_${randomUUID()}`, principalId, entry.id],
+    );
+  }
+  return principals;
 }
 
 export async function assertDrizzleJournalPreserved(
@@ -749,11 +762,27 @@ export async function assertDrizzleJournalPreserved(
 export async function assertPresetPolicyUpgrade(
   pool: Pool,
   migrationsDirectory: string,
-  fixture: PresetPolicyInput,
+  fixture: unknown,
 ) {
   assertPresetPolicyFixture(fixture);
-  const { installationId, namespaceId, roles, stock, reordered, presetPermissions, principals } =
-    fixture;
+  const { installationId, namespaceId, legacyPermissions, presetPermissions } = fixture;
+  const presetRead = presetPermissions[1];
+  assert.ok(presetRead);
+  const stock = historicalRole(legacyPermissions);
+  const reordered = historicalRole([...legacyPermissions].reverse());
+  const reduced = historicalRole(legacyPermissions.slice(1));
+  const roles = [
+    stock,
+    reordered,
+    reduced,
+    historicalRole([...legacyPermissions, { action: "update", resourceKind: "namespace" }]),
+    historicalRole(legacyPermissions, { name: "Custom administrator" }),
+    historicalRole(legacyPermissions, { id: `role_${randomUUID()}` }),
+    historicalRole(legacyPermissions, { namespace_id: namespaceId }),
+    historicalRole([...legacyPermissions, presetRead]),
+  ];
+  const principals = await seedHistoricalRoles(pool, roles, [stock, reduced]);
+  assert.ok(principals[0] && principals[1]);
   const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
@@ -886,6 +915,66 @@ export async function assertEmptyInstallationHistory(
       refusedHistory,
     );
     assert.deepEqual(await historySnapshot(empty), emptyBefore);
+  }
+}
+
+export async function assertPendingRegistrationGuard(
+  managed: HistoricalDatabase,
+  expected: string,
+  { runHistoryCommand, historySnapshot }: GuardOperations,
+) {
+  // A ready TokenService source and a pending Gateway registration on 0085
+  // both permit the pre-stop check.
+  const namespaceId = `ns_${randomUUID()}`;
+  const instanceId = randomUUID();
+  await managed.app.query(
+    "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+    [expected],
+  );
+  await managed.app.query(
+    "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+    [namespaceId],
+  );
+  await managed.app.query(
+    `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+     VALUES($1,$2,'fixture-token-service','fixture-store')`,
+    [expected, instanceId],
+  );
+  await managed.app.query(
+    `INSERT INTO occ.credential_sources
+     (id,namespace_id,name,type,owner_capability,token_service_instance_id,driver_id,state,
+      config,registration,registration_dispatched_at,created_at)
+     VALUES
+       ($1,$3,'Ready source','static','token_service',$4,NULL,'ready','{}','{}',now(),now()),
+       ($2,$3,'Gateway reservation','codex-pat','credential_gateway',NULL,'fixture-gateway',
+        'registering','{}',NULL,NULL,now())`,
+    [`cs_${randomUUID()}`, `cs_${randomUUID()}`, namespaceId, instanceId],
+  );
+  assert.deepEqual(
+    await runHistoryCommand(managed, "production", "--check-for-installation", undefined, expected),
+    { ok: true, history: "preTokenServiceSourceOwnership" },
+  );
+
+  // An undispatched reservation still belongs to the original writer. The
+  // upgrade must refuse it before downtime and again at the apply boundary.
+  await managed.app.query(
+    `INSERT INTO occ.credential_sources
+     (id,namespace_id,name,type,owner_capability,token_service_instance_id,state,config,created_at)
+     VALUES($1,$2,'Reserved source','static','token_service',$3,'registering','{}',now())`,
+    [`cs_${randomUUID()}`, namespaceId, instanceId],
+  );
+  const readSources = async () =>
+    (await managed.app.query("SELECT * FROM occ.credential_sources ORDER BY id")).rows;
+  const sources = await readSources();
+  const before = await historySnapshot(managed);
+  const refusal = /0086 is blocked by an unfinished TokenService registration\..*original owner/;
+  for (const flag of guardedCommands) {
+    assert.deepEqual(await runHistoryCommand(managed, "production", flag, refusal, expected), {
+      ok: false,
+      code: "MIGRATION_REGISTRATION_PENDING",
+    });
+    assert.deepEqual(await readSources(), sources);
+    assert.deepEqual(await historySnapshot(managed), before);
   }
 }
 
@@ -1174,12 +1263,9 @@ type CredentialSourcePermission = {
 };
 type AdministratorFixture = {
   namespaceId: string;
-  roles: HistoricalRole[];
-  release: HistoricalRole;
-  reordered: HistoricalRole;
-  preCredentialSources: HistoricalRole;
+  presetSeed: HistoricalPermission[];
+  releaseSeed: HistoricalPermission[];
   currentGrants: CredentialSourcePermission[];
-  principals: [string, string, string];
 };
 
 function isCredentialSourcePermission(value: unknown): value is CredentialSourcePermission {
@@ -1193,17 +1279,10 @@ function isCredentialSourcePermission(value: unknown): value is CredentialSource
 function assertAdministratorFixture(value: unknown): asserts value is AdministratorFixture {
   assert.ok(isRecord(value));
   assert.equal(typeof value.namespaceId, "string");
-  assert.ok(isUnknownArray(value.roles) && value.roles.every(isHistoricalRole));
-  assert.ok(isHistoricalRole(value.release));
-  assert.ok(isHistoricalRole(value.reordered));
-  assert.ok(isHistoricalRole(value.preCredentialSources));
+  assert.ok(isUnknownArray(value.presetSeed) && value.presetSeed.every(isHistoricalPermission));
+  assert.ok(isUnknownArray(value.releaseSeed) && value.releaseSeed.every(isHistoricalPermission));
   assert.ok(
     isUnknownArray(value.currentGrants) && value.currentGrants.every(isCredentialSourcePermission),
-  );
-  assert.ok(
-    isUnknownArray(value.principals) &&
-      value.principals.length === 3 &&
-      value.principals.every((principal) => typeof principal === "string"),
   );
 }
 
@@ -1213,17 +1292,33 @@ export async function assertAdministratorGrantUpgrade(
   migration: string,
   fixture: unknown,
 ) {
-  assert.ok(pool instanceof pg.Pool);
   assertAdministratorFixture(fixture);
-  const {
-    namespaceId,
-    roles,
+  const { namespaceId, presetSeed, releaseSeed, currentGrants } = fixture;
+  const currentUpdate = currentGrants[2];
+  assert.ok(currentUpdate);
+  const release = historicalRole(releaseSeed);
+  const reordered = historicalRole([...releaseSeed].reverse());
+  const preCredentialSources = historicalRole(presetSeed);
+  const reduced = historicalRole(releaseSeed.slice(1));
+  const current = historicalRole([...releaseSeed, currentUpdate]);
+  const roles = [
     release,
     reordered,
     preCredentialSources,
-    currentGrants,
-    principals,
-  } = fixture;
+    reduced,
+    current,
+    historicalRole([...releaseSeed, { action: "update", resourceKind: "namespace" }]),
+    historicalRole(releaseSeed, { name: "Custom administrator" }),
+    historicalRole(releaseSeed, { id: `role_${randomUUID()}` }),
+    historicalRole(releaseSeed, { namespace_id: namespaceId }),
+  ];
+  const principals = await seedHistoricalRoles(pool, roles, [
+    release,
+    preCredentialSources,
+    reduced,
+  ]);
+  assert.ok(pool instanceof pg.Pool);
+  assert.ok(principals[0] && principals[1] && principals[2]);
   const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),

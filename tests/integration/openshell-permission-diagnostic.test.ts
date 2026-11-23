@@ -13,7 +13,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { observeOpenShellPermissionRefusal } from "../helpers/openshell-permission-diagnostic.ts";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
 
 const controllerRequire = createRequire(

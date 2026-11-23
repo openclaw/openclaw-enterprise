@@ -17,6 +17,7 @@ import {
   productionTuiProxyData,
 } from "../helpers/production-tui-proxy.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
+import { observeControllerEndpoints } from "../helpers/controller-endpoint-observation.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { installProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
 import {
@@ -44,6 +45,7 @@ import {
   assertInstallationVolume,
   assertLocalRehearsalSelection,
   measureUpgradeAvailability,
+  readGatewayContinuity,
   readImmutableInstallationSecret,
   rehearsePopulatedReturn,
   selectRehearsalControllers,
@@ -53,7 +55,9 @@ import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts"
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
-const returnSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const returnMode = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL;
+const ordinaryUpgrade = returnMode === "ordinary";
+const returnSelected = returnMode === "1" || ordinaryUpgrade;
 const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
 const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
 const protectedTuiSelection = {
@@ -77,6 +81,9 @@ function selectedTestTitle() {
   }
   if (onlineSelected) {
     return "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL";
+  }
+  if (ordinaryUpgrade) {
+    return "A populated production Helm Installation retains the acknowledged write after an ordinary upgrade and controller return";
   }
   if (returnSelected) {
     return "A populated production Helm Installation retains the acknowledged write after controller return";
@@ -653,6 +660,8 @@ test(
         // Historical rehearsal charts keep their original credential contract.
         // Current-source workflow exercises automatic preparation through the CLI.
         bootstrapCredentials: custody ? "existing" : "generate",
+        useChartResourceDefaults: returnSelected,
+        createPostgresResource: custody?.create,
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
           : `https://console.oce.localhost:${port}`,
@@ -1637,43 +1646,60 @@ test(
       context.diagnostic(
         `Controller upgrade observations: ${join(directory, "forward-api-availability.json")}`,
       );
-      const controllerOutput = await measureUpgradeAvailability(
-        externalRequest,
-        installationId,
-        directory,
-        () =>
-          run(
-            "scripts/upgrade-production-images",
-            [
-              "--kubeconfig",
-              selection.kubeconfigPath,
-              "--context",
-              selection.kubernetesContext,
-              "--namespace",
-              system,
-              "--release",
-              release,
-              "--values",
-              valuesPath,
-              "--installation",
-              installationPath,
-              "--controller-image",
-              upgradeImages.controller,
-              "--source-revision",
-              sourceRevision,
-              "--evidence-dir",
-              controllerEvidence,
-              "--occ",
-              occCli,
-              "--timeout-seconds",
-              "600",
-            ],
-            { timeout: 900_000, env: occEnv },
-          ),
-        (details) =>
-          record("Independent controller upgrade API availability observations", details),
+      const upgradeController = () =>
+        measureUpgradeAvailability(
+          externalRequest,
+          installationId,
+          directory,
+          () =>
+            run(
+              "scripts/upgrade-production-images",
+              [
+                "--kubeconfig",
+                selection.kubeconfigPath,
+                "--context",
+                selection.kubernetesContext,
+                "--namespace",
+                system,
+                "--release",
+                release,
+                "--values",
+                valuesPath,
+                "--installation",
+                installationPath,
+                "--controller-image",
+                upgradeImages.controller,
+                "--source-revision",
+                sourceRevision,
+                "--evidence-dir",
+                controllerEvidence,
+                "--occ",
+                occCli,
+                "--verify-agent",
+                agent.id,
+                "--verify-agent-namespace",
+                namespace.id,
+                "--timeout-seconds",
+                "600",
+              ],
+              { timeout: 900_000, env: occEnv, protectedInput: true },
+            ),
+          (details) =>
+            record("Independent controller upgrade API availability observations", details),
+        );
+      const controllerOutput = await observeControllerEndpoints(
+        { run, kubeArgs, namespace: system, release, directory },
+        upgradeController,
       );
-      assert.match(controllerOutput, /no Agent deployments were requested/u);
+      assert.ok(
+        controllerOutput.includes("no Agent deployments were requested"),
+        "Controller upgrade completion message was absent",
+      );
+      const gatewayContinuity = await readGatewayContinuity(controllerEvidence, {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        revisionId: finalGateway.revisionId,
+      });
       for (const component of ["api", "worker"]) {
         const deployment = `openclaw-enterprise-${component}`;
         await kubectl("-n", system, "rollout", "status", `deployment/${deployment}`);
@@ -1718,6 +1744,7 @@ test(
       );
       await record("Independent controller upgrade retained Agent revisions", {
         controllerImage: upgradeImages.controller,
+        ...gatewayContinuity,
       });
 
       // Configure a curated catalog and an unused documentation-range proxy in
@@ -2090,6 +2117,7 @@ test(
       }
       await rehearsePopulatedReturn({
         controllers: rehearsal,
+        ordinaryUpgrade,
         kubeconfig: selection.kubeconfigPath,
         context: selection.kubernetesContext,
         namespace: system,

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  kubernetesNamespaceName,
+  type KubernetesComputeDriver,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   NODE_SETUP_POLL_MS,
   type GatewayNodeEnrollment,
@@ -7,6 +10,7 @@ import {
 } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import type {
+  AgentRevision,
   HarnessWorkloadRequirements,
   RevisionHarnessDescriptor,
   RuntimeFailureEvidence,
@@ -161,6 +165,9 @@ type FixtureOptions = {
 type NamespacedName = { name: string; namespace: string };
 type SelectorRequest = { labelSelector?: string };
 type WriteRequest = { body: FixtureObject };
+type DeleteRequest = NamespacedName & {
+  body?: { preconditions?: { uid?: string; resourceVersion?: string } };
+};
 type WriteObject = (
   request: WriteRequest,
   options?: { replace?: boolean },
@@ -169,8 +176,12 @@ type WriteObject = (
 type NamespacedWrites<Kind extends string> = Partial<
   Record<`${"patch" | "create" | "replace"}Namespaced${Kind}`, WriteObject>
 >;
+type NamespacedDeletes<Kind extends string> = Partial<
+  Record<`deleteNamespaced${Kind}`, (request: DeleteRequest) => Promise<void>>
+>;
 type NamespacedClient<Kind extends string, Observed = FixtureObject> = NamespacedWrites<Kind> &
-  Partial<Record<`readNamespaced${Kind}`, (request: NamespacedName) => Promise<Observed>>>;
+  Partial<Record<`readNamespaced${Kind}`, (request: NamespacedName) => Promise<Observed>>> &
+  NamespacedDeletes<Kind>;
 
 type FixtureClients = {
   core: NamespacedClient<(typeof coreKinds)[number]> &
@@ -196,6 +207,7 @@ type FixtureClients = {
   objects: {
     read?: (object: FixtureObject) => Promise<FixtureObject>;
     patch?: (object: FixtureObject) => Promise<FixtureObject>;
+    delete?: (object: FixtureObject, ...args: unknown[]) => Promise<void>;
   };
   discovery: {
     listNamespacedEndpointSlice?: () => Promise<unknown>;
@@ -441,11 +453,27 @@ export function createDedicatedDeployEnrollmentFixture(clock?: FixtureClock) {
   return { state, nodeEnrollment };
 }
 
+type DeployTransport = ReturnType<typeof createDedicatedDeployKubernetesFixture>;
+
+export type DedicatedDeployFixture = DeployTransport & {
+  state: DedicatedDeployEnrollmentState;
+  driver: KubernetesComputeDriver;
+  revision: AgentRevision;
+  namespace: string;
+  gatewayName: string;
+  gatewayNamespace: string;
+  gateway: DeployTransport;
+  agentName: string;
+  prepare: () => ReturnType<KubernetesComputeDriver["prepareRevision"]>;
+  markWorkloadsReady: () => void;
+};
+
 export function createDedicatedDeployKubernetesFixture(
   { namespace, gatewayName, state, revision, sandboxDriver, clock }: FixtureOptions,
   seed: (save: (object: FixtureObject) => void) => void,
 ) {
   const objects = new Map<string, FixtureObject>();
+  let gatewayDeleted = false;
   const templates: Array<{ name: string; template: unknown }> = [];
   const key = (kind: string, name: string, target = namespace) =>
     `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
@@ -523,6 +551,9 @@ export function createDedicatedDeployKubernetesFixture(
         },
       };
       if (kind === "Deployment") {
+        if (body.metadata.name === gatewayName) {
+          gatewayDeleted = false;
+        }
         const spec = asRecord(body.spec);
         assert.ok(spec, "expected Deployment spec");
         const template = JSON.stringify(spec.template);
@@ -553,13 +584,38 @@ export function createDedicatedDeployKubernetesFixture(
     api[`createNamespaced${kind}`] = write;
     api[`replaceNamespaced${kind}`] = (request: WriteRequest) => write(request, { replace: true });
   }
+  const remove = (
+    kind: string,
+    name: string,
+    target: string,
+    preconditions?: Record<string, unknown>,
+  ) => {
+    const existing = read(kind, name, target);
+    for (const [field, expected] of Object.entries(preconditions ?? {})) {
+      if (existing.metadata[field] !== expected) {
+        throw Object.assign(new Error("delete precondition failed"), { statusCode: 409 });
+      }
+    }
+    objects.delete(key(kind, name, target));
+    if (kind === "Deployment" && name === gatewayName) {
+      gatewayDeleted = true;
+    }
+  };
+  const setupDelete = <Kind extends string>(api: NamespacedDeletes<Kind>, kind: Kind) => {
+    api[`deleteNamespaced${kind}`] = async ({ name, namespace: target, body }: DeleteRequest) => {
+      remove(kind, name, target, body?.preconditions);
+    };
+  };
   for (const kind of coreKinds) {
     clients.core[`readNamespaced${kind}`] = readResource(kind);
     setupWrites(clients.core, kind);
+    setupDelete(clients.core, kind);
   }
   setupWrites(clients.core, "ResourceQuota");
   setupWrites(clients.apps, "Deployment");
+  setupDelete(clients.apps, "Deployment");
   setupWrites(clients.networking, "NetworkPolicy");
+  setupDelete(clients.networking, "NetworkPolicy");
   clients.networking.readNamespacedNetworkPolicy = readResource("NetworkPolicy");
   clients.core.listNamespace = async ({ labelSelector }) => ({
     items:
@@ -572,8 +628,26 @@ export function createDedicatedDeployKubernetesFixture(
   clients.objects.read = async (object) =>
     read(object.kind, object.metadata.name, object.metadata.namespace);
   clients.objects.patch = async (object) => {
-    save(object);
-    return object;
+    const previous = objects.get(key(object.kind, object.metadata.name, object.metadata.namespace));
+    const value = {
+      ...object,
+      metadata: {
+        ...object.metadata,
+        uid: previous?.metadata.uid ?? `${object.metadata.name}-uid`,
+        resourceVersion: String(Number(previous?.metadata.resourceVersion ?? "0") + 1),
+      },
+    };
+    save(value);
+    return value;
+  };
+  clients.objects.delete = async (object, ...args) => {
+    const options = asRecord(args.at(-1));
+    remove(
+      object.kind,
+      object.metadata.name,
+      object.metadata.namespace ?? namespace,
+      asRecord(options?.preconditions),
+    );
   };
   clients.discovery.listNamespacedEndpointSlice = async () =>
     readyServiceEndpointSliceList(gatewayName);
@@ -582,6 +656,9 @@ export function createDedicatedDeployKubernetesFixture(
     const labels = asRecord(rawLabels);
     const role = labels?.["openclaw.dev/workload-role"];
     assert.ok(labels && (role === "agent" || role === "gateway"), "expected a workload selector");
+    if (role === "gateway" && gatewayDeleted) {
+      return { items: [] };
+    }
     if (role === "agent" && sandboxDriver !== undefined) {
       return { items: state.providerPod === undefined ? [] : [structuredClone(state.providerPod)] };
     }

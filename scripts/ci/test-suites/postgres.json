@@ -28,6 +28,7 @@
         "An authenticated user can browse revisions retained across the Harness settings migration",
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
+        "Canonical repository policy migration preserves stock TokenService metadata and revision egress",
         "Canonical migration refuses unexplained histories before mutation",
         "Credential Proxy preview receipts require the exact history before the shared migration",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
