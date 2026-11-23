@@ -1025,6 +1025,163 @@ test("a github Source refuses values the native Git Provider cannot install, bef
   }
 });
 
+test("a Source's Git purpose never changes, bound or unbound", async (t) => {
+  const f = await fixture(t, { tokenService: true });
+  const ceiling = "octo/app:write";
+  const github = await f.request("POST", f.path, { body: githubSourceBody(FINE_GRAINED) });
+  assert.equal(github.status, 201, JSON.stringify(github.body));
+  const model = await f.request("POST", f.path, { body: MODEL_SOURCE_BODY });
+  assert.equal(model.status, 201, JSON.stringify(model.body));
+  const plain = await f.request("POST", f.path, {
+    body: { name: "No preset", type: "static", secret: { opaque: "synthetic-plain-material" } },
+  });
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  // A saved Agent binds this model Source.
+  const bound = await f.request("POST", f.path, {
+    body: { ...MODEL_SOURCE_BODY, name: "Bound model key" },
+  });
+  assert.equal(bound.status, 201, JSON.stringify(bound.body));
+  const configuration = await f.createConfiguration(
+    f.namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5"),
+  );
+  const agent = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+    body: {
+      name: "Bound Agent",
+      configurationId: configuration.id,
+      harnessAuth: { method: "credential_source", sourceId: bound.data.id },
+      credentialSources: [{ sourceId: bound.data.id }],
+    },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+
+  const PURPOSE =
+    "The github preset is chosen at registration. Register a new credential source instead.";
+  const token = fakeToken("github", "pat", "next");
+  // [Source, PATCH body, status, message]. Every row leaves the stored Source unchanged.
+  const rows = [
+    [github, { config: { provider_preset: "openai" } }, 409, PURPOSE],
+    [github, { config: { provider_preset: "openai" }, secret: { token } }, 409, PURPOSE],
+    [github, { config: { provider_preset: "openai", repositories: ceiling } }, 409, PURPOSE],
+    [github, { config: { repositories: ceiling } }, 409, PURPOSE],
+    [github, { config: {} }, 409, PURPOSE],
+    [github, { config: {}, secret: { token } }, 409, PURPOSE],
+    [github, { config: null }, 400],
+    [
+      github,
+      { config: { provider_preset: "github" } },
+      400,
+      "A github credential source requires a repository ceiling.",
+    ],
+    [
+      github,
+      { config: { provider_preset: "github" }, secret: { token } },
+      400,
+      "A github credential source requires a repository ceiling.",
+    ],
+    [model, { config: { provider_preset: "github", repositories: ceiling } }, 409, PURPOSE],
+    [
+      model,
+      { config: { provider_preset: "github", repositories: ceiling }, secret: { token } },
+      409,
+      PURPOSE,
+    ],
+    [plain, { config: { provider_preset: "github", repositories: ceiling } }, 409, PURPOSE],
+    [bound, { config: { provider_preset: "github", repositories: ceiling } }, 409, PURPOSE],
+    [
+      model,
+      { config: { repositories: ceiling } },
+      400,
+      "Only a github credential source has a repository ceiling.",
+    ],
+    [
+      plain,
+      { config: { repositories: ceiling } },
+      400,
+      "Only a github credential source has a repository ceiling.",
+    ],
+  ];
+  for (const [source, body, status, message] of rows) {
+    const label = `${source.data.name}: ${JSON.stringify(body)}`;
+    const path = `${f.path}/${source.data.id}`;
+    const stored = (await f.request("GET", path)).data;
+    const value = await custodyOf(f, source.data.id);
+    const refused = await f.request("PATCH", path, { body });
+    assert.equal(refused.status, status, `${label}: ${JSON.stringify(refused.body)}`);
+    if (message !== undefined) {
+      assert.equal(refused.body.error.message, message, label);
+    }
+    assert.deepEqual((await f.request("GET", path)).data, stored, label);
+    assert.deepEqual(await custodyOf(f, source.data.id), value, label);
+  }
+});
+
+test("managed Sources stored before the github preset still list, read, update and delete", async (t) => {
+  const f = await fixture(t, { tokenService: true });
+  // Rows and custody in the shape stored before this change: no preset, or a model preset. The
+  // custody record is the TokenService's `{credential, version}` under its private storage key.
+  const seeded = [
+    { name: "legacy-plain", config: {} },
+    { name: "legacy-openai", config: { provider_preset: "openai" } },
+  ];
+  for (const source of seeded) {
+    source.id = "cs_" + randomUUID();
+    source.credential = `synthetic-${source.name}-material`;
+    await f.controller.transact((unit) =>
+      unit.credentialSources.createCredentialSource({
+        id: source.id,
+        namespaceId: f.namespace.id,
+        name: source.name,
+        type: "static",
+        ownerCapability: "token_service",
+        tokenServiceInstanceId: f.tokenServiceInstanceId,
+        state: "ready",
+        config: source.config,
+        secrets: {},
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await f.secretDriver.installationSecrets.create(
+      {
+        installationId: f.controller.installation.id,
+        id: JSON.stringify([
+          "token_service",
+          f.tokenServiceInstanceId,
+          "credential_source",
+          f.namespace.id,
+          source.id,
+        ]),
+      },
+      JSON.stringify({ credential: source.credential, version: randomUUID() }),
+    );
+  }
+  const listed = (await f.request("GET", f.path)).data;
+  for (const source of seeded) {
+    const path = `${f.path}/${source.id}`;
+    const entry = listed.find(({ id }) => id === source.id);
+    assert.deepEqual(entry?.config, source.config, source.name);
+    const read = await f.request("GET", path);
+    assert.equal(read.status, 200, source.name);
+    assert.deepEqual(read.data.config, source.config, source.name);
+    assert.deepEqual(read.data.secrets, {}, source.name);
+    assert.equal((await custodyOf(f, source.id)).credential, source.credential, source.name);
+
+    // Replacement and an unbound preset change behave as before.
+    const replaced = await f.request("PATCH", path, {
+      body: { secret: { opaque: `${source.credential}-2` } },
+    });
+    assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+    assert.equal((await custodyOf(f, source.id)).credential, `${source.credential}-2`);
+    const config = source.config.provider_preset ? {} : { provider_preset: "openai" };
+    const changed = await f.request("PATCH", path, { body: { config } });
+    assert.equal(changed.status, 200, JSON.stringify(changed.body));
+    assert.deepEqual(changed.data.config, config, source.name);
+
+    assert.equal((await f.request("DELETE", path)).status, 204, source.name);
+    assert.equal((await f.request("GET", path)).status, 404, source.name);
+  }
+});
+
 test("credential source deletion identifies its registration fence without parsing the message", async (t) => {
   const f = await fixture(t);
   const created = await f.create("recent source");
