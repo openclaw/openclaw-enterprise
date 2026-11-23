@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -412,9 +412,12 @@ test(
     }
     await deploy();
     assert.equal((await api("GET", workspace)).content, content);
-    const modelDigestProbe =
-      'const value=process.env[process.argv[1]];if(typeof value!=="string")process.exit(1);process.stdout.write(require("node:crypto").createHash("sha256").update(value).digest("hex"))';
-    const modelDigest = async (pod) => {
+    const modelProofProbe =
+      'const [name,challenge]=process.argv.slice(1);if(!["OPENAI_API_KEY","CODEX_ACCESS_TOKEN"].includes(name)||!/^[a-f0-9]{64}$/.test(challenge))process.exit(1);const value=process.env[name];if(typeof value!=="string"||value.length===0)process.exit(1);process.stdout.write(require("node:crypto").createHmac("sha256",value).update(challenge).digest("hex"))';
+    const assertModelCredential = async (pod, credential) => {
+      // Each comparison uses a fresh public challenge. Only its one-time
+      // response leaves the Agent; the credential is never sent to kubectl.
+      const challenge = randomBytes(32).toString("hex");
       const output = await dp.kubectl(
         "exec",
         pod.metadata.name,
@@ -425,24 +428,25 @@ test(
         "--",
         "node",
         "-e",
-        modelDigestProbe,
+        modelProofProbe,
         modelEnvironment,
+        challenge,
       );
       assert.match(output, /^[a-f0-9]{64}$/);
-      return output;
+      const expected = createHmac("sha256", credential).update(challenge).digest("hex");
+      assert.equal(output, expected);
     };
-    const digest = (value) => createHash("sha256").update(value).digest("hex");
     const liveHarness = (await pods("execution", "agent")).find(
       (pod) => !pod.metadata.deletionTimestamp,
     );
-    assert.equal(await modelDigest(liveHarness), digest(modelCredential));
+    await assertModelCredential(liveHarness, modelCredential);
     // A deliberately invalid key proves source updates do not silently mutate
     // the active revision, while an attempted redeploy receives the new material
     // and fails native authentication before deployment can succeed. PAT login
     // rejects an invalid token before the API-key path's model probe runs.
     const invalidKey = `${authMethod === "codex_pat" ? "at-" : ""}test-only-invalid-${randomUUID()}`;
     await api("PATCH", `${base}/secrets/${secret.id}`, { value: invalidKey });
-    assert.equal(await modelDigest(liveHarness), digest(modelCredential));
+    await assertModelCredential(liveHarness, modelCredential);
     const rejected = await api("POST", `${agentPath}/deploy`);
     const expectedFailure =
       authMethod === "codex_pat"
@@ -483,7 +487,7 @@ test(
       (await api("GET", `${agentPath}/deployments/${rejected.id}`)).status,
       "succeeded",
     );
-    assert.equal(await modelDigest(rejectedHarness), digest(invalidKey));
+    await assertModelCredential(rejectedHarness, invalidKey);
     // Exclusive RWO replacement stops the predecessor. Workspace access can be
     // unavailable until valid credentials start its successor; verify retention below.
     await api("PATCH", `${base}/secrets/${secret.id}`, { value: modelCredential });
