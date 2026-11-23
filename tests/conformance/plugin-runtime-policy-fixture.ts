@@ -172,6 +172,7 @@ interface InstallOptions extends RuntimeOptions {
 
 export interface GatewayOptions extends RuntimeOptions {
   launcher?: "docker" | undefined;
+  gatewayEntrypoint?: string;
   workspaceNodeId?: string | undefined;
   workspaceNodeBindingPath?: true;
   intervals?: RuntimeInterval[];

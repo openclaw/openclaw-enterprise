@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-22
-last_updated_session: authoring-run/50df6805-135e-42e6-a549-2a24c9b17fb8
+updated: 2026-11-23
+last_updated_session: authoring-run/49bec6dd-1c1d-4c16-932a-ea8c0ccfdae0
 ---
 
 # Agent Workspace Files Flow
@@ -167,10 +167,10 @@ without endpoint support cannot serve workspace files.
 ### 5. OCC admits one exact-Agent file operation
 
 `apps/controller/src/index.ts:createFastifyApp` requires a valid user
-session or scoped service API key. Native Agent credentials cannot invoke this
-administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
-and, for session callers, passes the browser CSRF boundary. OCC resolves the
-selected AgentRevision before Compute endpoint resolution. After that grant, an
+session or scoped service API key. Native Agent credentials are rejected.
+`GET` requires Agent `read` and `PUT` requires `operate`.
+Both session requests undergo [browser checks](../reference/agents/workspace-files.md#live-file-access).
+OCC resolves the selected AgentRevision before Compute endpoint resolution. After that grant, an
 Agent with no running version (stopped, never deployed, or still activating)
 gets `409 RESOURCE_CONFLICT` naming the Agent and the next step.
 
@@ -352,8 +352,8 @@ replays it. Cleanup closes the native client.
 - For `503 DEPENDENCY_UNAVAILABLE`, check Compute routing and key mount, then Gateway,
   Certificate, SecurityPolicy, HTTPRoute, DNS, CA trust and exact NetworkPolicy peers
   before changing native auth.
-- For `403 FORBIDDEN`, check exact-Agent IAM and session PUT CSRF. Native scopes
-  cannot grant human IAM permissions.
+- For `403 FORBIDDEN`, check Agent IAM and session headers. Native scopes cannot
+  grant human IAM permissions.
 - For authenticated native upgrade failures, check trusted proxies, simultaneous tokens,
   loopback real IP and native identity scopes. Never fabricate forwarded addresses.
 - Confirm writes and model use with [runtime checks](../testing/README.md).
@@ -372,6 +372,7 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
+- 2026-11-23 00:59: Clarify browser checks. (authoring-run/49bec6dd-1c1d-4c16-932a-ea8c0ccfdae0 - fc352442c5ac75f023ec877deeb93636e238dd33)
 - 2026-11-22 09:27: Explain bounded reply policy selection. (authoring-run/50df6805-135e-42e6-a549-2a24c9b17fb8 - 1a8d9d9f46da702b830d50cc53215317d602ab4c)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)

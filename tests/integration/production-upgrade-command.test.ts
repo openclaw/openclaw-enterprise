@@ -706,7 +706,7 @@ test("migration apply requires approval of the original run before native dispat
 
 test("the same local candidate is explained by plan and apply without printing its contents", async (t) => {
   const f = await fixture(t);
-  await selectCheckout(f);
+  const selectedProfile = await selectCheckout(f);
   const values = join(f.rendered, "candidate-values.yaml");
   const installation = join(f.rendered, "candidate-installation.yaml");
   const receipt = join(f.rendered, "compatibility.json");
@@ -728,7 +728,41 @@ test("the same local candidate is explained by plan and apply without printing i
     { mode: 0o600 },
   );
   const receiptCanary = randomBytes(24).toString("hex");
-  await writeFile(receipt, JSON.stringify({ privateReceipt: receiptCanary }), { mode: 0o600 });
+  const compatibilityFile = "tests/integration/postgres-migration-compatibility.test.mjs";
+  const counts = { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 };
+  const releasedController = `sha256:${"b".repeat(64)}`;
+  const candidateController = f.input.images.controller.split("@")[1];
+  assert.ok(candidateController);
+  // A focused runner receipt with passing cases and an advisory about recovery history.
+  const compatibilityResult = {
+    path: compatibilityFile,
+    status: "passed",
+    nodeExitCode: 0,
+    signal: null,
+    counts,
+    tests: [
+      "Released controller remains usable across candidate database writes",
+      "Released controller remains usable after configured IAM activation",
+    ].map((name) => ({ name, status: "passed", file: compatibilityFile })),
+    issues: [],
+    cleanup: { status: "passed" },
+    imageDigests: { releasedController, candidateController },
+    measurements: [{ kind: "released-controller-history", status: "unsupported" }],
+  };
+  const compatibilityReceipt = {
+    version: 1,
+    command: "run",
+    sourceSha: "1".repeat(40),
+    lane: "postgres",
+    scope: "focused",
+    status: "passed",
+    exitCode: 0,
+    counts,
+    issues: [],
+    files: [compatibilityResult],
+    privateReceipt: receiptCanary,
+  };
+  await writeFile(receipt, JSON.stringify(compatibilityReceipt), { mode: 0o600 });
   const options = [
     "--",
     "--candidate-values",
@@ -755,9 +789,12 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.match(plan.stdout, /overwrite the local installation.yaml/);
   assert.match(plan.stdout, /live mutable Installation Secret remains selected.*replace its data/);
   assert.match(plan.stdout, /select a staged immutable Installation Secret/);
+  assert.match(plan.stdout, /compatibility receipt matches the selected controller/);
+  assert.match(plan.stdout, /installed controller digest requires live preflight/);
   assert.ok(plan.stdout.includes(f.input.images.controller));
   const output = plan.stdout + plan.stderr + apply.stdout + apply.stderr;
-  for (const withheld of [password, proxy, receiptCanary]) {
+  assert.doesNotMatch(output, /rejected the candidate migration history/);
+  for (const withheld of [password, proxy, receiptCanary, receipt, releasedController]) {
     assert.ok(!output.includes(withheld));
   }
   for (const file of [
@@ -782,6 +819,46 @@ test("the same local candidate is explained by plan and apply without printing i
     "operator.json",
     "rendered",
   ]);
+
+  const valid = JSON.stringify(compatibilityReceipt);
+  for (const invalid of [
+    valid.replace(candidateController, releasedController),
+    valid.replace(releasedController, receiptCanary),
+    JSON.stringify({ ...compatibilityReceipt, status: "failed" }),
+    valid.slice(0, -1),
+  ]) {
+    await writeFile(receipt, invalid);
+    for (const action of ["plan", "apply"]) {
+      const result = run(action, f, options, { automaticEvidence: true });
+      assert.equal(result.status, 2);
+      assert.ok(result.stdout === "");
+      assert.ok(
+        result.stderr.includes(
+          "Supply a passing PostgreSQL compatibility report for the selected controller and retry.",
+        ),
+      );
+      assert.ok(!result.stderr.includes(receiptCanary) && !result.stderr.includes(receipt));
+      assert.deepEqual((await readdir(f.directory)).sort(), [
+        "kubeconfig",
+        "operator.json",
+        "rendered",
+      ]);
+    }
+  }
+  await writeFile(receipt, valid);
+  await writeFile(
+    f.profile,
+    JSON.stringify({ ...selectedProfile, images: { broker: f.input.images.controller } }),
+  );
+  const noController = run("plan", f, options);
+  assert.equal(noController.status, 2);
+  assert.equal(noController.stdout, "");
+  assert.match(
+    noController.stderr,
+    /--controller-compatibility-results requires a selected controller image/,
+  );
+  assert.ok(!noController.stderr.includes(receipt));
+  await writeFile(f.profile, JSON.stringify(selectedProfile));
 
   const privateValue = randomBytes(32).toString("hex");
   for (const [file, invalid, description] of [
