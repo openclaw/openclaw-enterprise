@@ -285,7 +285,7 @@
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "description": "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries.",
             "maxProperties": 32,
             "type": "object"
           },
@@ -317,12 +317,12 @@
       },
       "UpdateTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed. The github preset cannot be added or removed after registration; a github Source's repositories change only separately from material and while the Source is unbound.",
         "minProperties": 1,
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "description": "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries.",
             "maxProperties": 32,
             "type": "object"
           },
