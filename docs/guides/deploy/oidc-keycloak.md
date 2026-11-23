@@ -248,29 +248,27 @@ jq -e --arg expected "${EXPECTED_HISTORY:?}" \
 Refuse an empty or unexpected history and any failed command. The check refuses unrecognized
 schema history, catalog or grants, including unexpected ownership or CREATE
 grants on `occ` or `drizzle`; PostgreSQL before 17 is refused. It does not
-apply SQL. By default, the existing upgrade workflow owns shutdown and the Helm
-hook applies migrations. For an explicitly separate database deployment, first
-select `database.upgradeMigration: separate` in the reviewed candidate values
-through the advanced chart path and retain the original upgrade evidence. The
-helper pauses with exit 3 after both writers stop. Apply pending migrations with
-the same selected image and program, then require completed history:
-
-```bash
-set -euo pipefail
-umask 077
-docker run --rm --env NODE_ENV=production --env OCC_MIGRATION_DATABASE_URL \
-  --mount "type=bind,src=${MIGRATION_CA_DIR:?}/ca.pem,dst=/etc/openclaw/database-ca/ca.pem,readonly" \
-  "$CONTROLLER_IMAGE" -e "${MIGRATION_PROGRAM:?}" --
-docker run --rm --env NODE_ENV=production --env OCC_MIGRATION_DATABASE_URL \
-  --mount "type=bind,src=${MIGRATION_CA_DIR:?}/ca.pem,dst=/etc/openclaw/database-ca/ca.pem,readonly" \
-  "$CONTROLLER_IMAGE" -e "${MIGRATION_PROGRAM:?}" -- --require-current > migration-current.json
-jq -e '.event == "migration.checked" and .history == "completed"' migration-current.json
-```
+apply SQL.
 
 After the last selected-image command, remove the staged public CA copy with
 `rm -- "$MIGRATION_CA_DIR/ca.pem"` and `rmdir -- "$MIGRATION_CA_DIR"`.
+The operator-host CA copy serves only the read-only rehearsal. The maintenance
+Jobs use the chart's migrator Secret and any referenced database CA Secret.
 
-Before service replacement, [resume the original upgrade](separate-database-upgrade.md#deploy-the-database).
+By default, the existing upgrade workflow owns shutdown and the Helm hook applies
+migrations.
+
+For an explicitly separate database deployment, first select
+`database.upgradeMigration: separate` in the reviewed candidate values through
+the advanced chart path and retain the original upgrade evidence. After the
+helper exits 3 with both writers stopped, follow the
+[guarded migration application and verification](separate-database-upgrade.md#apply-and-verify-the-prepared-migration)
+with the original evidence directory. The Jobs check the saved Installation ID
+before applying SQL and when verifying completed history. After verification and
+confirmed Job and Pod cleanup, resume once through the original entry point
+with the original evidence directory and candidate options. For script syntax,
+consult only [step 3](separate-database-upgrade.md#deploy-the-database). Skip the
+manual Jobs in steps 1 and 2.
 On an uncertain outcome, keep writers stopped,
 use [upgrade recovery](production-upgrade-recovery.md), and use
 [UID-bound preflight cleanup](production-preflight-cleanup.md) for acknowledged
