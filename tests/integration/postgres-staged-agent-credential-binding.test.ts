@@ -505,7 +505,7 @@ test(
     assert.equal(invalidSource.json().error.code, "INVALID_REQUEST");
     assert.equal(
       invalidSource.json().error.message,
-      "Static sources accept only the optional provider_preset and, for github, repositories configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+      "Static sources accept only the optional provider_preset and, for github, repositories configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit. A github credential must also fit the Git credential limit and contain no openshell:resolve: text.",
     );
     const invalidPreset = remember(
       await inject("POST", `${base}/credential-sources`, {
