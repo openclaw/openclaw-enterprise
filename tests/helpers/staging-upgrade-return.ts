@@ -28,6 +28,87 @@ import { Check } from "typebox/value";
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
 
+const gatewayContinuityReceipt = Type.Object({
+  namespaceId: Type.String(),
+  agentId: Type.String(),
+  revisionId: Type.String(),
+  runtime: Type.Object({
+    revisionId: Type.String(),
+    pods: Type.Array(
+      Type.Object({
+        role: Type.String(),
+        uid: Type.String({ minLength: 1 }),
+        phase: Type.String(),
+        containers: Type.Optional(
+          Type.Array(
+            Type.Object({
+              name: Type.String(),
+              state: Type.Optional(Type.String()),
+              restartCount: Type.Optional(Type.Unknown()),
+            }),
+          ),
+        ),
+      }),
+    ),
+  }),
+});
+
+export async function readGatewayContinuity(
+  directory: string,
+  {
+    namespaceId,
+    agentId,
+    revisionId,
+  }: { namespaceId: string; agentId: string; revisionId: string },
+) {
+  async function readGateway(phase: "before" | "after", filename: string) {
+    const label = `Agent continuity ${phase} the controller upgrade`;
+    const receipt = await readFile(join(directory, filename), "utf8")
+      .then(protectedJSON<unknown>)
+      .catch(() => {
+        throw new Error(`${label}: cannot read the receipt`);
+      });
+    assert.ok(Check(gatewayContinuityReceipt, receipt), `${label}: invalid receipt`);
+    assert.ok(
+      receipt.namespaceId === namespaceId &&
+        receipt.agentId === agentId &&
+        receipt.revisionId === revisionId &&
+        receipt.runtime.revisionId === revisionId,
+      `${label}: receipt identity does not match the selected Agent revision`,
+    );
+
+    // The upgrade CLI verifies readiness. Select the one live Gateway for comparison.
+    const gateways = receipt.runtime.pods.filter(
+      ({ role, phase }) => role === "gateway" && phase !== "Succeeded" && phase !== "Failed",
+    );
+    const [gateway] = gateways;
+    assert.ok(gateways.length === 1 && gateway, `${label}: expected exactly one live Gateway Pod`);
+    const containers = gateway.containers?.filter(({ name }) => name === "gateway");
+    const container = containers?.length === 1 ? containers[0] : undefined;
+    const count = container?.restartCount;
+    // Runtime inspection supplies a default zero when it has no container status.
+    const observed =
+      container?.state === "running" ||
+      container?.state === "waiting" ||
+      container?.state === "terminated";
+    return {
+      uid: gateway.uid,
+      restartCount:
+        observed && typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+          ? count
+          : null,
+    };
+  }
+
+  const before = await readGateway("before", "agent-continuity.json");
+  const after = await readGateway("after", "agent-continuity-after.json");
+  return {
+    podReplaced: before.uid !== after.uid,
+    gatewayRestartCountBefore: before.restartCount,
+    gatewayRestartCountAfter: after.restartCount,
+  };
+}
+
 // Both c0b09b2e and 4835e8bf ship these bytes at
 // deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs.
 const legacyRehearsalLoaderHash =
@@ -438,6 +519,28 @@ export async function measureUpgradeAvailability<T>(
     const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
     const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
     const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    let successful = 0;
+    let unsuccessfulBeforeFirstSuccess: number | null = null;
+    let unsuccessfulAfterLastSuccess: number | null = null;
+    let previousSuccessfulFinish: number | undefined;
+    let maxSuccessfulResponseIntervalMs: number | null = null;
+    for (const [index, sample] of samples.entries()) {
+      if (sample.outcome !== "ok") {
+        continue;
+      }
+      const finish = sample.startOffsetMs + sample.elapsedMs;
+      if (previousSuccessfulFinish === undefined) {
+        unsuccessfulBeforeFirstSuccess = index;
+      } else {
+        maxSuccessfulResponseIntervalMs = Math.max(
+          maxSuccessfulResponseIntervalMs ?? 0,
+          finish - previousSuccessfulFinish,
+        );
+      }
+      previousSuccessfulFinish = finish;
+      unsuccessfulAfterLastSuccess = samples.length - index - 1;
+      successful++;
+    }
     return {
       schemaVersion: 2,
       requestTimeoutMs: 5_000,
@@ -449,6 +552,16 @@ export async function measureUpgradeAvailability<T>(
       throughOffsetMs: through - origin,
       maxStartGapMs,
       tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      responseSummary: {
+        successful,
+        unsuccessful: samples.length - successful,
+        unsuccessfulBeforeFirstSuccess,
+        unsuccessfulAfterLastSuccess,
+        maxSuccessfulResponseIntervalMs:
+          maxSuccessfulResponseIntervalMs === null
+            ? null
+            : Math.round(maxSuccessfulResponseIntervalMs),
+      },
       cadence:
         cadence.start === undefined
           ? null
@@ -619,6 +732,7 @@ async function assertReturnedInstallationAuthentication(
 }
 type Rehearsal = {
   controllers: Controllers;
+  ordinaryUpgrade: boolean;
   kubeconfig: string;
   context: string;
   namespace: string;
@@ -677,6 +791,16 @@ type Pod = {
 
 const labels = Type.Record(Type.String(), Type.String());
 const container = Type.Object({ name: Type.String(), image: Type.String() });
+const controllerContainer = Type.Object({
+  ...container.properties,
+  resources: Type.Optional(
+    Type.Object({
+      limits: Type.Optional(
+        Type.Object({ cpu: Type.Optional(Type.String()), memory: Type.Optional(Type.String()) }),
+      ),
+    }),
+  ),
+});
 const installationVolumes = Type.Optional(
   Type.Array(
     Type.Object({
@@ -703,7 +827,7 @@ const controllerPod = Type.Object({
   spec: Type.Object({
     nodeName: Type.Optional(Type.String()),
     serviceAccountName: Type.String(),
-    containers: Type.Array(container),
+    containers: Type.Array(controllerContainer),
     volumes: installationVolumes,
   }),
   status: Type.Object({
@@ -839,9 +963,11 @@ export function rehearsalPlane({
   kubeconfig,
   context,
   namespace,
+  recordResourceLimits = false,
 }: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
   kube: Kubectl;
   get: (resource: string) => Promise<unknown>;
+  recordResourceLimits?: boolean;
 }) {
   const pods = async () => {
     const listed = protectedJSON<unknown>(
@@ -923,10 +1049,8 @@ export function rehearsalPlane({
             pod.status.phase === "Running",
           `${component} Pod did not start`,
         );
-        assert.equal(
-          pod.spec.containers.find((container) => container.name === component)?.image,
-          image.reference,
-        );
+        const podContainer = pod.spec.containers.find((container) => container.name === component);
+        assert.equal(podContainer?.image, image.reference);
         assertInstallationVolume(pod.spec, secretName);
         const status = pod.status.containerStatuses?.find((item) => item.name === component);
         assert.ok(status?.ready && status.containerID, `${component} container is not ready`);
@@ -953,6 +1077,7 @@ export function rehearsalPlane({
           { protectedInput: true },
         );
         assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
+        const limits = podContainer?.resources?.limits;
         return {
           component,
           pod: pod.metadata.name,
@@ -963,6 +1088,9 @@ export function rehearsalPlane({
           containerID: status.containerID,
           imageID: status.imageID,
           imageDigest,
+          ...(recordResourceLimits && {
+            limits: { cpu: limits?.cpu ?? null, memory: limits?.memory ?? null },
+          }),
         };
       }),
     );
@@ -972,6 +1100,7 @@ export function rehearsalPlane({
 
 export async function rehearsePopulatedReturn({
   controllers,
+  ordinaryUpgrade,
   kubeconfig,
   context,
   namespace,
@@ -1069,6 +1198,7 @@ export async function rehearsePopulatedReturn({
     kubeconfig,
     context,
     namespace,
+    recordResourceLimits: true,
   });
   const candidateConnections = () =>
     sql(
@@ -1318,13 +1448,24 @@ export async function rehearsePopulatedReturn({
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase("Recover the interrupted controller upgrade after committed initialization", () =>
+  const forwardPhase = ordinaryUpgrade
+    ? "Complete the ordinary controller upgrade"
+    : "Recover the interrupted controller upgrade after committed initialization";
+  await phase(forwardPhase, () =>
     measureUpgradeAvailability(
       externalRequest,
       installationId,
       directory,
       async (measureGuardedResume) => {
         const evidence = join(directory, "forward");
+        if (ordinaryUpgrade) {
+          await upgrade(["--evidence-dir", evidence]);
+          const deployed = await helmStatus();
+          assert.equal(deployed.version, baselineRelease.version + 1);
+          assert.equal(deployed.info.status, "deployed");
+          await verifyInstallation();
+          return;
+        }
         const client = join(directory, "helm-client.json");
         const shimDirectory = join(directory, "helm-client-bin");
         const shim = join(shimDirectory, "helm");
@@ -1626,6 +1767,10 @@ export async function rehearsePopulatedReturn({
     accepted,
     candidatePods,
     helmRevision: candidateRelease.version,
+  });
+  await phase("Check the candidate database with the previous controller", async () => {
+    await custody.assertRelease();
+    await checkMigration(previous, previousJob, originalDatabase, "return-preflight");
   });
 
   const stopCandidateWriters = async () => {

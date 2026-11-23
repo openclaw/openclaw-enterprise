@@ -11,6 +11,7 @@ import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
   button,
+  isUnavailable,
   requestIdDisclosure,
   setUnavailable,
   setFieldError,
@@ -3180,16 +3181,9 @@ async function revalidateMountedAgent(current: Route) {
     activeElement === document.body && !previousFocus?.cancel.signal.aborted
       ? previousFocus
       : undefined;
-  let editorFocus = deferredFocus;
-  if (
-    focused instanceof HTMLTextAreaElement &&
-    focused.id === "configuration-json" &&
-    view.contains(focused) &&
-    focused.selectionStart !== focused.selectionEnd
-  ) {
+  const watchFocus = () => {
     const cancel = new AbortController();
-    editorFocus = { editor: focused, cancel };
-    // Returning to the tab can focus the same textarea as the check starts. A different
+    // Returning to the tab can focus the same control as the check starts. A different
     // control taking focus cancels restoration even if focus later falls to the body.
     document.addEventListener(
       "focusin",
@@ -3200,6 +3194,19 @@ async function revalidateMountedAgent(current: Route) {
       },
       { signal: AbortSignal.any([cancel.signal, lifetime.signal]) },
     );
+    return cancel;
+  };
+  const recoveryFocus = focused?.matches('#configuration-editor-feedback[role="status"]')
+    ? watchFocus()
+    : undefined;
+  let editorFocus = deferredFocus;
+  if (
+    focused instanceof HTMLTextAreaElement &&
+    focused.id === "configuration-json" &&
+    view.contains(focused) &&
+    focused.selectionStart !== focused.selectionEnd
+  ) {
+    editorFocus = { editor: focused, cancel: watchFocus() };
   }
   if (previousFocus !== editorFocus) {
     previousFocus?.cancel.abort();
@@ -3208,7 +3215,11 @@ async function revalidateMountedAgent(current: Route) {
     focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
   const selection =
     typeof textField?.selectionStart === "number"
-      ? ([textField.selectionStart, textField.selectionEnd] as const)
+      ? ([
+          textField.selectionStart,
+          textField.selectionEnd,
+          textField.selectionDirection ?? undefined,
+        ] as const)
       : null;
   const restoreFocus = (afterRetry = false) => {
     if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
@@ -3235,13 +3246,27 @@ async function revalidateMountedAgent(current: Route) {
       }
       return;
     }
+    // A stale save can describe Reload draft but cannot focus it while this view is inert.
+    if (!afterRetry && recoveryFocus && target === focused) {
+      if (recoveryFocus.signal.aborted || document.getSelection()?.isCollapsed === false) {
+        return;
+      }
+      const reload = view.querySelector<HTMLButtonElement>("#configuration-conflict-reload");
+      if (reload?.checkVisibility() && !isUnavailable(reload)) {
+        reload.focus();
+        if (document.activeElement === reload) {
+          target.scrollIntoView({ block: "nearest" });
+        }
+        return;
+      }
+    }
     target.focus({ preventScroll: true });
     if (
       selection &&
       (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
       target.value === textField?.value
     ) {
-      target.setSelectionRange(selection[0], selection[1]);
+      target.setSelectionRange(...selection);
     }
   };
   let checking = "session";
@@ -3612,6 +3637,7 @@ async function revalidateMountedAgent(current: Route) {
     if (state.deferredConfigurationFocus !== editorFocus) {
       editorFocus?.cancel.abort();
     }
+    recoveryFocus?.abort();
   }
 }
 
