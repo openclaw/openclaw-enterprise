@@ -188,9 +188,11 @@ forward_requested_gateway
 ```
 
 Leave the command running after `Forwarding from 127.0.0.1:18789` appears.
-If it reports no matching Pod, inspect the requested version and tenant Pods
-before rerunning the block; do not forward to the Agent-wide Service. If the
-local port is occupied, change `18789` in both the forward and the verification
+If no Pod matches, check the requested Agent revision. Inspect its Gateway
+Pods in `$GATEWAY_NAMESPACE` using the same kubeconfig and context before
+rerunning the block. Do not forward to the Agent-wide Service.
+
+If the local port is occupied, change `18789` in both the forward and the verification
 example. In another operator shell with the same environment, set
 `GATEWAY_PASSWORD_FILE` to a protected file containing the password. If the
 credential API created it, you can retrieve it without printing the value:
@@ -198,6 +200,7 @@ credential API created it, you can retrieve it without printing the value:
 ```bash
 umask 077
 fetch_gateway_password() {
+  set +x
   local working_directory agent_suffix transport_secret secret_json
   unset GATEWAY_PASSWORD_FILE GATEWAY_PASSWORD_DIRECTORY
   if [ -z "${AGENT_ID:-}" ] || [ -z "${KUBECONFIG_FILE:-}" ] ||

@@ -92,16 +92,11 @@ resolve container registries. Startup then waits on the cert-manager rollout
 while its pods stay in `ContainerCreating`. The launcher does not print those
 Pod events, and it prints the kubeconfig path only after startup succeeds.
 
-In a second terminal, while that wait is still running, describe the
-cert-manager Pods. The context is `k3d-` plus the cluster name from the first
-startup line, `Creating Kubernetes-only k3d cluster ...`. `<state-directory>`
-belongs to the process that started OCC, not to this second terminal. Use
-`OCC_DEVELOPMENT_STATE_DIRECTORY` when that process set it. Otherwise use that
-process's temporary directory plus `openclaw-development`: its `TMPDIR` when
-set, and `/tmp` on Linux when `TMPDIR` is unset. Do not substitute this
-terminal's `TMPDIR`. The
-[development settings](../../reference/settings/development.md#required-development-controller-environment)
-define that directory.
+Describe cert-manager Pods in another terminal. `<cluster>` comes from
+`Creating Kubernetes-only k3d cluster ...`. `<state-directory>` is the OCC
+process’s `OCC_DEVELOPMENT_STATE_DIRECTORY` if set. Otherwise use its `TMPDIR`
+(`/tmp` on Linux when unset) plus `openclaw-development`. Ignore the second
+terminal’s `TMPDIR`. See [development settings](../../reference/settings/development.md#required-development-controller-environment).
 
 ```bash
 kubectl --kubeconfig '<state-directory>/kubeconfig' \
@@ -121,7 +116,18 @@ Default startup preloads the pinned controller. Check registry access and the
 import error; Pod pull policy cannot fix this. Keep state after incomplete cleanup
 and retry `occ dev down`; uncertain/replaced tags retain recovery state.
 
-For custom manifests, inspect [Pod events](#local-startup-stalls-on-cert-manager).
+For a custom manifest, inspect Pod events during rollout using the
+[state directory and cluster name](#local-startup-stalls-on-cert-manager) described above.
+
+```bash
+kubectl --kubeconfig '<state-directory>/kubeconfig' \
+  --context 'k3d-<cluster>' \
+  -n agent-sandbox-system describe pods
+```
+
+If the manifest places the controller elsewhere, inspect that namespace for pull
+errors. Local startup requires the controller in `agent-sandbox-system`.
+
 `ImagePullBackOff` with `cdn.registry.k8s.io` resets means node delivery failed.
 Restore connectivity or [preload a verified cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache).
 Preserve version pins, TLS verification and network policies.
