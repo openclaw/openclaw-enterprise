@@ -6,24 +6,26 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-lifecycle.test.ts",
+    "tests/integration/postgres-worker-agent-revision-convergence.test.ts",
     "tests/integration/postgres-worker-repository-roles.test.ts",
-    "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.ts",
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
     "tests/integration/postgres-worker-agent-revision-stop.test.ts",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
-    "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.ts",
-    "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
     "tests/integration/postgres-worker-harness-exposure.test.ts",
     "tests/integration/auth-maintain.test.ts",
-    "tests/integration/occ-metrics.test.mjs"
+    "tests/integration/occ-metrics.test.ts"
   ],
   "files": [
     {
-      "path": "tests/integration/occ-metrics.test.mjs",
+      "path": "tests/integration/occ-metrics.test.ts",
       "expectedTests": [
         "API metrics follow real authenticated routes and keep replica registries isolated",
         "metrics settings reject exposed development binds and disabled stray settings",
@@ -47,18 +49,45 @@
         "the revision worker rejects associated-account access revoked after admission before invoking Compute",
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
         "the revision worker retries transient Backend binding read failures without activating",
-        "an older revision retry is superseded without preparing or retiring a newer active revision",
-        "an expired claim keeps a started deployment running under any controller clock",
-        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
-        "real PostgreSQL preserves the failure budget while an Agent runtime converges",
-        "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
-        "an overdue Agent runtime fails closed without activating its incomplete revision",
-        "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
-        "the convergence deadline judges work age by the database clock, not the controller clock",
-        "a stop orders the running revision by the database clock, not the controller clock",
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
+        "a restarted worker refuses explicit deny-all before preparing an ordinary revision",
+        "a queued scoped deployment cannot replace an unscoped revision",
+        "an IAM change committed during the lock wait prevents Compute binding",
+        "an IAM change committed during the lock wait prevents exclusive predecessor stop",
+        "a current claim refuses revoked policy authority before repository credential preparation",
+        "a current claim refuses revoked policy authority before repository credential preparation after binding",
+        "a current claim refuses revoked policy authority before binding",
+        "a current claim refuses revoked policy authority before preparation",
+        "a current claim refuses revoked policy authority before activation before commit",
+        "a current claim refuses revoked policy authority before activation after commit",
+        "a recovered exclusive refusal fences predecessor repair while a shared preparation is outstanding",
+        "a prior deferred scoped attempt fences shared predecessor maintenance after refusal",
+        "shared predecessor maintenance can repair after a scoped candidate was never started",
+        "repository policy successor with legacy Compute enforcement during predecessor maintenance",
+        "repository policy successor with missing Compute enforcement during predecessor maintenance",
+        "repository policy successor with refused Compute enforcement during predecessor maintenance",
+        "repository policy successor with supported Compute enforcement during predecessor maintenance",
+        "repository policy successor with later supported Compute enforcement during predecessor maintenance",
+        "predecessor maintenance cannot retire its runtime for a scoped deployment with revoked policy authority",
+        "repository policy successor with refused after stop began Compute enforcement during predecessor maintenance",
+        "repository policy successor with missing work Compute enforcement during predecessor maintenance",
+        "repository policy successor with mismatched work Compute enforcement during predecessor maintenance",
+        "a held repository policy successor without enforcement cannot supersede or reprepare an older shared revision",
+        "a held repository policy successor without enforcement cannot supersede or reprepare an older exclusive revision",
+        "an active predecessor handles a held shared successor with missing repository policy enforcement",
+        "a queued revision does not hide a shared Gateway held by a scoped revision",
+        "predecessor maintenance leaves a converging scoped Gateway in place",
+        "an active predecessor handles a held shared successor with refused repository policy enforcement",
+        "an active predecessor handles a held shared successor with supported repository policy enforcement",
+        "an active predecessor handles a held shared successor with legacy repository policy enforcement",
+        "an overdue deployment cannot retire its active revision on behalf of an unenforceable held successor",
+        "a successor claim prevents preparation on shared Compute before the stale signal aborts",
+        "a successor claim prevents activation before commit before the stale signal aborts",
+        "a successor claim prevents activation after commit before the stale signal aborts",
+        "queued repository policy refuses revoked sandbox_policy read before Compute",
+        "queued repository policy refuses revoked sandbox_policy update before Compute",
+        "queued repository policy refuses revoked agent manage_policy before Compute",
         "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
-        "a lost retirement claim preserves the activated replacement and cannot complete stolen work",
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
@@ -69,8 +98,32 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-worker-agent-revision-lifecycle.test.ts",
+      "expectedTests": [
+        "an older revision retry is superseded without preparing or retiring a newer active revision",
+        "a stop orders the running revision by the database clock, not the controller clock",
+        "a lost retirement claim preserves the activated replacement and cannot complete stolen work"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-convergence.test.ts",
+      "expectedTests": [
+        "an expired claim keeps a started deployment running under any controller clock",
+        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
+        "real PostgreSQL preserves the failure budget while an Agent runtime converges",
+        "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
+        "an overdue Agent runtime fails closed without activating its incomplete revision",
+        "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
+        "the convergence deadline judges work age by the database clock, not the controller clock"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-worker-repository-roles.test.ts",
       "expectedTests": [
+        "retained protocol 1 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 1 consumes committed disposal with saved session ID and no sender",
+        "retained protocol 3 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 3 consumes committed disposal with saved session ID and no sender",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
         "worker refuses repository credentials when repositoryPolicy is absent",
@@ -83,8 +136,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
+        "standalone activation commits the prepared revision and delivers an active Source PATCH",
+        "standalone activation refuses a source grant removed during preparation",
         "credential withdrawal work revokes from the active revision without redeploying it",
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
         "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",
@@ -125,9 +180,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
       "expectedTests": [
-        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision"
+        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
+        "a stop during preparation prevents activation before a later deployment"
       ]
     },
     {
@@ -163,10 +219,14 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
       "expectedTests": [
+        "a stopped first deployment keeps reporting repository disposal after replacement activates",
         "repository service outage during Agent stop still stops Compute and retains durable closing work",
-        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
+        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
+        "finite Git removal survives a restarted Compute refusing the stored repository policy",
+        "the original deployment withdraws finite Git after losing policy-edit authority",
+        "the original deployment handles Stop after losing policy-edit authority"
       ]
     },
     {

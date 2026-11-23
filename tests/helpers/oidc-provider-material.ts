@@ -4,7 +4,7 @@ import { chmod, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { OidcTokenAuth } from "../../apps/controller/src/auth/oidc.ts";
-import { caAndLeaf } from "./certificates.mjs";
+import { caAndLeaf } from "./certificates.ts";
 import type { OidcIssuerEndpoints } from "./oidc-provider.ts";
 
 const execute = promisify(execFile);
@@ -52,18 +52,7 @@ export async function createOidcProviderMaterial(
       redirectUri,
       tokenAuth: "client_secret_post",
     };
-    // The JS helper's inferred default is stricter than its command-runner contract.
-    const createCertificates = caAndLeaf as (
-      directory: string,
-      options: {
-        caName: string;
-        commonName: string;
-        subjectAltName: string;
-        days: number;
-        run: RunCommand;
-      },
-    ) => Promise<unknown>;
-    await createCertificates(directory, {
+    await caAndLeaf(directory, {
       caName: "Disposable OIDC provider CA",
       commonName: hostname,
       subjectAltName: `DNS:${hostname}`,

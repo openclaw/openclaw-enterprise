@@ -138,6 +138,11 @@ native-admin settings in separate stopped maintenance, then verify a fresh
 Agent launch through restricted ingress.
 Reopen general ingress only after these checks pass.
 
+Retain the identity mapping and audit evidence. IdP group removal does not end an
+existing OCE session or remove local grants. Use
+[account disablement](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
+for immediate offboarding, and revoke separately issued service keys independently.
+
 ## Recover from a failed verification
 
 Keep general ingress closed and use the verified recovery account to correct
@@ -146,7 +151,29 @@ and grants; do not create a replacement account or rewrite subjects to make a
 sign-in pass. Follow [upgrade recovery](production-upgrade-recovery.md) for release
 or database failures. An older image is not assumed safe against a changed database.
 
-After successful verification, retain the identity mapping and audit evidence.
-IdP group removal does not end an existing OCE session or remove local grants.
-Use [account disablement](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-for immediate offboarding, and revoke separately issued service keys independently.
+### Before reopening on the previous release
+
+Record which writes completed before choosing a recovery point. A provider
+attachment on the previous release changes the account and revokes its sessions,
+even if the target never started. If the target accepted writes or their outcome
+is uncertain, keep writers stopped, reconcile those operations, and
+[restore the retained candidate database to a separate destination](upgrade-baseline.md#restore-the-retained-candidate-database).
+Verify that the previous release can use the selected data with the expected
+accounts, identity links, resource ownership and grants. If it cannot, keep
+ingress restricted and fix the target release.
+
+With ingress still restricted, check which sign-in methods the previous release
+actually serves. Its OIDC callback accepts attached subjects without checking
+the target's group rule. If you restore direct GitHub sign-in, verify its
+organization or team restriction and the accounts' retained GitHub links.
+For each provider that must enforce membership, verify that an eligible member
+reaches the original account and permitted resource. Then verify that a formerly
+eligible linked member is refused on a fresh sign-in within the required
+removal window. Keep a provider disabled if it cannot enforce its admission rule.
+Check other enabled methods against the installation's configured policy,
+including ordinary password sign-in if enabled. Verify recovery administrator
+access separately.
+
+Reconcile account disablements, session revocations and service-key revocations
+that occurred after the selected recovery point. Check existing sessions
+separately from new sign-ins.

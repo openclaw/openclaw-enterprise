@@ -1,19 +1,26 @@
+import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
+import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import {
+  API_REQUEST_AUDIT_ACTIONS,
   AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
+  ModelProviderSchema,
+  ModelProviderModelSchema,
   CredentialSourceResponse,
-  ErrorDetail as ErrorDetailSchema,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
   ErrorResponse,
-  isSecretHarnessAuth,
-  isServiceAccountHarnessAuth,
   JsonValue,
   occApiRoutes,
   PluginApproversSchema,
@@ -24,8 +31,8 @@ import {
   PluginToolPolicySchema,
   PRESET_JSON_MAX_BYTES,
   SecretResponse,
-  type Agent,
   type AgentRuntimeLogsQuery,
+  type ApiRequestAuditObservation,
   type AuditEvent,
   type AuditEventKind,
   type AuthorizationEvidence,
@@ -38,14 +45,11 @@ import {
   type OccApiRoute,
   type DiscoverSavedAgentPluginDetailsBody,
   type PermissionAction,
-  type ResourceKind,
   type ResourceRef,
   type SandboxDriver,
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
-  type UpdateWorkspaceFileBody,
-  type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
 import {
   AuthAccountRoleInvalidError,
@@ -54,14 +58,16 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   AgentPrincipalAuthorizationError,
+  AuditAppendUnavailableError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
-  NoActiveAgentRevisionError,
+  PostgresCommitOutcomeUnknownError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -103,20 +109,15 @@ import { createBootstrapResources } from "./composition/installation-bootstrap.t
 import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
-import {
-  ControllerWorkspaceFileUnknownOutcomeError,
-  isAllowedWorkspaceFileName,
-  type ControllerWorkspaceFileReadResult,
-  type ControllerWorkspaceFilesAccess,
-  type ControllerWorkspaceFileWriteResult,
-} from "./gateway/contracts.ts";
+import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { createDeviceAuthorizationHandlers } from "./http/device-authorization.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
-import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
+import { jsonPointer } from "./http/error-details.ts";
 import {
   canonicalFailure,
   cappedPath,
@@ -129,7 +130,6 @@ import {
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
@@ -144,6 +144,9 @@ import {
   nativeAdminReturnSchema,
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
+import { permissionAdvice } from "./http/permission-advice.ts";
+import { createAuthRouteSchemas, installationAuthOperation } from "./http/auth-schemas.ts";
+import { routePermissionMetadata, type RequiredPermission } from "./http/permission-metadata.ts";
 import { presetHandlers } from "./http/presets.ts";
 import { connectionTemplateHandlers } from "./http/connection-templates.ts";
 import {
@@ -172,7 +175,8 @@ import {
 } from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
-import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+import type { RequestContext, RequestOperation, ResourceHandlers } from "./http/types.ts";
+import { createWorkspaceFileHandlers, WORKSPACE_FILE_BODY_LIMIT } from "./http/workspace-files.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
@@ -208,6 +212,9 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
+  /** Durable sink for required HTTP admission and result records. */
+  readonly durableRequestAuditSink?: AuditSink;
+  readonly agentAuditCursorSecret?: string;
   readonly backendSummaries?: readonly BackendSummary[];
   readonly observabilityUrl?: string;
   readonly development: DevelopmentAdmission;
@@ -218,6 +225,7 @@ export interface ControllerAppOptions {
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
+  /** Private Agent gateway transport credential, shared by native browser and HTTP chat relays. */
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
    * How often a native admin WebSocket rechecks its admission (default 25 s). The server
@@ -237,29 +245,6 @@ export interface ControllerAppOptions {
 
 export interface ControllerApp {
   fetch(request: Request): Promise<Response>;
-}
-
-interface RequiredPermission {
-  readonly phase?: "fresh_admission";
-  readonly action: PermissionAction;
-  readonly resourceKind: ResourceKind;
-  readonly scope: "requested" | "installation" | "namespace" | "each_returned" | "request_body";
-  readonly condition?:
-    | "associated_service_account"
-    | "existing_namespace"
-    | "bound_secret"
-    | "directory_lookup"
-    | "selected_secret"
-    | "iam_binding_target"
-    | "provisioning_work"
-    | "gateway_managed_mode_disabled"
-    | "gateway_managed_mode_changed"
-    | "missing_runtime_credentials"
-    | "authenticated_plugin_discovery"
-    | "read_logs_alternative"
-    | "bound_credential_source"
-    | "unless_consent_owner"
-    | "saved_sandbox_policy_additions";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -285,9 +270,6 @@ const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 // bindings, each a 253-character name and a reference: under 32 KiB), all written with
 // six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
 const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
-const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
-// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
-const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -300,6 +282,7 @@ const RESOURCE_ID_PREFIX = {
   configurationId: "cfg_",
   serviceAccountId: "sa_",
   secretId: "sec_",
+  sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
   revisionId: "rev_",
@@ -419,30 +402,6 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
   ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
 }
 
-/**
- * The grants each Agent update checks on the sources the Agent binds now, besides its
- * Configuration's Secret bindings (`updateAgent`, finding 2441): operate on each listed
- * credential source and on a Secret or credential source Harness authentication, read on a
- * ServiceAccount one.
- */
-function agentBoundSourceGrants(
-  namespaceId: string,
-  agent: Pick<Agent, "harnessAuth" | "credentialSources">,
-): [PermissionAction, ResourceRef][] {
-  const grants: [PermissionAction, ResourceRef][] = (agent.credentialSources ?? []).map(
-    ({ sourceId }) => ["operate", { kind: "credential_source", namespaceId, id: sourceId }],
-  );
-  const harnessAuth = agent.harnessAuth;
-  if (harnessAuth?.method === "credential_source") {
-    grants.push(["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }]);
-  } else if (isSecretHarnessAuth(harnessAuth)) {
-    grants.push(["operate", { kind: "secret", namespaceId, id: harnessAuth.source.id }]);
-  } else if (isServiceAccountHarnessAuth(harnessAuth)) {
-    grants.push(["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }]);
-  }
-  return grants;
-}
-
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   // The JSON body parser already refuses deeper bodies; this keeps the rule for any other input.
   if (depth > MAX_JSON_BODY_DEPTH) {
@@ -478,7 +437,7 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
 }
 
 function operationTarget(
-  operation: OccApiRoute,
+  operation: RequestOperation,
   installationId: string,
   params: Readonly<Record<string, unknown>>,
 ): ResourceRef {
@@ -569,617 +528,6 @@ function operationTarget(
   return { kind: "installation", id: installationId };
 }
 
-function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
-  if (operation.operationId === "recoverAgentFirstDeployment") {
-    return [
-      { action: "deploy", resourceKind: "agent", scope: "requested" },
-      { action: "read", resourceKind: "configuration", scope: "requested" },
-    ];
-  }
-  if (operation.operationId === "deployAgentFirst") {
-    return requiredPermissions(
-      occApiRoutes.find((route) => route.operationId === "deployAgent")!,
-    ).map((permission) =>
-      permission.resourceKind === "configuration" ||
-      (permission.resourceKind === "agent" && permission.action === "deploy")
-        ? permission
-        : { ...permission, phase: "fresh_admission" as const },
-    );
-  }
-  const permission = {
-    action: operation.iamAction,
-    resourceKind: operation.resourceKind,
-  };
-
-  if (operation.operationId === "disconnectNamespaceConnection") {
-    return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
-  }
-  if (operation.operationId === "listNamespaceConnections") {
-    return [
-      { ...permission, scope: "requested" },
-      { action: "read", resourceKind: "credential_source", scope: "each_returned" },
-    ];
-  }
-
-  if (
-    [
-      "getAgentSandboxPolicy",
-      "getAgentSandboxRecommendations",
-      "updateAgentSandboxPolicy",
-      "applyAgentSandboxPolicy",
-    ].includes(operation.operationId)
-  ) {
-    return [
-      { ...permission, scope: "requested" },
-      {
-        action: operation.iamAction === "read" ? "read" : "update",
-        resourceKind: "sandbox_policy",
-        scope: "requested",
-      },
-      // Apply returns the saved policy and admits its additions, so it also needs read (finding 2874).
-      ...(operation.operationId === "applyAgentSandboxPolicy"
-        ? [
-            {
-              action: "read" as const,
-              resourceKind: "sandbox_policy" as const,
-              scope: "requested" as const,
-            },
-          ]
-        : []),
-    ];
-  }
-  if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
-    return [
-      { ...permission, scope: "requested" },
-      { action: "administer", resourceKind: "installation", scope: "installation" },
-    ];
-  }
-
-  if (operation.operationId.endsWith("DeviceAuthorization")) {
-    const saved = operation.operationId.includes("SavedAgent");
-    return [
-      {
-        action: saved ? "update" : "create",
-        resourceKind: "agent",
-        scope: saved ? "requested" : "namespace",
-      },
-      ...(saved
-        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
-        : []),
-      {
-        action: operation.operationId.startsWith("start") ? "create" : "operate",
-        resourceKind: "secret",
-        scope: operation.operationId.startsWith("start") ? "namespace" : "requested",
-      },
-    ];
-  }
-
-  if (operation.operationId === "createNamespace") {
-    return [
-      { ...permission, scope: "installation" },
-      {
-        action: "administer",
-        resourceKind: "installation",
-        scope: "requested",
-        condition: "existing_namespace",
-      },
-    ];
-  }
-
-  if (
-    operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration"
-  ) {
-    return [
-      {
-        ...permission,
-        scope: operation.operationId === "createConfiguration" ? "namespace" : "requested",
-      },
-      {
-        action: "operate",
-        resourceKind: "secret",
-        scope: operation.operationId === "createConfiguration" ? "request_body" : "requested",
-        condition: "bound_secret",
-      },
-    ];
-  }
-
-  if (
-    operation.operationId === "discoverAgentPlugins" ||
-    operation.operationId === "discoverAgentPluginDetails"
-  ) {
-    return [
-      { ...permission, scope: "namespace" },
-      {
-        action: "operate",
-        resourceKind: "secret",
-        scope: "request_body",
-        condition: "selected_secret",
-      },
-    ];
-  }
-
-  if (operation.operationId === "createSecret") {
-    return [{ ...permission, scope: "namespace" }];
-  }
-
-  if (
-    operation.operationId === "createCredentialSource" ||
-    operation.operationId === "updateCredentialSource"
-  ) {
-    // Mirrors OCC readCredentialSourceSecrets: operate on each Secret whose value the
-    // gateway receives (an update re-sends the current references when it names none).
-    const create = operation.operationId === "createCredentialSource";
-    return [
-      { ...permission, scope: create ? "namespace" : "requested" },
-      {
-        action: "operate",
-        resourceKind: "secret",
-        scope: create ? "request_body" : "requested",
-        condition: "bound_secret",
-      },
-    ];
-  }
-
-  if (operation.operationId === "lookupChannelDirectory") {
-    return [
-      {
-        action: "operate",
-        resourceKind: "secret",
-        scope: "request_body",
-        condition: "directory_lookup",
-      },
-      {
-        action: "create",
-        resourceKind: "agent",
-        scope: "namespace",
-        condition: "directory_lookup",
-      },
-      {
-        action: "update",
-        resourceKind: "agent",
-        scope: "request_body",
-        condition: "directory_lookup",
-      },
-      {
-        action: "update",
-        resourceKind: "configuration",
-        scope: "request_body",
-        condition: "directory_lookup",
-      },
-    ];
-  }
-
-  if (operation.operationId === "createIAMAccessBinding") {
-    return [
-      { action: "administer", resourceKind: "installation", scope: "requested" },
-      { action: "read", resourceKind: "namespace", scope: "requested" },
-      {
-        action: "read",
-        resourceKind: "agent",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "agent_revision",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "configuration",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "credential_source",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "namespace",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "preset",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "secret",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-      {
-        action: "read",
-        resourceKind: "service_account",
-        scope: "request_body",
-        condition: "iam_binding_target",
-      },
-    ];
-  }
-
-  if (
-    operation.operationId === "listIAMRoles" ||
-    operation.operationId === "createIAMRole" ||
-    operation.operationId === "getIAMRole" ||
-    operation.operationId === "deleteIAMRole" ||
-    operation.operationId === "listIAMAccessBindings" ||
-    operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "deleteIAMAccessBinding" ||
-    operation.operationId === "listIAMServicePrincipals" ||
-    operation.operationId === "createIAMServicePrincipal" ||
-    operation.operationId === "getIAMServicePrincipal"
-  ) {
-    return [
-      { action: "administer", resourceKind: "installation", scope: "requested" },
-      { action: "read", resourceKind: "namespace", scope: "requested" },
-    ];
-  }
-
-  const creatingAgent =
-    operation.operationId === "createAgent" || operation.operationId === "validateAgentCreate";
-  if (
-    operation.operationId === "provisionAgent" ||
-    creatingAgent ||
-    operation.operationId === "updateAgent" ||
-    operation.operationId === "deployAgent"
-  ) {
-    const permissions: RequiredPermission[] = [
-      {
-        ...permission,
-        scope:
-          creatingAgent || operation.operationId === "provisionAgent" ? "namespace" : "requested",
-      },
-    ];
-    if (creatingAgent || operation.operationId === "updateAgent") {
-      permissions.push({
-        action: "administer",
-        resourceKind: "installation",
-        scope: "installation",
-        condition: creatingAgent ? "gateway_managed_mode_disabled" : "gateway_managed_mode_changed",
-      });
-    }
-    if (operation.operationId === "validateAgentCreate") {
-      return permissions;
-    }
-    return [
-      ...permissions,
-      ...(operation.operationId === "provisionAgent"
-        ? [
-            {
-              action: "create" as const,
-              resourceKind: "configuration" as const,
-              scope: "namespace" as const,
-            },
-            {
-              action: "administer" as const,
-              resourceKind: "installation" as const,
-              scope: "requested" as const,
-            },
-          ]
-        : [
-            {
-              action: "read" as const,
-              resourceKind: "configuration" as const,
-              scope: "requested" as const,
-            },
-          ]),
-      ...(operation.operationId === "deployAgent"
-        ? [
-            {
-              action: "read" as const,
-              resourceKind: "agent" as const,
-              scope: "requested" as const,
-              condition: "missing_runtime_credentials" as const,
-            },
-            {
-              action: "operate" as const,
-              resourceKind: "agent" as const,
-              scope: "requested" as const,
-              condition: "missing_runtime_credentials" as const,
-            },
-          ]
-        : []),
-      {
-        action: "read",
-        resourceKind: "service_account",
-        scope: "requested",
-        condition: "associated_service_account",
-      },
-      {
-        action: "operate",
-        resourceKind: "secret",
-        scope: "requested",
-        condition: "bound_secret",
-      },
-      // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Agent
-      // provisioning refuses credential sources, so it needs no such grant.
-      ...(operation.operationId === "provisionAgent"
-        ? []
-        : [
-            {
-              action: "operate" as const,
-              resourceKind: "credential_source" as const,
-              scope:
-                operation.operationId === "createAgent"
-                  ? ("request_body" as const)
-                  : ("requested" as const),
-              condition: "bound_credential_source" as const,
-            },
-          ]),
-      // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
-      // network policy additions come after SandboxPolicy read (findings 2151, 2881).
-      ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
-        ? [
-            {
-              action: "read" as const,
-              resourceKind: "sandbox_policy" as const,
-              scope: "requested" as const,
-              condition: "saved_sandbox_policy_additions" as const,
-            },
-          ]
-        : []),
-    ];
-  }
-
-  if (
-    operation.operationId === "getAgentProvisioning" ||
-    operation.operationId === "retryAgentProvisioning"
-  ) {
-    // Mirrors OCC authorizeProvisioningRequest, then authorizeProvisioningRecord.
-    return [
-      { action: "create", resourceKind: "agent", scope: "namespace" },
-      { action: "create", resourceKind: "configuration", scope: "namespace" },
-      { action: "administer", resourceKind: "installation", scope: "requested" },
-      ...(["read", "operate", "deploy"] as const).map((action) => ({
-        action,
-        resourceKind: "agent" as const,
-        scope: "requested" as const,
-        condition: "provisioning_work" as const,
-      })),
-      ...(["read", "update"] as const).map((action) => ({
-        action,
-        resourceKind: "configuration" as const,
-        scope: "requested" as const,
-        condition: "provisioning_work" as const,
-      })),
-      {
-        action: "read",
-        resourceKind: "service_account",
-        scope: "requested",
-        condition: "associated_service_account",
-      },
-      {
-        action: "operate",
-        resourceKind: "secret",
-        scope: "requested",
-        condition: "bound_secret",
-      },
-    ];
-  }
-
-  if (operation.operationId === "provisionAgentRuntimeCredentials") {
-    return [
-      { ...permission, scope: "requested" },
-      { action: "read", resourceKind: "agent", scope: "requested" },
-    ];
-  }
-
-  if (
-    operation.operationId === "getSavedAgentPluginPolicyCapabilities" ||
-    operation.operationId === "discoverSavedAgentPlugins" ||
-    operation.operationId === "discoverSavedAgentPluginDetails"
-  ) {
-    return [
-      { ...permission, scope: "requested" },
-      { action: "read", resourceKind: "agent", scope: "requested" },
-      ...(operation.operationId === "getSavedAgentPluginPolicyCapabilities"
-        ? []
-        : [
-            {
-              action: "operate" as const,
-              resourceKind: "secret" as const,
-              scope: "requested" as const,
-              condition: "authenticated_plugin_discovery" as const,
-            },
-          ]),
-    ];
-  }
-
-  if (operation.operationId === "diagnoseAgentDeployment") {
-    return [
-      { action: "operate", resourceKind: "agent", scope: "requested" },
-      { action: "read", resourceKind: "agent", scope: "requested" },
-      { action: "read", resourceKind: "agent_revision", scope: "requested" },
-    ];
-  }
-
-  if (operation.operationId === "getAgentDeploymentRuntime") {
-    return [
-      { action: "operate", resourceKind: "agent", scope: "requested" },
-      { action: "read", resourceKind: "agent", scope: "requested" },
-      { action: "read", resourceKind: "agent_revision", scope: "requested" },
-    ];
-  }
-
-  if (operation.operationId === "getAgentDeploymentRuntimeLogs") {
-    return [
-      { action: "read_logs", resourceKind: "agent", scope: "requested" },
-      {
-        action: "administer",
-        resourceKind: "agent",
-        scope: "requested",
-        condition: "read_logs_alternative",
-      },
-      { action: "read", resourceKind: "agent", scope: "requested" },
-    ];
-  }
-
-  switch (operation.authorizationTarget) {
-    case "namespace_collection":
-      return [{ ...permission, scope: "namespace" }];
-    case "namespace_candidates":
-      return [{ ...permission, scope: "each_returned" }];
-    case "namespace_and_agent_candidates":
-      return [
-        { action: "read", resourceKind: "namespace", scope: "requested" },
-        { ...permission, scope: "each_returned" },
-      ];
-    case "namespace_and_service_account_candidates":
-    case "namespace_and_secret_candidates":
-    case "namespace_and_preset_candidates":
-    case "namespace_and_credential_source_candidates":
-      return [
-        { action: "read", resourceKind: "namespace", scope: "requested" },
-        { ...permission, scope: "each_returned" },
-      ];
-    case "agent_collection":
-      return [
-        { ...permission, scope: "requested" },
-        { action: "read", resourceKind: "agent_revision", scope: "each_returned" },
-      ];
-    default:
-      return [{ ...permission, scope: "requested" }];
-  }
-}
-
-function permissionDescription(
-  permissions: readonly RequiredPermission[],
-  operation?: OccApiRoute,
-): string {
-  if (operation?.operationId === "recoverAgentFirstDeployment") {
-    return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
-  }
-  if (operation?.operationId === "deployAgentFirst") {
-    return (
-      "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. " +
-      permissionDescription(
-        permissions,
-        occApiRoutes.find((route) => route.operationId === "deployAgent")!,
-      )
-    );
-  }
-  if (
-    operation?.operationId === "getAgentProvisioning" ||
-    operation?.operationId === "retryAgentProvisioning"
-  ) {
-    const verb = operation.operationId === "getAgentProvisioning" ? "read" : "retry";
-    // The provisioning_work rows are described here, not per row.
-    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.`;
-  }
-  const names: Record<ResourceKind, string> = {
-    installation: "Installation",
-    namespace: "Namespace",
-    configuration: "Configuration",
-    preset: "Preset",
-    service_account: "ServiceAccount",
-    secret: "Secret",
-    agent: "Agent",
-    agent_revision: "Agent revision",
-    credential_source: "CredentialSource",
-    sandbox_policy: "SandboxPolicy",
-  };
-
-  const description = permissions
-    .map(({ action, resourceKind, scope, condition }) => {
-      const name = names[resourceKind];
-      if (condition === "unless_consent_owner") {
-        return "Requires delete permission on this CredentialSource unless the caller owns the saved connection.";
-      }
-      if (condition === "associated_service_account") {
-        return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
-      }
-      if (condition === "directory_lookup") {
-        if (resourceKind === "secret") {
-          return "Requires operate permission on the exact Secret named by secretId.";
-        }
-        if (action === "create") {
-          return "Without an edit target, requires Agent create permission in the Namespace.";
-        }
-        return `With ${resourceKind === "agent" ? "agentId" : "configurationId"}, requires update permission on that exact ${name}.`;
-      }
-      if (condition === "existing_namespace") {
-        return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
-      }
-      if (condition === "gateway_managed_mode_disabled") {
-        return `Requires ${action} permission on the ${name} when gatewayManagedMode is set to false.`;
-      }
-      if (condition === "gateway_managed_mode_changed") {
-        return `Requires ${action} permission on the ${name} when the request changes the Agent's saved gatewayManagedMode setting.`;
-      }
-      if (condition === "selected_secret") {
-        return `Requires ${action} permission on the exact same-Namespace ${name} when a Secret reference is supplied.`;
-      }
-      if (condition === "bound_secret") {
-        if (operation?.operationId === "provisionAgent") {
-          return `Requires ${action} permission on each existing ${name} reference supplied in provisioning inputs.`;
-        }
-        if (operation?.operationId === "createConfiguration") {
-          return `Requires ${action} permission on each ${name} supplied in request body Secret bindings.`;
-        }
-        if (operation?.operationId === "updateConfiguration") {
-          return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
-        }
-        if (operation?.operationId === "createCredentialSource") {
-          return `Requires ${action} permission on each ${name} named in the request body secrets.`;
-        }
-        if (operation?.operationId === "updateCredentialSource") {
-          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
-        }
-        return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
-      }
-      if (condition === "bound_credential_source") {
-        if (operation?.operationId === "createAgent") {
-          return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
-        }
-        if (operation?.operationId === "updateAgent") {
-          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
-        }
-        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
-      }
-      if (condition === "saved_sandbox_policy_additions") {
-        return operation?.operationId === "updateAgent"
-          ? `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`
-          : `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions.`;
-      }
-      if (condition === "missing_runtime_credentials") {
-        return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
-      }
-      if (condition === "authenticated_plugin_discovery") {
-        return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
-      }
-      if (condition === "read_logs_alternative") {
-        return `Without read_logs, ${action} permission on the requested ${name} also admits the read.`;
-      }
-      if (condition === "iam_binding_target") {
-        return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
-      }
-      switch (scope) {
-        case "installation":
-          return `Requires ${action} permission for ${name} resources in the Installation.`;
-        case "namespace":
-          return `Requires ${action} permission for ${name} resources in the requested Namespace.`;
-        case "each_returned":
-          return `Only ${name} resources with individual ${action} permission are returned.`;
-        default:
-          return `Requires ${action} permission on the requested ${name}.`;
-      }
-    })
-    .join(" ");
-
-  if (operation?.operationId === "deployAgent") {
-    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
-  }
-  return description;
-}
-
 function clientInstallation(
   installation: Readonly<Installation>,
   computeDriver: Readonly<ComputeDriver> | undefined,
@@ -1233,10 +581,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     throw new Error("The native admin WebSocket lease interval must be a positive integer.");
   }
   let publicOrigin: string | undefined;
+  let publicOriginHost: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
       const parsed = new URL(options.publicOrigin);
       publicOrigin = parsed.origin;
+      publicOriginHost = parsed.host;
       if (
         parsed.username ||
         parsed.password ||
@@ -1370,8 +720,40 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
+  app.addSchema(ErrorResponse);
+  app.addSchema(AgentDeploymentDiagnosticsResponse);
+  app.addSchema(AgentRuntimeResponse);
+  app.addSchema(AgentRuntimeLogsResponse);
+  app.addSchema(AgentRuntimeCredentialResponse);
+  app.addSchema(SecretResponse);
+  app.addSchema(CredentialSourceResponse);
+  app.addSchema(OAuthConnectionTemplateVersionSchema);
+  app.addSchema(ConnectionTemplateSchema);
+  app.addSchema(StaticKeyConnectionTemplateVersionSchema);
+  app.addSchema(ModelProviderModelSchema);
+  app.addSchema(ModelProviderSchema);
+  app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(PushAgentCredentialsBody);
+  app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
     convertConstToEnum: false,
+    refResolver: {
+      buildLocalReference(schema, _baseUri, _fragment, index) {
+        // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
+        if (typeof schema.$id === "string") {
+          schema.title ??= schema.$id;
+          switch (schema.$id) {
+            case "RegisterTokenServiceSourceBody":
+            case "UpdateTokenServiceSourceBody":
+            case "PushAgentCredentialsBody":
+            case "PushAgentCredentialsResponse":
+              return schema.$id;
+          }
+        }
+        return `def-${index}`;
+      },
+    },
     openapi: {
       openapi: "3.1.0",
       info: {
@@ -1399,61 +781,53 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const admissions = new WeakMap<FastifyRequest, AdmittedCaller>();
   const contexts = new WeakMap<FastifyRequest, RequestContext>();
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
+  const requestAuditState = new WeakMap<
+    FastifyRequest,
+    {
+      denialObserved: boolean;
+      resultSelected: boolean;
+      readTarget?: ResourceRef;
+      commitOutcomeUnknown?: true;
+    }
+  >();
+  const requestAuditSink = options.durableRequestAuditSink;
   const factory = options.auditEventFactory ?? new AuditEventFactory();
-  const createAuthAccountOperation = {
+  const readAgentAudit =
+    options.agentAuditCursorSecret === undefined
+      ? undefined
+      : createAgentAuditReader(options.agentAuditCursorSecret);
+  const createAuthAccountOperation = installationAuthOperation({
     operationId: "createAuthAccount",
     method: "POST",
     path: "/api/auth/accounts",
     action: "openclaw.auth.accounts.create",
-    iamAction: "administer",
-    resourceKind: "installation",
-    authorizationTarget: "installation",
     summary: "Create a local auth account as an Installation administrator",
-    tags: ["Authentication"],
-    schema: {
-      body: {
-        type: "object",
-        additionalProperties: false,
-        required: ["email", "password"],
-        properties: {
-          email: { type: "string", minLength: 3, maxLength: 320 },
-          password: { type: "string", minLength: 12, maxLength: 128 },
-          name: { type: "string", minLength: 1, maxLength: 200 },
-          roleId: { type: "string", minLength: 1, maxLength: 200 },
-        },
+  });
+  const serviceKeyOperations = (
+    [
+      {
+        operationId: "createServiceKey",
+        method: "POST",
+        path: "/api/auth/service-keys",
+        action: "openclaw.auth.service-keys.create",
+        summary: "Issue a service API key",
       },
-    },
-  } as unknown as OccApiRoute;
-  const serviceKeyOperations = [
-    {
-      operationId: "createServiceKey",
-      method: "POST",
-      path: "/api/auth/service-keys",
-      action: "openclaw.auth.service-keys.create",
-      summary: "Issue a service API key",
-    },
-    {
-      operationId: "revokeServiceKey",
-      method: "DELETE",
-      path: "/api/auth/service-keys/:keyId",
-      action: "openclaw.auth.service-keys.revoke",
-      summary: "Revoke a service API key",
-    },
-  ].map((operation) => ({
-    ...operation,
-    iamAction: "administer",
-    resourceKind: "installation",
-    authorizationTarget: "installation",
-    tags: ["Authentication"],
-    schema: {},
-  })) as unknown as readonly OccApiRoute[];
+      {
+        operationId: "revokeServiceKey",
+        method: "DELETE",
+        path: "/api/auth/service-keys/:keyId",
+        action: "openclaw.auth.service-keys.revoke",
+        summary: "Revoke a service API key",
+      },
+    ] as const
+  ).map(installationAuthOperation);
   const runtimeLogLimiter = new RuntimeLogLimiter();
   const runtimeLogCursor =
     options.agentRuntimeLogs?.enabled === true
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
       : undefined;
   function event(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     resource: ResourceRef,
     kind: AuditEventKind,
@@ -1551,7 +925,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /** Log views and downloads share a route and permissions but not an audit action. */
-  function auditAction(operation: OccApiRoute, request: FastifyRequest): string {
+  function auditAction(operation: RequestOperation, request: FastifyRequest): string {
     return operation.operationId === "getAgentDeploymentRuntimeLogs" &&
       isRuntimeLogDownload(request.query as AgentRuntimeLogsQuery)
       ? RUNTIME_LOG_DOWNLOAD_ACTION
@@ -1608,110 +982,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return disconnected.signal;
   }
 
-  function workspaceFileRequestSignal(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    timeoutMs: number,
-  ): { readonly signal: AbortSignal; readonly dispose: () => void } {
-    const controller = new AbortController();
-    const abort = (message: string) => {
-      if (!controller.signal.aborted) {
-        controller.abort(new Error(message));
-      }
-    };
-    const timeout = setTimeout(
-      () => abort(`The workspace file request exceeded its ${timeoutMs}ms deadline.`),
-      timeoutMs,
-    );
-    timeout.unref?.();
-    const onRequestAborted = () =>
-      abort("The HTTP client disconnected before the workspace file request completed.");
-    const onReplyClosed = () => {
-      if (!reply.raw.writableEnded) {
-        abort("The HTTP client disconnected before the workspace file request completed.");
-      }
-    };
-    if (request.raw.aborted || reply.raw.destroyed) {
-      abort("The HTTP client disconnected before the workspace file request.");
-    }
-    request.raw.once("aborted", onRequestAborted);
-    reply.raw.once("close", onReplyClosed);
-    return {
-      signal: controller.signal,
-      dispose() {
-        clearTimeout(timeout);
-        request.raw.off("aborted", onRequestAborted);
-        reply.raw.off("close", onReplyClosed);
-      },
-    };
-  }
-
-  async function withWorkspaceFileRequestSignal<T>(
-    signal: AbortSignal,
-    operation: Promise<T>,
-    abortError: () => Error = dependencyUnavailable,
-  ): Promise<T> {
-    if (signal.aborted) {
-      // The operation has already started; observe any rejection after the HTTP deadline.
-      void operation.catch(() => {});
-      throw abortError();
-    }
-    let abort: (() => void) | undefined;
-    const aborted = new Promise<never>((_, reject) => {
-      abort = () => reject(abortError());
-      signal.addEventListener("abort", abort, { once: true });
-    });
-    try {
-      return await Promise.race([operation, aborted]);
-    } finally {
-      if (abort !== undefined) {
-        signal.removeEventListener("abort", abort);
-      }
-    }
-  }
-
-  function workspaceFileAuditEvent(
-    operation: OccApiRoute,
-    request: FastifyRequest,
-    resource: ResourceRef,
-    context: RequestContext,
-    filename: WorkspaceFileName,
-    result?: { readonly outcome: "success" | "failure"; readonly reasonCode?: string },
-  ): AuditEvent {
-    const base = event(operation, request, resource, "mutation", context, undefined, result);
-    return {
-      ...base,
-      details: {
-        ...base.details,
-        workspaceFileName: filename,
-      },
-    };
-  }
-
-  function validateWorkspaceFileBody(body: UpdateWorkspaceFileBody): void {
-    const details: ErrorDetail[] = [];
-    if (Buffer.byteLength(body.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT) {
-      details.push({ path: "/content", code: "TOO_LONG" });
-    }
-    const isWellFormed = (
-      String.prototype as unknown as { isWellFormed: (this: string) => boolean }
-    ).isWellFormed;
-    if (body.content.includes("\u0000") || !isWellFormed.call(body.content)) {
-      details.push({ path: "/content", code: "INVALID_VALUE" });
-    }
-    if (details.length > 0) {
-      throw failure(
-        400,
-        "INVALID_REQUEST",
-        "The request does not match the operation contract.",
-        details,
-      );
-    }
-  }
-
   async function requireInstallationAdmin(
     request: FastifyRequest,
-    operation: OccApiRoute,
+    operation: RequestOperation,
     context: RequestContext,
   ) {
     const target: ResourceRef = { kind: "installation", id: installationId };
@@ -1785,7 +1058,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   async function denial(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     kind: "authorization_denial",
     context?: RequestContext,
@@ -1795,14 +1068,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       readonly decisionReason: string;
       readonly reasonCode?: string;
       readonly details: Readonly<Record<string, unknown>>;
+      readonly requireAuditWrite?: true;
     },
   ): Promise<void> {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.denialObserved = true;
+    }
     try {
+      // Chat has no Namespace path input, so it needs the stored Agent target.
+      // Other operations keep the requested audit target, separate from enforcement.
       await options.auditSink.append(
         event(
           operation,
           request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          operation.operationId === "chatWithAgent" && authorization !== undefined
+            ? authorization.resource
+            : operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,
@@ -1810,17 +1092,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           authorization,
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+    } catch (error) {
+      if (audit !== undefined && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        if (explanation?.requireAuditWrite !== true) {
+          return;
+        }
+      }
+      throw dependencyUnavailable();
     }
   }
 
   async function rejectedMutation(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     context: RequestContext,
     reasonCode: string,
@@ -1837,12 +1121,77 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           { outcome: "failure", reasonCode },
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
+    } catch (error) {
+      if (requestAuditState.has(request) && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        return;
+      }
+      throw dependencyUnavailable();
+    }
+  }
+
+  function logRequestAuditFailure(
+    request: FastifyRequest,
+    operation: RequestOperation,
+    action: string,
+    error: unknown,
+  ): void {
+    let code = "AUDIT_WRITE_FAILED";
+    if (error instanceof PostgresCommitOutcomeUnknownError) {
+      code = "AUDIT_COMMIT_OUTCOME_UNKNOWN";
+    } else if (error instanceof AuditAppendUnavailableError && error.reasonCode !== undefined) {
+      code = error.reasonCode;
+    }
+    app.log.error({
+      event: "http.audit_append_failed",
+      requestId: request.id,
+      action,
+      operationId: operation.operationId,
+      code,
+    });
+  }
+
+  async function appendRequestAudit(
+    sink: AuditSink,
+    request: FastifyRequest,
+    operation: RequestOperation,
+    observation: ApiRequestAuditObservation,
+  ): Promise<boolean> {
+    const context = contexts.get(request);
+    const resource: ResourceRef = ("readTarget" in observation
+      ? observation.readTarget
+      : undefined) ?? { kind: "installation", id: installationId };
+    try {
+      await sink.append(
+        factory.create({
+          installationId,
+          ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
+          kind: "api_request",
+          action: observation.action,
+          outcome: observation.outcome,
+          resource,
+          actor: context === undefined ? { unresolved: true } : { principalId: context.actorId },
+          requestId: request.id,
+          ...(context === undefined ? {} : { admissionDecisionId: context.admissionDecisionId }),
+          ...("reasonCode" in observation ? { reasonCode: observation.reasonCode } : {}),
+          details: {
+            operationId: operation.operationId,
+            method: request.method === "HEAD" ? "HEAD" : operation.method,
+            ...("statusCode" in observation ? { statusCode: observation.statusCode } : {}),
+          },
+        }),
       );
+      return true;
+    } catch (error) {
+      logRequestAuditFailure(request, operation, observation.action, error);
+      return false;
+    }
+  }
+
+  function setAuditReadTarget(request: FastifyRequest, resource: ResourceRef): void {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.readTarget = resource;
     }
   }
 
@@ -1878,13 +1227,50 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       rejectDeployment: (request, context) =>
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
     }),
+    ...createDeviceAuthorizationHandlers({
+      auditSink: options.auditSink,
+      // Start phases belong in the factory input, before audit details are sanitized and frozen.
+      startEvent: ({ context, request }, resource, details) =>
+        event(context.operation, request, resource, "mutation", context, undefined, {
+          outcome: "success",
+          details,
+        }),
+    }),
+    ...createWorkspaceFileHandlers({
+      access: options.workspaceFilesAccess,
+      timeoutMs: workspaceFileRequestTimeoutMs,
+      auditSink: options.auditSink,
+      requireCsrf: requireWorkspaceFileCsrf,
+      isAuditManaged: (request) => requestAuditState.has(request),
+      logAuditFailure: (request, operation, error) =>
+        logRequestAuditFailure(request, operation, operation.action, error),
+    }),
   };
 
+  const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.routeOptions.url === "/agents/:agentId/chat") {
+      const timer = setTimeout(() => {
+        if (!reply.sent) {
+          reply.header("connection", "close");
+          reply.raw.once("finish", () => request.raw.destroy());
+          void reply.code(408).send({
+            error: { code: "REQUEST_TIMEOUT", message: "The request body deadline expired." },
+            meta: { requestId: request.id },
+          });
+        }
+      }, 60_000);
+      chatBodyDeadlines.set(request, timer);
+      request.raw.once("end", () => clearTimeout(timer));
+      request.raw.once("aborted", () => clearTimeout(timer));
+    }
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
     if (await nativeAdmin.interceptHttp(request, reply)) {
       return;
+    }
+    if ("auditManagementRequest" in request.routeOptions.config) {
+      requestAuditState.set(request, { denialObserved: false, resultSelected: false });
     }
     const contentLength = request.headers["content-length"];
     if (
@@ -1896,6 +1282,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.addHook("onResponse", async (request, reply) => {
+    clearTimeout(chatBodyDeadlines.get(request));
     const startedAt = requestStartedAt.get(request);
     const durationMs =
       startedAt === undefined ? undefined : Number(process.hrtime.bigint() - startedAt) / 1_000_000;
@@ -1937,11 +1324,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   }
 
-  async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+  async function admit(request: FastifyRequest, operation: RequestOperation): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
-        operation.operationId === "bootstrapInstallation")
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents")
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -1952,7 +1340,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "listAgentAuditEvents" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
@@ -2036,6 +1426,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
+        ...(request.routeOptions.url === undefined ? {} : { route: request.routeOptions.url }),
         requestedScope: {
           installationId,
           ...(typeof params.namespaceId === "string" ? { namespaceId: params.namespaceId } : {}),
@@ -2068,24 +1459,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         admitted.admittedScope.namespaceId !== params.namespaceId)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     admissions.set(request, admitted);
   }
 
-  async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+  async function resolveIdentity(
+    request: FastifyRequest,
+    operation: RequestOperation,
+  ): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     let selected: IAMDriver;
     let identity;
@@ -2105,11 +1491,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     if (
@@ -2138,6 +1520,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     contexts.set(request, context);
     if (
       admitted.method === "api_key" &&
+      operation.operationId !== "chatWithAgent" &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
@@ -2195,7 +1578,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operation: OccApiRoute,
   ): Promise<void> {
     const admitted = admissions.get(request);
-    if (controller === undefined || admitted?.method !== "session") {
+    if (
+      operation.operationId === "chatWithAgent" ||
+      controller === undefined ||
+      admitted?.method !== "session"
+    ) {
       return perform(request, reply, operation);
     }
     const { session } = admitted;
@@ -2212,16 +1599,60 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): Promise<void> {
     const context = contexts.get(request);
     if (!context) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
+    }
+    if (operation.operationId === "chatWithAgent") {
+      const admission = admissions.get(request);
+      if (controller === undefined || admission === undefined) {
+        throw dependencyUnavailable();
+      }
+      return relayAgentChat({
+        installationId,
+        controller,
+        request,
+        reply,
+        context,
+        admission,
+        factory,
+        auditSink: options.auditSink,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditFailure: (error) =>
+          logRequestAuditFailure(request, operation, operation.action, error),
+        reauthenticate: async () => {
+          await admit(request, operation);
+          await resolveIdentity(request, operation);
+          if (contexts.get(request)?.actorId !== context.actorId) {
+            throw dependencyUnavailable();
+          }
+        },
+      });
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
     if (body !== undefined) {
       validateConfiguration(body);
+    }
+
+    // TODO(RFC-0034): Remove this guard when the ModelProvider implementation is available.
+    if (
+      (body &&
+        "modelProviderId" in body &&
+        ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
+          operation.operationId,
+        )) ||
+      [
+        "listModelProviders",
+        "getModelProvider",
+        "createModelProvider",
+        "updateModelProvider",
+        "listUsableModelProviders",
+      ].includes(operation.operationId)
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Named model providers are unavailable on this controller.",
+      );
     }
 
     if (operation.operationId === "bootstrapInstallation") {
@@ -2236,11 +1667,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
         if (!options.createController) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         const installation: Installation = {
           id: installationId,
@@ -2429,8 +1856,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
     if (operation.operationId === "getNamespace") {
+      const namespace = await controller.getNamespace(context.actorId, namespaceId);
+      setAuditReadTarget(request, {
+        kind: "namespace",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
       reply.send({
-        data: await controller.getNamespace(context.actorId, namespaceId),
+        data: namespace,
         meta: { requestId: request.id },
       });
       return;
@@ -2449,48 +1882,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "getNamespaceCallerPermissions") {
-      await controller.getNamespace(context.actorId, namespaceId);
-      // Targets match Namespace deletion, operationTarget() for creation, and
-      // requireInstallationAdmin. The console reads this answer
-      // instead of an Installation-only read, which the API audits when it is refused.
-      const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
-        await Promise.all([
-          callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
-          ...(["agent", "secret"] as const).map((kind) =>
-            callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
-          ),
-          callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
-        ]);
-      reply.send({
-        data: {
-          delete: namespaceDelete,
-          agents: { create: agentCreate },
-          secrets: { create: secretCreate },
-          installation: { administer: installationAdminister },
-        },
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
-    if (operation.operationId === "getNamespaceSecretPermissions") {
-      // Namespace read, checked and audited as the Namespace permission answer checks it
-      // (finding 2478), so listing the Secrets below is never a refused, audited read.
-      await controller.getNamespace(context.actorId, namespaceId);
-      // Agent create authorizes Secret operate on its Harness authentication source and on its
-      // Configuration's Secret bindings, and a directory search before it needs the same two
-      // grants (finding 2469). Only a caller who may create an Agent here gets an answer, so it
-      // reports nothing such a request would not, and only on the Secrets the caller may list.
-      // The target matches operationTarget() for createAgent.
-      const operateDenied = (await callerMay(context.actorId, "create", {
-        kind: "agent",
-        id: namespaceId,
+    if (
+      operation.operationId === "getNamespaceCallerPermissions" ||
+      operation.operationId === "getNamespaceSecretPermissions"
+    ) {
+      const data = await permissionAdvice[operation.operationId]({
+        controller,
+        actorId: context.actorId,
         namespaceId,
-      }))
-        ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
-        : [];
-      reply.send({ data: { operateDenied }, meta: { requestId: request.id } });
+        installationId,
+        callerMay,
+      });
+      reply.send({ data, meta: { requestId: request.id } });
       return;
     }
 
@@ -2516,71 +1919,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (
-      operation.operationId === "startAgentDeviceAuthorization" ||
-      operation.operationId === "startSavedAgentDeviceAuthorization" ||
-      operation.operationId === "pollAgentDeviceAuthorization" ||
-      operation.operationId === "pollSavedAgentDeviceAuthorization" ||
-      operation.operationId === "cancelAgentDeviceAuthorization" ||
-      operation.operationId === "cancelSavedAgentDeviceAuthorization"
-    ) {
-      const agentId = params.agentId;
-      let result;
-      if (operation.operationId.startsWith("start")) {
-        result = await controller.startAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          body?.harnessId as string,
-          agentId,
-          (source, phase) =>
-            event(
-              operation,
-              request,
-              phase === "session_pending"
-                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
-                : source.ref,
-              "mutation",
-              context,
-              undefined,
-              { outcome: "success", details: { phase, sourceId: source.id } },
-            ),
-        );
-      } else if (operation.operationId.startsWith("poll")) {
-        result = await controller.pollAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.secretId as string,
-          agentId,
-        );
-      } else {
-        await controller.cancelAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.secretId as string,
-          agentId,
-        );
-      }
-      // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
-        await options.auditSink.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-      }
-      reply.header("cache-control", "no-store");
-      if (result === undefined) {
-        reply.status(204).send();
-      } else {
-        reply.send({ data: result, meta: { requestId: request.id } });
-      }
-      return;
-    }
-
     if (operation.operationId === "discoverAgentModels") {
       const models = await controller.discoverAgentModels(context.actorId, namespaceId, {
         provider: body?.provider as string,
@@ -2592,46 +1930,39 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-          ...(body?.q === undefined ? {} : { q: body.q as string }),
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
+    if (
+      operation.operationId === "discoverAgentPlugins" ||
+      operation.operationId === "discoverAgentPluginDetails"
+    ) {
+      const input = {
+        harnessId: body?.harnessId as "codex" | "openclaw",
+        ...(body?.credentialSource === undefined
+          ? {}
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
+        ...(body?.secretRef === undefined
+          ? { accessToken: body?.accessToken as string }
+          : { secretRef: body.secretRef as SecretReference }),
+      };
+      const result =
+        operation.operationId === "discoverAgentPlugins"
+          ? await controller.discoverAgentPlugins(
+              context.actorId,
+              namespaceId,
+              {
+                ...input,
+                ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+                ...(body?.q === undefined ? {} : { q: body.q as string }),
+              },
+              pluginDiscoveryRequestSignal(reply),
+            )
+          : await controller.discoverAgentPluginDetails(
+              context.actorId,
+              namespaceId,
+              { ...input, pluginId: body?.pluginId as string },
+              pluginDiscoveryRequestSignal(reply),
+            );
       reply.header("cache-control", "no-store");
-      reply.send({ data: catalog, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          pluginId: body?.pluginId as string,
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
-      reply.header("cache-control", "no-store");
-      reply.send({ data: plugin, meta: { requestId: request.id } });
+      reply.send({ data: result, meta: { requestId: request.id } });
       return;
     }
 
@@ -2700,12 +2031,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (resourceHandler) {
       await resourceHandler({
         controller,
+        resolveHarness: options.resolveHarness,
         context,
         request,
         reply,
         params,
         body,
         namespaceId,
+        setAuditReadTarget: (resource) => setAuditReadTarget(request, resource),
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
@@ -2752,398 +2085,43 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
 
-    if (operation.operationId === "getAgentCallerPermissions") {
-      // Route authorization already required Agent read; the read also proves the Agent
-      // exists before the mutating actions are probed.
-      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
-      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
-      // The Agent read names its Configuration, so its update bit discloses nothing new.
-      const configuration: ResourceRef = {
-        kind: "configuration",
-        id: agent.configurationId,
-        namespaceId,
-      };
-      // The Agent's network policy and its suggestions authorize read on the Agent's own
-      // sandbox_policy resource, which no other answer covers; the console skips both reads
-      // for a caller without it (finding 2454).
-      const sandboxPolicy: ResourceRef = {
-        kind: "sandbox_policy",
-        id: `sbp_${agentId.slice(4)}`,
-        namespaceId,
-      };
-      const [
-        [
-          update,
-          deploy,
-          operate,
-          remove,
-          // Native admin UI access authorizes Agent administer on the exact Agent, so the console
-          // skips its audited probe for a caller without it.
-          administer,
-          configurationUpdate,
-          configurationRead,
-          sandboxPolicyRead,
-        ],
-        readLogsDecision,
-      ] = await Promise.all([
-        Promise.all([
-          ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
-            callerMay(context.actorId, action, target),
-          ),
-          callerMay(context.actorId, "update", configuration),
-          callerMay(context.actorId, "read", configuration),
-          callerMay(context.actorId, "read", sandboxPolicy),
-        ]),
-        callerDecision(context.actorId, "read_logs", target),
-      ]);
-      // Log text authorizes Agent read_logs or, without a Restriction on read_logs, Agent
-      // administer in its place, as the runtime log read decides it. The console skips that
-      // audited read for a caller without either (finding D758).
-      const readLogs = readLogsDecision.allowed || (!readLogsDecision.restricted && administer);
-      // One IAM call per distinct grant, shared by the answers below. A Secret bound to several
-      // names is one decision.
-      const decisions = new Map<string, Promise<boolean>>();
-      const decide = (action: PermissionAction, resource: ResourceRef) => {
-        const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
-        let decision = decisions.get(key);
-        if (decision === undefined) {
-          decision = callerMay(context.actorId, action, resource);
-          decisions.set(key, decision);
-        }
-        return decision;
-      };
-      const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) =>
-        (await Promise.all(grants.map(([action, resource]) => decide(action, resource)))).every(
-          Boolean,
-        );
-      // Each Configuration save authorizes Secret operate on every Secret it binds, so
-      // Configuration update alone does not say a save can succeed (finding 2437); each Agent
-      // update checks them too (finding 2441). Only a caller who may read the Configuration and
-      // update it or the Agent gets an answer: the bindings are visible to them, and a save
-      // would report the same decision.
-      const boundSecrets: [string, ResourceRef][] =
-        configurationRead && (configurationUpdate || update)
-          ? Object.entries(
-              await controller.getConfigurationSecretBindingSources(
-                context.actorId,
-                namespaceId,
-                agent.configurationId,
-              ),
-            )
-          : [];
-      const bindingGrants = boundSecrets.map(([, source]): [PermissionAction, ResourceRef] => [
-        "operate",
-        source,
-      ]);
-      // A save that submits bindings is checked only on those, so one that rebinds each name
-      // listed here to a Secret the caller may operate needs nothing on the Secrets they bind
-      // now (finding 2444). Names only: the caller reads them on the Configuration already.
-      const configurationSecretsOperateDeniedBindings =
-        configurationUpdate && configurationRead
-          ? (
-              await Promise.all(
-                boundSecrets.map(async ([name, source]) =>
-                  (await decide("operate", source)) ? [] : [name],
-                ),
-              )
-            )
-              .flat()
-              .sort()
-          : [];
-      const configurationSecretsOperate =
-        configurationUpdate &&
-        configurationRead &&
-        configurationSecretsOperateDeniedBindings.length === 0;
-      // An Agent update needs Configuration read and checks the sources the Agent binds now,
-      // which the Agent read shows. Unreadable saved settings leave it unanswered.
-      const agentSourcesOperate =
-        update &&
-        configurationRead &&
-        !("configurationReadError" in agent) &&
-        (await callerMayAll([...bindingGrants, ...agentBoundSourceGrants(namespaceId, agent)]));
-      reply.send({
-        data: {
-          update,
-          deploy,
-          operate,
-          delete: remove,
-          administer,
-          configurationUpdate,
-          configurationRead,
-          configurationSecretsOperate,
-          configurationSecretsOperateDeniedBindings,
-          agentSourcesOperate,
-          sandboxPolicyRead,
-          readLogs,
-        },
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
-    if (operation.operationId === "getAgentSecretPermissions") {
-      // Route authorization already required Agent read, and the read proves the Agent exists.
-      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
-      const configuration: ResourceRef = {
-        kind: "configuration",
-        id: agent.configurationId,
-        namespaceId,
-      };
-      const agentRef: ResourceRef = { kind: "agent", id: agentId, namespaceId };
-      const [update, deploy, configurationUpdate, configurationRead, namespaceRead] =
-        await Promise.all([
-          callerMay(context.actorId, "update", agentRef),
-          callerMay(context.actorId, "deploy", agentRef),
-          callerMay(context.actorId, "update", configuration),
-          callerMay(context.actorId, "read", configuration),
-          // Checked first, so listing the Secrets below is never a refused, audited read.
-          callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
-        ]);
-      // Binding a Secret to the Agent's Configuration, or as its Harness authentication source,
-      // authorizes Secret operate on it (finding 2453), and so does deploying a draft that binds
-      // it (finding 2546). Only a caller who may make such a save or deployment gets an answer,
-      // so it reports nothing that request would not, and only on the Secrets the caller may
-      // list.
-      const mayBind = configurationUpdate || update;
-      const reported = namespaceRead && configurationRead && (mayBind || deploy);
-      // A deployment checks only the Secrets the draft binds now: its Configuration's Secret
-      // bindings and a Secret Harness authentication source.
-      const bound = new Set<string>();
-      if (reported) {
-        for (const source of Object.values(
-          await controller.getConfigurationSecretBindingSources(
-            context.actorId,
-            namespaceId,
-            agent.configurationId,
-          ),
-        )) {
-          if (source.kind === "secret" && source.namespaceId === namespaceId) {
-            bound.add(source.id);
-          }
-        }
-        // Unreadable saved settings hide the Agent's sources, so the answer leaves them out.
-        if (
-          !("configurationReadError" in agent) &&
-          isSecretHarnessAuth(agent.harnessAuth) &&
-          agent.harnessAuth.source.namespaceId === namespaceId
-        ) {
-          bound.add(agent.harnessAuth.source.id);
-        }
+    if (operation.operationId === "listAgentAuditEvents") {
+      const admitted = admissions.get(request);
+      if (admitted?.method !== "session") {
+        throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
       }
-      // One Secret scan answers both: the listed Secrets the caller may read but not operate, and
-      // how many bound ones it may neither read nor operate, a count, never their IDs, so a
-      // console can hold Deploy without naming them (finding D756).
-      const { readable: listed, unreadableCount: unreadableOperateDenied } = reported
-        ? await controller.secretsOperateDenied(context.actorId, namespaceId, bound)
-        : { readable: [], unreadableCount: 0 };
-      // A caller who may deploy but bind nothing learns only those, which the Agent and
-      // Configuration reads already name (finding 2565).
-      const operateDenied = mayBind ? listed : listed.filter((id) => bound.has(id));
-      reply.send({
-        data: { operateDenied, unreadableOperateDenied },
-        meta: { requestId: request.id },
+      if (readAgentAudit === undefined) {
+        throw failure(501, "NOT_IMPLEMENTED", "Agent audit is disabled.");
+      }
+      await readAgentAudit({
+        controller,
+        auth: options.auth,
+        session: admitted.session,
+        factory,
+        actorId: context.actorId,
+        admissionDecisionId: admitted.decisionId,
+        namespaceId,
+        agentId,
+        request,
+        reply,
       });
       return;
     }
 
     if (
-      operation.operationId === "getAgentWorkspaceFile" ||
-      operation.operationId === "putAgentWorkspaceFile"
+      operation.operationId === "getAgentCallerPermissions" ||
+      operation.operationId === "getAgentSecretPermissions"
     ) {
-      const deadlineMs = workspaceFileRequestTimeoutMs;
-      const workspaceFileSignal = workspaceFileRequestSignal(request, reply, deadlineMs);
-      const signal = workspaceFileSignal.signal;
-      const deadline = new Date(Date.now() + deadlineMs);
-      try {
-        requireWorkspaceFileCsrf(request, operation.operationId === "putAgentWorkspaceFile");
-        const filename = params.name;
-        if (filename === undefined || !isAllowedWorkspaceFileName(filename)) {
-          throw failure(
-            400,
-            "INVALID_REQUEST",
-            "The request does not match the operation contract.",
-          );
-        }
-        if (signal.aborted) {
-          throw dependencyUnavailable();
-        }
-        const { agent, revision } = await withWorkspaceFileRequestSignal(
-          signal,
-          operation.operationId === "getAgentWorkspaceFile"
-            ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
-            : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
-        ).catch((error: unknown) => {
-          // Raised after the Agent read or operate authorization, so a caller without the grant
-          // still gets its 403; this names the Agent's state instead of a 503 (finding D768).
-          throw error instanceof NoActiveAgentRevisionError
-            ? workspaceWithoutRunningVersion(agentId, error.stopped)
-            : error;
-        });
-        const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-        // After authorization, so a caller without the grant gets its 403, not this 503
-        // (finding 2584).
-        if (options.workspaceFilesAccess === undefined || signal.aborted) {
-          throw dependencyUnavailable();
-        }
-
-        if (operation.operationId === "getAgentWorkspaceFile") {
-          let result: ControllerWorkspaceFileReadResult;
-          try {
-            if (signal.aborted) {
-              throw dependencyUnavailable();
-            }
-            result = await withWorkspaceFileRequestSignal(
-              signal,
-              options.workspaceFilesAccess.read({
-                revision,
-                filename,
-                signal,
-                deadline,
-              }),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          if (result.status === "missing") {
-            throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
-          }
-          if (result.status === "unavailable") {
-            throw dependencyUnavailable();
-          }
-          const isWellFormed = (
-            String.prototype as unknown as { isWellFormed: (this: string) => boolean }
-          ).isWellFormed;
-          if (
-            Buffer.byteLength(result.file.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT ||
-            result.file.content.includes("\u0000") ||
-            !isWellFormed.call(result.file.content)
-          ) {
-            throw dependencyUnavailable();
-          }
-          reply.send({
-            data: { name: filename, content: result.file.content },
-            meta: { requestId: request.id },
-          });
-          return;
-        }
-
-        const writeBody = body as unknown as UpdateWorkspaceFileBody;
-        validateWorkspaceFileBody(writeBody);
-        let result: ControllerWorkspaceFileWriteResult;
-        try {
-          if (signal.aborted) {
-            throw dependencyUnavailable();
-          }
-          result = await withWorkspaceFileRequestSignal(
-            signal,
-            options.workspaceFilesAccess.write({
-              revision,
-              filename,
-              content: writeBody.content,
-              signal,
-              deadline,
-            }),
-            () =>
-              new ControllerWorkspaceFileUnknownOutcomeError(
-                "The workspace file write reached the OCC request deadline before the controller observed its outcome.",
-              ),
-          );
-        } catch (error) {
-          if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
-            try {
-              await withWorkspaceFileRequestSignal(
-                signal,
-                options.auditSink.append(
-                  workspaceFileAuditEvent(operation, request, target, context, filename, {
-                    outcome: "failure",
-                    reasonCode: "UNKNOWN_OUTCOME",
-                  }),
-                ),
-                () => new ControllerWorkspaceFileUnknownOutcomeError(error.message),
-              );
-            } catch {
-              throw failure(503, "UNKNOWN_OUTCOME", error.message);
-            }
-            throw failure(503, "UNKNOWN_OUTCOME", error.message);
-          }
-          try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw dependencyUnavailable();
-        }
-        if (result.status === "missing") {
-          try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "FILE_MISSING",
-                }),
-              ),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
-        }
-        if (result.status === "unavailable") {
-          try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw dependencyUnavailable();
-        }
-        try {
-          await withWorkspaceFileRequestSignal(
-            signal,
-            options.auditSink.append(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "success",
-              }),
-            ),
-            () =>
-              new ControllerWorkspaceFileUnknownOutcomeError(
-                "The workspace file was written, but its final audit outcome could not be persisted before the request ended.",
-              ),
-          );
-        } catch {
-          throw failure(
-            503,
-            "UNKNOWN_OUTCOME",
-            "The workspace file was written, but its final audit outcome could not be persisted.",
-          );
-        }
-        reply.send({
-          data: {
-            name: filename,
-            size: Buffer.byteLength(writeBody.content, "utf8"),
-          },
-          meta: { requestId: request.id },
-        });
-        return;
-      } finally {
-        workspaceFileSignal.dispose();
-      }
+      const data = await permissionAdvice[operation.operationId]({
+        controller,
+        actorId: context.actorId,
+        namespaceId,
+        agentId,
+        callerDecision,
+        callerMay,
+      });
+      reply.send({ data, meta: { requestId: request.id } });
+      return;
     }
 
     if (
@@ -3251,47 +2229,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   void app.register(async (routes) => {
-    const meta = {
-      type: "object",
-      additionalProperties: false,
-      required: ["requestId"],
-      properties: { requestId: { type: "string" } },
-    };
-    const envelope = (data: Record<string, unknown>) => ({
-      type: "object",
-      additionalProperties: false,
-      required: ["data", "meta"],
-      properties: { data, meta },
-    });
-    const error = {
-      type: "object",
-      additionalProperties: false,
-      required: ["error", "meta"],
-      properties: {
-        error: {
-          type: "object",
-          additionalProperties: false,
-          required: ["code", "message"],
-          properties: {
-            code: { type: "string" },
-            message: { type: "string" },
-            // Schema 400s point at the rejected field; without this the serializer drops it.
-            details: { type: "array", maxItems: 32, items: ErrorDetailSchema },
-          },
-        },
-        meta,
-      },
-    };
-    const responses = (success: Record<string, unknown>, status = 200) => ({
-      [status]: { description: status === 201 ? "Created" : "OK", ...envelope(success) },
-      401: { description: "Unauthorized", ...error },
-      503: { description: "Service Unavailable", ...error },
-    });
-    // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
-    const bodyErrors = {
-      413: { description: "Payload Too Large", ...error },
-      415: { description: "Unsupported Media Type", ...error },
-    };
+    const authSchemas = createAuthRouteSchemas();
+    const { bodyErrors, envelope, error, responses } = authSchemas;
     // Refuse request text that cannot be stored unchanged, as on OCC API routes.
     const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
       const unstorable =
@@ -3300,106 +2239,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         throw unstorable;
       }
     };
-    const accountBody = (
-      createAuthAccountOperation.schema as {
-        readonly body: { readonly properties: Record<string, unknown> };
-      }
-    ).body;
-    const account = {
-      type: "object",
-      additionalProperties: true,
-      required: ["id", "email", "name", "principalId"],
-      properties: {
-        id: { type: "string" },
-        email: { type: "string", format: "email" },
-        name: { type: "string" },
-        principalId: { type: "string" },
-      },
-    };
-
     for (const operation of serviceKeyOperations) {
       const creating = operation.method === "POST";
-      const serviceKey = {
-        type: "object",
-        additionalProperties: false,
-        required: ["id", "servicePrincipalId", "name", "expiresAt", "key"],
-        properties: {
-          id: { type: "string" },
-          servicePrincipalId: { type: "string" },
-          namespaceId: { type: "string" },
-          name: { type: "string" },
-          expiresAt: { type: "string", format: "date-time" },
-          key: { type: "string" },
-        },
-      };
       routes.route({
-        method: operation.method as HTTPMethods,
+        method: operation.method,
         url: operation.path,
-        schema: {
-          operationId: operation.operationId,
-          summary: operation.summary,
-          description: creating
-            ? "Requires a session or Installation-scoped service key with administer on the Installation. Issues a Better Auth key for an existing non-Agent ServicePrincipal in its exact scope when the caller already holds every IAM grant of that ServicePrincipal at the same or a broader scope; creates no identity or IAM grant. The plaintext key is returned only here."
-            : "Requires a session or Installation-scoped service key with administer on the Installation, plus every IAM grant of the key's ServicePrincipal, as for issuance. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
-          tags: [...operation.tags],
-          security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          ...(creating
-            ? {
-                body: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["servicePrincipalId", "name"],
-                  properties: {
-                    servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
-                    namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
-                    name: {
-                      type: "string",
-                      minLength: 1,
-                      maxLength: SERVICE_KEY_NAME_MAX_LENGTH,
-                      pattern: "\\S",
-                    },
-                    expiresIn: {
-                      type: "integer",
-                      minimum: 86400,
-                      maximum: 31536000,
-                      description: "Lifetime in seconds; defaults to 30 days.",
-                    },
-                  },
-                },
-              }
-            : {
-                params: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["keyId"],
-                  properties: { keyId: { type: "string", minLength: 1, maxLength: 200 } },
-                },
-              }),
-          response: {
-            ...responses(
-              creating
-                ? serviceKey
-                : {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["id", "revoked"],
-                    properties: {
-                      id: { type: "string" },
-                      revoked: { type: "boolean", const: true },
-                    },
-                  },
-              creating ? 201 : 200,
-            ),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
-            ...(creating ? bodyErrors : {}),
-          },
-        } as DocumentedFastifySchema,
+        schema: authSchemas.serviceKey(operation, RESOURCE_ID.namespaceId.source),
         onRequest: async (request) => admit(request, operation),
         preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
@@ -3704,24 +2549,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
     }
 
-    const accountParams = {
-      type: "object",
-      additionalProperties: false,
-      required: ["userId"],
-      properties: { userId: { type: "string", minLength: 1, maxLength: 200 } },
-    };
-    const accountReadOperation = {
+    function accountAdmission(operation: RequestOperation) {
+      return {
+        onRequest: async (request: FastifyRequest) => admit(request, operation),
+        preValidation: async (request: FastifyRequest) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, operation);
+        },
+      };
+    }
+
+    const accountReadOperation = installationAuthOperation({
       operationId: "getAuthAccount",
       method: "GET",
       path: "/api/auth/accounts/:userId",
       action: "openclaw.auth.accounts.read",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Inspect current human account state",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     // Account state and its controls live in the guarded external sign-in profile; the
     // password-only profile has no account version, disabled state, or bound sessions.
     function accountControlsUnsupported(): RequestFailure {
@@ -3733,16 +2577,27 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     async function humanAccountActor(
       request: FastifyRequest,
-      operation: OccApiRoute,
+      operation: RequestOperation,
       context: RequestContext,
       targetUserId?: string,
     ) {
       const admitted = admissions.get(request);
+      const origin = request.headers.origin;
+      const fetchMode = request.headers["sec-fetch-mode"];
+      // A browser GET from the Console omits Origin. Its Fetch Metadata is scoped
+      // to the requested host, so match the configured Console authority as well.
+      const sameOriginBrowserRead =
+        request.method === "GET" &&
+        origin === undefined &&
+        request.headers.host?.toLowerCase() === publicOriginHost &&
+        request.headers["sec-fetch-site"] === "same-origin" &&
+        (fetchMode === "cors" || fetchMode === "same-origin") &&
+        request.headers["sec-fetch-dest"] === "empty";
       if (
         admitted?.method !== "session" ||
         admitted.session.userId !== context.subject ||
         publicOrigin === undefined ||
-        request.headers.origin !== publicOrigin
+        (origin !== publicOrigin && !sameOriginBrowserRead)
       ) {
         throw failure(
           403,
@@ -3878,53 +2733,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.get(
       accountReadOperation.path,
       {
-        schema: {
-          operationId: accountReadOperation.operationId,
-          summary: accountReadOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          params: accountParams,
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["userId", "principalId", "version", "disabled", "methods"],
-              properties: {
-                userId: { type: "string" },
-                principalId: { type: "string" },
-                version: { type: "integer", minimum: 1 },
-                disabled: { type: "boolean" },
-                methods: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["methodId", "providerId", "subject"],
-                    properties: {
-                      methodId: { type: "string" },
-                      providerId: { type: "string" },
-                      subject: { type: "string" },
-                    },
-                  },
-                },
-              },
-            }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
-          },
-        },
-        onRequest: async (request) => admit(request, accountReadOperation),
-        preValidation: async (request) => {
-          refuseUnstorableText(request);
-          await resolveIdentity(request, accountReadOperation);
-        },
+        schema: authSchemas.readAccount(accountReadOperation),
+        ...accountAdmission(accountReadOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3981,75 +2791,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         summary: "Detach an external sign-in identity from an account",
       },
     ] as const;
-    const methodParams = {
-      type: "object",
-      additionalProperties: false,
-      required: ["userId", "methodId"],
-      properties: {
-        userId: { type: "string", minLength: 1, maxLength: 200 },
-        methodId: { type: "string", minLength: 1, maxLength: 200 },
-      },
-    };
     for (const { operationName, path, operationId, summary } of accountOperations) {
-      const operation = {
+      const operation = installationAuthOperation({
         operationId,
         method: "POST",
         path,
         action: `openclaw.auth.accounts.${operationName}`,
-        iamAction: "administer",
-        resourceKind: "installation",
-        authorizationTarget: "installation",
-        tags: ["Authentication"],
         summary,
-        schema: {},
-      } as unknown as OccApiRoute;
+      });
       routes.post(
         operation.path,
         {
-          schema: {
-            operationId: operation.operationId,
-            summary: operation.summary,
-            description:
-              "Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.",
-            tags: [...operation.tags],
-            security: [{ sessionCookie: [] }],
-            "x-openclaw-permissions": [
-              { action: "administer", resourceKind: "installation", scope: "requested" },
-            ],
-            params: operationName === "detach" ? methodParams : accountParams,
-            body: {
-              type: "object",
-              additionalProperties: false,
-              required:
-                operationName === "google" || operationName === "oidc"
-                  ? ["subject", "expectedVersion"]
-                  : ["expectedVersion"],
-              properties: {
-                expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-                ...(operationName === "google" || operationName === "oidc"
-                  ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
-                  : {}),
-              },
-            },
-            response: {
-              ...responses({
-                type: "object",
-                additionalProperties: false,
-                required: ["userId"],
-                properties: { userId: { type: "string" } },
-              }),
-              400: { description: "Bad Request", ...error },
-              403: { description: "Forbidden", ...error },
-              404: { description: "Not Found", ...error },
-              409: { description: "Conflict", ...error },
-              ...bodyErrors,
-            },
-          },
-          onRequest: async (request) => admit(request, operation),
-          preValidation: async (request) => {
-            refuseUnstorableText(request);
-            await resolveIdentity(request, operation);
-          },
+          schema: authSchemas.changeAccount(operation, operationName),
+          ...accountAdmission(operation),
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -4088,48 +2842,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
     }
 
-    const recoveryResponse = {
-      type: "object",
-      additionalProperties: false,
-      required: ["userId", "principalId", "methodId"],
-      properties: {
-        userId: { type: "string" },
-        principalId: { type: "string" },
-        methodId: { type: "string" },
-      },
-    };
-    const recoveryReadOperation = {
+    const recoveryReadOperation = installationAuthOperation({
       operationId: "getAuthRecovery",
       method: "GET",
       path: "/api/auth/recovery",
       action: "openclaw.auth.recovery.read",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Inspect the recovery account designation",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     routes.get(
       recoveryReadOperation.path,
       {
-        schema: {
-          operationId: recoveryReadOperation.operationId,
-          summary: recoveryReadOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          response: {
-            ...responses(recoveryResponse),
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
-          },
-        },
+        schema: authSchemas.readRecovery(recoveryReadOperation),
         onRequest: async (request) => admit(request, recoveryReadOperation),
         preValidation: async (request) => resolveIdentity(request, recoveryReadOperation),
       },
@@ -4149,59 +2872,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     );
 
-    const recoveryReplaceOperation = {
+    const recoveryReplaceOperation = installationAuthOperation({
       operationId: "replaceAuthRecovery",
       method: "POST",
       path: "/api/auth/recovery",
       action: "openclaw.auth.recovery.replace",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Move the recovery designation to another Installation administrator",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     routes.post(
       recoveryReplaceOperation.path,
       {
-        schema: {
-          operationId: recoveryReplaceOperation.operationId,
-          summary: recoveryReplaceOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin who holds every IAM grant of the current holder's Principal (else 403). The target must be an enrolled, enabled account with one password whose Principal administers the Installation. expectedCurrentUserId comes from the recovery read and expectedVersion from the target's account read. Commits state and audit together; an unknown outcome must be inspected without automatic retry.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["userId", "expectedCurrentUserId", "expectedVersion"],
-            properties: {
-              userId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedCurrentUserId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-            },
-          },
-          response: {
-            ...responses({
-              ...recoveryResponse,
-              required: [...recoveryResponse.required, "changed"],
-              properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
-            }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
-            ...bodyErrors,
-          },
-        },
-        onRequest: async (request) => admit(request, recoveryReplaceOperation),
-        preValidation: async (request) => {
-          refuseUnstorableText(request);
-          await resolveIdentity(request, recoveryReplaceOperation);
-        },
+        schema: authSchemas.replaceRecovery(recoveryReplaceOperation),
+        ...accountAdmission(recoveryReplaceOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -4268,55 +2950,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     );
 
-    const enrolOperation = {
+    const enrolOperation = installationAuthOperation({
       operationId: "enrolAuthAccount",
       method: "POST",
       path: "/api/auth/accounts/:userId/enrol",
       action: "openclaw.auth.accounts.enrol",
-      iamAction: "administer",
-      resourceKind: "installation",
-      authorizationTarget: "installation",
-      tags: ["Authentication"],
       summary: "Enrol an existing account that activation skipped",
-      schema: {},
-    } as unknown as OccApiRoute;
+    });
     routes.post(
       enrolOperation.path,
       {
-        schema: {
-          operationId: enrolOperation.operationId,
-          summary: enrolOperation.summary,
-          description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. The account must already have its IAM Principal and exactly one password. Idempotent; enrolment grants no access beyond the account's existing IAM bindings.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          params: accountParams,
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["userId", "principalId", "version", "created"],
-              properties: {
-                userId: { type: "string" },
-                principalId: { type: "string" },
-                version: { type: "integer", minimum: 1 },
-                created: { type: "boolean" },
-              },
-            }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
-          },
-        },
-        onRequest: async (request) => admit(request, enrolOperation),
-        preValidation: async (request) => {
-          refuseUnstorableText(request);
-          await resolveIdentity(request, enrolOperation);
-        },
+        schema: authSchemas.enrolAccount(enrolOperation),
+        ...accountAdmission(enrolOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -4343,15 +2988,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
           tags: ["Authentication"],
           security: [],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["email", "password"],
-            properties: {
-              email: accountBody.properties.email,
-              password: accountBody.properties.password,
-            },
-          },
+          body: authSchemas.passwordBody,
           response: {
             // A browser Origin other than the console's, or a cross-site fetch, is refused
             // before the credentials are read.
@@ -4436,32 +3073,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => options.auth.session(request, reply),
     );
     routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
-      "/api/auth/accounts",
+      createAuthAccountOperation.path,
       {
         config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
-        schema: {
-          ...createAuthAccountOperation.schema,
-          operationId: createAuthAccountOperation.operationId,
-          summary: createAuthAccountOperation.summary,
-          description:
-            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
-          tags: [...createAuthAccountOperation.tags],
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          response: {
-            ...responses(account, 201),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            409: { description: "Conflict", ...error },
-            429: {
-              description: "Too many account creation requests; wait for Retry-After",
-              ...error,
-            },
-            ...bodyErrors,
-          },
-        } as DocumentedFastifySchema,
+        schema: authSchemas.createAccount(createAuthAccountOperation),
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
           // Passwords are hashed before persistence; their existing schema and hashing
@@ -4479,18 +3094,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => {
         const context = contexts.get(request);
         if (!context) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         if (options.provisionAuthAccount === undefined) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
 
         const body = request.body as Record<string, unknown> | undefined;
@@ -4636,15 +3243,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   void app.register(async (routes) => {
-    routes.addSchema(ErrorResponse);
-    routes.addSchema(AgentDeploymentDiagnosticsResponse);
-    routes.addSchema(AgentRuntimeResponse);
-    routes.addSchema(AgentRuntimeLogsResponse);
-    routes.addSchema(AgentRuntimeCredentialResponse);
-    routes.addSchema(SecretResponse);
-    routes.addSchema(CredentialSourceResponse);
-    routes.addSchema(OAuthConnectionTemplateVersionSchema);
-    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
@@ -4741,21 +3339,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
     }
     for (const operation of occApiRoutes) {
-      const permissions = requiredPermissions(operation);
+      // Bootstrap has its own transactional evidence. Runtime log reads have their own
+      // disclosure gate and can also return a download.
+      const routeAuditSink =
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "getAgentDeploymentRuntimeLogs"
+          ? undefined
+          : requestAuditSink;
+      const { description, permissions } = routePermissionMetadata(operation);
       const schema: DocumentedFastifySchema = {
         ...operation.schema,
         operationId: operation.operationId,
         summary: operation.summary,
-        description: permissionDescription(permissions, operation),
+        description,
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
-        ...(operation.operationId === "bootstrapInstallation"
+        ...(operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents"
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route({
+      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
         method: operation.method as HTTPMethods,
         url: operation.path,
+        ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
+        ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4793,7 +3401,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           const unstorable =
             unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
+            (operation.operationId === "chatWithAgent"
+              ? undefined
+              : unstorableTextFailure("body", request.body));
           if (unstorable !== undefined) {
             throw unstorable;
           }
@@ -4801,7 +3411,69 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => performFenced(request, reply, operation),
+        handler: async (request, reply) => {
+          if (routeAuditSink === undefined) {
+            return performFenced(request, reply, operation);
+          }
+          // Admission here means the request can enter the handler. The handler still
+          // checks the caller's permission for the exact operation and target.
+          if (
+            controller !== undefined &&
+            requestAuditState.has(request) &&
+            !(await appendRequestAudit(routeAuditSink, request, operation, {
+              action: API_REQUEST_AUDIT_ACTIONS.admitted,
+              outcome: "success",
+            }))
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (controller === undefined) {
+            await performFenced(request, reply, operation);
+          } else {
+            await controller.withRequestAuditId(request.id, () =>
+              performFenced(request, reply, operation),
+            );
+          }
+          // Wait for an asynchronous onSend hook when perform called reply.send().
+          return reply;
+        },
+        ...(routeAuditSink === undefined
+          ? {}
+          : {
+              onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
+                const audit = requestAuditState.get(request);
+                if (audit === undefined || audit.resultSelected || controller === undefined) {
+                  return payload;
+                }
+                // A later transport or reply error can re-enter onSend. Record the first selected
+                // response once, including when its append fails.
+                audit.resultSelected = true;
+                const statusCode = reply.statusCode;
+                let outcome: "success" | "denied" | "failure" = "success";
+                if (
+                  statusCode < 500 &&
+                  (audit.denialObserved || statusCode === 401 || statusCode === 403)
+                ) {
+                  outcome = "denied";
+                } else if (statusCode >= 400) {
+                  outcome = "failure";
+                }
+                const readTarget =
+                  outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
+                // Preserve the selected response if the append fails. The handler may have
+                // committed its change or already denied the request.
+                await appendRequestAudit(routeAuditSink, request, operation, {
+                  action: API_REQUEST_AUDIT_ACTIONS.result,
+                  outcome,
+                  statusCode,
+                  ...(readTarget === undefined ? {} : { readTarget }),
+                  ...(audit.commitOutcomeUnknown === true
+                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
+                    : {}),
+                });
+                return payload;
+              },
+            }),
       });
     }
   });
@@ -5003,6 +3675,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               decisionReason: "The device login does not belong to the requested scope.",
               reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
               details: {},
+              requireAuditWrite: true,
             },
           );
         } catch (auditError) {
@@ -5102,7 +3775,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         failure: error.failure,
       });
     }
-    if (
+    if (error instanceof CredentialDeliveryFailedError) {
+      const params = request.params as { namespaceId?: string; credentialSourceId?: string };
+      app.log.warn({
+        event: "credential.delivery_failed",
+        requestId: request.id,
+        namespaceId: params.namespaceId,
+        credentialSourceId: params.credentialSourceId,
+        code: "CREDENTIAL_DELIVERY_FAILED",
+      });
+    } else if (
       mapped.status === 503 &&
       mapped.code === "DEPENDENCY_UNAVAILABLE" &&
       error instanceof Error &&
@@ -5134,7 +3816,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         code: mapped.code,
       });
     }
+    const operation = contexts.get(request)?.operation;
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined && operation !== undefined) {
+      if (error instanceof AuditAppendUnavailableError) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+      } else if (error instanceof PostgresCommitOutcomeUnknownError) {
+        audit.commitOutcomeUnknown = true;
+        app.log.error({
+          event: "http.commit_outcome_unknown",
+          requestId: request.id,
+          operationId: operation.operationId,
+          code: "COMMIT_OUTCOME_UNKNOWN",
+        });
+      }
+    }
     canonicalFailure(reply, mapped);
+    return reply;
   });
 
   return app;

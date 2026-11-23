@@ -1,3 +1,4 @@
+import type { NativeRepositoryWithdrawalSession } from "../drivers/repo/github/access/prepared-repository-git.ts";
 import { sameBinding } from "../drivers/repo/access/grant-identity.ts";
 import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -16,6 +17,7 @@ import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts"
 import {
   eligibleRepositoryApprovalScope,
   isRepositoryCleanupWork,
+  repositoryCleanupRevisionId,
   repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
   WorkClaimLostError,
@@ -73,7 +75,7 @@ interface Dependencies {
   ) => Promise<T>;
 }
 
-function owner(revision: RevisionIdentity) {
+export function revisionOwner(revision: RevisionIdentity) {
   return {
     namespaceId: revision.namespaceId,
     agentId: revision.agentId,
@@ -113,6 +115,13 @@ export interface RepositoryCleanupOutcome {
   readonly cause?: string;
 }
 
+type NativeRepositoryWithdrawal =
+  | { readonly state: "pending" | "unsafe" }
+  | {
+      readonly state: "disposed";
+      readonly sessions: readonly NativeRepositoryWithdrawalSession[];
+    };
+
 const CLEANUP_CAUSE = /^[A-Z][A-Z0-9_]{0,63}$/u;
 
 /** A loggable code for a cleanup failure, never provider text. */
@@ -145,6 +154,81 @@ export class RepositoryCredentialLifecycle {
 
   constructor(dependencies: Dependencies) {
     this.dependencies = dependencies;
+  }
+
+  selectsFiniteNativeWithdrawal(revision: Revision): boolean {
+    const snapshot = revision.repositoryCredentials;
+    const sender = this.dependencies.nativeSender;
+    return (
+      revision.executionAdmission.mode === "unprotected" &&
+      revision.sandboxDriverId === undefined &&
+      snapshot !== undefined &&
+      snapshot.standingApprovalId === undefined &&
+      snapshot.bindings.length > 0 &&
+      snapshot.bindings.every(({ profile }) => profile === "git-write") &&
+      sender?.durableBrokerReceipts === true &&
+      sender.id === snapshot.driver.id &&
+      sender.implementation === snapshot.driver.implementation
+    );
+  }
+
+  /** Read the exact broker generations once the Worker has proved the durable removal fence. */
+  async observeFiniteNativeWithdrawal(revision: Revision): Promise<NativeRepositoryWithdrawal> {
+    const snapshot = revision.repositoryCredentials;
+    if (!snapshot || !this.selectsFiniteNativeWithdrawal(revision)) {
+      return { state: "unsafe" };
+    }
+    return this.dependencies.state.read(async ({ repositorySessions }) => {
+      const attempts = await repositorySessions.listRevisionAttempts(revisionOwner(revision));
+      const bindings = new Map(
+        snapshot.bindings.map((binding) => [binding.repositoryRef, binding]),
+      );
+      const disposedBindings = new Set<string>();
+      const sessions: NativeRepositoryWithdrawalSession[] = [];
+      for (const attempt of attempts) {
+        const binding = bindings.get(attempt.repositoryRef);
+        if (
+          attempt.brokerProtocol !== 3 ||
+          attempt.liveRevisionId !== revision.id ||
+          !isDeepStrictEqual(attempt.cleanupContext.driver, snapshot.driver) ||
+          !binding ||
+          !isDeepStrictEqual(attempt.cleanupContext.binding, binding) ||
+          (attempt.phase !== "closing" && attempt.phase !== "disposed")
+        ) {
+          return { state: "unsafe" };
+        }
+        if (attempt.phase !== "disposed") {
+          continue;
+        }
+        const receipt = await repositorySessions.findBrokerReceipt(attempt.admissionId);
+        if (
+          receipt?.state !== "disposed" ||
+          receipt.admissionId !== attempt.admissionId ||
+          !receipt.sessionId ||
+          receipt.sessionId !== attempt.sessionId ||
+          !receipt.generation ||
+          receipt.deadlineWallMs === undefined ||
+          receipt.deadlineWallMs > attempt.deadlineWallMs
+        ) {
+          return { state: "unsafe" };
+        }
+        disposedBindings.add(attempt.repositoryRef);
+        sessions.push({
+          admissionId: receipt.admissionId,
+          sessionId: receipt.sessionId,
+          generation: receipt.generation,
+        });
+      }
+      if (attempts.length === 0) {
+        return { state: "unsafe" };
+      }
+      if (sessions.length !== attempts.length) {
+        return { state: "pending" };
+      }
+      return disposedBindings.size === bindings.size
+        ? { state: "disposed", sessions }
+        : { state: "unsafe" };
+    });
   }
 
   validate(revision: Revision): number | undefined {
@@ -250,7 +334,7 @@ export class RepositoryCredentialLifecycle {
         continue;
       }
       let attempts = await this.dependencies.state.read((view) =>
-        view.repositorySessions.listRevisionAttempts(owner(revision)),
+        view.repositorySessions.listRevisionAttempts(revisionOwner(revision)),
       );
       const closingAttempts = attempts.filter(
         (candidate) =>
@@ -267,7 +351,7 @@ export class RepositoryCredentialLifecycle {
       }
       if (closingAttempts.length > 0) {
         attempts = await this.dependencies.state.read((view) =>
-          view.repositorySessions.listRevisionAttempts(owner(revision)),
+          view.repositorySessions.listRevisionAttempts(revisionOwner(revision)),
         );
       }
       assertRepositorySessionCanOpen(attempts, binding.repositoryRef);
@@ -345,7 +429,9 @@ export class RepositoryCredentialLifecycle {
     await this.authorizedTransaction(claim, revision, async ({ repositorySessions }) => {
       if (protectedRepositoryGitAdmission(revision.executionAdmission)) {
         const { sessionId, repositoryRef, deadlineWallMs } = binding;
-        const [attempt] = (await repositorySessions.listRevisionAttempts(owner(revision))).filter(
+        const [attempt] = (
+          await repositorySessions.listRevisionAttempts(revisionOwner(revision))
+        ).filter(
           (a) =>
             a.phase === "open" &&
             a.brokerProtocol === 2 &&
@@ -406,7 +492,7 @@ export class RepositoryCredentialLifecycle {
     }
     await this.authorize(claim, revision);
     const attempts = await this.dependencies.state.read((view) =>
-      view.repositorySessions.listRevisionAttempts(owner(revision)),
+      view.repositorySessions.listRevisionAttempts(revisionOwner(revision)),
     );
     for (const missingRef of missing) {
       const attempt = attempts.find(
@@ -453,14 +539,14 @@ export class RepositoryCredentialLifecycle {
       } else if (claim.namespaceTarget === "deleted") {
         closeLive = namespace?.status === "deleting" && beforeSource;
       }
-      const attempts = await unit.repositorySessions.listRevisionAttempts(owner(revision));
+      const attempts = await unit.repositorySessions.listRevisionAttempts(revisionOwner(revision));
       for (const attempt of attempts) {
         if (closeLive && (attempt.phase === "opening" || attempt.phase === "open")) {
           await this.advanceIn(unit, attempt, "closing");
         }
       }
       // Registration validates exact claim/owner scope; rejection rolls back phase changes.
-      await queue.enqueueRepositoryCleanup(claim, owner(revision));
+      await queue.enqueueRepositoryCleanup(claim, revisionOwner(revision));
     }, this.dependencies.queueOptions);
     if (options.awaitCleanup === false) {
       return false;
@@ -479,7 +565,9 @@ export class RepositoryCredentialLifecycle {
         await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
         await unit.agents.lockAgent(revision.namespaceId, revision.agentId);
         await this.heartbeat(queue, claim);
-        const attempts = await unit.repositorySessions.listRevisionAttempts(owner(revision));
+        const attempts = await unit.repositorySessions.listRevisionAttempts(
+          revisionOwner(revision),
+        );
         for (const attempt of attempts) {
           if (attempt.phase === "opening" || attempt.phase === "open") {
             await this.advanceIn(unit, attempt, "closing");
@@ -488,7 +576,7 @@ export class RepositoryCredentialLifecycle {
       }, this.dependencies.queueOptions);
     }
     const attempts = await this.dependencies.state.read((view) =>
-      view.repositorySessions.listRevisionAttempts(owner(revision)),
+      view.repositorySessions.listRevisionAttempts(revisionOwner(revision)),
     );
     return this.cleanupRetained(claim, attempts);
   }
@@ -500,6 +588,13 @@ export class RepositoryCredentialLifecycle {
     const outcome = settleCleanup(attempts);
     for (const attempt of attempts.filter((candidate) => candidate.phase === "closing")) {
       try {
+        if (
+          isRepositoryCleanupWork(claim) &&
+          (attempt.brokerProtocol === 1 || attempt.brokerProtocol === 3) &&
+          (await this.consumeDisposedReceipt(claim, attempt))
+        ) {
+          continue;
+        }
         const closed = await this.closeAttempt(claim, attempt);
         outcome.settled = closed.settled && outcome.settled;
       } catch (error) {
@@ -511,6 +606,68 @@ export class RepositoryCredentialLifecycle {
       }
     }
     return outcome;
+  }
+
+  private async consumeDisposedReceipt(claim: ClaimedWork, attempt: Attempt): Promise<boolean> {
+    // Routing only: unresolved evidence (including a failed read) stays with its original owner.
+    const observed = await this.dependencies.state
+      .read((view) => view.repositorySessions.findBrokerReceipt(attempt.admissionId))
+      .catch(() => undefined);
+    if (observed?.state !== "disposed") {
+      return false;
+    }
+    return this.dependencies.state.transactWithQueue(async (unit, queue) => {
+      const checkClaim = async () => {
+        const current = await queue.heartbeat(claim);
+        if (
+          !current ||
+          current.actorId !== claim.actorId ||
+          current.namespaceId !== claim.namespaceId ||
+          current.agentId !== claim.agentId ||
+          current.revisionId !== claim.revisionId ||
+          !isRepositoryCleanupWork(current) ||
+          current.namespaceId !== attempt.namespaceId ||
+          repositoryCleanupRevisionId(current) !== attempt.revisionId ||
+          (current.agentId !== undefined
+            ? current.agentId !== attempt.agentId
+            : attempt.liveRevisionId !== null)
+        ) {
+          throw new WorkClaimLostError();
+        }
+      };
+      await checkClaim();
+      const current = await unit.repositorySessions.lockAttempt(attempt.admissionId);
+      if (!isDeepStrictEqual(current, attempt)) {
+        throw new WorkClaimLostError();
+      }
+      // The journal belongs to this immutable attempt. Read it under the same lock used by
+      // its original custodian. The advisory read cannot authorize a transition.
+      const receipt = await unit.repositorySessions.findBrokerReceipt(attempt.admissionId);
+      if (
+        receipt?.state !== "disposed" ||
+        !isDeepStrictEqual(receipt, observed) ||
+        receipt.admissionId !== attempt.admissionId ||
+        !receipt.sessionId ||
+        (attempt.sessionId !== undefined && receipt.sessionId !== attempt.sessionId) ||
+        receipt.deadlineWallMs === undefined ||
+        !Number.isSafeInteger(receipt.deadlineWallMs) ||
+        receipt.deadlineWallMs <= 0 ||
+        receipt.deadlineWallMs > attempt.deadlineWallMs ||
+        !receipt.generation ||
+        typeof receipt.revoked !== "number" ||
+        !Number.isSafeInteger(receipt.revoked) ||
+        receipt.revoked < 0 ||
+        typeof receipt.expired !== "number" ||
+        !Number.isSafeInteger(receipt.expired) ||
+        receipt.expired < 0 ||
+        attempt.cleanupContext.binding.repositoryRef !== attempt.repositoryRef
+      ) {
+        throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_DRIVER_OBSERVATION");
+      }
+      await checkClaim();
+      await this.advanceIn(unit, attempt, "disposed", receipt.sessionId);
+      return true;
+    }, this.dependencies.queueOptions);
   }
 
   private driverFor(selected: CleanupContext["driver"] | undefined): NativeRepositorySender {
@@ -563,7 +720,7 @@ export class RepositoryCredentialLifecycle {
       return;
     }
     await this.authorizedTransaction(claim, revision, (u) =>
-      u.repositorySessions.recordStandingExecution(owner(revision), execution),
+      u.repositorySessions.recordStandingExecution(revisionOwner(revision), execution),
     );
     return execution;
   }
@@ -596,7 +753,7 @@ export class RepositoryCredentialLifecycle {
     await this.validateStanding(revision);
     if (revision.repositoryCredentials?.standingApprovalId) {
       const recorded = await this.dependencies.state.read((v) =>
-        v.repositorySessions.findStandingExecution(owner(revision)),
+        v.repositorySessions.findStandingExecution(revisionOwner(revision)),
       );
       if (recorded) {
         if (recorded.closed) {
@@ -671,14 +828,14 @@ export class RepositoryCredentialLifecycle {
     const standing = revision.repositoryCredentials?.standingApprovalId !== undefined;
     const predecessor = standing
       ? await this.dependencies.state.read(async (v) =>
-          (await v.repositorySessions.listRevisionAttempts(owner(revision)))
+          (await v.repositorySessions.listRevisionAttempts(revisionOwner(revision)))
             .filter((a) => a.repositoryRef === binding.repositoryRef)
             .at(-1),
         )
       : undefined;
     const execution = predecessor ? await this.captureExecution(claim, revision, true) : undefined;
     const attempt = await this.authorizedTransaction(claim, revision, async (unit) => {
-      const attempts = await unit.repositorySessions.listRevisionAttempts(owner(revision));
+      const attempts = await unit.repositorySessions.listRevisionAttempts(revisionOwner(revision));
       assertRepositorySessionCanOpen(attempts, binding.repositoryRef);
       const openedAt = Date.now();
       const deadlineWallMs = predecessor
@@ -691,7 +848,7 @@ export class RepositoryCredentialLifecycle {
         throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
       }
       const attempt = await unit.repositorySessions.createAttempt({
-        ...owner(revision),
+        ...revisionOwner(revision),
         ...(predecessor
           ? {
               predecessorAdmissionId: predecessor.admissionId,
@@ -877,7 +1034,7 @@ export class RepositoryCredentialLifecycle {
       await unit.agents.lockAgent(revision.namespaceId, revision.agentId);
       await this.heartbeat(queue, claim);
       const closing = await this.advanceIn(unit, attempt, "closing", sessionId);
-      await queue.enqueueRepositoryCleanup(claim, owner(revision));
+      await queue.enqueueRepositoryCleanup(claim, revisionOwner(revision));
       return closing;
     }, this.dependencies.queueOptions);
   }

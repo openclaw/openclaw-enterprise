@@ -197,12 +197,12 @@ in effect. Unbound Agents receive no generated policy change. Because worker and
 sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
 
-Render the chart and use the rendered broker origin as the source of truth for
-the certificate. The helper reads the worker sidecar argument from the rendered
-manifests; it does not construct a second hostname.
+Use the release checkout's pinned Node.js version (24.22.1) to run the helper.
+Use the broker hostname from the rendered worker sidecar argument as the
+certificate's DNS SAN.
 
 ```bash
-node scripts/render-repository-credentials-origin.mjs \
+node scripts/render-repository-credentials-origin.ts \
   --release oce --namespace openclaw-system \
   --values "$OCC_INPUT_DIRECTORY/values.yaml" \
   > "$OCC_INPUT_DIRECTORY/repository-broker.json"
@@ -251,16 +251,26 @@ name or the deliberate cutover name.
 
 ## Install and verify
 
-Render the proposed upgrade before changing the startup Secret:
+Compute the SHA-256 digest of the edited Installation YAML and save it in the
+existing Helm values. This changes the API and worker Pod templates so both
+deployments load the updated startup Secret. Then render the proposed upgrade:
 
 ```bash
+OCC_INSTALLATION_CHECKSUM="$(python3 -c \
+  'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+  "$OCC_INPUT_DIRECTORY/installation.yaml")" || exit 1
+export OCC_INSTALLATION_CHECKSUM
+yq -i '.controlPlane.installationChecksum = strenv(OCC_INSTALLATION_CHECKSUM)' \
+  "$OCC_INPUT_DIRECTORY/values.yaml" || exit 1
 helm template oce deploy/helm/openclaw-enterprise --is-upgrade --namespace openclaw-system \
   -f "$OCC_INPUT_DIRECTORY/values.yaml" > /tmp/oce-rendered.yaml
 ```
 
 If rendering fails, stop and correct the values. Review the complete rendered
-manifests before continuing. Upgrade mode includes the installation check and
-requires an explicit repository credential Service name.
+manifests before continuing. If the Installation YAML changes, regenerate the
+checksum, render the upgrade, and review the manifests again. Upgrade mode
+includes the installation check and requires an explicit repository credential
+Service name.
 
 After successful rendering and review, update the operator-owned startup Secret
 from the edited Installation YAML and upgrade the existing release. The patch
@@ -278,6 +288,8 @@ helm upgrade oce deploy/helm/openclaw-enterprise \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
   --wait --timeout 5m
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  rollout status deployment/openclaw-enterprise-api
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   rollout status deployment/openclaw-enterprise-worker
 ```

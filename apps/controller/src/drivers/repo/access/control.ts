@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { admissionIdTimestamp } from "./admission-id.ts";
+import { controlRequestBodyMaxBytes } from "./client-contracts.ts";
 import type { Clock } from "./backend-contracts.ts";
 import type { CredentialServiceOwner } from "./internal-contracts.ts";
 import type { SessionInput } from "./sessions.ts";
@@ -152,7 +153,8 @@ export function createControlAdmission(
       // status again: the journal accepts an identical disposal once and refuses
       // any other, so the disposal is recorded exactly once.
       record.publication ??= status;
-      await journal.dispose(
+      await journal.writeStatus(
+        "dispose",
         id,
         record.input as RepositoryCredentialBoundSessionInput,
         record.publication,
@@ -374,7 +376,7 @@ export function createControlAdmission(
     );
     if (isBoundInput(admittedInput)) {
       const sessionId = opened.session.sessionId;
-      record.ready = journal!.bind(id, admittedInput, opened.session);
+      record.ready = journal!.writeStatus("bind", id, admittedInput, opened.session);
       try {
         await record.ready;
       } catch (error) {
@@ -504,7 +506,9 @@ export async function handleControl(
     return;
   }
   const { head } = inspected;
-  if ((head.framing.bytes ?? 0) > Math.min(16384, config.limits.controlBodyBytes)) {
+  if (
+    (head.framing.bytes ?? 0) > Math.min(controlRequestBodyMaxBytes, config.limits.controlBodyBytes)
+  ) {
     reply(response, 413, { error: "invalid-request" });
     return;
   }
@@ -529,7 +533,7 @@ export async function handleControl(
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
       size += chunk.length;
-      if (size > Math.min(16384, config.limits.controlBodyBytes)) {
+      if (size > Math.min(controlRequestBodyMaxBytes, config.limits.controlBodyBytes)) {
         request.destroy();
         return;
       }

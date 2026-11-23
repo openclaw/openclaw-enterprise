@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Set up OpenClaw Enterprise locally
 
 <span id="quickstart"></span>
@@ -13,31 +18,24 @@ use [Kubernetes Setup](kubernetes-setup.md).
 
 For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-setup.md). The instructions below use the profile without OpenShell.
 
-## Before you start
+<span id="before-you-start"></span>
 
-Run the commands below from the repository root on Linux or macOS. You need:
+## Requirements
 
-- Docker Engine, k3d, kubectl, Helm, jq, Bash, and Python 3. Podman users should first
-  check the [local Kubernetes requirements](deploy/local-kubernetes-development.md#start-the-profile).
-- The Go version in `go.mod`, Node.js 24.22.1 or later, and the pnpm version pinned
-  in `package.json`.
-- About 20 GB of free container-engine storage for the first build. On macOS
-  that space is inside the Podman or Docker virtual machine rather than on your
-  host disk; check it with `podman machine ssh df -h /var`, or for Docker
-  Desktop with `docker run --rm alpine df -h /`. Without it, startup
-  fails late with `no space left on device` and rolls back the cluster.
-- Free local ports `3000` for the API, `8443` for the browser console, and
-  `6443` for Kubernetes. Startup checks them first and names the container
-  that holds a port. If that is a Docker-compatible stack from an earlier
-  `occ dev up`, stop it with `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./bin/occ dev down`.
-  Otherwise, override `OPENCLAW_DEV_PORT`, `OCC_DEVELOPMENT_BROWSER_PORT`, or
-  `OCC_DEVELOPMENT_KUBERNETES_API_PORT`; see
-  [development settings](../reference/settings/development.md#required-development-controller-environment).
-
-You do not need a model credential to install the platform. Have an OpenAI API
-key available when you continue to [deploy an Agent](#deploy-an-agent).
+- Linux or macOS, with commands run from the OCE repository root.
+- Docker Engine or [Podman](deploy/local-kubernetes-development.md#start-the-profile), k3d, kubectl, Helm, jq, Bash, and Python 3.
+- [Go 1.27.3](../../go.mod), [pnpm 11.15.1](../../package.json), and Node.js `>=24.22.1 <26 || >=26.12.1`.
+- About 20 GB of free container-engine storage for the first build; on macOS, this must be inside the Docker or Podman VM.
+- Free local ports `3000` (API), `8443` (browser console), and `6443` (Kubernetes), or [configured alternatives](../reference/settings/development.md#required-development-controller-environment).
+- An OpenAI API key to [deploy an Agent](#deploy-an-agent); no model credential is needed to install the platform.
 
 ## Start the local stack
+
+Check container storage with `podman machine ssh df -h /var` or
+`docker run --rm alpine df -h /`. Insufficient space causes startup to fail and
+roll back the cluster. Startup also checks the ports and names any container
+holding one. To stop an earlier Docker-compatible `occ dev up` stack, run
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./bin/occ dev down`.
 
 By default, startup builds this checkout. To use published images, first
 [select the published pair](#optional-use-matching-published-images).
@@ -119,10 +117,10 @@ built-in `default` namespace.
 
 Prepare the shared deployment guide's operator variables in Bash from this
 checkout. Keep `OCC_URL` and `OCC_SERVICE_KEY_FILE` from the authenticated check
-above. The launcher already configured this installation's private routing,
-Envoy source CIDRs, and tenant RoleBindings; keep those grants instead of
-applying the production examples with different release and ServiceAccount
-names. Use this shell and the bootstrap service key as the operator session; this
+above. The launcher configured private routing and Envoy source CIDRs. It grants
+the API and worker access across this disposable cluster with ClusterRoleBindings.
+Skip the production tenant RoleBinding steps here.
+Use this shell and the bootstrap service key as the operator session; this
 local installation needs no separate operator shell or service principal.
 
 ```bash

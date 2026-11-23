@@ -1,0 +1,366 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  createWorkerLogEmitter,
+  emitOccLogEvent,
+  MAX_LOGGED_IDENTIFIERS,
+  skippedUserLogFields,
+} from "../../apps/controller/src/logging.ts";
+import {
+  carriesFakeCredential,
+  CREDENTIAL_SHAPE_TEXTS,
+  LEGITIMATE_DIAGNOSTIC_TEXTS,
+} from "../fixtures/logged-error-text-cases.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { captureLogs, logAt } from "./common-logging-output.ts";
+
+// The JavaScript fixture defaults the protocol and path but takes raw credential parts.
+const preparationCredentialUrl: (options: {
+  protocol?: string;
+  username: string;
+  password: string;
+  host: string;
+  port: undefined;
+  pathname?: string;
+}) => string = syntheticCredentialUrl;
+
+export function registerEventCases(): void {
+  test("OCC logger emits structured severity and filters below the configured level", () => {
+    const output = captureLogs("occ-test", "warn");
+    const { logger } = output;
+
+    logger.info({ event: "dropped.info" });
+    logger.warn({ event: "kept.warn", requestId: "req_test" });
+
+    assert.equal(output.lines.length, 1);
+    assert.equal(logAt(output.lines, 0).event, "kept.warn");
+    assert.equal(logAt(output.lines, 0).severity, "WARN");
+    assert.equal(logAt(output.lines, 0).service, "occ-test");
+    assert.equal(Object.hasOwn(logAt(output.lines, 0), "level"), false);
+  });
+
+  test("OCC event severity mapping treats failed diagnostics as errors and warnings as warnings", () => {
+    const output = captureLogs("occ-script", "info");
+    const { logger } = output;
+
+    emitOccLogEvent(logger, { event: "installation.bootstrap-failed" });
+    emitOccLogEvent(logger, { event: "migration.failed" });
+    emitOccLogEvent(logger, {
+      event: "compute.preflight-warning",
+      code: "KUBERNETES_VERSION_BELOW_MINIMUM",
+      message: "Kubernetes 1.34.12 is below the supported minimum 1.35.0.",
+    });
+
+    assert.deepEqual(
+      output.lines.map(({ event, severity }) => ({ event, severity })),
+      [
+        { event: "installation.bootstrap-failed", severity: "ERROR" },
+        { event: "migration.failed", severity: "ERROR" },
+        { event: "compute.preflight-warning", severity: "WARN" },
+      ],
+    );
+    assert.equal(
+      logAt(output.lines, 2).message,
+      "Kubernetes 1.34.12 is below the supported minimum 1.35.0.",
+    );
+  });
+
+  test("a limited sign-in lane logs a warning with its lane and hashed key only", () => {
+    const output = captureLogs("occ-api", "info");
+    const { logger } = output;
+
+    emitOccLogEvent(logger, {
+      event: "authentication.sign-in-limited",
+      lane: "email",
+      keyHash: "0123456789abcdef",
+      email: "victim@example.test",
+      clientAddress: "203.0.113.7",
+    });
+
+    assert.equal(output.lines.length, 1);
+    const { time, ...line } = logAt(output.lines, 0);
+    assert.ok(time);
+    assert.deepEqual(line, {
+      severity: "WARN",
+      service: "occ-api",
+      event: "authentication.sign-in-limited",
+      lane: "email",
+      keyHash: "0123456789abcdef",
+    });
+  });
+
+  test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", () => {
+    const output = captureLogs("occ-worker", "info");
+    const { logger } = output;
+
+    emitOccLogEvent(logger, {
+      event: "worker.error",
+      attempt: 2,
+      code: "WORKER_UNAVAILABLE",
+      message: "ordinary diagnostic text must not enter operational logs",
+      secret: "sk-proj-secret-value-that-must-not-log",
+      error: "Bearer token-that-must-not-log",
+      grpcStatus: "3",
+      validationCategory: "arbitrary-supplier-category",
+    });
+    emitOccLogEvent(logger, {
+      event: "installation.bootstrap-failed",
+      code: "COMMIT_OUTCOME_UNKNOWN",
+      attempt: {
+        installationId: "ins_2c7a3b6e-41f0-4d1b-9a8e-5f3c2d1e0b9a",
+        serviceKeyFile: "/tmp/common-otel-swarm/occ/service-key.json",
+        passwordFile: "/tmp/common-otel-swarm/occ/password.txt",
+        serviceKeyId: "key_safe",
+        arbitrary: "dropped",
+        unsafe: "Bearer token-that-must-not-log",
+      },
+    });
+
+    assert.equal(output.lines.length, 2);
+    assert.equal(logAt(output.lines, 0).attempt, 2);
+    assert.equal(logAt(output.lines, 0).code, "WORKER_UNAVAILABLE");
+    assert.deepEqual(logAt(output.lines, 1).attempt, {
+      installationId: "ins_2c7a3b6e-41f0-4d1b-9a8e-5f3c2d1e0b9a",
+      serviceKeyFile: "/tmp/common-otel-swarm/occ/service-key.json",
+      passwordFile: "/tmp/common-otel-swarm/occ/password.txt",
+      serviceKeyId: "key_safe",
+    });
+    assert.equal(Object.hasOwn(logAt(output.lines, 0), "error"), false);
+    assert.equal(Object.hasOwn(logAt(output.lines, 0), "message"), false);
+    assert.equal(Object.hasOwn(logAt(output.lines, 0), "secret"), false);
+    assert.equal(Object.hasOwn(logAt(output.lines, 0), "grpcStatus"), false);
+    assert.equal(Object.hasOwn(logAt(output.lines, 0), "validationCategory"), false);
+    assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
+    assert.equal(JSON.stringify(output.lines).includes("arbitrary"), false);
+  });
+
+  test("Compute preparation diagnostics keep reviewed context and reject secret-bearing text", () => {
+    const output = captureLogs("occ-worker", "info");
+
+    const emit = createWorkerLogEmitter(output.logger);
+
+    emit({
+      event: "worker.compute-prepare-failed",
+      workId: "agent_revision:rev_test:reconcile",
+      attempt: 1,
+      operation: "agent_revision.reconcile",
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      revisionId: "rev_test",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_API_REJECTED",
+      step: "gateway_deployment",
+      candidatePreparationReached: false,
+      errorClass: "KubernetesApiError",
+      status: 422,
+      message: "The Kubernetes API rejected revision preparation.",
+    });
+    emit({
+      event: "worker.compute-prepare-failed",
+      code: "KUBERNETES_PREPARATION_FAILED",
+      step: "sandbox_provision",
+      candidatePreparationReached: "token-that-must-not-log",
+      message: "Bearer token-that-must-not-log",
+    });
+
+    assert.equal(output.lines.length, 2);
+    const { time, ...diagnostic } = logAt(output.lines, 0);
+    assert.ok(time);
+    assert.deepEqual(diagnostic, {
+      severity: "ERROR",
+      service: "occ-worker",
+      event: "worker.compute-prepare-failed",
+      workId: "agent_revision:rev_test:reconcile",
+      attempt: 1,
+      operation: "agent_revision.reconcile",
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      revisionId: "rev_test",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_API_REJECTED",
+      step: "gateway_deployment",
+      candidatePreparationReached: false,
+      errorClass: "KubernetesApiError",
+      status: 422,
+      message: "The Kubernetes API rejected revision preparation.",
+    });
+    assert.equal(Object.hasOwn(logAt(output.lines, 1), "message"), false);
+    assert.equal(Object.hasOwn(logAt(output.lines, 1), "candidatePreparationReached"), false);
+    assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
+
+    // A trusted Driver can accidentally return a printable URI in a preparation
+    // diagnostic. The real worker emitter must contain it before writing stdout.
+    const messages = [
+      preparationCredentialUrl({
+        protocol: "postgres",
+        username: "fixture-user",
+        password: ["invented", "fixture"].join("/"),
+        host: "database.invalid",
+        port: undefined,
+        pathname: "/fixture",
+      }),
+      preparationCredentialUrl({
+        username: "fixture-user",
+        password: "invented-fixture",
+        host: "service.invalid",
+        port: undefined,
+      }),
+    ];
+    for (const message of messages) {
+      const recordCount: number = output.lines.length;
+      emit({
+        event: "worker.compute-prepare-failed",
+        workId: "agent_revision:rev_test:reconcile",
+        operation: "agent_revision.reconcile",
+        namespaceId: "ns_test",
+        agentId: "agt_test",
+        revisionId: "rev_test",
+        code: "KUBERNETES_API_REJECTED",
+        step: "gateway_deployment",
+        message,
+      });
+      assert.equal(output.lines.length, recordCount + 1);
+      const line = logAt(output.lines, recordCount);
+      assert.equal(line.event, "worker.compute-prepare-failed");
+      assert.equal(line.severity, "ERROR");
+      assert.equal(line.service, "occ-worker");
+      assert.equal(line.workId, "agent_revision:rev_test:reconcile");
+      assert.equal(line.operation, "agent_revision.reconcile");
+      assert.equal(line.namespaceId, "ns_test");
+      assert.equal(line.agentId, "agt_test");
+      assert.equal(line.revisionId, "rev_test");
+      assert.equal(line.code, "KUBERNETES_API_REJECTED");
+      assert.equal(line.step, "gateway_deployment");
+      assert.equal(Object.hasOwn(line, "message"), false, "unsafe URI diagnostic is absent");
+      assert.equal(JSON.stringify(output.lines).includes(message), false);
+    }
+
+    // A Driver writes the recovery step for the operator as prose. Its punctuation must not
+    // drop the message, or the line names only the code and step on every attempt.
+    const fields = {
+      event: "worker.compute-prepare-failed",
+      workId: "agent_revision:rev_test:reconcile",
+      revisionId: "rev_test",
+      code: "KUBERNETES_DEPENDENCY_UNAVAILABLE",
+      step: "prepare_revision",
+      errorClass: "DependencyUnavailableError",
+    };
+    const logged = (message: string) => {
+      const index = output.lines.length;
+      emit({ ...fields, message });
+      const { time, message: kept, ...line } = logAt(output.lines, index);
+      assert.ok(time);
+      assert.deepEqual(line, { severity: "ERROR", service: "occ-worker", ...fields });
+      return kept;
+    };
+    const prose =
+      "Node credential unconfirmed. Stop Agent; wait for shutdown. Delete only node Secret " +
+      "ns-a/node-a, then redeploy. Preserve the node's identity and workspace storage.";
+    assert.equal(logged(prose), prose);
+    // The message stays one bounded line: whitespace and control characters collapse to one
+    // space, and at most 512 characters are kept.
+    assert.equal(
+      logged("Stop Agent;\n\twait for shutdown,\r\nthen redeploy."),
+      "Stop Agent; wait for shutdown, then redeploy.",
+    );
+    assert.equal(logged("Retry later, ".repeat(60)), "Retry later, ".repeat(60).slice(0, 512));
+    // Format characters collapse too, so a message cannot reorder or hide text in a terminal.
+    assert.equal(
+      logged("Refusing \u202Edecoded \u200BSecret, then redeploy."),
+      "Refusing decoded Secret, then redeploy.",
+    );
+    assert.equal(/[\u202E\u200B]/u.test(JSON.stringify(output.lines)), false);
+    // Punctuation admits no credential: a message that resembles one is still left out, and
+    // the line keeps its other fields.
+    for (const message of [
+      `Stop Agent; the gateway sent ${["Bearer", "invented-fixture-token"].join(" ")}, then failed.`,
+      `Fetch failed, see https://service.invalid/v1?${"token"}=invented-fixture; redeploy.`,
+      `Database ${preparationCredentialUrl({
+        username: "fixture-user",
+        password: "invented-fixture",
+        host: "database.invalid",
+        port: undefined,
+      })} refused, then closed.`,
+      // The check runs before the 512-character cut: a token that straddles it is left out
+      // although the kept part alone would not match.
+      `${"Retry later, ".repeat(39)}x ${["Bearer", "invented-fixture-token"].join(" ")}`,
+    ]) {
+      assert.equal(logged(message), undefined);
+      assert.equal(JSON.stringify(output.lines).includes("invented-fixture"), false);
+    }
+
+    // A preflight warning takes the same path: its punctuation keeps the message as one
+    // bounded line.
+    const warningFields = {
+      event: "compute.preflight-warning",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+    };
+    const warned = (message: string) => {
+      const index = output.lines.length;
+      emit({ ...warningFields, message });
+      const { time, message: kept, ...line } = logAt(output.lines, index);
+      assert.ok(time);
+      assert.deepEqual(line, { severity: "WARN", service: "occ-worker", ...warningFields });
+      return kept;
+    };
+    const punctuated =
+      "Proxy CIDR 0.0.0.0/0 covers more than one address; every Pod can reach the port.";
+    assert.equal(warned(punctuated), punctuated);
+    assert.equal(warned("Retry later,\n".repeat(60)), "Retry later, ".repeat(60).slice(0, 512));
+
+    // On both events OCC's own diagnostics are kept verbatim, and a JSON, form or
+    // connection-string pair, a credential header or a token prefix is left out.
+    for (const text of LEGITIMATE_DIAGNOSTIC_TEXTS) {
+      assert.equal(logged(text), text);
+      assert.equal(warned(text), text);
+    }
+    for (const { shape, text } of CREDENTIAL_SHAPE_TEXTS) {
+      assert.equal(logged(text), undefined, shape);
+      assert.equal(warned(text), undefined, shape);
+    }
+    assert.equal(carriesFakeCredential(JSON.stringify(output.lines)), false);
+  });
+
+  test("activation warning caps skipped account IDs and reports the total and truncation", () => {
+    const output = captureLogs("occ-api", "info");
+    const { logger } = output;
+    const ids = (count: number) =>
+      Array.from({ length: count }, (_, index) => `user_${String(index).padStart(4, "0")}`);
+
+    for (const skipped of [ids(1), ids(MAX_LOGGED_IDENTIFIERS), ids(MAX_LOGGED_IDENTIFIERS + 1)]) {
+      emitOccLogEvent(logger, {
+        event: "authentication.activation-warning",
+        ...skippedUserLogFields(skipped),
+      });
+    }
+
+    assert.equal(output.lines.length, 3);
+    assert.deepEqual(
+      output.lines.map(
+        ({ severity, skippedUserIds, skippedUserCount, skippedUserIdsTruncated }) => {
+          const loggedIds: unknown = skippedUserIds;
+          assert.ok(Array.isArray(loggedIds));
+          const entries: readonly unknown[] = loggedIds;
+          return { severity, ids: entries.length, skippedUserCount, skippedUserIdsTruncated };
+        },
+      ),
+      [
+        { severity: "WARN", ids: 1, skippedUserCount: 1, skippedUserIdsTruncated: false },
+        {
+          severity: "WARN",
+          ids: MAX_LOGGED_IDENTIFIERS,
+          skippedUserCount: MAX_LOGGED_IDENTIFIERS,
+          skippedUserIdsTruncated: false,
+        },
+        {
+          severity: "WARN",
+          ids: MAX_LOGGED_IDENTIFIERS,
+          skippedUserCount: MAX_LOGGED_IDENTIFIERS + 1,
+          skippedUserIdsTruncated: true,
+        },
+      ],
+    );
+    assert.deepEqual(logAt(output.lines, 2).skippedUserIds, ids(MAX_LOGGED_IDENTIFIERS));
+  });
+}

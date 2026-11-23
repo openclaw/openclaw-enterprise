@@ -14,7 +14,7 @@ Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes clust
 
 Use separate pools (`oce-role=control`, `oce-role=agents`) and encrypted RWO storage with `WaitForFirstConsumer`.
 
-Install the matching Agent Sandbox controller and `openshell-sandbox` `runc` RuntimeClass; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
+Install Agent Sandbox; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security. OCE configures no RuntimeClass or admission exemption.
 
 Use a fresh application database.
 
@@ -50,13 +50,13 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORA
 | Input                                    | Value                                                                          |
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | `OCE_CHART`                              | Matching absolute chart directory/archive.                                     |
-| `OPENSHELL_CHART`                        | Stock 0.1.8.                                                                   |
+| `OPENSHELL_CHART`                        | Stock 0.1.9.                                                                   |
 | `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository for stock AMD64 Gateway, supervisor and runtime manifests. |
 | `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                               |
 | `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
 | `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-Match templates: OpenShell 0.1.8, Codex 0.164.0.
+Match templates: OpenShell 0.1.9 ([existing Gateway recovery](eks-openshell-setup.md#openshell-gateway-upgrade-recovery)), Codex 0.164.0.
 
 Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
 

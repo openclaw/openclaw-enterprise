@@ -10,7 +10,7 @@ import { parsers } from "prettier/plugins/babel";
 // keep that build stage cached (deploy/runtime/Dockerfile).
 const options = process.argv.slice(2);
 if (options.length > 1 || (options.length === 1 && options[0] !== "--client-only")) {
-  throw new Error("Usage: build-repository-credentials.mjs [--client-only]");
+  throw new Error("Usage: build-repository-credentials.ts [--client-only]");
 }
 const clientOnly = options[0] === "--client-only";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));

@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:https";
-import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.ts";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 
 // The registry-backed broker must fail closed when its durable journal is absent.
 test(

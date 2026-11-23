@@ -40,13 +40,17 @@ kind: reference/driver
   - [`validateRepositoryCredentialSupport`](#method-validate-repository-credential-support)
   - [`validateRepositoryCredentials`](#method-validate-repository-credentials)
   - [`validateExecutionAdmission`](#method-validate-execution-admission)
+  - [`admitsProtectedRepositoryNetworkPolicySave`](#method-admits-protected-repository-network-policy-save)
+  - [`validateProtectedRepositoryNetworkPolicy`](#method-validate-protected-repository-network-policy)
   - [`admitRevision`](#method-admit-revision)
+  - [`snapshotRuntimeInputs`](#method-snapshot-runtime-inputs)
   - [`activateRevision`](#method-activate-revision)
   - [`deactivateRevision`](#method-deactivate-revision)
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
-  - [`getGatewayChatEndpoint`](#method-get-gateway-chat-endpoint)
+  - [`getGatewayBrowserRequest`](#method-get-gateway-browser-request)
+  - [`getChatCompletionsEndpoint`](#method-get-chat-completions-endpoint)
   - [`getAgentRuntimeCredentialStatus`](#method-get-agent-runtime-credential-status)
   - [`provisionAgentRuntimeCredentials`](#method-provision-agent-runtime-credentials)
   - [`deleteAgentRuntimeCredentials`](#method-delete-agent-runtime-credentials)
@@ -104,9 +108,9 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-prepare-revision"></a>`prepareRevision`                                                                | Required    | Create or reuse the gateway and prepare the Harness. Return readiness for the requested Namespace, Agent, and revision. The worker supplies authorized revision context.                                                                                                                                                                                  |
 | <a id="method-stop-revision"></a>`stopRevision`                                                                      | Required    | Remove inbound routing and stop execution, including applicable Driver hooks and Sandbox cleanup. Keep Agent credentials, workspace data, and saved revisions. Repeated calls must be safe.                                                                                                                                                               |
 | <a id="method-retire-revision"></a>`retireRevision`                                                                  | Required    | Revoke workload access, stop the workload, and complete applicable Sandbox cleanup. Preserve the replacement's gateway.                                                                                                                                                                                                                                   |
-| <a id="method-preflight"></a>`preflight`                                                                             | Optional    | Check startup dependencies. An error blocks startup. Warnings are logged as `compute.preflight-warning`. Bundled Kubernetes Compute must implement this in production.                                                                                                                                                                                    |
+| <a id="method-preflight"></a>`preflight`                                                                             | Optional    | Check startup dependencies; errors block startup. Log warnings as `compute.preflight-warning`. Required for production Kubernetes Compute.                                                                                                                                                                                                                |
 | <a id="method-set-lifecycle-drivers"></a>`setLifecycleDrivers`                                                       | Optional    | Receive the selected Drivers that supply lifecycle hooks. Startup refuses a hook provider if Compute cannot accept it.                                                                                                                                                                                                                                    |
-| <a id="method-bind-agent"></a>`bindAgent`                                                                            | Optional    | The worker supplies the approved Namespace and Agent before revision work. A rejection prevents further runtime work on that attempt.                                                                                                                                                                                                                     |
+| <a id="method-bind-agent"></a>`bindAgent`                                                                            | Optional    | Receive the approved Namespace and Agent before revision work; rejection ends the attempt.                                                                                                                                                                                                                                                                |
 | <a id="method-validate-configuration"></a>`validateConfiguration`                                                    | Optional    | Check native Configuration values on save. Preset validation identifies unresolved variables separately.                                                                                                                                                                                                                                                  |
 | <a id="method-validate-gateway-settings"></a>`validateGatewaySettings`                                               | Optional    | Refuse gateway settings the Driver cannot honor at deployment. Name the setting without exposing its value. OCC skips this check if omitted.                                                                                                                                                                                                              |
 | <a id="method-normalize-harness-overrides"></a>`normalizeHarnessOverrides`                                           | Optional    | Normalize overrides; requires `resolveHarnessConfiguration`. Omission rejects nonempty requests.                                                                                                                                                                                                                                                          |
@@ -118,12 +122,16 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-validate-repository-credential-support"></a>`validateRepositoryCredentialSupport`                      | Optional    | Check support for repository credentials on the selected Sandbox topology. Without it, OCC cannot offer repository options.                                                                                                                                                                                                                               |
 | <a id="method-validate-repository-credentials"></a>`validateRepositoryCredentials`                                   | Optional    | Check repository bindings against the requested Harness and Sandbox. OCC refuses bindings if it cannot validate them.                                                                                                                                                                                                                                     |
 | <a id="method-validate-execution-admission"></a>`validateExecutionAdmission`                                         | Optional    | Check whether Compute supports the requested execution at admission and again before release. Without it the platform admits ordinary unprotected execution only.                                                                                                                                                                                         |
+| <a id="method-admits-protected-repository-network-policy-save"></a>`admitsProtectedRepositoryNetworkPolicySave`      | Optional    | Qualify protected grant saves.                                                                                                                                                                                                                                                                                                                            |
+| <a id="method-validate-protected-repository-network-policy"></a>`validateProtectedRepositoryNetworkPolicy`           | Optional    | Validate frozen policy before credentials.                                                                                                                                                                                                                                                                                                                |
 | <a id="method-admit-revision"></a>`admitRevision`                                                                    | Optional    | Return Driver-owned admission data for OCC to save with the revision. Without it, OCC stores the revision without Driver admission data.                                                                                                                                                                                                                  |
+| <a id="method-snapshot-runtime-inputs"></a>`snapshotRuntimeInputs`                                                   | Optional    | Capture bounded private launch inputs after admission; omission preserves legacy behavior. These facts are not execution authority.                                                                                                                                                                                                                       |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
-| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
-| <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
+| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private machine workspace WSS address, or `undefined`.                                                                                                                                                                                                                                                                                                    |
+| <a id="method-get-gateway-browser-request"></a>`getGatewayBrowserRequest`                                            | Optional    | Resolve authorized per-human browser transport. Keep credential headers private. Unsupported transport or missing credentials fails closed, without machine fallback.                                                                                                                                                                                     |
+| <a id="method-get-chat-completions-endpoint"></a>`getChatCompletionsEndpoint`                                        | Optional    | [HTTP completions](../agent-http-chat.md).                                                                                                                                                                                                                                                                                                                |
 | <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
 | <a id="method-delete-agent-runtime-credentials"></a>`deleteAgentRuntimeCredentials`                                  | Optional    | Remove Agent-owned credentials after revision retirement. A Driver that provisions them but omits deletion fails Agent deletion permanently.                                                                                                                                                                                                              |
@@ -144,8 +152,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 ### Model discovery
 
-For model discovery, OCC checks Agent creation permission in the Namespace.
-The bundled Docker and Kubernetes [model discovery client](../../../apps/controller/src/drivers/compute/model-discovery.ts)
+Model discovery requires Namespace-scoped Agent creation permission.
+The Docker and Kubernetes [model discovery client](../../../apps/controller/src/drivers/compute/model-discovery.ts)
 uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 10,000 model IDs. It refuses redirects. See [model discovery and API egress](../console/create-and-deploy.md#create-an-agent).
 
@@ -153,12 +161,14 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Namespace results follow the [shared lifecycle contract](namespace-lifecycle.md).
+Namespace results follow the [lifecycle contract](namespace-lifecycle.md).
 Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 
 Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 from trusted settings and approved resource IDs, independently of readiness and authorization.
+
+Keep headers private. Admission cannot provision credentials or use machine authentication.
 
 ### Optional initial runtime credential provisioning
 
@@ -285,11 +295,9 @@ and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
 record the selection. The original work stays queued until that revision is ready;
 only then does the worker activate it, retire its predecessor, and complete the work.
 
-Exclusive replacement closes earlier credential sessions and stops each earlier
-revision, including failed candidates, before preparation. A failed stop blocks
-the successor. Older work and maintenance cannot recreate the stopped execution.
-Compute must confirm resource release and preserve workspace data on repeated
-stops. This policy permits downtime. Recover by deploying a newer revision.
+Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
+before closing credentials and stopping predecessors. Failed stop blocks preparation.
+Repeated stops must preserve workspace data; stopped revisions cannot be recreated.
 
 ### SandboxDriver coordination
 
@@ -366,4 +374,4 @@ for topology, deletion support, and private gateway access.
 - [Driver selection](selection.md) and [Harness execution](../harness-execution.md)
 - [Agent lifecycle](../agents.md) and [controller reconciliation](../controller/reconciliation.md)
 - [Deployment diagnostics flow](../../flows/agent-deployment-diagnostics.md)
-- [Worker source](../../../apps/controller/src/worker.ts) and [OCC source](../../../packages/occ/src/index.ts)
+- [Worker source](../../../apps/controller/src/worker.ts) and [OCC source](../../../packages/occ/src/agent-deployment-admission.ts)

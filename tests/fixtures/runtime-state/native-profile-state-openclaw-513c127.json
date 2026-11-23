@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "image": "localhost/oce-rfc0031-runtime@sha256:8f655a069417b80c3f67e14147bf22d02ec84359dee6a53cf0d0f9b8ddedfe64",
+  "provenance": {
+    "source": "https://github.com/openclaw/openclaw",
+    "commit": "513c12703ad9a9161cc123e0b8ed4ecb811aa6b3",
+    "sourceArchiveSha256": "dab8e21f38603bace955a157f804ddec32b0097ab52286c87b0c0886d45b7730",
+    "openclawBridgePatchSha256": "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc",
+    "openclawRequiredWorkerAuthorityRegressionPatchSha256": "5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494",
+    "patches": {
+      "openclaw-codex-read-only-paths.patch": "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc",
+      "openclaw-codex-full-access-profile.patch": "5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe",
+      "openclaw-required-worker-authority-regression.patch": "5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494",
+      "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+      "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+      "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+      "openclaw-node-setup-renewal.patch": "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538"
+    },
+    "artifactKind": "assembled-runtime-root",
+    "runtimeContentsSha256": "9cadcd9e134467f10efe84edfba9372a6329291bf04d8697c0f33e6c2f8155e0",
+    "lockfileSha256": "c428adc8508bd39a356284602a1d7e793944bbc0915c91e5327e1179ff905d6a",
+    "codex": {
+      "source": "npm:@openai/codex",
+      "version": "0.164.0",
+      "packageIntegrity": "sha512-TWj7UGyPRe3Pj/A3ddNAxs1te3a/W/xAd+J0LHrrFTmsSfahGMOLF/vn88D3QCIgAT3B1rm1y/Z3NYE0rx6cZQ==",
+      "package": "@openai/codex-linux-arm64",
+      "packageVersion": "0.164.0-linux-arm64",
+      "platformPackageIntegrity": "sha512-LL5iTQjyDL4YRX44EWqhIfEQ5uGnmgxkQBJSxjZSeJ8L1Og83pdlzUJW/PRJ76oaVwOVgh6HXwuPEiBNEHU4lg==",
+      "architecture": "arm64",
+      "installedBinary": "node_modules/.pnpm/@openai+codex@0.164.0/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex",
+      "resolvedBinary": "node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+      "binarySha256": "8813c8d8a4cea2eeba271b72ab22f49628b184b24ab18dbef06b4ce41e9a8d39"
+    },
+    "packageManager": "pnpm@12.15.0+sha512.b3951d6d6ff4a9f13dc7cf56cd28d2b8eb37dbcc9c68e52e1e1191873ea9f82a017287ab50baadc5ccc494f036c67c0e47eb13608c2fa36f47711b61ea128e61",
+    "platform": "linux",
+    "architecture": "arm64",
+    "plugins": ["codex", "slack"]
+  },
+  "archiveSha256": "80dfbaa36445696d85c90530bd84fb08e67fdafa24d63c5b573e6bb9142ba145",
+  "capture": "Native trusted-human RPC: users.self, users.setDisplayName, sessions.create, chat.inject. No model generation.",
+  "sanitized": "Shared and Agent SQLite stores plus client migration metadata; generated identity, token and configuration HMAC rows removed and vacuumed; no journal keys.",
+  "verifiedWithOriginalRuntime": true,
+  "expected": {
+    "profileId": "e64797de-78d0-4207-9857-10ae5ab9b69e",
+    "displayName": "Retained native person",
+    "sessionKey": "agent:main:dashboard:ce04f724-2b72-42e1-9150-07d34582fc54",
+    "message": "Native profile conversation before the runtime upgrade.",
+    "sessionId": "62a74da4-b285-4b95-8661-08989a8afea5",
+    "messageRecord": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Native profile conversation before the runtime upgrade."
+        }
+      ],
+      "timestamp": 1794345150085,
+      "stopReason": "stop",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "totalTokens": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "api": "openai-responses",
+      "provider": "openclaw",
+      "model": "gateway-injected",
+      "__openclaw": {
+        "id": "dfa493c8-d443-4cc6-af60-923d24945fc5",
+        "recordTimestampMs": 1794345150085,
+        "transcriptPosition": {
+          "source": "XAh6d6fGPFnDrqPpgu5pcdkB8rJWf52_VEZPF8qGsRk",
+          "rawSeq": 1
+        },
+        "seq": 1
+      }
+    }
+  }
+}

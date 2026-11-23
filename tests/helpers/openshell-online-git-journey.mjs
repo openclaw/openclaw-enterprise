@@ -10,7 +10,7 @@ import {
   cleanEnvironment,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 const packet = (line) =>
   Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, "0") + line);
@@ -54,7 +54,7 @@ export async function gitCommandBodies(t, pushRef) {
 
 // The stock gateway boundary for the worker expiry regression. The production gRPC client
 // sends every request, including provider bootstrap, credential rotation and conditional detach.
-// openshell-gateway-wire.test.mjs checks that client's encoding against the released schema.
+// openshell-gateway-wire.test.ts checks that client's encoding against the released schema.
 // No Kubernetes, real supervisor, credential or model provider is needed for this test.
 export async function gitExpiryGateway(
   t,
@@ -100,8 +100,13 @@ export async function gitExpiryGateway(
     processInstanceId: "same-process",
     networkInstanceId: "same-network",
   });
+  const started = { seconds: Math.floor(Date.now() / 1000) };
   const world = {
     repositoryGitRecipient,
+    processInstanceId: String(repositoryGitRecipient.processInstanceId),
+    networkInstanceId: String(repositoryGitRecipient.networkInstanceId),
+    supervisorSessionId: "same-supervisor",
+    runtimeGeneration: "initial-runtime",
     writes: 0,
     providerCreates: [],
     profileImports: [],
@@ -260,14 +265,14 @@ export async function gitExpiryGateway(
         observed: {
           ...snapshot,
           sequence: "81",
-          session_id: "same-supervisor",
-          process_instance_id: repositoryGitRecipient.processInstanceId,
+          session_id: world.supervisorSessionId,
+          process_instance_id: world.processInstanceId,
           credentials_installed: !expired,
           ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
           launch_environment_installed: !expired,
           policy_active: true,
         },
-        network_instance_id: repositoryGitRecipient.networkInstanceId,
+        network_instance_id: world.networkInstanceId,
         observed_time: now,
         evaluated_time: now,
       },
@@ -293,17 +298,20 @@ export async function gitExpiryGateway(
             name: supervisor?.sandbox ?? sandbox,
             workspace,
             resource_version: String(world.version),
-            annotations: supervisor
-              ? {
-                  "openclaw.dev/revision-id": supervisor.revisionId,
-                  "openclaw.dev/namespace-id": supervisor.namespaceId,
-                  "openclaw.dev/agent-id": supervisor.agentId,
-                }
-              : { "openclaw.dev/revision-id": revisionId },
+            annotations: {
+              "internal.openshell.ai/runtime-generation": world.runtimeGeneration,
+              ...(supervisor
+                ? {
+                    "openclaw.dev/revision-id": supervisor.revisionId,
+                    "openclaw.dev/namespace-id": supervisor.namespaceId,
+                    "openclaw.dev/agent-id": supervisor.agentId,
+                  }
+                : { "openclaw.dev/revision-id": revisionId }),
+            },
           },
           spec: {
             ...(supervisor && { policy: supervisor.policy }),
-            restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
+            restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS",
             providers: world.detaches.length
               ? world.retainedProviders
               : [...world.retainedProviders, gitName],
@@ -313,7 +321,7 @@ export async function gitExpiryGateway(
           },
           status: {
             phase: "SANDBOX_PHASE_READY",
-            main_process_instance_id: repositoryGitRecipient.networkInstanceId,
+            main_process_instance_id: world.networkInstanceId,
             configuration_activated: true,
             configuration_admission: {
               state: 2,
@@ -325,7 +333,7 @@ export async function gitExpiryGateway(
                 : "6",
               policy_hash: "original-policy",
             },
-            ...(supervisor && { main_process_started_time: supervisor.started }),
+            main_process_started_time: supervisor?.started ?? started,
           },
         },
       },
@@ -499,5 +507,17 @@ export async function gitExpiryGateway(
     client.close();
     server.forceShutdown();
   });
-  return { client, world };
+  function setRuntimeProvider(name) {
+    assert.ok(supervisor && providers[supervisor.runtimeProvider]);
+    const previous = supervisor.runtimeProvider;
+    const provider = providers[previous];
+    delete providers[previous];
+    provider.metadata.name = name;
+    providers[name] = provider;
+    supervisor.runtimeProvider = name;
+    world.retainedProviders = world.retainedProviders.map((providerName) =>
+      providerName === previous ? name : providerName,
+    );
+  }
+  return { client, world, setRuntimeProvider };
 }

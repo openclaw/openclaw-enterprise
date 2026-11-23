@@ -1,8 +1,19 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { validateAuthSecret } from "../auth/configuration.ts";
+import {
+  CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
+  controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
+} from "./control-plane-audit.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationControllerOptions } from "./installation-config.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "./installation-config.ts";
+import { installTokenServiceDriver } from "./token-service.ts";
+import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
@@ -60,16 +71,10 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
-  readonly channelDirectoryProxyUrl?: string;
-  readonly channelDirectoryManagedProxyHost?: string;
-  /**
-   * OCC_API_HTTPS_EGRESS_OPEN: a sign-in egress rule lets the API reach any address on TCP 443,
-   * so Slack can answer without a proxy. Default: closed.
-   */
-  readonly apiHttpsEgressOpen?: boolean;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  readonly controlPlaneAuditEnabled?: boolean;
   /** Receives each composition phase's wall-clock duration, in order, for the startup log. */
   readonly onStartupPhase?: (phase: ProductionStartupPhase, durationMs: number) => void;
 }
@@ -79,7 +84,7 @@ export type ProductionStartupPhase =
 
 /**
  * Code-only dependencies, kept out of `ProductionConfig` so that no setting can supply them:
- * api-startup.mjs passes none. Tests pass a cheap `passwordHasher`; without one the
+ * api-startup.ts passes none. Tests pass a cheap `passwordHasher`; without one the
  * controller hashes with `scryptPasswordHasher`.
  */
 export interface CompositionDependencies {
@@ -93,6 +98,7 @@ export async function composeProduction(
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
+  validateAuthSecret(config.authSecret);
   const {
     installation,
     computeDriver,
@@ -128,8 +134,10 @@ export async function composeProduction(
     phaseStartedAt = now;
   };
 
+  const auditEnabled = config.controlPlaneAuditEnabled === true;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -137,6 +145,7 @@ export async function composeProduction(
     closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
@@ -196,25 +205,18 @@ export async function composeProduction(
     }
 
     phaseCompleted("computePreflight");
-    const channelDriver = new SlackChannelDriver(
-      globalThis.fetch,
-      config.channelDirectoryProxyUrl,
-      {
-        managedProxyHosts:
-          config.channelDirectoryManagedProxyHost === undefined
-            ? []
-            : [config.channelDirectoryManagedProxyHost],
-        // A closed egress reaches Slack only through a proxy; an open one may reach it
-        // directly, so a timeout there stays a retryable outage (finding 2533).
-        expectProxy: config.apiHttpsEgressOpen !== true,
-      },
-    );
+    const channelDriver =
+      config.drivers.channelDrivers?.find(({ provider }) => provider === "slack")?.driver ??
+      new SlackChannelDriver(globalThis.fetch, undefined, { expectProxy: true });
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(config.drivers.installation),
+        credentialSourceDelivery: credentialSourceDeliveryBinding(config.drivers),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
           ? {}
@@ -236,12 +238,8 @@ export async function composeProduction(
     controller.selectDriver("secret", secretDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (protectedDriver !== undefined) {
-      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
-    } else if (sandboxDriver !== undefined) {
-      controller.registerDriver(sandboxDriver);
-      controller.selectDriver("sandbox", sandboxDriver.id);
-    }
+    installSelectedSandboxDrivers(controller, config.drivers);
+    await installTokenServiceDriver(controller, config.drivers, state);
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
@@ -369,12 +367,15 @@ export async function composeProduction(
         enabled: config.agentRuntimeLogsEnabled !== false,
         cursorSecret: config.authSecret,
       },
-      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+      ...(config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
+      ...(auditEnabled
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),
       ...(installation.observability === undefined
         ? {}

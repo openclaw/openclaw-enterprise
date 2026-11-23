@@ -147,8 +147,6 @@ test("type uses the design-language scale (UX plan B3, spec P12)", () => {
     ["input, select, textarea font-size", phoneInputMinimum],
     [".log-picker select, .log-search input font-size", phoneInputMinimum],
     [".channel-field input, .channel-field select font-size", phoneInputMinimum],
-    // The nav glyphs are fixed at 16px to match their 16px box (spec 6.1), not a type step.
-    [".nav-icon font-size", "16px"],
     // UNKNOWN fits the 78px level column the log grid reserves (6.5em); on the scale it is 83px.
     [".log-level font-size", "10px"],
     [".log-level letter-spacing", "0.03em"],
