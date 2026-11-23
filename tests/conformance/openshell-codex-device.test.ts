@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { CredentialSourceContext } from "../../packages/contracts/src/index.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import type {
+  OpenShellGatewayClient,
+  OpenShellProviderProfile,
+  OpenShellProviderResponse,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
@@ -60,7 +69,10 @@ test("Codex device authorization never follows issuer redirects", async (t) => {
           // Native fetch refuses the redirect itself (redirect: "error").
           await assert.rejects(
             pollCodexDeviceAuthorization(state, signal),
-            (error) => error instanceof TypeError && error.cause?.message === "unexpected redirect",
+            (error) =>
+              error instanceof TypeError &&
+              error.cause instanceof Error &&
+              error.cause.message === "unexpected redirect",
           );
         }
       }
@@ -73,18 +85,29 @@ test("Codex device authorization never follows issuer redirects", async (t) => {
   }
 });
 
-function jwt(payload) {
+function jwt(payload: Readonly<Record<string, unknown>>) {
   return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
 }
 
-function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse } = {}) {
-  const providers = new Map();
-  const profiles = new Map();
-  const operations = [];
-  const http = [];
+function fixture(
+  t: TestContext,
+  {
+    invalidIdToken = false,
+    failRotation = false,
+    pollResponse,
+  }: {
+    invalidIdToken?: boolean;
+    failRotation?: boolean;
+    pollResponse?(init: RequestInit): Response;
+  } = {},
+) {
+  const providers = new Map<string, OpenShellProviderResponse>();
+  const profiles = new Map<string, OpenShellProviderProfile & { resourceVersion: string }>();
+  const operations: string[] = [];
+  const http: string[] = [];
   let pending = true;
-  let refreshStatus;
-  const rotationRequests = [];
+  let refreshStatus: string | undefined;
+  const rotationRequests: string[] = [];
   const expirationTime = new Date(Date.now() + 3_600_000).toISOString();
   const identity = {
     "https://api.openai.com/auth": {
@@ -102,47 +125,59 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
       chatgpt_account_user_id: "membership-fixture",
     },
   });
-  t.mock.method(globalThis, "fetch", async (url, init) => {
-    http.push(url);
-    assert.equal(init.method, "POST");
-    switch (url) {
-      case "https://auth.openai.com/api/accounts/deviceauth/usercode":
-        assert.equal(JSON.parse(init.body).client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
-        return Response.json({
-          device_auth_id: "device-fixture",
-          user_code: "USER-CODE",
-          interval: "5",
-        });
-      case "https://auth.openai.com/api/accounts/deviceauth/token":
-        assert.deepEqual(JSON.parse(init.body), {
-          device_auth_id: "device-fixture",
-          user_code: "USER-CODE",
-        });
-        if (pollResponse !== undefined) {
-          return pollResponse(init);
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      assert.ok(typeof url === "string");
+      http.push(url);
+      assert.ok(init);
+      assert.equal(init.method, "POST");
+      switch (url) {
+        case "https://auth.openai.com/api/accounts/deviceauth/usercode":
+          assert.ok(typeof init.body === "string");
+          assert.equal(asRecord(JSON.parse(init.body))?.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
+          return Response.json({
+            device_auth_id: "device-fixture",
+            user_code: "USER-CODE",
+            interval: "5",
+          });
+        case "https://auth.openai.com/api/accounts/deviceauth/token":
+          assert.ok(typeof init.body === "string");
+          assert.deepEqual(JSON.parse(init.body), {
+            device_auth_id: "device-fixture",
+            user_code: "USER-CODE",
+          });
+          if (pollResponse !== undefined) {
+            return pollResponse(init);
+          }
+          return pending
+            ? new Response(null, { status: 403 })
+            : Response.json({
+                authorization_code: "authorization-fixture",
+                code_verifier: "verifier-fixture",
+              });
+        case "https://auth.openai.com/oauth/token": {
+          assert.equal(
+            new Headers(init.headers).get("Content-Type"),
+            "application/x-www-form-urlencoded",
+          );
+          assert.ok(typeof init.body === "string" || init.body instanceof URLSearchParams);
+          const form = new URLSearchParams(init.body);
+          assert.equal(form.get("grant_type"), "authorization_code");
+          assert.equal(form.get("code_verifier"), "verifier-fixture");
+          assert.equal(form.get("redirect_uri"), "https://auth.openai.com/deviceauth/callback");
+          return Response.json({
+            access_token: accessToken,
+            refresh_token: "synthetic-initial-refresh",
+            id_token: invalidIdToken ? "invalid-private-response" : jwt(identity),
+          });
         }
-        return pending
-          ? new Response(null, { status: 403 })
-          : Response.json({
-              authorization_code: "authorization-fixture",
-              code_verifier: "verifier-fixture",
-            });
-      case "https://auth.openai.com/oauth/token": {
-        assert.equal(init.headers["Content-Type"], "application/x-www-form-urlencoded");
-        const form = new URLSearchParams(init.body);
-        assert.equal(form.get("grant_type"), "authorization_code");
-        assert.equal(form.get("code_verifier"), "verifier-fixture");
-        assert.equal(form.get("redirect_uri"), "https://auth.openai.com/deviceauth/callback");
-        return Response.json({
-          access_token: accessToken,
-          refresh_token: "synthetic-initial-refresh",
-          id_token: invalidIdToken ? "invalid-private-response" : jwt(identity),
-        });
+        default:
+          assert.fail("unexpected provider URL");
       }
-      default:
-        assert.fail("unexpected provider URL");
-    }
-  });
+    },
+  );
   // Simulate only OpenShell storage/RPC responses. The Driver performs the real device
   // response parsing, source ownership checks, handoff sequencing, and attachment projection.
   const client = {
@@ -150,10 +185,12 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
       return profiles.get(id);
     },
     async importProviderProfile(_workspace, profile) {
-      profiles.set(profile.id, profile);
+      profiles.set(profile.id, { ...profile, resourceVersion: "1" });
     },
     async createProvider(input) {
-      providers.set(input.name, { ...input, config: {}, resourceVersion: "1" });
+      const provider = { ...input, config: {}, resourceVersion: "1" };
+      providers.set(input.name, provider);
+      return provider;
     },
     async getProvider(_workspace, name) {
       return providers.get(name);
@@ -175,7 +212,9 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
     },
     async updateProviderConfig(_workspace, name, config) {
       operations.push("store-metadata");
-      const updated = { ...providers.get(name), config };
+      const provider = providers.get(name);
+      assert.ok(provider);
+      const updated = { ...provider, config };
       providers.set(name, updated);
       return updated;
     },
@@ -195,31 +234,50 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
       operations.push("read-usable");
       return { value: "synthetic-rotated-access", expirationTime };
     },
-  };
-  const backend = {
-    drivers: {
-      credential_gateway: "credential-gateway-openshell",
-      credential_refresh: "credential-refresh-openshell",
+  } satisfies Partial<OpenShellGatewayClient>;
+  const backend = createOpenShellBackend(
+    {
+      id: "openshell",
+      type: "openshell",
+      // A literal loopback endpoint has no named Kubernetes placement.
+      configuration: { endpoint: "http://127.0.0.1:1" },
+      drivers: {
+        sandbox: "sandbox-openshell",
+        credential_gateway: "credential-gateway-openshell",
+        credential_refresh: "credential-refresh-openshell",
+      },
     },
-    client: {
-      clientForNamespace: () => client,
-      credentialClientForNamespace: () => client,
-      // The controlled transport models a gateway without a named Kubernetes placement.
-      placement: () => undefined,
-    },
-  };
+    { gatewayClient: completeOpenShellGatewayClient(client) },
+  );
+  t.after(() => backend.client.close());
   const driver = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/local/bin/codex"] },
     { backend },
   );
   const refresh = new OpenShellCredentialRefreshDriver({}, { backend });
-  const namespace = { id: "ns-fixture", name: "oauth-fixture" };
-  const context = (id) => ({
+  const namespace: CredentialSourceContext["namespace"] = {
+    id: "ns-fixture",
+    name: "oauth-fixture",
+    status: "ready",
+    createdAt: "2026-08-18T00:00:00.000Z",
+  };
+  const context = (id: string): CredentialSourceContext => ({
     namespace,
     signal: AbortSignal.timeout(10_000),
-    source: { id, type: "codex-oauth", namespaceId: namespace.id, driverId: driver.id, config: {} },
+    source: {
+      id,
+      type: "codex-oauth",
+      namespaceId: namespace.id,
+      driverId: driver.id,
+      config: {},
+      name: id,
+      ownerCapability: "credential_gateway",
+      secrets: {},
+      state: "ready",
+      createdAt: namespace.createdAt,
+    },
   });
-  const register = async (id) => {
+  const register = async (id: string) => {
     const current = context(id);
     await driver.registerSource(current, { type: "codex-oauth", config: {}, secrets: {} });
     return current;
@@ -240,7 +298,7 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
     allowRotation: () => {
       failRotation = false;
     },
-    setRefreshStatus: (value) => {
+    setRefreshStatus: (value: string | undefined) => {
       refreshStatus = value;
     },
   };
@@ -254,7 +312,9 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
   // source's endpoint/binary policy must leave the other's policy intact.
   const registered = [...f.providers.values()];
   assert.equal(registered.length, 2);
-  assert.notEqual(registered[0].type, registered[1].type);
+  const [first, second] = registered;
+  assert.ok(first && second);
+  assert.notEqual(first.type, second.type);
   for (const provider of registered) {
     assert.equal(provider.type, provider.name);
     assert.equal(f.profiles.get(provider.type)?.id, provider.name);
@@ -280,6 +340,21 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
   const [attachment] = await f.driver.attachForRevision({
     namespace: owner.namespace,
     revision: {
+      id: "revision-fixture",
+      namespaceId: owner.namespace.id,
+      agentId: "agent-fixture",
+      revision: 1,
+      backendId: "openshell",
+      executionAdmission: { version: 2, mode: "unprotected" },
+      configurationId: "configuration-fixture",
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: {},
+      gatewayManagedMode: true,
+      harnessAuth: { method: "runtime" },
+      compute: { id: "compute-fixture", implementation: "kubernetes" },
+      servicePrincipalId: "service-principal-fixture",
+      createdAt: owner.namespace.createdAt,
       harness: {
         id: "codex",
         version: "1.0.0",
@@ -291,6 +366,7 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
     sources: [owner.source],
     signal: owner.signal,
   });
+  assert.ok(attachment);
   assert.deepEqual(attachment.externalChatgptAuth, {
     accessTokenPlaceholder: "openshell:resolve:env:CODEX_ACCESS_TOKEN",
     accountId: "account-fixture",

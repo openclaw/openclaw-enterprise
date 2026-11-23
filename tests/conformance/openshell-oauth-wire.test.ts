@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type {
+  CredentialSourceToken,
+  OpenShellBackendConfiguration,
+} from "../../packages/contracts/src/index.ts";
+import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { bindOpenShellPluginSourceReader } from "../../apps/controller/src/composition/openshell-plugin-source-reader.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -14,13 +18,50 @@ import {
 import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const grpc = require("@grpc/grpc-js");
-const loader = require("@grpc/proto-loader");
+type WireTime = { seconds?: string; nanos?: number };
+type ScopedRequest = { workspace_scope?: { workspace?: string } };
+type CredentialRequest = ScopedRequest & { provider?: string; credential_key?: string };
+type ConfigureRequest = CredentialRequest & {
+  strategy?: string;
+  material?: Record<string, string>;
+  expiration_time?: WireTime;
+};
+type RefreshStatus = {
+  provider?: string;
+  credential_key?: string;
+  status?: string;
+  expiration_time?: WireTime;
+};
+type CredentialValues = Record<string, { value?: string; expiration_time?: WireTime }>;
+type WireMethods = {
+  ConfigureProviderRefresh: [ConfigureRequest, { status?: RefreshStatus }];
+  RotateProviderCredential: [CredentialRequest, { status?: RefreshStatus }];
+  GetProviderRefreshStatus: [CredentialRequest, { credentials?: RefreshStatus[] }];
+  GetProvider: [
+    ScopedRequest & { name?: string },
+    {
+      provider?: {
+        type?: string;
+        metadata?: { name?: string; resource_version?: string; labels?: Record<string, string> };
+        config?: Record<string, string>;
+      };
+    },
+  ];
+  GetProviderCredentials: [
+    ScopedRequest & { name?: string; credential_keys?: string[] },
+    {
+      credentials?: CredentialValues;
+    },
+  ];
+};
+// The independent proto fixture omits absent fields and decodes uint64 values as strings.
+type WireHandlers = {
+  [M in keyof WireMethods]: Grpc.handleUnaryCall<WireMethods[M][0], WireMethods[M][1]>;
+};
 
 // Real TLS proves client identity and header separation; the RPC bodies below are
 // controlled protocol fixtures, not proof of OpenShell's refresh implementation.
-async function wireCertificates(t) {
+async function wireCertificates(t: TestContext) {
   const directory = await temporaryDirectory(t, "openshell-oauth-wire-");
   const ca = await certificateAuthority(directory, { caName: "OpenShell wire test CA", days: 1 });
   const server = await signedLeaf(directory, ca, {
@@ -61,7 +102,9 @@ test(
   async (t) => {
     const certificates = await wireCertificates(t);
     await writeFile(certificates.bearerPath, "synthetic-bearer");
-    const assertBearer = (call) => {
+    const assertBearer = (
+      call: Pick<Grpc.ServerUnaryCall<unknown, unknown>, "metadata" | "getAuthContext">,
+    ) => {
       assert.deepEqual(call.metadata.get("authorization"), ["Bearer synthetic-bearer"]);
       assert.equal(call.getAuthContext().sslPeerCertificate, undefined);
     };
@@ -75,7 +118,7 @@ test(
         oneofs: true,
       },
     );
-    const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+    const service = openShellService(grpc.loadPackageDefinition(proto));
     const workspace = "oauth-poc";
     const sourceId = "source-fixture";
     const provider = openShellProviderName(sourceId);
@@ -84,12 +127,12 @@ test(
     const expiryWire = { seconds: String(Math.floor(expiry.getTime() / 1000)), nanos: 0 };
     let current = "synthetic-access-first";
     let denyRead = false;
-    let readResponse;
+    let readResponse: CredentialValues | undefined;
     let pendingRead = false;
-    const received = Promise.withResolvers();
-    const cancelled = Promise.withResolvers();
+    const received = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
     let rotations = 0;
-    const requests = [];
+    const requests: ConfigureRequest[] = [];
     const status = {
       provider,
       credential_key: key,
@@ -97,7 +140,7 @@ test(
       expiration_time: expiryWire,
     };
     const server = new grpc.Server();
-    server.addService(OpenShell.service, {
+    const handlers: WireHandlers = {
       ConfigureProviderRefresh(call, callback) {
         assertBearer(call);
         requests.push(call.request);
@@ -105,7 +148,7 @@ test(
       },
       RotateProviderCredential(call, callback) {
         assertBearer(call);
-        assert.equal(call.request.workspace_scope.workspace, workspace);
+        assert.equal(call.request.workspace_scope?.workspace, workspace);
         assert.equal(call.request.provider, provider);
         assert.equal(call.request.credential_key, key);
         rotations++;
@@ -118,7 +161,7 @@ test(
       },
       GetProvider(call, callback) {
         assertBearer(call);
-        assert.equal(call.request.workspace_scope.workspace, workspace);
+        assert.equal(call.request.workspace_scope?.workspace, workspace);
         callback(null, {
           provider: {
             type: provider,
@@ -163,8 +206,9 @@ test(
           });
         }
       },
-    });
-    const port = await new Promise((resolve, reject) =>
+    };
+    server.addService(service, handlers);
+    const port = await new Promise<number>((resolve, reject) =>
       server.bindAsync("127.0.0.1:0", certificates.serverCredentials, (error, value) =>
         error ? reject(error) : resolve(value),
       ),
@@ -174,7 +218,7 @@ test(
       auth: { mode: "bearerTokenFile", path: certificates.bearerPath },
       rootCertificatePath: certificates.rootCertificatePath,
       operatorTls: certificates.operatorTls,
-    };
+    } satisfies OpenShellBackendConfiguration;
     const client = new GrpcOpenShellGatewayClient(configuration);
     t.after(() => {
       client.close();
@@ -193,20 +237,22 @@ test(
       },
       signal,
     );
-    assert.equal(requests[0].strategy, "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN");
-    assert.equal(requests[0].workspace_scope.workspace, workspace);
-    assert.equal(requests[0].credential_key, key);
-    assert.equal(requests[0].material.refresh_token, "synthetic-refresh");
-    assert.equal(requests[0].expiration_time.seconds, String(Math.floor(expiry.getTime() / 1000)));
+    const configured = requests[0];
+    assert.ok(configured);
+    assert.equal(configured.strategy, "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN");
+    assert.equal(configured.workspace_scope?.workspace, workspace);
+    assert.equal(configured.credential_key, key);
+    assert.equal(configured.material?.refresh_token, "synthetic-refresh");
+    assert.equal(configured.expiration_time?.seconds, String(Math.floor(expiry.getTime() / 1000)));
     await client.rotateProviderCredential(workspace, provider, key, randomUUID(), signal);
     assert.equal(
-      (await client.getProviderRefreshStatus(workspace, provider, key, signal)).status,
+      (await client.getProviderRefreshStatus(workspace, provider, key, signal))?.status,
       "refreshed",
     );
 
     const backend = createOpenShellBackend({
       id: "openshell",
-      implementation: "openshell",
+      type: "openshell",
       configuration,
       drivers: {
         sandbox: "sandbox",
@@ -229,7 +275,7 @@ test(
     // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
     const ipBackend = createOpenShellBackend({
       id: "openshell-ip",
-      implementation: "openshell",
+      type: "openshell",
       configuration: { ...configuration, endpoint: `https://127.0.0.1:${port}` },
       drivers: {
         sandbox: "sandbox",
@@ -243,9 +289,14 @@ test(
       { backend: ipBackend },
     );
     const ipReader = bindOpenShellPluginSourceReader(ipBackend, ipDriver);
-    const context = {
+    const context: Parameters<typeof reader.withSourceToken>[0] = {
       signal,
-      namespace: { id: "namespace", name: workspace },
+      namespace: {
+        id: "namespace",
+        name: workspace,
+        status: "ready",
+        createdAt: "2026-08-18T00:00:00.000Z",
+      },
       source: {
         id: sourceId,
         namespaceId: "namespace",
@@ -253,14 +304,18 @@ test(
         type: "codex-oauth",
         ownerCapability: "credential_gateway",
         state: "ready",
+        name: "OAuth fixture",
+        config: {},
+        secrets: {},
+        createdAt: "2026-08-18T00:00:00.000Z",
       },
     };
     assert.equal(
       await ipReader.withSourceToken(context, async ({ accessToken }) => accessToken),
       current,
     );
-    const seen = [];
-    const consume = async (token) => {
+    const seen: CredentialSourceToken[] = [];
+    const consume = async (token: CredentialSourceToken) => {
       seen.push(token);
       return "catalog-result";
     };
@@ -273,10 +328,12 @@ test(
       seen.map(({ accessToken }) => accessToken),
       ["synthetic-access-first", "synthetic-access-replacement"],
     );
+    assert.ok(seen[1]);
     assert.equal(seen[1].accountId, "account-fixture");
     assert.equal(rotations, 1, "source reads leave refresh coordination to GetProviderCredentials");
     denyRead = true;
     await assert.rejects(reader.withSourceToken(context, consume), (error) => {
+      assert.ok(error instanceof Error && "grpcStatus" in error);
       assert.equal(error.grpcStatus, grpc.status.PERMISSION_DENIED);
       assert.match(error.message, /GetProviderCredentials failed/);
       assert.equal(error.message.includes("synthetic-private-provider-error"), false);
@@ -285,7 +342,7 @@ test(
     denyRead = false;
     // Fail closed on unexpected selection, unusable values, and malformed declared expiry.
     // These are decoder/adapter checks; this fixture does not simulate gateway refresh decisions.
-    for (const [credentials, error] of [
+    const unusable: readonly (readonly [CredentialValues, RegExp])[] = [
       [{}, /unexpected credential selection/],
       [{ OTHER_TOKEN: { value: "synthetic-unrequested" } }, /unexpected credential selection/],
       [
@@ -299,7 +356,8 @@ test(
         /invalid credential expiration/,
       ],
       [{ [key]: { value: current, expiration_time: { seconds: "1" } } }, /expired/],
-    ]) {
+    ];
+    for (const [credentials, error] of unusable) {
       readResponse = credentials;
       await assert.rejects(reader.withSourceToken(context, consume), error);
     }
@@ -331,7 +389,7 @@ test("OpenShell mutual TLS rejects insecure endpoints and relative identity path
   const options = {
     endpoint: "https://gateway.example.test:443",
     auth: { mode: "mutualTls", certificatePath: "/operator.crt", privateKeyPath: "/operator.key" },
-  };
+  } satisfies ConstructorParameters<typeof GrpcOpenShellGatewayClient>[0];
   for (const endpoint of ["http://gateway.example.test:80", "gateway.example.test:80"]) {
     assert.throws(() => new GrpcOpenShellGatewayClient({ ...options, endpoint }), /HTTPS/);
   }

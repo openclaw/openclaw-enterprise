@@ -93,8 +93,8 @@
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
-    "tests/conformance/openshell-oauth-wire.test.mjs",
-    "tests/conformance/openshell-codex-device.test.mjs",
+    "tests/conformance/openshell-oauth-wire.test.ts",
+    "tests/conformance/openshell-codex-device.test.ts",
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/conformance/strands-box-status.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
@@ -398,10 +398,10 @@
       "path": "tests/conformance/openshell-managed-bootstrap.test.ts"
     },
     {
-      "path": "tests/conformance/openshell-oauth-wire.test.mjs"
+      "path": "tests/conformance/openshell-oauth-wire.test.ts"
     },
     {
-      "path": "tests/conformance/openshell-codex-device.test.mjs"
+      "path": "tests/conformance/openshell-codex-device.test.ts"
     },
     {
       "path": "tests/conformance/openshell-harness-status.test.mjs"
