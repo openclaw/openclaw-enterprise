@@ -23,15 +23,14 @@ command; use this page as its migration inventory.
 - [ ] Check that the candidate can read each Installation `presets.files` path.
       Restore required files. Flag obsolete entries. Ordinary image upgrades
       permit only supported Plugin Driver Installation edits.
-- [ ] For single-cluster discovery, run
-      `kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' get namespaces -l 'openclaw.dev/gateway-namespace,!openclaw.dev/namespace' -L openclaw.dev/gateway-namespace`.
-      Require a complete, successful read. For
-      [split tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),
-      the tenant label is absent and the namespace name matches the storage name
-      derived from a nonempty Gateway label.
 - [ ] With [preprovisioning](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md),
       verify the bound Namespace. Stop here. This profile omits initialization Jobs
       and requires an independently migrated database and bootstrapped Installation.
+- [ ] For single-cluster discovery only, run
+      `kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' get namespaces -l 'openclaw.dev/gateway-namespace,!openclaw.dev/namespace' -L openclaw.dev/gateway-namespace`.
+      Require a complete, successful list. [Plan adoption](../../reference/drivers/kubernetes-compute/split-layout-installations.md)
+      for names matching `oce-gateways-` plus the first 24 hex digits
+      of the nonempty Gateway label’s SHA-256 hash.
 - [ ] Render with live values (`helm template --is-upgrade`) and
       [correct refused values](production-upgrade-recovery.md#correct-values-the-candidate-refuses)
       before maintenance. Preflight rejects missing Preset files and
@@ -274,12 +273,13 @@ and database migrations to retained volumes and local profile state.
    readiness.
 4. Reconcile persisted resources that startup intentionally preserves, including
    same-name Presets. Compare complete objects, not only counts or names.
-5. For ordinary runtime image changes, update selections, reload API and worker,
-   and deploy recorded running Agents through OCC. Skip completed helper actions.
-   Reconcile unknown effects first.
-   Handle authorized broker recovery separately.
-   [One-off upgrades](one-off-upgrades.md) can require redeployment with unchanged
-   runtime images.
+5. Let the runtime upgrade helper deploy recorded running Agents. After interruption, reconcile outcomes,
+   [correct refusals](production-upgrade-recovery.md#correct-a-refused-agent-deployment)
+   and [resume](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade)
+   with original evidence and dispatch journal. [Replace recorded failed revisions](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade)
+   manually only as authorized. Handle broker recovery separately.
+   [Channel transitions](one-off-upgrades.md) can require redeployment
+   with unchanged runtime images.
 6. Reconcile external integrations and cluster-owned supporting services.
 7. Run the acceptance checks below before ending the interruption window.
 
