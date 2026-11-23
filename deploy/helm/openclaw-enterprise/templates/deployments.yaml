@@ -185,11 +185,13 @@ spec:
           projected:
             defaultMode: 288
             sources:
+              {{- if $.Values.repositoryCredentials.appKeySecretName }}
               - secret:
                   name: {{ $.Values.repositoryCredentials.appKeySecretName | quote }}
                   items:
                     - key: {{ $.Values.repositoryCredentials.appKeyKey | quote }}
                       path: private-key.pem
+              {{- end }}
               - secret:
                   name: {{ $.Values.repositoryCredentials.preparedCustodySecretName | quote }}
                   items:
