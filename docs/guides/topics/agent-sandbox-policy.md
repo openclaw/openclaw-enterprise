@@ -147,10 +147,10 @@ for defaults and operator ceiling inputs.
 
 ## Set GitHub access before the first deployment
 
-In **Create Agent → Repository access**, choose **GitHub network policy**.
+In **Create Agent → Repository access**, choose **Per-repository access**.
 OCE recommends this mode when an Installation administrator can read policies
 and the Namespace offers eligible GitHub repositories. If you first deploy with
-**Access profiles**, you need a new Agent to use GitHub network policy.
+**Access profiles**, you need a new Agent to use Per-repository access.
 
 Select repositories by owner/name. Each selection starts at **Contributor** if
 the Installation and Namespace allow writes. Otherwise, it starts at **Read-only**.

@@ -1290,9 +1290,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(await mode.inputValue(), "");
   await repositoryCheckbox(page, app.repository).check();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page
-    .getByText(/Choose GitHub network policy or access profiles before continuing/)
-    .waitFor();
+  await page.getByText(/Choose an access mode before continuing/).waitFor();
   assert.equal(pathRequests(requests, "POST", agents).length, 0);
   await mode.selectOption("profiles");
   await page.getByText(/After deploying with access profiles, you need a new Agent/).waitFor();

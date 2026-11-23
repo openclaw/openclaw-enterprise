@@ -1721,7 +1721,7 @@ export const createAgentProvisioningScenarios = {
       { selector: 'input[data-repository-ref="tooling"]', click: true },
     ],
     description:
-      "With GitHub network policy, application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
+      "With Per-repository access, application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

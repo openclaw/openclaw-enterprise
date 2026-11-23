@@ -273,7 +273,7 @@ export function createRepositoryFields(
     "select",
     { id: "repository-mode", "aria-describedby": "repository-mode-help" },
     element("option", { value: "", disabled: true }, "Choose access mode"),
-    element("option", { value: "scoped" }, "GitHub network policy"),
+    element("option", { value: "scoped" }, "Per-repository access"),
     element("option", { value: "profiles" }, "Access profiles"),
   );
   const scoped = () => mode.value === "scoped";
@@ -542,8 +542,8 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Read-only allows clone and fetch. Contributor adds push. PRs and issues also depend on deployment support, GitHub permissions and API policy."
-      : "GitHub network policy is recommended. Choose Read-only or Contributor per repository. After deploying with access profiles, you need a new Agent to use GitHub network policy.";
+      ? "Read-only allows clone and fetch. Contributors can also push. Opening PRs and creating issues require support in the deployed policy and permission from GitHub."
+      : "We recommend Per-repository access for GitHub. After deploying with access profiles, you need a new Agent to switch.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
       help.hidden = scoped() || needsMode();
@@ -1162,7 +1162,7 @@ export function createRepositoryFields(
       return true;
     }
     if (needsMode()) {
-      validation.textContent = "Choose GitHub network policy or access profiles before continuing.";
+      validation.textContent = "Choose an access mode before continuing.";
       validation.hidden = false;
       mode.focus();
       return false;

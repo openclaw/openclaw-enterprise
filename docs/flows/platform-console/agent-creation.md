@@ -144,7 +144,7 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-[GitHub network policy](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
+[Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
 uses the delegated Installation and Namespace limits from the authorized
 catalog. Only selected repositories receive grants. The API saves the draft
 and grants atomically. Console confirms them before granting
