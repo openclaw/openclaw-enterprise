@@ -1159,10 +1159,9 @@ test("native Proxy isolates and rotates projections of one Source across HTTP co
   assert.equal(retryUpdates.length, 2);
   for (const { provider: value } of retryUpdates) {
     const provider = record(value);
-    assert.deepEqual(
-      [provider.credentials, provider.config],
-      rotations.get(record(provider.metadata).name),
-    );
+    const name = record(provider.metadata).name;
+    assert(typeof name === "string");
+    assert.deepEqual([provider.credentials, provider.config], rotations.get(name));
   }
   const retryStatusReads = f.state.statusReads.slice(observedUpdates);
   assert.deepEqual(
