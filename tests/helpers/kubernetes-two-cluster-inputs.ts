@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
+import { protectedText, registerQaSecret } from "./qa-secrets.ts";
 
 type TwoClusterInputs = Readonly<{
   configuration: Readonly<Record<string, unknown>>;
@@ -14,6 +15,20 @@ export async function readTwoClusterInputs(
   configurationFile: string,
   environment: NodeJS.ProcessEnv,
 ): Promise<TwoClusterInputs> {
+  // Capture and consume every recognized selector before fixture I/O or any
+  // error path can start diagnostics or host child processes.
+  const keyFile = environment.OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE;
+  const openAiKey = environment.OPENAI_API_KEY;
+  const codexToken = environment.CODEX_ACCESS_TOKEN;
+  delete environment.OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE;
+  delete environment.OPENAI_API_KEY;
+  delete environment.CODEX_ACCESS_TOKEN;
+  for (const value of [keyFile, openAiKey, codexToken]) {
+    if (value) {
+      registerQaSecret(value);
+    }
+  }
+
   const input = await readFile(configurationFile, "utf8");
   let value: unknown;
   try {
@@ -53,10 +68,21 @@ export async function readTwoClusterInputs(
     throw new Error("Unsupported harnessAuthMethod.");
   }
   const modelEnvironment = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
-  const modelCredential = environment[modelEnvironment];
+  const sources = [keyFile, openAiKey, codexToken].filter((value) => value !== undefined);
+  if (sources.length > 1) {
+    throw new Error("Select only one two-cluster model credential source.");
+  }
+  if (keyFile !== undefined && authMethod !== "api_key") {
+    throw new Error("The two-cluster model key file requires api_key authentication.");
+  }
+
+  const directCredential = authMethod === "codex_pat" ? codexToken : openAiKey;
+  const modelCredential =
+    keyFile === undefined
+      ? directCredential
+      : await protectedText(keyFile, "two-cluster model credential");
   if (!modelCredential) {
     throw new Error(`The selected real-runtime case requires ${modelEnvironment}.`);
   }
-
   return { configuration, origin, authMethod, modelEnvironment, modelCredential };
 }

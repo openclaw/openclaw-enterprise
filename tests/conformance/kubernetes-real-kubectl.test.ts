@@ -35,6 +35,7 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { readTwoClusterInputs } from "../helpers/kubernetes-two-cluster-inputs.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
@@ -2433,6 +2434,113 @@ test("the inline probe's refused connection passes a deny check", async (t) => {
     quiet,
   );
   assert.deepEqual(denial, { denied: true, code: "ECONNREFUSED" });
+});
+
+test("two-cluster model selection keeps credentials out of host child environments", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-two-cluster-model-");
+  const configurationFile = join(directory, "configuration.json");
+  const credentialFile = join(directory, "model-key");
+  const marker = `model-marker-${createHash("sha256").update(directory).digest("hex").slice(0, 16)}`;
+  await writeFile(configurationFile, JSON.stringify({ apiUrl: "http://127.0.0.1" }), {
+    mode: 0o600,
+  });
+  await writeFile(credentialFile, marker, { mode: 0o600 });
+
+  const childInputs = async (env: NodeJS.ProcessEnv) =>
+    (
+      await execute(
+        process.execPath,
+        [
+          "-e",
+          'process.stdout.write(["OPENAI_API_KEY","CODEX_ACCESS_TOKEN","OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE"].filter((name) => process.env[name] !== undefined).join(","))',
+        ],
+        { env, signal: t.signal },
+      )
+    ).stdout;
+
+  // File selection returns the key to the test without giving host tools its
+  // contents or a file selector from which they can recover it.
+  const fileEnv = { OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE: credentialFile };
+  const fromFile = await readTwoClusterInputs(configurationFile, fileEnv);
+  assert.equal(fromFile.modelCredential, marker);
+  assert.equal(await childInputs(fileEnv), "");
+
+  // Existing direct CI input is consumed before kubectl/docker children start.
+  const directEnv = { OPENAI_API_KEY: marker };
+  assert.equal((await readTwoClusterInputs(configurationFile, directEnv)).modelCredential, marker);
+  assert.equal(await childInputs(directEnv), "");
+
+  const mixedEnv = {
+    OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE: credentialFile,
+    OPENAI_API_KEY: marker,
+    CODEX_ACCESS_TOKEN: `${marker}-alternate`,
+  };
+  await assert.rejects(
+    readTwoClusterInputs(configurationFile, mixedEnv),
+    /Select only one two-cluster model credential source/,
+  );
+  assert.equal(await childInputs(mixedEnv), "");
+
+  // A fixture read can fail before its contents are validated. Credential
+  // variables must already be consumed, and the runner must redact that error.
+  const missingFixture = join(directory, marker);
+  const earlyEnv = { OPENAI_API_KEY: marker };
+  await assert.rejects(readTwoClusterInputs(missingFixture, earlyEnv), { code: "ENOENT" });
+  assert.equal(await childInputs(earlyEnv), "");
+  // The registered real test must redact a downstream error even when the
+  // credential appears in a nested filesystem error rather than an API reply.
+  await writeFile(
+    configurationFile,
+    JSON.stringify({ apiUrl: "http://127.0.0.1", serviceKeyFile: join(directory, marker) }),
+  );
+  const installedTest = fileURLToPath(
+    new URL("../integration/kubernetes-two-cluster-real.test.mjs", import.meta.url),
+  );
+  await assert.rejects(
+    execute(process.execPath, ["--test", installedTest], {
+      env: {
+        OCC_TEST_TWO_CLUSTER_CONFIG: missingFixture,
+        OPENAI_API_KEY: marker,
+      },
+      signal: t.signal,
+    }),
+    (error: unknown) => {
+      expectExecFailure(error);
+      const diagnostic = error.stdout + error.stderr;
+      assert.equal(diagnostic.includes(marker), false);
+      assert.match(diagnostic, /\[REDACTED\]/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    execute(process.execPath, ["--test", installedTest], {
+      env: {
+        OCC_TEST_TWO_CLUSTER_CONFIG: configurationFile,
+        OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE: credentialFile,
+      },
+      signal: t.signal,
+    }),
+    (error: unknown) => {
+      expectExecFailure(error);
+      const diagnostic = error.stdout + error.stderr;
+      assert.equal(diagnostic.includes(marker), false);
+      assert.match(diagnostic, /\[REDACTED\]/);
+      return true;
+    },
+  );
+  await writeFile(
+    configurationFile,
+    JSON.stringify({ apiUrl: "http://127.0.0.1", harnessAuthMethod: "codex_pat" }),
+  );
+  await assert.rejects(
+    readTwoClusterInputs(configurationFile, {
+      OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE: credentialFile,
+    }),
+    /The two-cluster model key file requires api_key authentication/,
+  );
+  const codexEnv = { CODEX_ACCESS_TOKEN: marker };
+  assert.equal((await readTwoClusterInputs(configurationFile, codexEnv)).modelCredential, marker);
+  assert.equal(await childInputs(codexEnv), "");
 });
 
 test(

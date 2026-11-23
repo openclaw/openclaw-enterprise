@@ -1,5 +1,6 @@
 {
-  "requiredEnv": ["OCC_TEST_TWO_CLUSTER_CONFIG", "OPENAI_API_KEY"],
+  "requiredEnv": ["OCC_TEST_TWO_CLUSTER_CONFIG"],
+  "optionalEnv": ["OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE"],
   "files": [
     {
       "path": "tests/integration/kubernetes-two-cluster-real.test.mjs",

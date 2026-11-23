@@ -9,14 +9,25 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
 import { readTwoClusterInputs } from "../helpers/kubernetes-two-cluster-inputs.ts";
+import { redactQaError } from "../helpers/qa-secrets.ts";
 
 const execute = promisify(execFile);
 const configurationFile = process.env.OCC_TEST_TWO_CLUSTER_CONFIG;
 
+const redactFailure =
+  (work) =>
+  async (...args) => {
+    try {
+      return await work(...args);
+    } catch (error) {
+      throw redactQaError(error);
+    }
+  };
+
 test(
   "installed OCE owns Gateway and Harness lifecycles across two real clusters",
   { skip: configurationFile === undefined, timeout: 900_000 },
-  async (t) => {
+  redactFailure(async (t) => {
     // The selected fixture is a complete Helm-installed OCE, with separate API
     // and worker credentials. Neither the controller nor its Drivers are mocked.
     const { configuration, origin, authMethod, modelEnvironment, modelCredential } =
@@ -240,8 +251,8 @@ test(
       forbidden,
     );
     await assert.rejects(
-      executionApiKubectl("get", "secret", "automation-secret-denied"),
-      forbidden,
+      executionApiKubectl("auth", "can-i", "get", "secrets"),
+      (error) => String(error.stdout).trim() === "no",
     );
     await assert.rejects(
       executionApiKubectl("get", "service", "automation-service-denied"),
@@ -338,14 +349,29 @@ test(
       }
     });
 
-    // Inspect only delivery shape; assertion failures never expose credential bytes.
-    const secrets = await dp.resources("secrets", namespaces.execution);
-    const delivered = secrets.filter(
-      (item) => item.metadata.labels?.["openclaw.dev/agent"] === agent.id,
+    // Inspect Pod references, not Secret objects: host kubectl must never
+    // receive model credential bytes, including their base64 representation.
+    const agentContainer = harness.spec.containers.find((container) => container.name === "agent");
+    const modelEntries = agentContainer.env.filter((item) => item.name === modelEnvironment);
+    assert.equal(modelEntries.length, 1);
+    assert.equal(Object.hasOwn(modelEntries[0], "value"), false);
+    assert.equal(modelEntries[0].valueFrom.secretKeyRef.key, modelEnvironment);
+    assert.equal(typeof modelEntries[0].valueFrom.secretKeyRef.name, "string");
+    const projectedKeys = agentContainer.env.flatMap((item) =>
+      item.valueFrom?.secretKeyRef?.key === undefined ? [] : [item.valueFrom.secretKeyRef.key],
     );
-    assert.ok(delivered.some((item) => Object.hasOwn(item.data ?? {}, modelEnvironment)));
-    assert.ok(delivered.every((item) => !Object.hasOwn(item.data ?? {}, "gateway-password")));
-    assert.ok(delivered.every((item) => !Object.hasOwn(item.data ?? {}, "kubeconfig")));
+    assert.ok(!projectedKeys.includes("gateway-password"));
+    assert.ok(!projectedKeys.includes("kubeconfig"));
+    const gatewayPod = (await pods("control", "gateway"))[0];
+    assert.ok(
+      gatewayPod.spec.containers.every((container) =>
+        (container.env ?? []).every(
+          (item) =>
+            item.name !== modelEnvironment &&
+            item.valueFrom?.secretKeyRef?.key !== modelEnvironment,
+        ),
+      ),
+    );
 
     // Delete the exact observed Pod, then prove a new UID reconnects to the same
     // Gateway and serves the retained workspace through the normal OCE API.
@@ -386,13 +412,24 @@ test(
     }
     await deploy();
     assert.equal((await api("GET", workspace)).content, content);
+    const modelDigestProbe =
+      'const value=process.env[process.argv[1]];if(typeof value!=="string")process.exit(1);process.stdout.write(require("node:crypto").createHash("sha256").update(value).digest("hex"))';
     const modelDigest = async (pod) => {
-      const environment = pod.spec.containers.find((container) => container.name === "agent").env;
-      const ref = environment.find((item) => item.name === modelEnvironment).valueFrom.secretKeyRef;
-      const delivery = await dp.resource("secret", ref.name, namespaces.execution);
-      return createHash("sha256")
-        .update(Buffer.from(delivery.data[ref.key], "base64"))
-        .digest("hex");
+      const output = await dp.kubectl(
+        "exec",
+        pod.metadata.name,
+        "-n",
+        namespaces.execution,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        modelDigestProbe,
+        modelEnvironment,
+      );
+      assert.match(output, /^[a-f0-9]{64}$/);
+      return output;
     };
     const digest = (value) => createHash("sha256").update(value).digest("hex");
     const liveHarness = (await pods("execution", "agent")).find(
@@ -642,5 +679,5 @@ test(
     t.diagnostic(
       "Real API/worker: separate placement, workspace RPC, Pod reconnect, stop/resume, credential refresh/rejection, revision replacement, model shell execution, DP outage recovery, and two-target deletion passed.",
     );
-  },
+  }),
 );

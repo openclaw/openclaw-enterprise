@@ -31,7 +31,7 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
   ```
 
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
-- [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
+- [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and one selected model credential. Prefer the protected key-file input for `api_key`. See [two-cluster validation](kubernetes.md#two-cluster-validation).
 - [`openshell-oauth`](../../scripts/ci/test-suites/openshell-oauth.json): requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
 - [`image-pair-qualification`](../../scripts/ci/test-suites/image-pair-qualification.json): requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).
 - [Strands listener replacement](../../scripts/ci/test-suites/strands-listener-replacement.json) requires a disposable, active Strands Agent in a loopback k3d cluster, the standard Helm worker, and an authenticated OCC CLI. The test replaces the Harness Pod, checks that both clients refuse its new certificate, and deploys a fresh revision to restore the Agent.

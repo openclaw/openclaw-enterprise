@@ -478,11 +478,16 @@ Create a private JSON fixture with `apiUrl` (loopback), `serviceKeyFile`,
 `dockerContext` (an explicit local Unix-socket context), `agentConfiguration`
 (the dedicated native Configuration create body), and `control` and `execution`
 objects. Each object needs `kubeconfigPath`, `kubernetesContext`, `release`, and
-`systemNamespace`. Set `harnessAuthMethod` to `api_key` (default) or `codex_pat`;
-provide its credential through `OPENAI_API_KEY` or `CODEX_ACCESS_TOKEN`, not the
-fixture. The pass covers only the selected method.
+`systemNamespace`. Set `harnessAuthMethod` to `api_key` (default) or `codex_pat`.
+For `api_key`, prefer `OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE` pointing to a private
+regular file; `OPENAI_API_KEY` is an alternative. For `codex_pat`, use
+`CODEX_ACCESS_TOKEN`. Select exactly one source; mixed sources are refused. Never
+put credentials in the fixture. The helper removes credential environment variables
+before starting host kubectl or Docker processes. Runtime credential projection
+goes only to the dedicated Agent workload. The pass covers only the selected method.
 
 ```sh
+OCC_TEST_TWO_CLUSTER_OPENAI_KEY_FILE=/private/path/model.key \
 OCC_TEST_TWO_CLUSTER_CONFIG=/private/path/two-cluster.json \
   node --test tests/integration/kubernetes-two-cluster-real.test.mjs
 ```
