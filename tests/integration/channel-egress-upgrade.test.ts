@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { createServer } from "node:http";
 import { request } from "node:https";
@@ -65,9 +65,10 @@ async function fixture(t: TestContext, enabled = true) {
     "--release",
     "oce",
   ];
-  const run = (action: string, extra: string[] = []) =>
+  const run = (action: string, extra: string[] = [], env = process.env) =>
     spawnSync("python3", ["scripts/upgrade-channel-egress", action, ...args, ...extra], {
       encoding: "utf8",
+      env,
     });
   return { directory, values, installation, run };
 }
@@ -176,6 +177,178 @@ test("disabled legacy channels only remove obsolete fields and remain off", asyn
   );
   assert.equal(dependencies.status, 0, dependencies.stderr);
   assert.match(dependencies.stdout, /Channels disabled/);
+});
+
+test("one-off preserves values parsed by filename and validates requested candidates", async (t) => {
+  const f = await fixture(t, false);
+  const input = join(f.directory, "values.properties");
+  const installation = join(f.directory, "installation.yaml");
+  const prepared = join(f.directory, "prepared");
+  // yq reads property values as strings. The channel upgrade must preserve that type.
+  await writeFile(input, "feature: true\n", { mode: 0o600 });
+  const preparation = f.run("prepare", ["--values", input, "--out-dir", prepared]);
+  assert.equal(preparation.status, 0, preparation.stderr);
+  const candidate = await readFile(join(prepared, "values.yaml"), "utf8");
+  assert.deepEqual(JSON.parse(candidate), {
+    feature: "true",
+    channelEgress: { enabled: false },
+  });
+
+  // The production wrapper checks copies with a .yaml.requested suffix.
+  const requestedValues = join(f.directory, "candidate-values.yaml.requested");
+  const requestedInstallation = join(f.directory, "candidate-installation.yaml.requested");
+  await writeFile(requestedValues, candidate, { mode: 0o600 });
+  await writeFile(requestedInstallation, await readFile(join(prepared, "installation.yaml")), {
+    mode: 0o600,
+  });
+  const validation = f.run("validate", [
+    "--before-values",
+    input,
+    "--before-installation",
+    installation,
+    "--values",
+    requestedValues,
+    "--installation",
+    requestedInstallation,
+  ]);
+  assert.equal(validation.status, 0, validation.stderr);
+  assert.equal(validation.stdout, "false\n");
+
+  // A .properties filename must not hide a Helm display header from either command.
+  for (const heading of ["USER-SUPPLIED VALUES", "COMPUTED VALUES"]) {
+    await t.test(heading, async () => {
+      const display = join(f.directory, "display.properties");
+      const refused = join(f.directory, `${heading}-properties-refused`);
+      await writeFile(display, `${heading}: \nfeature: true\n`, { mode: 0o600 });
+      const preparation = f.run("prepare", ["--values", display, "--out-dir", refused]);
+      const validation = f.run("validate", [
+        "--before-values",
+        display,
+        "--before-installation",
+        installation,
+        "--values",
+        requestedValues,
+        "--installation",
+        requestedInstallation,
+      ]);
+      for (const result of [preparation, validation]) {
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, new RegExp(`${heading} display header`));
+        assert.match(result.stderr, /helm get values RELEASE --output yaml/);
+      }
+      await assert.rejects(access(refused), { code: "ENOENT" });
+    });
+  }
+});
+
+test("one-off preparation never uses a values file swapped in after inspection", async (t) => {
+  const f = await fixture(t, false);
+  const input = join(f.directory, "values.yaml");
+  const replacement = join(f.directory, "replacement.yaml");
+  const output = join(f.directory, "prepared");
+  const tools = join(f.directory, "bin");
+  const replacementValues = JSON.stringify({ ...f.values, metrics: { enabled: false } });
+  await writeFile(replacement, replacementValues, { mode: 0o600 });
+  await mkdir(tools);
+  // Replace the path at the first parser invocation, then run the real yq.
+  await writeFile(
+    join(tools, "yq"),
+    `#!/bin/sh
+export PATH="$TEST_YQ_PATH"
+if [ -f "$TEST_YQ_REPLACEMENT" ]; then
+  mv "$TEST_YQ_REPLACEMENT" "$TEST_YQ_INPUT" || exit 1
+fi
+exec yq "$@"
+`,
+    { mode: 0o700 },
+  );
+  const result = f.run("prepare", ["--out-dir", output], {
+    ...process.env,
+    PATH: [tools, process.env.PATH].join(delimiter),
+    TEST_YQ_PATH: process.env.PATH,
+    TEST_YQ_INPUT: input,
+    TEST_YQ_REPLACEMENT: replacement,
+  });
+  assert.equal(await readFile(input, "utf8"), replacementValues);
+  assert.equal(result.status, 0, result.stderr);
+
+  const values = JSON.parse(await readFile(join(output, "values.yaml"), "utf8"));
+  assert.deepEqual(values.metrics, f.values.metrics);
+});
+
+test("one-off requires machine-readable Helm values captures", async (t) => {
+  const f = await fixture(t, false);
+  const input = join(f.directory, "values.yaml");
+  const installation = join(f.directory, "installation.yaml");
+  const prepared = join(f.directory, "prepared");
+  const baseline = "slackProxy:\n  enabled: false\n";
+  await writeFile(input, baseline);
+  const preparation = f.run("prepare", ["--out-dir", prepared]);
+  assert.equal(preparation.status, 0, preparation.stderr);
+  const candidate = join(prepared, "values.yaml");
+  const validate = (before: string, after: string) =>
+    f.run("validate", [
+      "--before-values",
+      before,
+      "--before-installation",
+      installation,
+      "--values",
+      after,
+      "--installation",
+      join(prepared, "installation.yaml"),
+    ]);
+
+  for (const heading of ["USER-SUPPLIED VALUES", "COMPUTED VALUES"]) {
+    await t.test(heading, async () => {
+      const display = join(f.directory, "display.yaml");
+      const refused = join(f.directory, "refused");
+      const recapture = /helm get values RELEASE --output yaml/;
+      // Helm can display a payload with a key that repeats the display heading.
+      // The header must still be rejected on either side of validation.
+      for (const payload of [baseline, `${heading}: keep\n${baseline}`]) {
+        await writeFile(display, `${heading}: \n${payload}`, { mode: 0o600 });
+        for (const result of [
+          f.run("prepare", ["--values", display, "--out-dir", refused]),
+          validate(display, candidate),
+          validate(input, display),
+        ]) {
+          assert.equal(result.status, 1, result.stderr);
+          assert.match(result.stderr, new RegExp(`${heading} display header`));
+          assert.match(result.stderr, recapture);
+          assert.equal(result.stdout, "");
+        }
+        await assert.rejects(access(refused), { code: "ENOENT" });
+      }
+
+      // Helm prints a flow mapping after the header when there are no values.
+      await writeFile(display, `${heading}: \n{}\n`);
+      const empty = f.run("prepare", ["--values", display, "--out-dir", refused]);
+      assert.equal(empty.status, 1, empty.stderr);
+      assert.match(empty.stderr, /yq failed; inspect the selected resource/);
+      assert.match(empty.stderr, recapture);
+      await assert.rejects(access(refused), { code: "ENOENT" });
+
+      for (const [label, entry, expected] of [
+        ["mapping", `${heading}:\n  note: keep`, { note: "keep" }],
+        ["explicit-null", `${heading}: null`, null],
+        ["indented-null", `${heading}:\n  null`, null],
+        ["quoted-key", `"${heading}":`, null],
+        ["preceding-comment", `# operator note\n${heading}:`, null],
+      ] as const) {
+        const output = join(f.directory, `${heading}-${label}`);
+        await writeFile(input, `${entry}\n${baseline}`);
+        const result = f.run("prepare", ["--out-dir", output]);
+        assert.equal(result.status, 0, result.stderr);
+        const saved = JSON.parse(await readFile(join(output, "values.yaml"), "utf8"));
+        assert.equal(Object.hasOwn(saved, heading), true);
+        assert.deepEqual(saved[heading], expected);
+      }
+      await writeFile(input, baseline);
+    });
+  }
+  const validated = validate(input, candidate);
+  assert.equal(validated.status, 0, validated.stderr);
+  assert.equal(validated.stdout, "false\n");
 });
 
 test("one-off preparation refuses wrong release, external proxy, and unprotected input", async (t) => {

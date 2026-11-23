@@ -8,7 +8,10 @@ export const ConnectionTemplatesMobile = story("credentialsTemplateCatalog", {
   frameWidth: "390px",
   frameHeight: "844px",
 });
+export const CreateStaticBearerTemplate = story("credentialsStaticTemplateCreate");
+export const EditStaticBearerTemplate = story("credentialsStaticTemplateEdit");
 export const GoogleOAuthTemplate = story("credentialsGoogleTemplate");
+export const UnconfirmedTemplateSave = story("credentialsUnconfirmedTemplate");
 export const ManualOAuthTemplate = story("credentialsManualTemplate");
 export const ChooseTemplateAvailability = story("credentialsTemplateWithoutNamespace");
 export const ApprovedScopeLimit = story("credentialsApprovedScopeLimit");

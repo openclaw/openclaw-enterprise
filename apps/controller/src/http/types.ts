@@ -7,11 +7,21 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type {
   DeployAgentAuthorization,
+  HarnessResolver,
   OpenClawController,
   RemovedAccessBinding,
   PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
+
+/** Identity and audit fields shared by contract routes and manually registered routes. */
+export interface RequestOperation extends Pick<
+  OccApiRoute,
+  "method" | "iamAction" | "resourceKind" | "authorizationTarget"
+> {
+  readonly operationId: string;
+  readonly action: string;
+}
 
 export interface RequestContext {
   readonly actorId: string;
@@ -19,11 +29,12 @@ export interface RequestContext {
   readonly issuer: string;
   readonly subject: string;
   readonly admissionDecisionId: string;
-  readonly operation: OccApiRoute;
+  readonly operation: RequestOperation;
 }
 
 export type ResourceHandler = (input: {
   readonly controller: OpenClawController;
+  readonly resolveHarness: HarnessResolver;
   readonly context: RequestContext;
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;

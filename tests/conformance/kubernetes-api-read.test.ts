@@ -14,7 +14,7 @@ import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.ts";
 import { isTransientKubectlFailure } from "../helpers/kubernetes-real.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const resource = (name: string, kind: string, namespaced: boolean, shortNames?: string[]) => ({
   name,

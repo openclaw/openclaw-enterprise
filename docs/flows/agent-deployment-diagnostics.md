@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-14
-last_updated_session: authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260
+updated: 2026-11-20
+last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 ---
 
 # Agent deployment diagnostics flow
@@ -18,7 +18,7 @@ work or select a live version.
 
 - Trigger: `POST /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`.
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
-  `packages/occ/src/index.ts:OpenClawController.diagnoseAgentDeployment`, and
+  `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`, and
   `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`.
 - Assumptions: `deploymentId` is the Agent revision ID of a saved version. The caller needs
   exact Agent `read` and `operate` and Agent revision `read` permissions.
@@ -47,9 +47,9 @@ graph TD
 ### 1. Authorize the exact deployment
 
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares a bodyless POST.
-`apps/controller/src/index.ts:requiredPermissions` requires exact Agent
+`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents exact Agent
 `operate` and `read` plus Agent revision `read`.
-`packages/occ/src/index.ts:OpenClawController.diagnoseAgentDeployment`
+`packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`
 resolves the version under the supplied Namespace and Agent, authorizes the
 same resources, and selects the Compute Driver recorded in that version.
 
@@ -106,15 +106,14 @@ Driver provisions the Harness. An [OpenShell](../reference/drivers/openshell-san
 Harness listens inside its own Sandbox network namespace. Its `agent` `runtime-status` check is `unknown` with code
 `UNAVAILABLE`. The Gateway can still report a held failure.
 
-Beside Compute's checks, `OpenClawController.diagnoseAgentDeployment` asks the
-version's Sandbox Driver for its record of a dedicated Harness Sandbox
-(`observeHarness`, with a ten-second timeout signal). The result leads the list as an
-`agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
-such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
-version, `failed` with `HARNESS_RESTARTING` while OpenShell restarts a Harness
-process that exited, and `unknown` on a first start (code `STARTING`), when the
-record is unreadable (`UNAVAILABLE`), or when a version that is not selected for the running
-Agent has no Sandbox, such as a stopped Agent's.
+Alongside Compute's checks, `AgentRuntimeObservations.diagnoseAgentDeployment`
+asks the selected Sandbox Driver about a dedicated Harness using a ten-second
+timeout signal. When supported, this observation adds the first `agent`
+`sandbox` check. A running Sandbox reports `succeeded`. A terminal Sandbox
+or a Harness restart reports `failed` with its code, such as `SANDBOX_FAILED`
+or `HARNESS_RESTARTING`. A first start (`STARTING`) or unreadable record
+(`UNAVAILABLE`) reports `unknown`. A missing or deleting Sandbox reports
+failure only for the running Agent's active revision.
 
 ### 3. Return validated evidence
 
@@ -252,6 +251,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-18 03:40: Held `gateway-state-lock` fails as `RUNTIME_STATE_LOCK_UNVERIFIED`. (finding 3348)
 

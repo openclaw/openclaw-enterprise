@@ -1,4 +1,4 @@
-import type { CredentialPolicyReductionState } from "./platform-state.ts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import type { PostgresClient } from "./postgres-state.ts";
 
 /** Public, nonsecret identity of the delivery being reduced. The Driver owns the

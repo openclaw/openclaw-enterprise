@@ -38,6 +38,7 @@ on:
       - scripts/ci/prepare-inputs.ts
       - scripts/ci/warm-image-cache.ts
       - scripts/ci/prepare-command.ts
+      - scripts/ci/command-supervision.ts
       - scripts/ci/image-build-cache.ts
       - scripts/ci/fixture-support-images.ts
       - scripts/ci/k3d-preparation.ts
@@ -50,6 +51,7 @@ on:
       - scripts/migration-catalog.ts
       - scripts/migration-history-preflight.ts
       - scripts/production-healthcheck.ts
+      - scripts/write-inspected-workspace-image-pin.ts
       - tsconfig.base.json
       - tsconfig.json
   # The kept runtime image reaches Blacksmith's shared Docker store only if this

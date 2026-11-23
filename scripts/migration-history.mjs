@@ -129,6 +129,24 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 83 && completedCount > 83) {
     return "preRevisionEgressInstallations";
   }
+  if (count === 84 && completedCount > 84) {
+    return "preStaticTokenServiceSources";
+  }
+  if (count === 85 && completedCount > 85) {
+    return "preTokenServiceSourceOwnership";
+  }
+  if (count === 86 && completedCount > 86) {
+    return "preRepositoryNetworkPolicy";
+  }
+  if (count === 87 && completedCount > 87) {
+    return "preStandaloneCredentialDeployment";
+  }
+  if (count === 88 && completedCount > 88) {
+    return "preStaticConnectionTemplates";
+  }
+  if (count === 89 && completedCount > 89) {
+    return "preNativeGitDelivery";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -304,6 +322,23 @@ export async function migrateWithHistory(
         );
       }
       return history;
+    }
+    // Migration 0086 cannot preserve an unfinished managed registration. Detect it
+    // while the old controller can still reconcile it. Apply repeats the check,
+    // and the migration constraint still guards changes after this read.
+    if (history === "preTokenServiceSourceOwnership") {
+      const { rows } = await client.query(
+        "SELECT 1 FROM occ.credential_sources WHERE token_service_instance_id IS NOT NULL AND state = 'registering' LIMIT 1",
+      );
+      if (rows.length > 0) {
+        throw Object.assign(
+          new Error(
+            "Migration 0086 is blocked by an unfinished TokenService registration. " +
+              "Reconcile the registration with its original owner before retrying the upgrade.",
+          ),
+          { code: "MIGRATION_REGISTRATION_PENDING" },
+        );
+      }
     }
     if (!checkOnly) {
       if (history === "completed") {

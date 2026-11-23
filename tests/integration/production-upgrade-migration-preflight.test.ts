@@ -15,7 +15,7 @@ import {
   productionValues,
   renderProductionChart,
 } from "../helpers/production-chart.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const labels = Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Null()]));
 const container = Type.Object({

@@ -18,11 +18,13 @@ export function registerRuntimeProvenanceCases() {
   for (const scenario of [
     "available",
     "manifest",
+    "index-as-config",
     "missing",
     "invalid",
     "directory",
     "oversized",
     "different-image",
+    "substituted-classic-id",
     "cleanup-failed",
     "invalid-inventory",
     "cleanup-failed-once",
@@ -41,14 +43,19 @@ export function registerRuntimeProvenanceCases() {
         OCC_TEST_KUBERNETES_CODEX_VERSION: "not-reviewed",
       });
       const configId = `sha256:${"b".repeat(64)}`;
-      const imageId = scenario === "manifest" ? `sha256:${"9".repeat(64)}` : configId;
+      const wrongId = `sha256:${"a".repeat(64)}`;
+      const indexedImage = ["manifest", "index-as-config"].includes(scenario);
+      const wrongImport = ["different-image", "substituted-classic-id", "index-as-config"].includes(
+        scenario,
+      );
+      const imageId = indexedImage ? `sha256:${"9".repeat(64)}` : configId;
       const containerId = "d".repeat(64);
       const canary = "private-provenance-must-not-be-uploaded";
       const metadata = {
         commit: "e".repeat(40),
         codex: {
           architecture: "amd64",
-          version: scenario === "manifest" ? "0.164.0-alpha.1+build.2" : "0.164.0",
+          version: indexedImage ? "0.164.0-alpha.1+build.2" : "0.164.0",
           binarySha256: "f".repeat(64),
           config: canary,
         },
@@ -115,7 +122,7 @@ export function registerRuntimeProvenanceCases() {
       let created = 0;
       await interceptFixtureDocker(t, commands, async (args) => {
         if (
-          scenario === "manifest" &&
+          indexedImage &&
           args[0] === "image" &&
           args[1] === "inspect" &&
           args.includes("{{.Id}}")
@@ -125,32 +132,36 @@ export function registerRuntimeProvenanceCases() {
         if (args[0] === "image" && args[1] === "inspect" && args.at(-1) === imageId) {
           // Docker 29 selects a platform manifest from the immutable image index.
           const selected = args.includes("--platform");
+          if (selected && !indexedImage) {
+            // Docker 28.0.4 rejects this flag for image inspect.
+            return "exit 125";
+          }
           const descriptor = selected
             ? { mediaType: "application/vnd.oci.image.manifest.v1+json", digest: manifestDigest }
             : { mediaType: "application/vnd.oci.image.index.v1+json", digest: imageId };
           return `printf '%s' ${bashString(
             JSON.stringify([
               {
-                Id: imageId,
+                Id: scenario === "substituted-classic-id" ? wrongId : imageId,
                 Os: "linux",
                 Architecture: "amd64",
-                ...(scenario === "manifest" ? { Descriptor: descriptor } : {}),
+                ...(indexedImage ? { Descriptor: descriptor } : {}),
               },
             ]),
           )}; exit 0`;
         }
-        if (scenario === "different-image" && args.includes("inspecti")) {
+        if (wrongImport && args.includes("inspecti")) {
           return `printf '%s' ${bashString(
             JSON.stringify({
               status: {
-                id: `sha256:${"a".repeat(64)}`,
+                id: scenario === "index-as-config" ? imageId : wrongId,
                 repoDigests: [args.at(-1)],
                 pinned: true,
               },
             }),
           )}; exit 0`;
         }
-        if (scenario === "manifest" && args.includes("content") && args.at(-1) === manifestDigest) {
+        if (indexedImage && args.includes("content") && args.at(-1) === manifestDigest) {
           return `printf '%s' ${bashString(manifest)}; exit 0`;
         }
         if (args[0] === "create") {
@@ -160,7 +171,7 @@ export function registerRuntimeProvenanceCases() {
             "copy from the immutable image, never its mutable build tag",
           );
           const state = await commands.readState();
-          if (scenario === "manifest") {
+          if (indexedImage) {
             await writeFile(
               `${commands.statePath}.diagnostics.json`,
               JSON.stringify({
@@ -263,11 +274,12 @@ export function registerRuntimeProvenanceCases() {
         cleanupFailure ? /Runtime provenance cleanup failed/ : /limited to reviewed Codex versions/,
       );
       const state = await commands.readState();
+      const available = ["available", "manifest"].includes(scenario);
       const expected = {
         imageId,
         manifestDigest: `sha256:${"c".repeat(64)}`,
-        status: ["available", "manifest"].includes(scenario) ? "available" : "unavailable",
-        ...(["available", "manifest"].includes(scenario)
+        status: available ? "available" : "unavailable",
+        ...(available
           ? {
               platform: "linux/amd64",
               openclawCommit: metadata.commit,
@@ -291,11 +303,7 @@ export function registerRuntimeProvenanceCases() {
       }
       assert.ok(!diagnostics.includes(canary));
       assert.ok(!prepared.stderr.includes(canary));
-      assert.equal(
-        created,
-        scenario === "different-image" ? 0 : 1,
-        "reuse one extraction for the shared image",
-      );
+      assert.equal(created, wrongImport ? 0 : 1, "reuse one extraction for the shared image");
       assert.equal(containerPresent, retainedContainer);
       if (!allowRemoval) {
         const failedCleanup = await commands.cleanup();
