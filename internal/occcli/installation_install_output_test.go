@@ -28,6 +28,7 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			t.Skip("requires " + tool)
 		}
 	}
+	check := installationCheckContainer(installationCheckArg(t))
 	for _, phase := range []struct {
 		name            string
 		failNotice      bool
@@ -186,7 +187,8 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 						}
 						// Match the actual persisted attempt and the supported chart's
 						// install steps, labels, release, name and stable original UID.
-						fmt.Fprintf(w, `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"original-job","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":%q}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`, intent.Attempt)
+						job := fmt.Sprintf(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"original-job","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":%q}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.ts","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs","--require-fresh"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`, intent.Attempt)
+						fmt.Fprint(w, strings.Replace(job, `"initContainers":[`, `"initContainers":[`+check+`,`, 1))
 						return
 					}
 					w.WriteHeader(http.StatusNotFound)
