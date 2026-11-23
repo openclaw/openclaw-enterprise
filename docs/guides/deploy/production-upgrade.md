@@ -128,7 +128,7 @@ git status --short --untracked-files=all
 ```
 
 Require the reviewed HEAD and successful, empty status output. Choose an unused
-evidence path (created with mode `0700`). Set the target once in this shell.
+evidence path (created with mode `0700`). Set the target in this shell.
 
 ```bash
 target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
@@ -179,7 +179,7 @@ Add either or both flags:
 ```
 
 The helper saves private evidence, applies selected images and the preserved
-broker endpoint, then writes to `--values` and, if changed, `--installation`.
+broker endpoint, then writes `--values` and, if changed, `--installation`.
 Installation changes update the mutable Secret or select its staged immutable
 successor and restart OCC with the new checksum. Keep supplied candidates unchanged
 during recovery. Never repeat setup.
