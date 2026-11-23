@@ -27,6 +27,7 @@ export const NoCompatibleTemplate = story("pluginConnectEmpty");
 export const TemplateNeedsOAuthClient = story("pluginConnectNoClient");
 export const ConnectionPermissionDenied = story("pluginConnectDenied");
 export const ConnectionTemplatesLoading = story("pluginConnectLoading");
+export const TemplateChangedBeforeConsent = story("pluginConnectTemplateChanged");
 
 export const NamedSlotAccounts = story("namedSlotAccounts");
 export const AgentDiscoveryOnly = story("agentDiscoveryOnly");

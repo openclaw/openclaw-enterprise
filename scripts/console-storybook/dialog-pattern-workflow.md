@@ -93,3 +93,13 @@ Open **Pages / Create Agent / OpenClaw Plugin Catalog** over HTTPS. Add **Google
 For the admin setup preview, add **Slack** in the same story and choose a connection template. The empty chooser offers **Create connection template** and **Refresh templates**. In **Components / Plugins / Template Needs OAuth Client**, the chooser instead links to the existing **Google OAuth** template. **Components / Plugins / No Compatible Template** shows the message a member sees when an administrator needs to finish setup. The previews simulate template availability. Use the live Console walkthrough to check the separate editor tab and return to the draft.
 
 In **Components / Plugins / Unrestricted Connection Scopes**, select **Support MCP** in **Connect an account**. Both permissions start checked. **Unselect all** clears **messages.write** and keeps the required **messages.read** permission. **Select all** restores the optional scope. Type a scope in **Additional scopes**, then **Cancel** to return to the plugin editor.
+
+## Recover when a connection template changes
+
+Open **Components / Plugins / Template changed before consent**. The first simulated consent attempt returns `409`, and the chooser asks you to refresh the template. Select **Refresh templates**. Confirm that **Workspace OAuth (version 2)** replaces version 1 and shows **gmail.modify**. Review the new permission, then select **Connect account** to see the simulated provider handoff. This fixture does not contact an OAuth provider.
+
+## Preview tools from an Agent-authorized account
+
+Open **Components / Plugins / Preview tools with an Agent-authorized account**. The account cannot be selected for a new binding, but its tool preview is available without editable switches. Previewing does not change the plugin draft.
+
+Open **Components / Plugins / Edit bound tools while previewing another Agent-authorized account**. Confirm that **Search tickets** remains checked for the bound Support account while **View reports** appears in the read-only Reporting account preview. Reload either tool list; both results stay visible, and the draft policy does not change. The inventories and reload responses are simulated.

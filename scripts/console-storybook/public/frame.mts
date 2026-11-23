@@ -123,6 +123,7 @@ if (scenario.component === "plugins") {
   input.rows = 6;
   input.spellcheck = false;
   input.value = scenario.pluginSelections ?? "{}";
+  let changedTemplateAttempted = false;
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
@@ -138,8 +139,12 @@ if (scenario.component === "plugins") {
       },
     }),
     ...(scenario.connectionPreview && {
-      saveHint: "Changes are saved when you choose Save plugin selections.",
+      saveHint:
+        scenario.connectionPreview === "changed"
+          ? "Changes are saved when you create the Agent."
+          : "Changes are saved when you choose Save plugin selections.",
       getSlotConnection: () => ({
+        ...(scenario.connectionPreview === "changed" && { grantOnCreate: true as const }),
         unavailable: () => undefined,
         async list() {
           if (scenario.connectionPreview === "denied") {
@@ -147,6 +152,23 @@ if (scenario.component === "plugins") {
           }
           if (scenario.connectionPreview === "loading") {
             return await new Promise<never>(() => {});
+          }
+          if (scenario.connectionPreview === "changed") {
+            const version = changedTemplateAttempted ? 2 : 1;
+            const scope = changedTemplateAttempted ? "gmail.modify" : "gmail.readonly";
+            return {
+              templates: [
+                {
+                  id: "changing-template",
+                  displayName: `Workspace OAuth (version ${version})`,
+                  version,
+                  mode: "manual",
+                  scopes: [scope],
+                  requiredScopes: [],
+                  offeredScopes: [],
+                },
+              ],
+            };
           }
           if (scenario.connectionPreview === "unregistered") {
             return {
@@ -226,6 +248,10 @@ if (scenario.component === "plugins") {
           };
         },
         async start(_slot, template, selectedScopes) {
+          if (scenario.connectionPreview === "changed" && !changedTemplateAttempted) {
+            changedTemplateAttempted = true;
+            throw Object.assign(new Error("Template changed"), { status: 409 });
+          }
           document.querySelector<HTMLDialogElement>("dialog[open]")?.close();
           const receipt = document.createElement("section");
           receipt.className = "agent-card agent-form";

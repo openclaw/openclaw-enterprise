@@ -46,7 +46,15 @@ const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 
 export type ConnectionPreview =
-  "choose" | "bound" | "empty" | "unregistered" | "denied" | "loading" | "named" | "unrestricted";
+  | "choose"
+  | "bound"
+  | "empty"
+  | "unregistered"
+  | "denied"
+  | "loading"
+  | "named"
+  | "unrestricted"
+  | "changed";
 
 function googleSlotStory(preview: ConnectionPreview) {
   const pluginId = "occ-plugin:google@1.0.0";
@@ -183,6 +191,7 @@ const namedSlotScenario = {
     "Bind an approved saved account to each named slot. The reporting account requires separate provider consent before it can be used for the support server.",
   gap: "The catalog, account grants, and provider handoff are simulated. The Console uses each slot ID once regardless of its delivery aliases.",
 } satisfies PluginScenario;
+const changedTemplateScenario = googleSlotStory("changed");
 
 export const pluginsScenarios = {
   agentDiscoveryOnly: {
@@ -337,6 +346,17 @@ export const pluginsScenarios = {
   pluginConnectNoClient: googleSlotStory("unregistered"),
   pluginConnectDenied: googleSlotStory("denied"),
   pluginConnectLoading: googleSlotStory("loading"),
+  pluginConnectTemplateChanged: {
+    ...changedTemplateScenario,
+    name: "Template changed before consent",
+    description:
+      "Recover when the selected template changes before a new Agent starts consent. Refresh the template and review its updated permissions.",
+    steps: [
+      "Read the template-changed error, then select Refresh templates. The simulated chooser advances to version 2 and shows gmail.modify.",
+      "Select Connect account to see the simulated handoff after reviewing the updated permission.",
+    ],
+    actions: [...changedTemplateScenario.actions, click("Connect account")],
+  },
   pluginsAvailable: {
     group: "Components/Plugins",
     name: "Available catalog",
