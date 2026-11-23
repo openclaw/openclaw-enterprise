@@ -493,7 +493,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     currentTemplate: { ...googleSource.currentTemplate, destinations: googleWorkspaceDestinations },
   };
   await assert.rejects(
-    () => credentials.validate({ [google.id]: googleSelection }, [builtInTemplate]),
+    async () => credentials.validate({ [google.id]: googleSelection }, [builtInTemplate]),
     /Select a ready Google Workspace account/,
     "the built-in broad Template still includes other services whose operations cannot be enforced",
   );
@@ -509,7 +509,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     },
   };
   await assert.rejects(
-    () => credentials.validate({ [google.id]: googleSelection }, [unsafeGroup]),
+    async () => credentials.validate({ [google.id]: googleSelection }, [unsafeGroup]),
     /Select a ready Google Workspace account/,
   );
   // Consent v1 remains tied to Gmail and the provider's actual grant; an admin's current
