@@ -226,7 +226,10 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      if (Object.hasOwn(policy, "scopedRest") && (!selected || policy.scopedRest !== "v1")) {
+      if (
+        Object.hasOwn(policy, "scopedRest") &&
+        (!selected || policy.scopedRest !== "v1" || policy.nativeGit !== "v1")
+      ) {
         return invalid();
       }
       if (

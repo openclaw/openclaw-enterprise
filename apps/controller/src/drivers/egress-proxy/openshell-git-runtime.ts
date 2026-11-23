@@ -29,6 +29,7 @@ import {
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
+import { openShellGitOriginRefusal } from "../sandbox/openshell-git-network-policy.ts";
 import type {
   RepositoryGitDeliveryResolver,
   RepositoryGitDeliveryBinding,
@@ -308,6 +309,9 @@ const RELEASE_INTERVAL_CAP_MS = 60_000;
 /** The store closed the route at this worker's fence: another worker withdrew the revision or
  * expired its access, and the row already says why (finding 2218). */
 class OpenShellGitRouteClosedError extends OpenShellGitRouteError {}
+/** The prepared material is for a GitHub origin the OpenShell Git rules never reach; the worker
+ * log carries the message, which names the origin and the fix. */
+class OpenShellGitOriginRefusedError extends OpenShellGitRouteError {}
 
 export class OpenShellGitRouteBlockedError extends Error {
   readonly reason: OpenShellGitRouteBlockReason;
@@ -467,7 +471,8 @@ export class OpenShellGitRuntime {
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
     const native =
-      revision.executionAdmission?.version === 8 &&
+      revision.executionAdmission?.version === 9 &&
+      revision.executionAdmission.mode === "protected" &&
       revision.egressPlan?.repositoryGitAuthorization === "network-policy";
     if (
       !state ||
@@ -1833,7 +1838,12 @@ export class OpenShellGitRuntime {
 
   /** Closes the route for good and reports why; the entry is a tombstone from here on, in
    * this process and, unless another worker holds the route now, in the store. */
-  private block(entry: Entry, reason: OpenShellGitRouteBlockReason, reported = false): void {
+  private block(
+    entry: Entry,
+    reason: OpenShellGitRouteBlockReason,
+    reported = false,
+    message?: string,
+  ): void {
     if (entry.blocked) {
       return;
     }
@@ -1874,6 +1884,7 @@ export class OpenShellGitRuntime {
       event: "worker.error",
       code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
       reason,
+      ...(message !== undefined && { message }),
       ...this.identity(entry),
     });
   }
@@ -1930,7 +1941,12 @@ export class OpenShellGitRuntime {
     }
     let failure: OpenShellGitObservationFailure | undefined;
     if (error instanceof OpenShellGitRouteError) {
-      this.block(entry, error.reason, error instanceof OpenShellGitRouteClosedError);
+      this.block(
+        entry,
+        error.reason,
+        error instanceof OpenShellGitRouteClosedError,
+        error instanceof OpenShellGitOriginRefusedError ? error.message : undefined,
+      );
       return;
     }
     if (error instanceof OpenShellPreparedGitProviderError) {
@@ -2062,6 +2078,10 @@ export class OpenShellGitRuntime {
         );
       }
       const { binding, repository } = scope;
+      const unsupportedOrigin = openShellGitOriginRefusal(material.apiOrigin);
+      if (unsupportedOrigin) {
+        throw new OpenShellGitOriginRefusedError("material_mismatch", unsupportedOrigin);
+      }
       if (
         !isDeepStrictEqual(scope, entry.authorization) ||
         ("scope" in material
@@ -2079,8 +2099,7 @@ export class OpenShellGitRuntime {
             material.pushRef !== repository.pushRef ||
             material.pullRequestBase !== repository.pullRequestBase) ||
         material.providerInstanceId !== binding.grant.providerInstanceId ||
-        material.grantId !== binding.grant.grantId ||
-        material.apiOrigin !== "https://api.github.com"
+        material.grantId !== binding.grant.grantId
       ) {
         throw new OpenShellGitRouteError(
           "material_mismatch",

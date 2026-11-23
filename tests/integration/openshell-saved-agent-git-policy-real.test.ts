@@ -5,8 +5,12 @@ import { isDeepStrictEqual } from "node:util";
 
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
-import type { AgentDeploymentStatusWire } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  AgentDeploymentStatusWire,
+  AgentReadWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { repositoryCleanupWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { wirePolicy } from "../../apps/controller/src/drivers/egress-proxy/openshell-wire-policy.ts";
 import { assertGitCallbackEndpoint } from "../fixtures/openshell-git-callback-proxy.ts";
 import {
@@ -528,6 +532,27 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
     return { originalIndex, replacementIndex: undefined };
   }
+  // Calibrate and replay once with the rotated credential before downgrading B.
+  const outcomes = await network.checkGitVariants(
+    originalIndex,
+    async ({ method, target, service, path, body }) => {
+      const reply = await guest(original, { kind: "variant", method, path, host: "github.com" }, [
+        ...curl,
+        "--http1.1",
+        "--path-as-is",
+        "--request-target",
+        target,
+        ...(method === "HEAD" ? ["--head"] : ["-X", method]),
+        ...(body === undefined
+          ? []
+          : ["-H", `Content-Type: application/x-${service}-request`, "--data-binary", body]),
+        `https://github.com${target}`,
+      ]);
+      return reply.stdout.toString("utf8");
+    },
+  );
+  await verifyCallbackCount();
+  t.diagnostic(JSON.stringify({ event: "saved-git-acl-variants", outcomes }));
   const successor = await replace(originalIndex);
   const replacement = successor.target;
   const main = "refs/heads/main";
@@ -610,9 +635,16 @@ git -C '${local}' rev-parse HEAD HEAD^`,
   return { originalIndex, replacementIndex };
 }
 
-if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
+// The openshell-saved-agent lane selects "1". To exercise natural expiry instead,
+// use its fixture environment and run this file with node --test and
+// OCC_TEST_OPENSHELL_SAVED_AGENT_ACL=expiry. Both modes own one installation.
+const savedAgentAcl = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL;
+const autonomousExpiry = savedAgentAcl === "expiry";
+if (savedAgentAcl === "1" || autonomousExpiry) {
   test(
-    "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
+    autonomousExpiry
+      ? "OpenShell retires a saved Agent at its finite Git grant deadline"
+      : "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
     { timeout: 45 * 60_000 },
     settleBeforeFixtureTeardown(async (t) => {
       assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
@@ -908,6 +940,9 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
             "GET",
             `${owner.path}/deployments/${deployed.revision.id}`,
           );
+          assert.equal(deployment.deploymentId, deployed.revision.id);
+          assert.equal(deployment.agentId, owner.agentId);
+          assert.equal(deployment.namespaceId, deployed.agent.namespaceId);
           assert.notEqual(deployment.cleanup?.status, "failed");
           const sandbox = await gatewayClient.getSandbox(
             { workspace: owner.workspace, name: deployed.target.sandboxName },
@@ -1129,7 +1164,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       const beforeDeploy = origin.snapshot();
       const beforeDeployGit = network.requests().length;
       network.shortenNextTokenForRenewal();
-      let original = await deployPolicy();
+      const restricted = await deployPolicy();
       const afterDeploy = origin.snapshot();
       const appIssuances =
         (afterDeploy.endpoints["issue:201"] ?? 0) - (beforeDeploy.endpoints["issue:201"] ?? 0);
@@ -1137,7 +1172,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       t.diagnostic(
         JSON.stringify({
           event: "saved-git-acl-startup-origin",
-          revision: savedGitAclIdentity(original.revision.id),
+          revision: savedGitAclIdentity(restricted.revision.id),
           originHttp,
           appIssuances,
         }),
@@ -1150,9 +1185,9 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       );
       assert.equal(await callbacks.read(), nativeCallbackBaseline);
       await retire(permissive.deployed, permissive.provider, permissive.index);
-      const installed = await loadPolicy(original, write, "read-write");
-      deadlines.set(original.target.sandboxId, original.deadlineWallMs);
-      {
+      const installed = await loadPolicy(restricted, write, "read-write");
+      deadlines.set(restricted.target.sandboxId, restricted.deadlineWallMs);
+      const rotate = async (original: IssuedDeployment) => {
         const index = original.credentialIndex;
         const before = origin.snapshot();
         const token = before.tokens.find((candidate) => candidate.index === index);
@@ -1193,11 +1228,12 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
         assert.ok(!next.revoked && next.expires > token.expires);
         assert.deepEqual(next.repositoryIds, token.repositoryIds);
         assert.deepEqual(next.permissions, token.permissions);
+        const rotatedGeneration = await loadPolicy(original, write, "read-write");
         const {
           resourceVersion: updated,
           providerRevision: environment,
           ...rotated
-        } = await loadPolicy(original, write, "read-write");
+        } = rotatedGeneration;
         assert.deepEqual(
           rotated,
           binding,
@@ -1210,7 +1246,6 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
           service: "git-upload-pack",
         });
         assert.deepEqual(old, { status: 401, type: "application/json" });
-        original = { ...original, credentialIndex: next.index };
         assert.equal(await callbacks.read(), nativeCallbackBaseline);
         t.diagnostic(
           JSON.stringify({
@@ -1224,7 +1259,9 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
             oldStatus: old.status,
           }),
         );
-      }
+        return { ...original, credentialIndex: next.index, generation: rotatedGeneration };
+      };
+      const original = await rotate(restricted);
       const startPeer = async () => {
         const independent = fixture.independent;
         assert.ok(independent?.modelSource);
@@ -1368,6 +1405,109 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
         });
       }
       const peer = await startPeer();
+      const finishPeer = async (stage: "after-expiry" | "after-stop") => {
+        await peer.prove(stage);
+        await stop(peer.deployed);
+        await retire(peer.deployed, peer.provider, peer.credentialIndex, {
+          path: peer.deployed.path,
+          workspace: peer.workspace,
+          agentId: peer.deployed.agent.id,
+        });
+        assert.equal(await callbacks.read(), 0);
+      };
+      if (autonomousExpiry) {
+        const deadline = original.deadlineWallMs;
+        assert.ok(
+          deadline < peer.deployed.deadlineWallMs,
+          "The peer must outlive the original grant",
+        );
+        requireTimelyGit(original.target);
+        assert.deepEqual(await loadPolicy(original, write, "read-write"), original.generation);
+        const before = origin.snapshot();
+        const token = before.tokens.find(({ index }) => index === original.credentialIndex);
+        assert.ok(token && !token.revoked && token.expires > deadline);
+        const { allowReplay, requests } = savedGitProbeTools(fixture, exec);
+        await allowReplay(original.target, original.credentialIndex, "b", requests[0]);
+        assert.equal(await callbacks.read(), nativeCallbackBaseline);
+        requireTimelyGit(original.target);
+
+        // Only the Worker's finite deadline may initiate the original revision's retirement.
+        await observeUntil(
+          "the admitted Git deadline",
+          t.signal,
+          async () => (Date.now() >= deadline ? true : undefined),
+          deadline - Date.now() + 10_000,
+        );
+        const workId = repositoryCleanupWorkKey(original.revision.id, "expiry");
+        await observeUntil("the exact Worker Git expiry completion", t.signal, async () => {
+          const logs: string = await fixture.kube([
+            "logs",
+            "deployment/openclaw-enterprise-worker",
+            "-n",
+            fixture.platform,
+            "-c",
+            "worker",
+            "--tail=2000",
+            "--timestamps=true",
+          ]);
+          const completed = logs.split("\n").some((line) => {
+            try {
+              const separator = line.indexOf(" ");
+              const observedAt = Date.parse(line.slice(0, separator));
+              const event = asRecord(JSON.parse(line.slice(separator + 1)));
+              return (
+                observedAt >= deadline &&
+                event?.event === "worker.completed" &&
+                event.workId === workId &&
+                event.namespaceId === fixture.namespace.id &&
+                event.agentId === agent.id &&
+                event.revisionId === original.revision.id &&
+                event.code === "REPOSITORY_RUNTIME_RETIREMENT_QUEUED" &&
+                event.outcome === "success"
+              );
+            } catch {
+              // Ignore non-JSON startup lines without disclosing their contents.
+              return false;
+            }
+          });
+          return completed ? true : undefined;
+        });
+        await retire(original, installed.provider, original.credentialIndex);
+        const current: AgentReadWire = await request("GET", path);
+        assert.equal(current.id, agent.id);
+        assert.equal(current.namespaceId, fixture.namespace.id);
+        assert.equal(current.status, "active");
+        assert.equal(current.desiredRuntimeState, "running");
+        assert.equal(current.activeRevisionId, undefined);
+        assert.ok(
+          Date.now() < token.expires,
+          "The credential issuer deadline must still be in the future",
+        );
+        const after = origin.snapshot();
+        assert.equal(after.issued, before.issued);
+        // Only the pre-expiry Git read, issuer DELETE and direct revoked-token probe.
+        assert.equal(after.requests - before.requests, 3);
+        assert.deepEqual(after.endpoints, {
+          ...before.endpoints,
+          "upload-advertise:200": (before.endpoints["upload-advertise:200"] ?? 0) + 1,
+          "revoke:204": (before.endpoints["revoke:204"] ?? 0) + 1,
+          "upload-advertise:401": (before.endpoints["upload-advertise:401"] ?? 0) + 1,
+        });
+        assert.equal(await callbacks.read(), nativeCallbackBaseline);
+        await finishPeer("after-expiry");
+        assert.equal(origin.snapshot().issued, before.issued);
+        t.diagnostic(
+          JSON.stringify({
+            event: "saved-git-acl-expired",
+            revision: savedGitAclIdentity(original.revision.id),
+            work: savedGitAclIdentity(workId),
+            deadline,
+            code: "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+            originHttp: after.requests - before.requests,
+          }),
+        );
+        return;
+      }
       let successor: Deployed | undefined;
       let successorProvider: string | undefined;
       const { originalIndex, replacementIndex } = await exerciseSavedGitAcl(
@@ -1486,14 +1626,7 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
         5_000,
       );
       assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
-      await peer.prove("after-stop");
-      await stop(peer.deployed);
-      await retire(peer.deployed, peer.provider, peer.credentialIndex, {
-        path: peer.deployed.path,
-        workspace: peer.workspace,
-        agentId: peer.deployed.agent.id,
-      });
-      assert.equal(await callbacks.read(), 0);
+      await finishPeer("after-stop");
       t.diagnostic(
         "Saved Git ACL clear persisted; deploy refused deny-all and explicit Stop retired both generations",
       );

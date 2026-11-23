@@ -188,7 +188,7 @@ function provisioningFailureMessage(code: string, error: unknown): string {
 type RunEffect = NonNullable<AgentProvisioningWorkerOptions["runEffect"]>;
 
 interface ProvisioningWorkerDependencies {
-  readonly installationId: () => string;
+  readonly installationId: string;
   readonly now: () => Date;
   readonly timestamp: () => string;
   readonly nextId: (kind: "configuration" | "agent") => string;
@@ -319,33 +319,37 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           progress: {},
         });
       }
-      const revision = await transactions.transact(async (state) => {
-        const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
-        if (
-          current === undefined ||
-          current.status === "cancelled" ||
-          current.status === "failed" ||
-          current.agentId === undefined
-        ) {
-          throw new ResourceStateConflictError(
-            "The Agent provisioning lifecycle changed before handoff.",
+      // Deployment admission reads current authority after waiting for its locks.
+      const revision = await transactions.transact(
+        async (state) => {
+          const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
+          if (
+            current === undefined ||
+            current.status === "cancelled" ||
+            current.status === "failed" ||
+            current.agentId === undefined
+          ) {
+            throw new ResourceStateConflictError(
+              "The Agent provisioning lifecycle changed before handoff.",
+            );
+          }
+          await fenceAgentProvisioning(state, claim);
+          const revision = await handoffClaim.run(claim, () =>
+            dependencies.deploy(
+              current.actorId,
+              { namespaceId: current.namespaceId, agentId: current.agentId! },
+              resolveHarness,
+            ),
           );
-        }
-        await fenceAgentProvisioning(state, claim);
-        const revision = await handoffClaim.run(claim, () =>
-          dependencies.deploy(
-            current.actorId,
-            { namespaceId: current.namespaceId, agentId: current.agentId! },
-            resolveHarness,
-          ),
-        );
-        await commitProvisioningCheckpoint(state, claim, {
-          completedPhase: "handoff",
-          status: "running",
-          revisionId: revision.id,
-        });
-        return revision;
-      });
+          await commitProvisioningCheckpoint(state, claim, {
+            completedPhase: "handoff",
+            status: "running",
+            revisionId: revision.id,
+          });
+          return revision;
+        },
+        { readCommitted: true },
+      );
       return await observeProvisioningDeployment(claim, {
         ...record,
         completedPhase: "handoff",
@@ -465,7 +469,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       );
       await state.audit.append({
         id: `aud_${crypto.randomUUID()}`,
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId: current.namespaceId,
         occurredAt: dependencies.timestamp(),
         kind: authorizationDenied ? "authorization_denial" : "mutation",
@@ -555,7 +559,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       if (!pending) {
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
-          installationId: dependencies.installationId(),
+          installationId: dependencies.installationId,
           namespaceId: record.namespaceId,
           occurredAt: dependencies.timestamp(),
           kind: "mutation",
@@ -592,7 +596,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     const record = await state.provisioning.checkpoint(claim, checkpoint);
     await state.audit.append({
       id: `aud_${crypto.randomUUID()}`,
-      installationId: dependencies.installationId(),
+      installationId: dependencies.installationId,
       namespaceId: record.namespaceId,
       occurredAt: dependencies.timestamp(),
       kind: "mutation",

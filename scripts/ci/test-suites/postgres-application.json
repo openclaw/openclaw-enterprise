@@ -52,6 +52,8 @@
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
         "a restarted worker refuses explicit deny-all before preparing an ordinary revision",
         "a queued scoped deployment cannot replace an unscoped revision",
+        "an IAM change committed during the lock wait prevents Compute binding",
+        "an IAM change committed during the lock wait prevents exclusive predecessor stop",
         "a current claim refuses revoked policy authority before repository credential preparation",
         "a current claim refuses revoked policy authority before repository credential preparation after binding",
         "a current claim refuses revoked policy authority before binding",
@@ -136,6 +138,8 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
+        "standalone activation commits the prepared revision and delivers an active Source PATCH",
+        "standalone activation refuses a source grant removed during preparation",
         "credential withdrawal work revokes from the active revision without redeploying it",
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
         "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",

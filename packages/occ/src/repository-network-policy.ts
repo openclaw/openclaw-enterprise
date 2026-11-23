@@ -31,7 +31,11 @@ import {
   type ConfigurationOwnership,
 } from "./deployment-policy.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
-import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
+import {
+  DependencyUnavailableError,
+  RepositoryPolicyDeploymentConflict,
+  ResourceStateConflictError,
+} from "./errors.ts";
 
 export type RepositoryGrantPolicy = {
   repositoryNetworkPolicyAllows?(input: {
@@ -438,8 +442,6 @@ export function hasOnlyScopedRepositoryRevisions(
 
 export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
   if (!hasOnlyScopedRepositoryRevisions(history)) {
-    throw new ResourceStateConflictError(
-      "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
-    );
+    throw new RepositoryPolicyDeploymentConflict("unscoped_history");
   }
 }

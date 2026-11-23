@@ -14,13 +14,22 @@ import type {
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
+/** Identity and audit fields shared by contract routes and manually registered routes. */
+export interface RequestOperation extends Pick<
+  OccApiRoute,
+  "method" | "iamAction" | "resourceKind" | "authorizationTarget"
+> {
+  readonly operationId: string;
+  readonly action: string;
+}
+
 export interface RequestContext {
   readonly actorId: string;
   readonly sessionId?: string;
   readonly issuer: string;
   readonly subject: string;
   readonly admissionDecisionId: string;
-  readonly operation: OccApiRoute;
+  readonly operation: RequestOperation;
 }
 
 export type ResourceHandler = (input: {

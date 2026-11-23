@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  ConfigurationValidationError,
+  type CredentialProxyDriver,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
@@ -82,6 +85,14 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const createdAt = new Date().toISOString();
   const installation = { id: `ins_${randomUUID()}`, name: "TokenService startup", createdAt };
   await state.transact((unit) => unit.installations.createInstallation(installation));
+  let deliveredCredential: string | undefined;
+  let initialDrivers: Awaited<ReturnType<typeof loadInstallationFile>>;
+  const notify: NonNullable<CredentialProxyDriver["notifyCredentialUpdated"]> = async (
+    _notification,
+    resolveCredential,
+  ) => {
+    deliveredCredential = (await resolveCredential()).credential;
+  };
 
   async function start(secretId: string) {
     const base = createCredentialProxyInstallationConfiguration();
@@ -95,6 +106,14 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     assert.ok(drivers.secretDriver instanceof KubernetesSecretDriver);
     // Substitute only the Core API transport; ownership checks remain in the real Driver.
     Reflect.set(drivers.secretDriver, "client", Promise.resolve(core));
+    const proxy = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+    assert.ok(proxy);
+    if (initialDrivers === undefined) {
+      initialDrivers = drivers;
+    }
+    // Control only the delivery boundary; production composition must bind this registered Proxy
+    // before the controller has selected its Sandbox or delivery capability.
+    assert.equal(Reflect.set(proxy, "notifyCredentialUpdated", notify), true);
     const controller = new OpenClawController(installation, { state });
     await installTokenServiceDriver(controller, drivers, state);
     return controller;
@@ -102,6 +121,11 @@ test("TokenService startup keeps marker ownership with the selected private Secr
 
   const initial = await start("secret-a");
   const initialInstance = initial.currentTokenServiceInstanceId();
+  // An API restart can reuse the same loaded native registration and replace its resolver.
+  assert.ok(initialDrivers);
+  const restartedApi = new OpenClawController(installation, { state });
+  await installTokenServiceDriver(restartedApi, initialDrivers, state);
+  assert.equal(restartedApi.currentTokenServiceInstanceId(), initialInstance);
   assert.equal((await start("secret-a")).currentTokenServiceInstanceId(), initialInstance);
   assert.equal(core.secrets.size, 1);
 
@@ -128,13 +152,21 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     },
     AbortSignal.timeout(5_000),
   );
-  // A new private owner can establish its own marker, but live source custody
-  // still prevents selecting a replacement TokenService instance.
-  await assert.rejects(start("secret-b"), /still has registrations/);
   const sourceInstance = {
     sourceRef: { kind: "credential_source" as const, namespaceId, id: source.id },
     tokenServiceInstanceId: initialInstance,
   };
+  const refreshedCredential = randomUUID();
+  await owner.updateSource(
+    sourceInstance,
+    { secret: { credential: refreshedCredential } },
+    AbortSignal.timeout(5_000),
+  );
+  assert.equal(deliveredCredential, refreshedCredential);
+
+  // A new private owner can establish its own marker, but live source custody
+  // still prevents selecting a replacement TokenService instance.
+  await assert.rejects(start("secret-b"), /still has registrations/);
   await state.transact(({ credentialSources }) =>
     credentialSources.markCredentialSourceDeleting(namespaceId, source.id),
   );

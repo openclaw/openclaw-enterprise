@@ -5,6 +5,7 @@ import type {
   SandboxPolicy,
   SandboxFacet,
 } from "@openclaw-enterprise/contracts";
+import type { PlatformUnitOfWork } from "@openclaw-enterprise/occ";
 import type { ResourceHandlers } from "./types.ts";
 
 const recommendationLimiter = new RuntimeLogLimiter();
@@ -137,7 +138,7 @@ export const sandboxPolicyHandlers = {
   }) {
     const repositoryNetworkPolicy = body!.repositoryNetworkPolicy as
       readonly RepositoryNetworkGrant[] | undefined;
-    const policy = await controller.transact(async (unit) => {
+    const save = async (unit: PlatformUnitOfWork) => {
       const updated = await controller.updateAgentSandboxPolicy(
         context.actorId,
         namespaceId,
@@ -162,6 +163,10 @@ export const sandboxPolicyHandlers = {
         ),
       );
       return updated;
+    };
+    // The save and its audit share this transaction, including the IAM lock wait.
+    const policy = await controller.transact(save, {
+      readCommitted: repositoryNetworkPolicy !== undefined,
     });
     // An additions-only writer may lack permission to read the saved repository grants.
     reply.send({

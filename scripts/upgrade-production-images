@@ -1746,6 +1746,10 @@ check_separate_migration_preconditions() {
   fi
 }
 
+migration_mode() {
+  node scripts/upgrade-startup-preflight.ts migration-mode "$1" "$release"
+}
+
 # Before any writer stops, start the selected controller image on the candidate
 # Installation the way the API and worker start: the rendered chart's env, mounts
 # and service account, with the candidate Installation in a temporary Secret.
@@ -1754,10 +1758,10 @@ check_separate_migration_preconditions() {
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local preflight_action=${1:-job} attempt=. writer_qualifier=''
+  local preflight_action=${1:-job} expected_migration=${2:-} attempt=. writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
-  local suffix secret delete_options upgrade_migration
+  local suffix secret delete_options
   local drafts='' channel_targets='' drafts_flag=none drafts_status=0 guarded_migration_id=''
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ "$preflight_action" == job && -s "${agent_drafts:-}" ]]; then
@@ -1780,7 +1784,10 @@ preflight_startup() {
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no ${writer_qualifier}OCC writer was stopped."
-  upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
+  upgrade_migration=$(migration_mode "$evidence_dir/preflight-rendered.jsonl") ||
+    die "cannot identify the rendered upgrade migration mode; no ${writer_qualifier}OCC writer was stopped."
+  [[ -z "$expected_migration" || "$upgrade_migration" == "$expected_migration" ]] ||
+    die "the Helm retry render changed the submitted migration mode. Preserve the original evidence and reconcile before retrying."
   if [[ "$upgrade_migration" == separate ]]; then
     check_separate_migration_preconditions "$writer_qualifier"
     guarded_migration_id=$installation_id
@@ -1843,7 +1850,7 @@ preflight_resume() {
   preflight_children=()
   preflight_consumer_unknown=0
   jq -n --arg id "$installation_id" '{id: $id, name: ""}' >"$evidence_dir/installation.json"
-  preflight_startup identity-job
+  preflight_startup identity-job "${1:-}"
 }
 
 validate_controller_compatibility() {
@@ -2351,24 +2358,25 @@ run_migration_stage() {
 
 apply_database_migration() {
   local secret_names
-  [[ $(yq -er '.database.upgradeMigration // "hook"' "$candidate_values") == separate ]] ||
-    die "migration apply requires a prepared separate database deployment."
   [[ ! -e "$evidence_dir/helm-started" && ! -L "$evidence_dir/helm-started" ]] ||
     die "Helm submission was already recorded; use upgrade recovery with the original evidence."
+  local rendered_json="$evidence_dir/migration-rendered.jsonl"
+  yq -p=yaml -o=json -I=0 '.' "$rendered" >"$rendered_json" ||
+    die "cannot read the rendered chart for migration apply."
+  [[ $(migration_mode "$rendered_json") == separate ]] ||
+    die "migration apply requires a prepared separate database deployment."
   require_private_file "$evidence_dir/database-migration-handoff.json"
   require_immutable_image "prepared controller" "$selected_controller"
   rendered_helm_hooks "$evidence_dir/before-helm-status.json" >"$evidence_dir/migration-installed-hooks.jsonl" ||
     die "cannot read the original deployed Helm revision's initialization hook."
-  yq -p=yaml -o=json -I=0 '.' "$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml" \
-    >"$evidence_dir/migration-rendered.jsonl"
   secret_names=$(node scripts/upgrade-startup-preflight.ts migration-database \
-    "$evidence_dir/migration-installed-hooks.jsonl" "$evidence_dir/migration-rendered.jsonl" "$release" "$namespace") ||
+    "$evidence_dir/migration-installed-hooks.jsonl" "$rendered_json" "$release" "$namespace") ||
     die "migration apply refused before creating a Job."
   recheck_migration_release pre-apply "$evidence_dir/before-helm-status.json"
   require_migration_writers_stopped
   recheck_migration_secrets "$secret_names"
-  run_migration_stage apply "$evidence_dir/migration-rendered.jsonl" "$secret_names"
-  run_migration_stage verify "$evidence_dir/migration-rendered.jsonl" "$secret_names"
+  run_migration_stage apply "$rendered_json" "$secret_names"
+  run_migration_stage verify "$rendered_json" "$secret_names"
   recheck_migration_release post-verification "$evidence_dir/before-helm-status.json"
   recheck_migration_secrets "$secret_names"
   require_migration_writers_stopped
@@ -2898,8 +2906,13 @@ candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
 python3 scripts/upgrade-evidence.py verify "$evidence_dir" ||
   die "prepared upgrade evidence changed; investigate before continuing."
-helm_attempt=$(python3 scripts/upgrade-helm-state.py select "$evidence_dir")
+verified_attempt=$(python3 scripts/upgrade-helm-state.py select "$evidence_dir")
+if ((resume == 0)) && [[ "$helm_attempt" != "$verified_attempt" ]]; then
+  die "the verified Helm attempt changed after startup preflight; investigate before continuing."
+fi
+helm_attempt=$verified_attempt
 candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
+rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 targets="$evidence_dir/targets.jsonl"
 if ((channel_egress_one_off)); then
   channel_egress_enabled=$(python3 scripts/upgrade-channel-egress validate \
@@ -3065,21 +3078,22 @@ if ((helm_complete)) && ! matches_yaml "$evidence_dir/current-live-installation.
   die "Helm selected the candidate but the live Installation Secret does not; investigate before continuing."
 fi
 retry_separate_handoff=0
+retry_migration=''
 if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
   ((migration_history_checked)) || die "Helm's outcome is unresolved. Inspect the release and initialization Job, run the candidate migration --check against the retained database, then resume with --migration-history-checked."
   require_settled_initializers "retrying Helm"
+  retry_migration=$(yq -p=yaml -o=json -I=0 '.' "$rendered" | migration_mode /dev/stdin) ||
+    die "cannot identify the submitted upgrade migration mode; preserve the original evidence before retrying."
   # An intent can outlive a rejected submission. Until Helm advances past the
   # original revision, keep the same separate-migration writers stopped.
   original_revision=$(jq -ers '
     select(length == 1) | .[0].version | select(type == "number" and . > 0 and floor == .)
   ' "$evidence_dir/before-helm-status.json") || die "cannot identify the original Helm revision."
-  if jq -e --argjson revision "$original_revision" '.version == $revision' \
+  if [[ "$retry_migration" == separate ]] &&
+    jq -e --argjson revision "$original_revision" '.version == $revision' \
     "$evidence_dir/current-helm-status.json" >/dev/null; then
-    upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
-    if [[ "$upgrade_migration" == separate ]]; then
-      retry_separate_handoff=1
-      require_migration_writers_stopped
-    fi
+    retry_separate_handoff=1
+    require_migration_writers_stopped
   fi
 fi
 
@@ -3095,13 +3109,13 @@ if ((helm_complete == 0)); then
     # Every submitted retry has a fresh hook identity; retain earlier attempts.
     helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "$values" "${helm_args[@]}")
     candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
+    rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
   fi
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
   fi
   if ((resume)); then
-    rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
-    preflight_resume
+    preflight_resume "$retry_migration"
   fi
   if [[ "$channel_egress_enabled" == true ]]; then
     python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
@@ -3116,7 +3130,6 @@ if ((helm_complete == 0)); then
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
   }
-  upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
   handoff="$evidence_dir/database-migration-handoff.json"
   separate_handoff=0
   if [[ "$upgrade_migration" == separate && ! -f "$evidence_dir/helm-started" ]]; then
@@ -4031,7 +4044,9 @@ jq -e --arg recovered "$recovered_revision" --slurpfile submission "$evidence_di
   : >"$evidence_dir/completed"
 ) ||
   die "could not record upgrade completion; preserve the evidence and investigate before recovery."
-if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
+if [[ "$channel_egress_enabled" == true ]]; then
+  printf 'Upgrade and channel transition complete. See channel-agent-operations.json in the evidence directory for Agent deployment results.\n'
+elif [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then
   printf 'Upgraded runtime image; controller image remained unchanged and %s running Agents selected new revisions.\n' "$target_count"

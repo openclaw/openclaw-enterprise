@@ -257,7 +257,7 @@ async function selectedV5(
         repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
       },
     }),
-    executionAdmission: { version: native ? 8 : 5, mode: "protected" },
+    executionAdmission: { version: native ? 9 : 5, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
       execution: { executionId },
@@ -3638,7 +3638,7 @@ test("native issue reads intersect the selected permissions, registry opt-in and
   );
 });
 
-test("a persisted v8 Git-only binding cannot inherit issue network access", async () => {
+test("a persisted v9 Git-only binding cannot inherit issue network access", async () => {
   const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
   const namespace = {
     namespaceId,
@@ -3699,9 +3699,9 @@ test("a persisted v8 Git-only binding cannot inherit issue network access", asyn
       method: "api_key",
       source: { kind: "secret", id: "sec_00000000-0000-4000-8000-000000000002", namespaceId },
       secretDriverId: "fixture-secret",
-      protectedExecutionVersion: 8,
+      protectedExecutionVersion: 9,
     },
-    execution_admission: { version: 8, mode: "protected", repositoryNetworkPolicyVersion: 1 },
+    execution_admission: { version: 9, mode: "protected", repositoryNetworkPolicyVersion: 1 },
     sandbox_driver_id: driver.id,
     sandbox_policy: {
       driverId: driver.id,
@@ -3755,7 +3755,7 @@ test("a persisted v8 Git-only binding cannot inherit issue network access", asyn
   );
   assert.ok(revision?.sandboxPolicy?.repositoryNetworkPolicy);
   assert.deepEqual(revision.repositoryCredentials, repositoryCredentials);
-  assert.deepEqual(revision.executionAdmission, { version: 8, mode: "protected" });
+  assert.deepEqual(revision.executionAdmission, { version: 9, mode: "protected" });
 
   const { delivery } = createGitHubRepositoryDeliveryResolver(gitOnly)(revision);
   assert.ok("scope" in delivery && delivery.scope === "github-repository");
@@ -4375,6 +4375,28 @@ test("native Git cannot opt a ref or draft limited registration into repository-
   ]) {
     assert.throws(() => validate(restriction), /invalid-repository-registry/);
   }
+});
+
+test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {
+  const { f, revision, prepare, store, noCredentials } = await selectedV5(t, true);
+  const calls = structuredClone(f.calls);
+  const rows = store.rows.size;
+  for (const admission of [
+    { version: 8, mode: "protected" },
+    { version: 8, mode: "standalone" },
+    { version: 9, mode: "standalone" },
+  ]) {
+    await assert.rejects(
+      prepare(f.runtime, [], {
+        ...revision,
+        executionAdmission: admission as AgentRevision["executionAdmission"],
+      }),
+      /OpenShell prepared Git requires one explicitly admitted GitHub binding/,
+    );
+  }
+  assert.deepEqual(f.calls, calls);
+  assert.equal(store.rows.size, rows);
+  noCredentials();
 });
 
 test("native Git registration refuses an online authorization plan before Provider work", async (t) => {

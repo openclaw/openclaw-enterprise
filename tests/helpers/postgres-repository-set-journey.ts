@@ -446,13 +446,15 @@ async function repositoryGitJourney(
   // kernel may hand a connection to the hold, which resets it.
   await authorityPort.release();
   await runtime["running"];
+  const standingSessionDurationSeconds = coldWorker ? 90 : 60;
+  const nonStandingSessionDurationSeconds = narrow && policy.draftPull === false ? 180 : 600;
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
     {
       sessionDurationSeconds:
         policy.sessionDurationSeconds ??
-        (standing ? 90 : narrow && policy.draftPull === false ? 180 : 600),
+        (standing ? standingSessionDurationSeconds : nonStandingSessionDurationSeconds),
     },
   );
   f.controller.registerDriver(driver);
@@ -1353,6 +1355,15 @@ async function repositoryGitJourney(
         assert.equal(peer.gh.issuesOfTokens.length, 1, "cold verification issued no successor");
         assert.equal(wire.world.writes, writes, "cold verification did not replay credentials");
         assert.equal(state.installed, installed);
+
+        // The previous worker has joined. Let its replacement recover interrupted cleanup
+        // without waiting for this fixture revision's work lease to expire.
+        await expireWorkLease(f.observerPool, {
+          namespaceId: revision.namespaceId,
+          revisionId: revision.id,
+          keyLike: `agent_revision:${revision.id}:repository_cleanup:%`,
+          state: "claimed",
+        });
 
         // A second process recovers the durable cleanup handoff. Only the new expiry
         // cases supply the model attachment and use the driver’s OpenShell identity checks.
