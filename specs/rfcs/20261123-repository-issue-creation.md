@@ -23,7 +23,7 @@ An Admin who grants Write on B should know what the Agent can do there. A second
 
 ## Proposal
 
-Keep the existing native Git delivery selection. For each granted repository, compile only these GitHub API routes on stock OpenShell.
+Keep the existing native Git delivery selection. The table shows eligible **direct requests** to GitHub on stock OpenShell before filtering.
 
 | Approved Namespace permission | Agent Read           | Agent Write                        |
 | ----------------------------- | -------------------- | ---------------------------------- |
@@ -34,11 +34,11 @@ Keep the existing native Git delivery selection. For each granted repository, co
 
 Omitted permissions grant no corresponding routes. Metadata and Contents alone mean Git-only, even if the installed App has broader permissions. Without a saved grant, deny direct access to that repository. GitHub also enforces the credential’s permissions.
 
-**Mixed grants.** Repositories on one selected App token share a permission map. With A Read, B Write, and C bound without a grant, B can create issues. [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) still withholds PR creation while C is bound. Unbind C and redeploy to restore eligible PRs.
+Repositories on one selected App token must have identical permission maps. Their filters can differ. With A Read, B Write and C bound without a grant, [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) withholds PR creation on B but permits eligible issue creation there. Setting `allow: []` on C leaves it bound. Unbind C and redeploy to restore eligible PR creation on B.
 
 ### Optional API restrictions
 
-Keep Read and Write as the everyday Agent controls. An operator can narrow the eligible routes for all Agents using a repository’s Namespace registration with `apiActions`. Git fetch and push keep their existing grants. The following are alternative settings on B.
+Setting `apiActions` on B’s Namespace registration filters direct API requests for **every Agent using that registration**. Git fetch and push keep their existing grants.
 
 | Operator intent           | Registration example                                                    | When OCE supports another eligible action |
 | ------------------------- | ----------------------------------------------------------------------- | ----------------------------------------- |
@@ -47,13 +47,15 @@ Keep Read and Write as the everyday Agent controls. An operator can narrow the e
 | Only read and open PRs    | `apiActions: { allow: ["pull_requests:read", "pull_requests:create"] }` | Excluded until listed                     |
 | Git only                  | `apiActions: { allow: [] }`                                             | Excluded                                  |
 
-Use **one of** `allow` or `deny`. Reject both together, unknown actions, duplicates and wildcards. An empty deny list has the default behavior. Filters can only remove eligible routes. Listing a write action cannot override Read, a missing permission or the PR safeguard.
+If present, `apiActions` must be an object with exactly one key, `allow` or `deny`, whose value is an array of unique literal action names. Reject malformed values, mixed or extra keys, wildcards and unknown names. Reject retired `scopedRest`, `createIssues` and bare `deny` settings without conversion.
+
+Treat `deny: []` as omission. Every allow list (even `allow: []`) and every nonempty deny list is an active restriction. Filters can only remove eligible routes. Listing a write action cannot override Read, a missing permission or the PR safeguard.
 
 Start with four actions. `issues:read` and `pull_requests:read` each cover list and numbered detail GETs. `issues:create` and `pull_requests:create` each cover one collection POST. Creation does not enable a separate GET. Give new operations distinct names. A new GitHub endpoint stays closed until OCE deliberately supports it and specifies its permissions.
 
-In the UI, show the effective actions for the selected Agent and repository, including why a requested action is unavailable. Keep advanced filters at the Namespace registration. The labels above describe the intended UX. This RFC requires no new Console editor.
+A future Console editor could let operators check the actions to keep on B. With **Include new eligible actions automatically** on, save unchecked actions in `deny`. With it off, save checked actions in `allow`. Preview each Agent’s effective actions at next deployment and explain exclusions separately from the running policy. No UI change is required.
 
-**Deployment.** Remove `scopedRest` from configuration. Existing and new Agents use the current approved registration on their next deployment. An unchanged Write grant can gain issue or PR creation. Review the registration before deployment. Running Sandboxes retain their loaded policy and can lose credential renewal if it no longer matches. Retire the old Sandbox to complete withdrawal.
+**Before deploying**, remove `scopedRest` and check the approved permissions. To keep Git-only access, set `apiActions: { allow: [] }`. To keep issue creation off, use `apiActions: { deny: ["issues:create"] }`. An unchanged Write grant can otherwise gain issue or PR creation at the next deployment. A running Sandbox retains its loaded policy and may lose credential renewal after a change. Retire it to complete withdrawal.
 
 **Limits.** These actions control direct requests. GitHub can apply labels or link a parent in another repository through the [issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). An eligible PR POST can convert an issue even when issue creation is disabled. Issue reads can return PRs, and creation returns the created record. Denying a GET cannot hide those responses. Comments, edits, reviews, merges and GraphQL remain outside this policy. Finer field restrictions belong in OpenShell.
 
@@ -73,7 +75,7 @@ No changes.
 
 ### Driver contracts
 
-Replace the REST version selector with the optional `apiActions` filter on native App registrations. Filter the existing operation set before compiling OpenShell allows. Bind effective actions to the credential grant and verify loaded policy. If a configured restriction cannot be enforced (including a missing native policy), refuse credential delivery. Never fall back to broader online access. Preserve Stop and withdrawal. PATs and protected profiles are outside this change.
+Filter eligible routes before compiling OpenShell policy. Include each repository’s filter and effective actions in the credential grant identity. Ignore list order. Verify the loaded policy at issuance and renewal. Reject stale policy after tightening. If native policy cannot enforce an active restriction, refuse both issuance and renewal even when permissions leave no eligible routes. Preserve legacy online fallback for unfiltered grants, Stop and withdrawal. PATs and protected profiles are outside this change.
 
 ## Simplifications
 
@@ -81,11 +83,12 @@ One policy applies at every deployment. No compatibility mode, per-Agent upgrade
 
 ## Acceptance Criteria
 
-- **AC-1.** On stock OpenShell, bind A/B/C with identical GitHub permissions, including Issues write. Grant A Read and B Write. Create and independently read back an issue in B. Require zero direct writes to A, zero requests to C, zero Worker callbacks and only a placeholder in the Agent.
+- **AC-1.** On stock OpenShell, bind A/B/C with identical permissions including Issues and Pull requests write. Grant A Read and B Write. Leave C bound without a grant and set `allow: []` on C. Create and independently read back an issue in B. Block PR creation on B. Require zero direct writes to A, zero direct requests to C, zero Worker callbacks and only a placeholder in the Agent.
 - **AC-2.** Unbind C and redeploy. Verify both POSTs in B. Deny `issues:create` on B and redeploy. Verify B’s reads, push and PR creation still work. Another eligible Write repository retains issue creation.
-- **AC-3.** Exercise an existing draft, redeployment, credential rotation and downgrade. Check current permissions and the opt-out in each case. Verify Git-only and Issues read deny issue creation. Deny disallowed methods, routes and redirects before forwarding. Verify retirement of the prior Sandbox.
-- **AC-4.** Test parent links from B to A and C separately using authorized test repositories. Inspect both sides. Hold wider rollout if read-only A changes or denied C is exposed or changed.
-- **AC-5.** Allow only PR reads and verify all other API routes stop before forwarding. With `allow: []`, verify Git works and all API requests stop. Explicit allows must respect Read, missing permissions and #7135. Reject invalid filters. Refuse broader delivery if the native policy is missing. Verify tightening takes effect on redeploy and old credentials cannot renew against stale policy.
+- **AC-3.** Check current permissions and filters on existing drafts, redeployment, rotation and downgrade. Reordering actions preserves grant identity. Tightening blocks renewal against stale policy. Verify the new limits on redeploy and retire the prior Sandbox. Block disallowed methods, routes and redirects before forwarding.
+- **AC-4.** Hold wider rollout until reviewers assess live parent links from B to A and C separately in authorized test repositories. Inspect both sides. Keep the hold if read-only A changes or denied C is exposed or changed.
+- **AC-5.** Reject invalid and retired settings. Allow only PR reads and block other API routes. Allow only `issues:create` on B and verify POST succeeds while GET stops before forwarding. Explicit allows must respect Read, missing permissions, Issues read and #7135. With `allow: []`, verify Git works and all API requests stop.
+- **AC-6.** With native policy missing, test issuance and renewal separately. Both must fail without fallback for `allow: []` and for a nonempty `deny`, even with no eligible API routes. Under the same conditions verify legacy delivery still works with the filter omitted or `deny: []`.
 
 ## Delivery and verification
 
