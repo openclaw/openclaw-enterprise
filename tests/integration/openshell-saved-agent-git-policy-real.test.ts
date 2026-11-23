@@ -2704,6 +2704,10 @@ if (savedAgentAcl === "source") {
               const out = (await fixture.nodeShell(watch, 40_000)).trim();
               hunt.backends = out.split(" ")[1] ?? "";
               stoppedNow = out.startsWith("stopped");
+              if (hunt.backends === "0") {
+                // No database backend on this node: stop at random times and ask the database.
+                hunt.method = "stop-and-check";
+              }
             } catch {
               hunt.method = "stop-and-check";
             }
@@ -2737,24 +2741,31 @@ if (savedAgentAcl === "source") {
       let paused: Record<string, unknown>;
       try {
         const heldAtPause = await rowHeld();
-        const patchStart = Date.now();
-        const patchStatus = await statusOf(
-          request("PATCH", source.path, { secret: { token: third } }),
-        );
-        const patchEnd = Date.now();
-        const heldAfterPatch = await rowHeld();
-        const deleteStart = Date.now();
-        const deleteWhilePaused = await statusOf(request("DELETE", source.path));
+        // The first writer meets the hold; OCC_TEST_SOURCE_PAUSE_ORDER=delete-first makes that
+        // the retirement instead of the replacement.
+        const deleteFirst = process.env.OCC_TEST_SOURCE_PAUSE_ORDER === "delete-first";
+        const timed = async (pending: () => Promise<unknown>) => {
+          const started = Date.now();
+          const status = await statusOf(pending());
+          return { status, seconds: (Date.now() - started) / 1000 };
+        };
+        const replace = () => request("PATCH", source.path, { secret: { token: third } });
+        const retire = () => request("DELETE", source.path);
+        const firstWrite = await timed(deleteFirst ? retire : replace);
+        const heldAfterFirst = await rowHeld();
+        const secondWrite = await timed(deleteFirst ? replace : retire);
+        const [patch, del] = deleteFirst ? [secondWrite, firstWrite] : [firstWrite, secondWrite];
         const deleteEnd = Date.now();
         paused = {
           caughtInHold: hunt.caught,
+          firstWriter: deleteFirst ? "DELETE" : "PATCH",
           heldAtPause,
-          heldAfterPatch,
+          heldAfterFirst,
           pausedAt: new Date(pausedAt).toISOString(),
-          patchStatus,
-          patchSeconds: (patchEnd - patchStart) / 1000,
-          deleteStatus: deleteWhilePaused,
-          deleteSeconds: (deleteEnd - deleteStart) / 1000,
+          patchStatus: patch.status,
+          patchSeconds: patch.seconds,
+          deleteStatus: del.status,
+          deleteSeconds: del.seconds,
           pausedSeconds: (deleteEnd - pausedAt) / 1000,
         };
       } finally {
