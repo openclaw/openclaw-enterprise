@@ -370,7 +370,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       );
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      await validatePluginCredentialSources(driver, plugins, []);
+      await validatePluginCredentialSources(state, driver, plugins, []);
       await authorizeProvisioningSources(
         state,
         principalId,

@@ -1,16 +1,13 @@
 import type {
-  StoredCredentialSource as CredentialSource,
+  PluginCredentialSource,
   PluginDeploymentNetworkRequirement,
 } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
 import {
-  eligibleGoogleOperations,
   googleActionPath,
   googleCatalog,
   googleDiscoveryRoutes,
   googleSourcePathMatches,
-  googleDiscoveryRequests,
-  googleRequestScope,
 } from "./operations.ts";
 
 const googleDiscovery = googleDiscoveryRoutes().map(({ host, path }) => ({
@@ -57,19 +54,6 @@ function googleNetworks(
   return [...rules.values()];
 }
 
-function sourceScope(source: CredentialSource) {
-  if (source.ownerCapability === "token_service") {
-    return undefined;
-  }
-  const config = source.config;
-  return googleRequestScope({
-    host: config.host,
-    port: Number(config.port ?? 443),
-    path: config.path ?? "/**",
-    scopes: config.scope?.split(" ") ?? [],
-  });
-}
-
 /** Google scopes and routes are connector semantics, independent of catalog presentation. */
 export const googleWorkspaceCredentialPolicy = {
   packageName: "oce-google-workspace",
@@ -79,44 +63,30 @@ export const googleWorkspaceCredentialPolicy = {
       credential: googleNetworks(install, "action"),
     };
   },
-  accepts(
-    install: ManagedCliInstall,
-    slot: ManagedCredentialSlot,
-    source: CredentialSource,
-  ): boolean {
-    if (source.ownerCapability === "token_service") {
+  accepts(slot: ManagedCredentialSlot, source: PluginCredentialSource): boolean {
+    const template = source.currentTemplate;
+    if (
+      source.state !== "ready" ||
+      source.type !== "oauth2-refresh-token" ||
+      source.consent.kind !== "connection_template" ||
+      source.consent.issuer !== slot.issuer ||
+      source.consent.tokenUrl !== slot.tokenEndpoint ||
+      !template ||
+      template.mode !== "manual" ||
+      template.templateId !== source.connectionTemplateId ||
+      template.issuer !== source.consent.issuer ||
+      template.tokenUrl !== source.consent.tokenUrl
+    ) {
       return false;
     }
-    const config = source.config;
-    const scope = sourceScope(source);
-    return (
-      source.state === "ready" &&
-      source.ownerCapability === "credential_gateway" &&
-      source.egress === undefined &&
-      source.type === "oauth2-refresh-token" &&
-      config.token_url === slot.tokenEndpoint &&
-      config.env_var === slot.delivery.env &&
-      (config.binary === undefined || config.binary === install.binaryPath) &&
-      scope !== undefined &&
-      eligibleGoogleOperations(scope).length > 0
+    return template.destinations.some((destination) =>
+      googleActions.some(
+        (route) =>
+          destination.host === route.host &&
+          destination.port === 443 &&
+          (googleSourcePathMatches(destination.path, route.path) ||
+            googleSourcePathMatches(route.path, destination.path)),
+      ),
     );
-  },
-  conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
-    const scope = sourceScope(selected);
-    if (!scope || selected.ownerCapability === "token_service") {
-      return undefined;
-    }
-    // The qualified adapter selects middleware by host, including discovery requests.
-    const hosts = new Set([scope.host, ...googleDiscoveryRequests(scope).map((r) => r.host)]);
-    if (
-      sources.some(
-        (s) =>
-          s.ownerCapability !== "token_service" &&
-          s.id !== selected.id &&
-          (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
-      )
-    ) {
-      return "This Google plugin binding conflicts with another attached credential's placeholder or guarded Google host. Use non-overlapping credential routes and distinct placeholder names, or clear the plugin binding.";
-    }
   },
 };

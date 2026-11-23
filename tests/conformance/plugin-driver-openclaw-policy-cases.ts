@@ -6,6 +6,7 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   managedMcpCredentialBindings,
+  managedCliInstalls,
   managedMcpInstalls,
   type ManagedMcpInstall,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -15,7 +16,7 @@ import {
   validatePolicies,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import type {
-  LegacyCredentialSource,
+  PluginCredentialSource,
   PluginApprover,
   PluginApprovers,
   PluginDriver,
@@ -117,9 +118,10 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   driver.validatePolicies({ [slack.id]: { enabled: false } });
   const slackInstall = managedMcpInstalls.find(({ id }) => id === slack.id);
   assert.ok(slackInstall);
+  const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
   const slackPolicy = {
     releaseSha256: slackInstall.releaseSha256,
-    credentials: { account: "cs_slack" },
+    credentials: { account: slackSourceId },
   };
   const selections = {
     [google.id]: { enabled: true },
@@ -129,7 +131,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   assert.throws(
     () =>
       driver.validatePolicies({
-        [slack.id]: { enabled: true, driverPolicy: { credentials: { account: "cs_slack" } } },
+        [slack.id]: { enabled: true, driverPolicy: { credentials: { account: slackSourceId } } },
       }),
     /Slack release has changed/,
   );
@@ -161,28 +163,40 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
       /Select distinct literal Slack tool names/,
     );
   }
-  const source: LegacyCredentialSource = {
-    id: "cs_slack",
+  const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const templateId = "ctp_00000000-0000-4000-8000-000000000001";
+  const createdAt = "2026-09-08T00:00:00.000Z";
+  const source = {
+    id: slackSourceId,
     name: "Slack test account",
-    namespaceId: "ns_test",
-    type: "bearer-token",
-    ownerCapability: "credential_gateway",
-    driverId: "credential-gateway-openshell",
-    createdAt: "2026-09-08T00:00:00.000Z",
+    namespaceId,
+    ref: { kind: "credential_source", id: slackSourceId, namespaceId },
+    type: "static",
+    connectionTemplateId: templateId,
+    createdAt,
     state: "ready",
-    secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: "ns_test" } },
-    config: {
-      protocol: "mcp",
-      host: "mcp.slack.com",
-      port: "443",
-      path: "/mcp",
-      env_var: "SLACK_MCP_TOKEN",
+    config: {},
+    currentTemplate: {
+      templateId,
+      version: 1,
+      createdAt,
+      mode: "static_bearer",
+      destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp", method: "POST" }],
     },
-  };
+  } satisfies PluginCredentialSource;
   const broaderRestSource = {
     ...source,
-    id: "cs_rest",
-    config: { ...source.config, protocol: "rest" },
+    id: "cs_00000000-0000-4000-8000-000000000002",
+    connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000003",
+    ref: {
+      ...source.ref,
+      id: "cs_00000000-0000-4000-8000-000000000002",
+    },
+    currentTemplate: {
+      ...source.currentTemplate,
+      templateId: "ctp_00000000-0000-4000-8000-000000000003",
+      destinations: [{ host: "mcp.slack.com", port: 443, path: "/api/**", method: "POST" }],
+    },
   };
   const credentials: NonNullable<PluginDriver["credentials"]> = driver.credentials;
   const slots = credentials.choices([source, broaderRestSource]);
@@ -191,10 +205,185 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   assert.equal(slackSlot.id, "account");
   assert.equal(slackSlot.label, "Slack user account");
   assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
+  const oauthId = "cs_00000000-0000-4000-8000-000000000004";
+  const slot = slackInstall.credentials[slackInstall.slotId]!;
+  const oauth = {
+    id: oauthId,
+    namespaceId,
+    name: "Slack OAuth account",
+    state: "ready",
+    createdAt,
+    ref: { kind: "credential_source", id: oauthId, namespaceId },
+    type: "oauth2-refresh-token",
+    connectionTemplateId: templateId,
+    consent: {
+      kind: "connection_template",
+      ownerPrincipalId: "p-test",
+      version: 1,
+      oauthClientId: "oc-test",
+      requestedScopes: [],
+      grantedScopes: [],
+      issuer: slot.issuer,
+      tokenUrl: "https://mcp.slack.com/token",
+      clientId: "client",
+      destinations: [],
+      resource: slot.mcp.resource,
+      mcpServerUrl: slackInstall.url,
+    },
+    currentTemplate: {
+      templateId,
+      version: 2,
+      createdAt,
+      mode: "mcp_discovery",
+      issuer: slot.issuer,
+      authorizationUrl: "https://mcp.slack.com/authorize",
+      tokenUrl: "https://mcp.slack.com/token",
+      scopes: [],
+      authorizationParameters: {},
+      destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp" }],
+      mcp: { resource: slot.mcp.resource, serverUrl: slackInstall.url },
+    },
+  } satisfies PluginCredentialSource;
+  assert.deepEqual(
+    credentials.choices([oauth]).find(({ pluginId }) => pluginId === slack.id)?.sources,
+    [{ id: oauth.id, name: oauth.name }],
+  );
+  assert.equal(
+    credentials
+      .choices([
+        {
+          ...oauth,
+          currentTemplate: {
+            ...oauth.currentTemplate,
+            destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp/**" }],
+          },
+        },
+      ])
+      .find(({ pluginId }) => pluginId === slack.id)?.sources.length,
+    1,
+  );
+  for (const invalid of [
+    { ...oauth, consent: { ...oauth.consent, issuer: "https://other.example" } },
+    { ...oauth, consent: { ...oauth.consent, resource: "https://other.example" } },
+    {
+      ...oauth,
+      currentTemplate: {
+        ...oauth.currentTemplate,
+        mcp: { ...oauth.currentTemplate.mcp, serverUrl: "https://other.example/mcp" },
+      },
+    },
+    { ...oauth, currentTemplate: { ...oauth.currentTemplate, destinations: [] } },
+    {
+      ...oauth,
+      currentTemplate: {
+        ...oauth.currentTemplate,
+        destinations: [{ host: "mcp.slack.com", port: 443, path: "/mc/**" }],
+      },
+    },
+  ]) {
+    assert.deepEqual(
+      credentials.choices([invalid]).find(({ pluginId }) => pluginId === slack.id)?.sources,
+      [],
+    );
+  }
   await driver.credentials.validate(selections, [source]);
   await assert.rejects(
-    async () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+    async () =>
+      driver.credentials.validate(selections, [
+        { ...broaderRestSource, id: source.id, ref: source.ref },
+      ]),
     /Select a ready Slack account/,
+  );
+
+  const googleInstall = managedCliInstalls.find(({ id }) => id === google.id);
+  assert.ok(googleInstall);
+  const googleSourceId = "cs_00000000-0000-4000-8000-000000000003";
+  const googleTemplateId = "ctp_00000000-0000-4000-8000-000000000002";
+  const destinations = [{ host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/**" }];
+  const googleSource = {
+    id: googleSourceId,
+    name: "Google account",
+    namespaceId,
+    ref: { kind: "credential_source", id: googleSourceId, namespaceId },
+    type: "oauth2-refresh-token",
+    state: "ready",
+    createdAt,
+    connectionTemplateId: googleTemplateId,
+    consent: {
+      kind: "connection_template",
+      version: 1,
+      oauthClientId: "oc_00000000-0000-4000-8000-000000000001",
+      ownerPrincipalId: "pr_00000000-0000-4000-8000-000000000001",
+      requestedScopes: [],
+      grantedScopes: [],
+      issuer: "https://accounts.google.com",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      clientId: "google-client-id",
+      destinations,
+    },
+    currentTemplate: {
+      templateId: googleTemplateId,
+      version: 2,
+      createdAt,
+      mode: "manual",
+      issuer: "https://accounts.google.com",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      oauthClientId: "oc_00000000-0000-4000-8000-000000000001",
+      scopes: [],
+      authorizationParameters: {},
+      destinations,
+    },
+  } satisfies PluginCredentialSource;
+  const otherIssuer = {
+    ...googleSource,
+    id: "cs_00000000-0000-4000-8000-000000000004",
+    ref: { ...googleSource.ref, id: "cs_00000000-0000-4000-8000-000000000004" },
+    connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000004",
+    consent: {
+      ...googleSource.consent,
+      oauthClientId: "oc_00000000-0000-4000-8000-000000000002",
+      issuer: "https://other.example.test",
+      tokenUrl: "https://other.example.test/token",
+      clientId: "other-client-id",
+    },
+    currentTemplate: {
+      ...googleSource.currentTemplate,
+      templateId: "ctp_00000000-0000-4000-8000-000000000004",
+      issuer: "https://other.example.test",
+      authorizationUrl: "https://other.example.test/authorize",
+      tokenUrl: "https://other.example.test/token",
+      oauthClientId: "oc_00000000-0000-4000-8000-000000000002",
+    },
+  };
+  const googleSlot = credentials
+    .choices([
+      googleSource,
+      otherIssuer,
+      {
+        ...googleSource,
+        consent: { ...googleSource.consent, tokenUrl: "https://other.example.test/token" },
+        currentTemplate: {
+          ...googleSource.currentTemplate,
+          tokenUrl: "https://other.example.test/token",
+        },
+      },
+    ])
+    .find(({ pluginId }) => pluginId === google.id);
+  assert.deepEqual(googleSlot?.sources, [{ id: googleSourceId, name: googleSource.name }]);
+  // A provider may grant no known scopes; issuer and approved destination establish slot eligibility.
+  await credentials.validate(
+    {
+      ...selections,
+      [google.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: googleInstall.releaseSha256,
+          credentials: { account: googleSourceId },
+        },
+      },
+    },
+    [source, googleSource],
   );
   const mixedPlacement = { ...selections, ...occSelection() };
   driver.validatePolicies(mixedPlacement);

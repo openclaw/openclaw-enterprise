@@ -10,7 +10,6 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { bindOpenShellPluginSourceReader } from "../../apps/controller/src/composition/openshell-plugin-source-reader.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -106,7 +105,6 @@ test(
       { binaries: ["/usr/local/bin/codex"] },
       { backend },
     );
-    const reader = bindOpenShellPluginSourceReader(backend, driver);
     const refreshDriver = new OpenShellCredentialRefreshDriver({}, { backend });
     const context = {
       signal,
@@ -252,17 +250,14 @@ test(
     );
     assert.equal(configured.status, "configured");
 
-    const fingerprint = async ({ accessToken, accountId }) => {
-      assert.equal(accountId, "poc-account");
-      return createHash("sha256").update(accessToken).digest("hex");
-    };
-    // The reader asks upstream for a usable credential without an explicit rotate
-    // call. Only its Backend's certificate-only export channel may return the token.
-    const first = await reader.withSourceToken(context, fingerprint);
+    const fingerprint = ({ value }) => createHash("sha256").update(value).digest("hex");
+    const read = () => operatorClient.getProviderCredential(workspace, name, credentialKey, signal);
+    // The operator asks upstream for a usable credential without an explicit rotate call.
+    const first = fingerprint(await read());
     assert.notEqual(first, createHash("sha256").update(initialAccessToken).digest("hex"));
     assert.equal((await driver.sourceStatus(context)).state, "ready");
     assert.equal(
-      await reader.withSourceToken(context, fingerprint),
+      fingerprint(await read()),
       first,
       "a credential with sufficient remaining lifetime is reused without another mint",
     );
@@ -279,7 +274,7 @@ test(
     // The issuer rejects reuse of the old refresh token. A second successful rotation proves
     // OpenShell persisted and used the replacement refresh token without OCE supplying it again.
     assert.equal((await refreshDriver.rotate(context, randomUUID())).state, "ready");
-    const second = await reader.withSourceToken(context, fingerprint);
+    const second = fingerprint(await read());
     assert.notEqual(first, second);
     assert.deepEqual(
       await driver.attachForRevision({

@@ -217,9 +217,6 @@ export async function composeProduction(
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
-        ...(config.drivers.pluginSourceReader === undefined
-          ? {}
-          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],

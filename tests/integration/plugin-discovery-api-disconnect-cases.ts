@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import {
   createServer,
@@ -10,11 +11,18 @@ import {
 import type { TestContext } from "node:test";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { AgentResponse } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  AccessBinding,
+  ResolvedCredential,
+  TokenServiceSourceInstance,
+} from "../../packages/contracts/src/index.ts";
 import {
-  AgentPluginCatalogResponse,
-  CredentialSourceResponse,
-} from "../../packages/contracts/src/api/resources.ts";
-import type { AccessBinding, CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+  DependencyUnavailableError,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
@@ -24,8 +32,8 @@ import { listen } from "../helpers/listen.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   accessToken,
-  catalogEntry,
   createFixture,
+  createDiscoveryLogger,
   createSavedAgent,
   remoteId,
   boundPort,
@@ -185,19 +193,38 @@ export async function honorsDisconnectsDuringIam(t: TestContext) {
   }
 }
 
-export async function rechecksCredentialSourceGrants(t: TestContext) {
-  const { gateway, refresh } = createDeviceCredentialDrivers();
-  let wrongReaderCalls = 0;
+class ControlledTokenService extends OCCTokenServiceDriver {
+  resolves = 0;
+  afterResolved: ((signal: AbortSignal) => Promise<void> | void) | undefined;
+  failure: Error | undefined;
+  synchronousFailure = false;
+
+  override resolveCredential(
+    source: TokenServiceSourceInstance,
+    signal: AbortSignal,
+  ): Promise<ResolvedCredential> {
+    this.resolves += 1;
+    if (this.failure && this.synchronousFailure) {
+      throw this.failure;
+    }
+    return super.resolveCredential(source, signal).then(async (actual) => {
+      if (this.failure) {
+        throw this.failure;
+      }
+      // Hold only delivery of the concrete owner's real result. This lets the test revoke
+      // a grant or disconnect HTTP after custody resolved but before OCC can dispatch it.
+      await this.afterResolved?.(signal);
+      return actual;
+    });
+  }
+}
+
+async function codexSourceFixture(
+  t: TestContext,
+  logger?: ReturnType<typeof createDiscoveryLogger>["logger"],
+) {
   const fixture = await createFixture(t, {
-    credentialGatewayDriver: gateway,
-    // Same public ID, a distinct selected object. Never use this private reader.
-    pluginSourceReader: {
-      gateway: { ...gateway },
-      async withSourceToken(_context, use) {
-        wrongReaderCalls += 1;
-        return use({ accessToken });
-      },
-    },
+    ...(logger === undefined ? {} : { logger }),
     sandboxDriver: {
       id: "source-discovery-sandbox",
       capability: "sandbox",
@@ -207,212 +234,358 @@ export async function rechecksCredentialSourceGrants(t: TestContext) {
       async cleanup() {},
     },
   });
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
-  const registered = await fixture.request(
-    "POST",
-    `/namespaces/${fixture.namespace.id}/credential-sources`,
-    { body: { name: "Discovery source", type: "codex-device" } },
+  const ownerId = "plugin-token-service";
+  const instanceId = await fixture.controller.activateTokenServiceInstance(ownerId, randomUUID());
+  const owner = new ControlledTokenService(
+    ownerId,
+    fixture.controller.installation.id,
+    fixture.secretDriver.installationSecrets,
+    instanceId,
+    fixture.state,
+    undefined,
+    new OAuthAccountTokens(
+      fixture.state,
+      fixture.secretDriver,
+      fixture.controller.resolveConnectionClient.bind(fixture.controller),
+    ),
   );
-  assert.equal(registered.status, 201, JSON.stringify(registered.body));
-  const source = fixture.fixtureResponse(
-    registered,
-    201,
-    CredentialSourceResponse,
-    "register discovery source",
-  ).data.ref;
-  // The external credential service is simulated. Its ready token must still pass
-  // the real Fastify/OCC/IAM checks; this does not prove OpenShell export or injection.
-  gateway.sources.set(source.id, "ready");
-  const agent = await fixture.createAgent(
-    fixture.namespace.id,
-    "Source discovery Agent",
-    createHarnessConfiguration("codex", "gpt-5.1"),
+  fixture.controller.registerDriver(owner);
+  fixture.controller.selectDriver("token_service", owner.id);
+  const account = { accountId: "account-discovery", planType: "plus", isFedramp: true };
+  // The real TokenService owns registration and custody after the controlled device exchange.
+  // This does not claim that an interactive provider approved the device code.
+  const registered = await owner.createSource(
     {
+      kind: "oauth_refresh_token",
+      namespaceId: fixture.namespace.id,
+      name: "Codex discovery account",
+      consent: { kind: "builtin_codex", ownerPrincipalId: fixture.principal.id, account },
+      grant: {
+        accessToken,
+        refreshToken: "synthetic-refresh-first",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: ["openid"],
+        grantedScopes: ["openid"],
+      },
+    },
+    AbortSignal.timeout(5_000),
+  );
+  const source = {
+    kind: "credential_source" as const,
+    namespaceId: fixture.namespace.id,
+    id: registered.id,
+  };
+  const actor = await fixture.createAccountWithPolicy("source-discovery-editor", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "source-agent-creator",
+      namespaceId: fixture.namespace.id,
+      permissions: { agent: ["create"] },
+    });
+  });
+  const session = await fixture.signIn(actor.credentials);
+  const callerBinding = grantRole(fixture.policy, actor.principal.id, {
+    id: "source-caller-operator",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: source,
+  }).binding;
+  return { fixture, owner, instanceId, source, account, actor, session, callerBinding };
+}
+
+export async function suppressesSourceResolutionErrors(t: TestContext) {
+  const { logger, logs } = createDiscoveryLogger();
+  const { fixture, owner, source, session } = await codexSourceFixture(t, logger);
+  const sentinel = "source-owner-private-sentinel";
+  const selected = { harnessId: "codex", credentialSource: source };
+  // A selected producer can throw before returning a Promise or reject after custody I/O.
+  for (const [error, status, synchronous] of [
+    [new ResourceStateConflictError(sentinel), 409, true],
+    [new DependencyUnavailableError(sentinel), 503, false],
+  ] as const) {
+    owner.failure = error;
+    owner.synchronousFailure = synchronous;
+    for (const [suffix, body] of operations) {
+      const before = owner.resolves;
+      const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
+        session,
+        body: { ...selected, ...body },
+      });
+      assert.equal(response.status, status);
+      assert.equal(owner.resolves, before + 1, "the selected concrete owner was called");
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    }
+  }
+  assert.deepEqual(fixture.calls, [], "a failed resolve cannot dispatch a catalog request");
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(sentinel), false);
+  assert.ok(logs.length > 0, "the request logger was captured");
+  assert.equal(logs.join("").includes(sentinel), false);
+}
+
+type CodexSourceFixture = Awaited<ReturnType<typeof codexSourceFixture>>;
+const operations = [
+  ["", {}],
+  ["/details", { pluginId: remoteId }],
+] as const;
+
+function removeBinding(fixture: CodexSourceFixture["fixture"], binding: AccessBinding) {
+  const index = fixture.policy.bindings.findIndex((item) => item.id === binding.id);
+  assert.notEqual(index, -1);
+  fixture.policy.bindings.splice(index, 1);
+}
+
+async function expectDenied(
+  context: CodexSourceFixture,
+  path: string,
+  body: unknown,
+  calls: number,
+) {
+  const result = await context.fixture.request("POST", path, { session: context.session, body });
+  assertApiError(result, 403, "FORBIDDEN");
+  assert.equal(context.fixture.calls.length, calls, "denied source use must not invoke discovery");
+}
+
+export async function rechecksCredentialSourceGrants(t: TestContext) {
+  const context = await codexSourceFixture(t);
+  const { fixture, owner, instanceId, account, source, session, callerBinding } = context;
+  const selected = { harnessId: "codex", credentialSource: source };
+  for (const [suffix, body] of operations) {
+    const before = owner.resolves;
+    const result = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      session,
+      body: { ...selected, ...body },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(owner.resolves, before + 1);
+    assert.deepEqual(fixture.calls.at(-1)?.input, {
+      accessToken,
+      accountId: account.accountId,
+      isFedramp: account.isFedramp,
+      ...body,
+    });
+    assert.equal(JSON.stringify(result.body).includes(accessToken), false);
+  }
+  let driverCalls = fixture.calls.length;
+  removeBinding(fixture, callerBinding);
+  const resolves = owner.resolves;
+  for (const [suffix, body] of operations) {
+    await expectDenied(context, `${fixture.path}${suffix}`, { ...selected, ...body }, driverCalls);
+  }
+  assert.equal(owner.resolves, resolves, "IAM refuses custody access before resolve");
+  fixture.policy.bindings.push(callerBinding);
+
+  // Only the external token endpoint is controlled. Real TokenService custody, refresh,
+  // state transitions, and the following Fastify discovery request remain in the path.
+  const refreshedToken = "at-plugin-discovery-refreshed";
+  const realFetch = globalThis.fetch;
+  let exchanges = 0;
+  t.mock.method(globalThis, "fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (fetchUrl(input).href === "https://auth.openai.com/oauth/token") {
+      exchanges += 1;
+      assert.equal(new URLSearchParams(String(init?.body)).get("grant_type"), "refresh_token");
+      return Promise.resolve(
+        Response.json({
+          access_token: refreshedToken,
+          token_type: "Bearer",
+          expires_in: 3600,
+          refresh_token: "synthetic-refresh-next",
+          scope: "openid",
+        }),
+      );
+    }
+    return realFetch(input, init);
+  });
+  await owner.forceRefresh(
+    { sourceRef: source, tokenServiceInstanceId: instanceId },
+    AbortSignal.timeout(5_000),
+  );
+  assert.equal(exchanges, 1);
+  const refreshed = await fixture.request("POST", `${fixture.path}/details`, {
+    session,
+    body: { ...selected, pluginId: remoteId },
+  });
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  assert.equal(
+    fixture.calls.at(-1)?.input.accessToken,
+    refreshedToken,
+    "the next request uses refreshed custody",
+  );
+  driverCalls = fixture.calls.length;
+
+  for (const [suffix, body] of operations) {
+    const before = owner.resolves;
+    owner.afterResolved = () => removeBinding(fixture, callerBinding);
+    await expectDenied(context, `${fixture.path}${suffix}`, { ...selected, ...body }, driverCalls);
+    owner.afterResolved = undefined;
+    assert.equal(owner.resolves, before + 1, "the grant was revoked after real resolution");
+    fixture.policy.bindings.push(callerBinding);
+  }
+
+  // Historical Gateway rows never become canonical TokenService Codex Sources; configuring
+  // a Gateway must not create a second reader or a fallback using the old persisted row.
+  const { gateway } = createDeviceCredentialDrivers();
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const legacyId = `cs_${randomUUID()}`;
+  await fixture.state.transact((unit) =>
+    unit.credentialSources.createCredentialSource({
+      id: legacyId,
+      namespaceId: fixture.namespace.id,
+      name: "Historical Codex account",
+      type: "codex-device",
+      ownerCapability: "credential_gateway",
+      driverId: gateway.id,
+      config: {},
+      secrets: {},
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  const legacy = { ...source, id: legacyId };
+  grantRole(fixture.policy, context.actor.principal.id, {
+    id: "legacy-source-operator",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: legacy,
+  });
+  const refused = await fixture.request("POST", fixture.path, {
+    session,
+    body: { harnessId: "codex", credentialSource: legacy },
+  });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(gateway.calls.filter(({ operation }) => operation === "withSourceToken").length, 0);
+  assert.equal(fixture.calls.length, driverCalls);
+
+  await assertResolveDisconnect(t, context, `${fixture.path}`, selected, driverCalls);
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(refreshedToken), false);
+}
+
+async function assertResolveDisconnect(
+  t: TestContext,
+  { fixture, owner, session }: CodexSourceFixture,
+  path: string,
+  body: unknown,
+  driverCalls: number,
+) {
+  const producer = new EventEmitter<{ entered: [AbortSignal]; finished: [] }>();
+  const entered = once(producer, "entered", { signal: t.signal });
+  const finished = once(producer, "finished", { signal: t.signal });
+  entered.catch(() => {});
+  finished.catch(() => {});
+  const resume = Promise.withResolvers<void>();
+  let started = false;
+  let cancelled = false;
+  let client: ClientRequest | undefined;
+  owner.afterResolved = async (signal) => {
+    started = true;
+    producer.emit("entered", signal);
+    try {
+      await resume.promise;
+      cancelled = signal.aborted;
+    } finally {
+      producer.emit("finished");
+    }
+  };
+  try {
+    const server = fixture.app.server;
+    const incoming = waitForRequest(server, t.signal);
+    client = httpRequest(`http://127.0.0.1:${boundPort(server)}${path}`, {
+      method: "POST",
+      headers: authenticatedHeaders(session, {
+        "content-type": "application/json",
+        host: new URL(fixture.origin).host,
+      }),
+      agent: false,
+    });
+    const result = once(client, "error");
+    result.catch(() => {});
+    client.on("response", (reply) => reply.resume());
+    client.end(JSON.stringify(body));
+    const { request: raw, response } = await incoming;
+    const [signal]: unknown[] = await entered;
+    assert.ok(signal instanceof AbortSignal && !signal.aborted);
+    assert.equal(raw.complete, true);
+    const closed = once(response, "close", { signal: t.signal });
+    client.destroy();
+    await closed;
+    assert.equal(signal.aborted, true, "HTTP disconnect aborts the real resolve signal");
+    expectReset((await result)[0]);
+    resume.resolve();
+    await finished;
+    assert.equal(cancelled, true);
+    assert.equal(fixture.calls.length, driverCalls, "a late token cannot reach the Plugin Driver");
+  } finally {
+    resume.resolve();
+    client?.destroy();
+    if (started) {
+      await finished;
+    }
+    owner.afterResolved = undefined;
+  }
+}
+
+export async function savedAgentCredentialSourceGrants(t: TestContext) {
+  const context = await codexSourceFixture(t);
+  const { fixture, owner, source, account, actor, session, callerBinding } = context;
+  const configuration = await fixture.createConfiguration(
+    fixture.namespace.id,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+  );
+  const created = await fixture.request("POST", `/namespaces/${fixture.namespace.id}/agents`, {
+    body: {
+      name: "Source discovery Agent",
+      configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: source.id },
       credentialSources: [{ sourceId: source.id }],
     },
-  );
+  });
+  // This intentionally requires the aggregate's canonical OAuth Source admission. A standalone
+  // dependency head that cannot admit the Source must fail here, not fabricate persisted state.
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agent = fixture.fixtureResponse(created, 201, AgentResponse, "create Agent").data;
   fixture.policy.identities.push({
     id: agent.servicePrincipalId,
     kind: "service_principal",
     namespaceId: fixture.namespace.id,
     agentId: agent.id,
   });
-  const actor = await fixture.createAccountWithPolicy("source-discovery-editor", (principal) => {
-    grantRole(fixture.policy, principal.id, {
-      id: "source-agent-editor",
-      namespaceId: fixture.namespace.id,
-      permissions: { agent: ["read", "update"] },
-      resource: { kind: "agent", id: agent.id },
-    });
+  grantRole(fixture.policy, actor.principal.id, {
+    id: "source-agent-editor",
+    namespaceId: fixture.namespace.id,
+    permissions: { agent: ["read", "update"] },
+    resource: { kind: "agent", id: agent.id },
   });
-  const session = await fixture.signIn(actor.credentials);
-  const sourceBindings = [actor.principal.id, agent.servicePrincipalId].map((principalId) => {
-    const id = `source-operator-${principalId}`;
-    grantRole(fixture.policy, principalId, {
-      id,
-      namespaceId: fixture.namespace.id,
-      permissions: { credential_source: ["operate"] },
-      resource: source,
-    });
-    const binding = fixture.policy.bindings.find((item) => item.id === id);
-    assert.ok(binding);
-    return binding;
-  });
+  const agentBinding = grantRole(fixture.policy, agent.servicePrincipalId, {
+    id: "source-agent-operator",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: source,
+  }).binding;
   const path = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`;
-  const tokenReads = () =>
-    gateway.calls.filter(({ operation }) => operation === "withSourceToken").length;
-  const remove = (binding: AccessBinding) => {
-    const index = fixture.policy.bindings.findIndex((item) => item.id === binding.id);
-    assert.notEqual(index, -1);
-    fixture.policy.bindings.splice(index, 1);
-  };
-  // An external Gateway without its optional callback must still receive 501.
-  // Its ID and source ownership alone never authorize a bundled reader fallback.
-  const externalWithSourceToken = gateway.withSourceToken;
-  const selectedGateway: CredentialGatewayDriver = gateway;
-  delete selectedGateway.withSourceToken;
-  try {
-    const unsupported = await fixture.request("POST", path, { session, body: {} });
-    assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));
-    assert.equal(tokenReads(), 0);
-    assert.equal(wrongReaderCalls, 0);
-    assert.equal(fixture.calls.length, 0);
-  } finally {
-    gateway.withSourceToken = externalWithSourceToken;
-  }
-  const allowed = await fixture.request("POST", path, { session, body: {} });
-  assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
-  assert.equal(tokenReads(), 1);
-  assert.equal(fixture.calls.length, 1);
-  const operations = [
-    ["", {}],
-    ["/details", { pluginId: remoteId }],
-  ] as const;
-  const expectDenied = async (suffix: string, body: unknown) => {
-    const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
-    assertApiError(denied, 403, "FORBIDDEN");
-    assert.equal(fixture.calls.length, 1, "denied source use must not invoke discovery");
-  };
-  for (const binding of sourceBindings) {
-    remove(binding);
-    for (const [suffix, body] of operations) {
-      await expectDenied(suffix, body);
-    }
-    assert.equal(tokenReads(), 1, "both grants are required before requesting a source token");
-    fixture.policy.bindings.push(binding);
-  }
-
-  const withSourceToken = gateway.withSourceToken.bind(gateway);
-  let revokedBinding: AccessBinding;
-  gateway.withSourceToken = (context, use) =>
-    withSourceToken(context, (token) => {
-      // Revoke after the external read yields its token, before OCC may hand it to discovery.
-      // Neither the Plugin Driver nor an authorization method is replaced here.
-      remove(revokedBinding);
-      return use(token);
+  for (const [suffix, body] of operations) {
+    const result = await fixture.request("POST", `${path}${suffix}`, { session, body });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.deepEqual(fixture.calls.at(-1)?.input, {
+      accessToken,
+      accountId: account.accountId,
+      isFedramp: account.isFedramp,
+      ...body,
     });
-  let reads = tokenReads();
-  for (const binding of sourceBindings) {
+  }
+  const driverCalls = fixture.calls.length;
+  for (const binding of [callerBinding, agentBinding]) {
+    removeBinding(fixture, binding);
+    const before = owner.resolves;
     for (const [suffix, body] of operations) {
-      revokedBinding = binding;
-      await expectDenied(suffix, body);
-      assert.equal(tokenReads(), ++reads, "retrieval completed before its grant was rechecked");
+      await expectDenied(context, `${path}${suffix}`, body, driverCalls);
+    }
+    assert.equal(owner.resolves, before);
+    fixture.policy.bindings.push(binding);
+    for (const [suffix, body] of operations) {
+      owner.afterResolved = () => removeBinding(fixture, binding);
+      await expectDenied(context, `${path}${suffix}`, body, driverCalls);
+      owner.afterResolved = undefined;
       fixture.policy.bindings.push(binding);
     }
   }
-  gateway.withSourceToken = withSourceToken;
-
-  await t.test(
-    "source token read is cancelled when the client disconnects",
-    { timeout: 10_000 },
-    async (t) => {
-      // The loops above restored both grants. Prove this same Agent still reaches
-      // the normal synthetic token producer and catalog before holding its next read.
-      const live = await fixture.request("POST", path, { session, body: {} });
-      assert.equal(live.status, 200, JSON.stringify(live.body));
-      assert.equal(tokenReads(), ++reads);
-      assert.equal(fixture.calls.length, 2);
-      assert.deepEqual(
-        fixture.fixtureResponse(live, 200, AgentPluginCatalogResponse, "live source catalog").data,
-        { plugins: [catalogEntry], nextCursor: "second-page" },
-      );
-
-      const producer = new EventEmitter<{ entered: [AbortSignal]; finished: [] }>();
-      const entered = once(producer, "entered", { signal: t.signal });
-      const finished = once(producer, "finished", { signal: t.signal });
-      // Cleanup can reach this wait after the test deadline has already expired.
-      entered.catch(() => {});
-      finished.catch(() => {});
-      const resume = Promise.withResolvers<void>();
-      let started = false;
-      let cancelled = false;
-      let client: ClientRequest | undefined;
-      const holdToken: NonNullable<CredentialGatewayDriver["withSourceToken"]> = async (
-        context,
-        use,
-      ) => {
-        started = true;
-        producer.emit("entered", context.signal);
-        try {
-          await resume.promise;
-          // Return a token despite cancellation to test OCC's late callback guard too.
-          cancelled = context.signal.aborted;
-          return await withSourceToken(context, use);
-        } finally {
-          producer.emit("finished");
-        }
-      };
-      t.mock.method(gateway, "withSourceToken", holdToken);
-      try {
-        const server = fixture.app.server;
-        const incoming = waitForRequest(server, t.signal);
-        client = httpRequest(`http://127.0.0.1:${boundPort(server)}${path}`, {
-          method: "POST",
-          headers: authenticatedHeaders(session, {
-            "content-type": "application/json",
-            host: new URL(fixture.origin).host,
-          }),
-          agent: false,
-        });
-        const result = once(client, "error");
-        result.catch(() => {});
-        client.on("response", (reply) => reply.resume());
-        client.end(JSON.stringify({}));
-        const { request: raw, response } = await incoming;
-        const [signal]: unknown[] = await entered;
-        assert.ok(signal instanceof AbortSignal);
-        assert.equal(signal.aborted, false);
-        assert.equal(raw.readableEnded, true);
-        assert.equal(raw.complete, true);
-        const closed = once(response, "close", { signal: t.signal });
-        client.destroy();
-        await closed;
-        assert.equal(response.writableEnded, false);
-        // The actual server close must abort the source read, before its own timeout.
-        assert.equal(
-          signal.aborted,
-          true,
-          "source token read signal must abort on HTTP disconnect",
-        );
-        expectReset((await result)[0]);
-        resume.resolve();
-        await finished;
-        assert.equal(cancelled, true, "the held producer saw the real source-read signal abort");
-        assert.equal(tokenReads(), reads + 1, "the late callback did yield a fixture token");
-        assert.equal(fixture.calls.length, 2, "a late source token must not reach discovery");
-      } finally {
-        // Release the producer even if the assertion fails. Its completion wait uses the test deadline.
-        resume.resolve();
-        client?.destroy();
-        if (started) {
-          await finished;
-        }
-      }
-    },
-  );
 }

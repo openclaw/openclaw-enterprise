@@ -211,7 +211,7 @@ export function createAgentCredentialAccess({
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
-      await validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
+      await validatePluginCredentialSources(state, driver, agent.plugins, [], agent.harnessAuth);
       return [];
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -227,7 +227,7 @@ export function createAgentCredentialAccess({
       bindings,
       agent.harnessAuth,
     );
-    await validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
+    await validatePluginCredentialSources(state, driver, agent.plugins, sources, agent.harnessAuth);
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
       await authority.authorizeAgentPrincipal(principalId, agent, "operate", {

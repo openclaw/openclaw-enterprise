@@ -68,7 +68,6 @@ import type {
   AgentRevision,
   ComputeDriver,
   ConfigurationValidationOptions,
-  CredentialGatewayDriver,
   CredentialProxyDriver,
   CredentialSourceReference,
   DeploymentPolicy,
@@ -159,11 +158,6 @@ export interface ControllerOptions {
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
-  /** Code-only composition binding for the bundled retained-source plugin reader. */
-  readonly pluginSourceReader?: {
-    readonly gateway: CredentialGatewayDriver;
-    readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
-  };
   /** Code-only binding for Source-scoped cleanup owned by the selected delivery Proxy. */
   readonly credentialSourceDelivery?:
     | ((
@@ -692,7 +686,6 @@ export function createControllerComposition(
 
   const authorization: ControllerOptions["authorize"] | undefined = options.authorize;
   const preparedTokens: TokenService | undefined = options.preparedTokens;
-  const pluginSourceReader = options.pluginSourceReader;
   const stateAndAuthority = createStateAndAuthority(
     admittedInstallation,
     options,
@@ -741,7 +734,6 @@ export function createControllerComposition(
   const {
     agentCredentialAccess,
     credentialSourceDrivers,
-    credentialSourceOperations,
     egressAdmission,
     managedCredentialSources,
   } = credentials;
@@ -865,14 +857,11 @@ export function createControllerComposition(
     pluginDriver: (harnessId, forConfiguration) =>
       drivers.pluginDriver(harnessId, forConfiguration),
     computeImplementation: () => selectedCompute().implementation,
-    sandboxImplementation: () => drivers.selection("sandbox")?.implementation,
-    credentialGatewayImplementation: () => drivers.selection("credential_gateway")?.implementation,
   });
   const pluginDiscovery = createPluginDiscovery({
     transactions,
     authority,
-    authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
-    sourceReader: pluginSourceReader,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     secretDriver: secretOperations.secretDriver,
     readConfiguration: (metadata) => configurationOperations.savedConfigurationReader(metadata)(),
     modelPolicyAgent,

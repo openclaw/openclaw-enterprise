@@ -42,7 +42,6 @@
     "tests/conformance/workspace-node-supervisor.test.ts",
     "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.ts",
-    "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.ts",
     "tests/integration/model-discovery-shipped-api.test.ts",
@@ -675,12 +674,6 @@
     },
     {
       "path": "tests/integration/plugin-discovery-api.test.ts"
-    },
-    {
-      "path": "tests/integration/openshell-plugin-source-reader.test.ts",
-      "expectedTests": [
-        "OpenShell source discovery uses the selected Backend reader with no Gateway callback"
-      ]
     },
     {
       "path": "tests/integration/device-authorization-api.test.ts"

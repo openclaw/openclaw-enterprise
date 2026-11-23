@@ -21,6 +21,8 @@ import {
 import {
   honorsDisconnectsDuringIam,
   rechecksCredentialSourceGrants,
+  savedAgentCredentialSourceGrants,
+  suppressesSourceResolutionErrors,
 } from "./plugin-discovery-api-disconnect-cases.ts";
 import {
   usesCurrentAgentSecret,
@@ -83,8 +85,17 @@ test(
   requiresExactAgentAndSecretGrants,
 );
 test(
-  "Saved Agent source discovery denies missing grants and rechecks revocation after retrieval",
+  "Pre-Agent Codex Source discovery resolves refreshed custody and rechecks grants and disconnects",
+  { timeout: 15_000 },
   rechecksCredentialSourceGrants,
+);
+test(
+  "Pre-Agent Codex Source discovery sanitizes selected owner resolution failures",
+  suppressesSourceResolutionErrors,
+);
+test(
+  "Saved Agent Codex Source discovery requires caller and Agent grants around resolution",
+  savedAgentCredentialSourceGrants,
 );
 test(
   "Saved Agent plugin discovery rechecks Secret authority after the backend read",

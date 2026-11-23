@@ -132,7 +132,6 @@ import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
-import { bindOpenShellPluginSourceReader } from "./openshell-plugin-source-reader.ts";
 import {
   OpenShellCredentialGatewayDriver,
   type OpenShellCredentialGatewayOptions,
@@ -267,7 +266,6 @@ export interface InstallationRuntimeDrivers {
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
-  readonly pluginSourceReader?: ControllerOptions["pluginSourceReader"];
   readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
   /** Same selected Sandbox owner, with the native delivery capability when available. */
@@ -1550,10 +1548,6 @@ async function composeInstallationConfiguration(
             backend: openShell!,
           },
         );
-  const pluginSourceReader =
-    credentialGatewayDriver === undefined
-      ? undefined
-      : bindOpenShellPluginSourceReader(openShell!, credentialGatewayDriver);
   if (
     proxySelection !== undefined &&
     sandboxPackage === undefined &&
@@ -1868,7 +1862,6 @@ async function composeInstallationConfiguration(
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(pluginSourceReader === undefined ? {} : { pluginSourceReader }),
     ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     ...(protectedDriver === undefined
       ? {}

@@ -1720,6 +1720,7 @@ export type {
   PluginDriver,
   PluginDriverContext,
   PluginDiscoveryAuthentication,
+  PluginCredentialSource,
 } from "./drivers/plugin/index.ts";
 export type {
   ChannelDriver,

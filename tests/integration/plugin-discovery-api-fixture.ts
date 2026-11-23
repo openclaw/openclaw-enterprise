@@ -12,11 +12,7 @@ import type {
   PluginDriver,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
-import {
-  InMemoryPlatformState,
-  OpenClawController,
-  type ControllerOptions,
-} from "../../packages/occ/src/index.ts";
+import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
@@ -57,7 +53,6 @@ type ConsoleOptions = {
   logger?: OccLogger;
   onSend?: (request: { raw: IncomingMessage }) => Promise<void>;
   credentialGatewayDriver?: CredentialGatewayDriver;
-  pluginSourceReader?: ControllerOptions["pluginSourceReader"];
   sandboxDriver?: SandboxDriver;
 };
 

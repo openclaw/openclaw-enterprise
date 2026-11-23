@@ -45,13 +45,11 @@ import {
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
   InstalledDriver,
-  OpenClawController,
   type PostgresPool,
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -1127,19 +1125,10 @@ test(
       assert.deepEqual(skippedRefreshes(frozenLog), frozenWarning);
       // Development PostgreSQL startup passes the same warning to its logger.
       const developmentLog = memoryLog();
-      const { gateway } = createDeviceCredentialDrivers();
-      const withSourceToken = t.mock.fn(() => {
-        assert.fail("PostgreSQL development startup must not read a plugin credential");
+      const developmentRuntime = await productionDrivers({
+        includeDefaults: true,
+        configurationRoot: join(passwordDirectory, "configurations"),
       });
-      const pluginSourceReader = { gateway, withSourceToken };
-      const developmentRuntime = {
-        ...(await productionDrivers({
-          includeDefaults: true,
-          configurationRoot: join(passwordDirectory, "configurations"),
-        })),
-        pluginSourceReader,
-      };
-      const factory = t.mock.method(OpenClawController, "forInstallation");
       let development: Awaited<ReturnType<typeof composePostgresDevelopment>> | undefined;
       try {
         development = await composePostgresDevelopment(
@@ -1154,20 +1143,7 @@ test(
           },
           developmentRuntime,
         );
-        assert.equal(factory.mock.callCount(), 1);
-        const factoryCall = factory.mock.calls[0];
-        assert.ok(factoryCall);
-        const [persistedInstallation, controllerOptions] = factoryCall.arguments;
-        assert.equal(persistedInstallation.id, recordId(row(installation)));
-        assert.ok(controllerOptions.state instanceof PostgresPlatformState);
-        assert.strictEqual(
-          controllerOptions.pluginSourceReader,
-          pluginSourceReader,
-          "PostgreSQL development must forward the identical plugin source reader",
-        );
-        assert.equal(withSourceToken.mock.callCount(), 0);
       } finally {
-        factory.mock.restore();
         await development?.close();
       }
       assert.deepEqual(await readOpenClaw(), refrozen.data);

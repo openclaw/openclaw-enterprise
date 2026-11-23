@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
-  type StoredCredentialSource as CredentialSource,
+  type PluginCredentialSource,
   type PluginCatalogEntry,
   type PluginDesiredState,
   type PluginDeploymentContract,
@@ -457,42 +457,75 @@ export function managedMcpInstallForSourceConfig(
 
 export function managedMcpSlotAcceptsSource(
   install: ManagedMcpInstall,
-  source: CredentialSource,
+  source: PluginCredentialSource,
 ): boolean {
+  const template = source.currentTemplate;
+  if (
+    source.state !== "ready" ||
+    !source.connectionTemplateId ||
+    template?.templateId !== source.connectionTemplateId
+  ) {
+    return false;
+  }
+  if (source.type === "static") {
+    return (
+      template.mode === "static_bearer" &&
+      template.destinations.some(
+        ({ host, port, path, method }) =>
+          host === install.endpoint.host &&
+          port === install.endpoint.port &&
+          path === install.endpoint.path &&
+          method === "POST",
+      )
+    );
+  }
+  const consent = source.consent;
+  const slot = install.credentials[install.slotId]!;
   return (
-    source.ownerCapability === "credential_gateway" &&
-    source.state === "ready" &&
-    source.egress === undefined &&
-    source.type === "bearer-token" &&
-    source.secrets.token?.namespaceId === source.namespaceId &&
-    managedMcpInstallForSourceConfig(source.config) === install
+    consent.kind === "connection_template" &&
+    consent.issuer === slot.issuer &&
+    consent.resource === slot.mcp.resource &&
+    consent.mcpServerUrl === install.url &&
+    template.mode === "mcp_discovery" &&
+    template.issuer === consent.issuer &&
+    template.mcp?.resource === consent.resource &&
+    template.mcp.serverUrl === consent.mcpServerUrl &&
+    template.destinations.some(
+      ({ host, port, path }) =>
+        host === install.endpoint.host &&
+        port === install.endpoint.port &&
+        (path === install.endpoint.path ||
+          (path.endsWith("/**") &&
+            (install.endpoint.path === path.slice(0, -3) ||
+              install.endpoint.path.startsWith(path.slice(0, -2))))),
+    )
   );
 }
 
 function acceptsManagedSource(
   install: ManagedCliInstall | ManagedMcpInstall,
   requirement: string,
-  source: CredentialSource,
+  source: PluginCredentialSource,
 ): boolean {
   if (install.kind === "mcp") {
     return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source);
   }
   const slot = install.credentials[requirement];
-  return !!slot && cliCredentialPolicy(install)?.accepts(install, slot, source) === true;
+  return !!slot && cliCredentialPolicy(install)?.accepts(slot, source) === true;
 }
 
 export function managedPluginCredentials(
   driver: PluginDeploymentContract,
 ): NonNullable<PluginDriver["credentials"]> {
   return {
-    mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
+    mcpToolDiscovery(pluginId: string, slotId: string, source: PluginCredentialSource) {
       const install = managedMcpInstalls.find(({ id }) => id === pluginId);
       if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
         return undefined;
       }
       return { endpoint: install.url };
     },
-    choices(sources: readonly CredentialSource[]) {
+    choices(sources: readonly PluginCredentialSource[]) {
       return managedInstalls.flatMap((install) =>
         Object.entries(install.credentials).map(([id, slot]) => ({
           pluginId: install.id,
@@ -552,13 +585,6 @@ export function managedPluginCredentials(
               !acceptsManagedSource(install, requirement, source)
             ) {
               throw unavailable();
-            }
-            const conflict =
-              install.kind === "cli"
-                ? cliCredentialPolicy(install)?.conflict(source, sources)
-                : undefined;
-            if (conflict) {
-              throw new ConfigurationHarnessError(conflict);
             }
           }
         }

@@ -3,7 +3,8 @@ import type { PluginDeploymentContract } from "./deployment.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
-  StoredCredentialSource,
+  ConnectionTemplateVersion,
+  CredentialSourceMetadata,
   Namespace,
   OpenClawConfigurationDocument,
   PluginApprovers,
@@ -28,6 +29,11 @@ export interface PluginDiscoveryAuthentication {
   readonly isFedramp?: boolean;
 }
 
+/** OCC supplies authorized Source metadata and the current approved Template, without credential values. */
+export type PluginCredentialSource = CredentialSourceMetadata & {
+  readonly currentTemplate?: Readonly<ConnectionTemplateVersion>;
+};
+
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   /** Harness family authorized to use this catalog. */
@@ -36,16 +42,16 @@ export interface PluginDriver extends Driver {
   readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
-    choices(sources: readonly StoredCredentialSource[]): readonly AgentPluginCredentialSlot[];
+    choices(sources: readonly PluginCredentialSource[]): readonly AgentPluginCredentialSlot[];
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,
       slotId: string,
-      source: StoredCredentialSource,
+      source: PluginCredentialSource,
     ): { readonly endpoint: string } | undefined;
     validate(
       selections: PluginDesiredState,
-      sources: readonly StoredCredentialSource[],
+      sources: readonly PluginCredentialSource[],
       modelSourceId?: string,
     ): void | Promise<void>;
   };
@@ -65,10 +71,6 @@ export interface PluginDriver extends Driver {
     selections: PluginDesiredState,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     computeImplementation: string,
-    credentialRuntime?: {
-      readonly sandbox: string | undefined;
-      readonly gateway: string | undefined;
-    },
   ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
   /** Pre-Agent discovery defaults to requiring a transient credential. Results are not persisted. */

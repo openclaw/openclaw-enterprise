@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -9,11 +9,9 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import type {
-  CredentialGatewayDriver,
-  CredentialRefreshDriver,
-  SandboxDriver,
-} from "../../packages/contracts/src/index.ts";
+import type { SandboxDriver } from "../../packages/contracts/src/index.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -25,7 +23,6 @@ import {
   identifier,
   injectedRequest,
 } from "./occ-api-injected-fixture.ts";
-import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 
 function record(value: unknown) {
   const result = asRecord(value);
@@ -39,19 +36,9 @@ function string(value: unknown) {
 }
 
 test("deploying Google Workspace and Slack together freezes both selections and preserves independent credentials", async (t) => {
-  const sourceConfig = {
-    protocol: "mcp",
-    host: "mcp.slack.com",
-    port: "443",
-    path: "/mcp",
-    env_var: "SLACK_MCP_TOKEN",
-  };
-  // Exercise Agent admission and immutable revision storage. Provider registration and MCP
-  // enforcement are covered at the OpenShell boundary.
-  function unexpectedGatewayCall(): never {
-    assert.fail("the admission fixture must not access credential material");
-  }
-  const token = "fixture-slack-discovery-token";
+  // OCC, IAM, Template policy, TokenService custody, and MCP SDK discovery are real.
+  // Only the private Secret store and MCP routing are controlled fixtures.
+  let token = "fixture-slack-discovery-token";
   const upstream: { method: unknown; authenticated: boolean }[] = [];
   let tokenReads = 0;
   let beforeTokenUse = () => {};
@@ -121,77 +108,6 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert(peerAddress && typeof peerAddress === "object");
   const peerUrl = `http://127.0.0.1:${peerAddress.port}/mcp`;
   const secretDriver = createTestSecretDriver({ id: "secret-slack-admission" });
-  const readValue = secretDriver.withValue;
-  secretDriver.withValue = (secret, use) =>
-    readValue(secret, (value) => {
-      tokenReads += 1;
-      beforeTokenUse();
-      return use(value);
-    });
-  const googleGateway = credentialGatewayOverProviders({
-    refresh: true,
-    toolBinaries: ["/usr/local/lib/oce/plugins/google/bin/gog"],
-  }).driver;
-  const gateway: CredentialGatewayDriver & { rotateSource: typeof unexpectedGatewayCall } = {
-    id: "credential-gateway-slack-admission",
-    capability: "credential_gateway",
-    implementation: "openshell",
-    validateSourceConfig(input) {
-      if (input.type === "oauth2-refresh-token") {
-        return googleGateway.validateSourceConfig(input);
-      }
-    },
-    async listSourceTypes(context) {
-      const googleType = (await googleGateway.listSourceTypes(context)).find(
-        ({ type }) => type === "oauth2-refresh-token",
-      );
-      assert.ok(googleType);
-      return [
-        googleType,
-        {
-          type: "openai",
-          config: [],
-          secrets: [],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-        {
-          type: "bearer-token",
-          config: Object.keys(sourceConfig).map((name) => ({ name, required: true })),
-          secrets: [{ name: "token", required: true }],
-          rotation: "none",
-        },
-      ];
-    },
-    async registerSource() {
-      return { state: "ready" };
-    },
-    updateSource: unexpectedGatewayCall,
-    rotateSource: unexpectedGatewayCall,
-    removeSource: unexpectedGatewayCall,
-    attachForRevision: unexpectedGatewayCall,
-    attachmentStatus: unexpectedGatewayCall,
-    withdraw: unexpectedGatewayCall,
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    withSourceToken: unexpectedGatewayCall,
-  };
-  // OCC registers the Google source normally. This fixture reports the first refresh as
-  // ready so the test can exercise deployment without contacting Google's token endpoint.
-  const refresh: CredentialRefreshDriver = {
-    id: "credential-refresh-openshell",
-    capability: "credential_refresh",
-    implementation: "openshell",
-    async configureRefresh() {
-      return { state: "pending" };
-    },
-    async rotate() {
-      return { state: "ready" };
-    },
-    refreshStatus: unexpectedGatewayCall,
-    removeRefresh: unexpectedGatewayCall,
-  };
   const sandbox: SandboxDriver = {
     id: "sandbox-slack-admission",
     capability: "sandbox",
@@ -206,7 +122,6 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const compute = createTestKubernetesComputeDriver("compute-slack-admission", {
     gatewayRuntime: true,
     sandboxDriver: sandbox,
-    credentialGatewayDriver: gateway,
   });
   compute.resolveSandboxNamespace = async (namespace) => namespace;
   compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
@@ -256,10 +171,38 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const { controller, platformState } = fixture;
   assert(controller && platformState);
   const pluginDriver = new OCCPluginDriver();
-  for (const driver of [sandbox, gateway, refresh]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  controller.registerDriver(sandbox);
+  controller.selectDriver("sandbox", sandbox.id);
+  const instanceId = await controller.activateTokenServiceInstance(
+    "joint-plugin-token-service",
+    randomUUID(),
+  );
+  const owner = new OCCTokenServiceDriver(
+    "joint-plugin-token-service",
+    controller.installation.id,
+    secretDriver.installationSecrets,
+    instanceId,
+    platformState,
+    undefined,
+    new OAuthAccountTokens(
+      platformState,
+      secretDriver,
+      controller.resolveConnectionClient.bind(controller),
+    ),
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  const resolveCredential = owner.resolveCredential.bind(owner);
+  t.mock.method(
+    owner,
+    "resolveCredential",
+    async (...args: Parameters<typeof owner.resolveCredential>) => {
+      const result = await resolveCredential(...args);
+      tokenReads += 1;
+      beforeTokenUse();
+      return result;
+    },
+  );
   // A saved Agent selects the MCP credential and endpoint from its own Harness catalog.
   controller.installPluginDrivers([new CodexPluginDriver(), pluginDriver]);
   const namespaceName = "slack-mcp-admission";
@@ -275,49 +218,147 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
   );
   const base = `/namespaces/${namespaceId}`;
-  const secret = await request("POST", `${base}/secrets`, {
-    body: { name: "Slack access token", value: token },
+  const slackTemplate = await request("POST", "/connection-templates", {
+    body: {
+      namespaceId,
+      displayName: "Slack MCP bearer",
+      mode: "static_bearer",
+      destinations: [{ method: "POST", host: "mcp.slack.com", port: 443, path: "/mcp" }],
+    },
   });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
+  assert.equal(slackTemplate.status, 201, JSON.stringify(slackTemplate.body));
+  const slackTemplateId = string(record(slackTemplate.data).id);
   const source = await request("POST", `${base}/credential-sources`, {
     body: {
       name: "Slack account",
-      type: "bearer-token",
-      config: sourceConfig,
-      secrets: { token: { kind: "secret", id: string(record(secret.data).id), namespaceId } },
+      type: "static",
+      connectionTemplateId: slackTemplateId,
+      secret: { opaque: token },
     },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
   const sourceId = string(record(source.data).id);
-  const googleSecret = await request("POST", `${base}/secrets`, {
-    body: { name: "Google refresh token", value: "fixture-google-refresh-token" },
-  });
-  assert.equal(googleSecret.status, 201, JSON.stringify(googleSecret.body));
-  const googleSource = await request("POST", `${base}/credential-sources`, {
+  const googleTemplate = await request("POST", "/connection-templates", {
     body: {
-      name: "Google account",
-      type: "oauth2-refresh-token",
-      config: {
-        host: "gmail.googleapis.com",
-        path: "/gmail/**",
-        env_var: "GOG_ACCESS_TOKEN",
-        client_id: "google-admission-fixture",
-        scope: "https://www.googleapis.com/auth/gmail.readonly",
-        token_url: "https://oauth2.googleapis.com/token",
-      },
-      secrets: {
-        refresh_token: { kind: "secret", namespaceId, id: string(record(googleSecret.data).id) },
-      },
+      namespaceId,
+      displayName: "Google Workspace OAuth",
+      mode: "manual",
+      issuer: "https://accounts.google.com",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      scopes: [],
+      destinations: [{ host: "gmail.googleapis.com", port: 443, path: "/gmail/**" }],
     },
   });
-  assert.equal(googleSource.status, 201, JSON.stringify(googleSource.body));
-  const googleSourceId = string(record(googleSource.data).id);
-  tokenReads = 0;
-  const model = await request("POST", `${base}/credential-sources`, {
-    body: { name: "Model account", type: "openai" },
+  assert.equal(googleTemplate.status, 201, JSON.stringify(googleTemplate.body));
+  const templateId = string(record(googleTemplate.data).id);
+  const client = await request("POST", "/oauth-clients", {
+    body: {
+      connectionTemplateId: templateId,
+      connectionTemplateVersion: record(record(googleTemplate.data).current).version,
+      displayName: "Google public client",
+      clientId: "google-admission-fixture",
+      tokenEndpointAuthMethod: "none",
+    },
+  });
+  assert.equal(client.status, 201, JSON.stringify(client.body));
+  const currentTemplate = await request("GET", `/connection-templates/${templateId}`);
+  assert.equal(currentTemplate.status, 200, JSON.stringify(currentTemplate.body));
+  // Consent itself has a separate owner and integration. This is its trusted post-exchange handoff.
+  const googleSource = await owner.createSource(
+    {
+      kind: "oauth_refresh_token",
+      namespaceId,
+      name: "Google account",
+      connectionTemplateId: templateId,
+      consent: {
+        kind: "connection_template",
+        ownerPrincipalId: fixture.principal.id,
+        version: Number(record(record(currentTemplate.data).current).version),
+        oauthClientId: string(record(client.data).id),
+      },
+      grant: {
+        accessToken: "fixture-google-access-token",
+        refreshToken: "fixture-google-refresh-token",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: [],
+        grantedScopes: [],
+      },
+    },
+    AbortSignal.timeout(5_000),
+  );
+  const googleSourceId = googleSource.id;
+  const wrongIssuerTemplate = await request("POST", "/connection-templates", {
+    body: {
+      namespaceId,
+      displayName: "Other issuer",
+      mode: "manual",
+      issuer: "https://login.example.test",
+      authorizationUrl: "https://login.example.test/authorize",
+      tokenUrl: "https://login.example.test/token",
+      scopes: [],
+      destinations: [{ host: "gmail.googleapis.com", port: 443, path: "/gmail/**" }],
+    },
+  });
+  assert.equal(wrongIssuerTemplate.status, 201, JSON.stringify(wrongIssuerTemplate.body));
+  const wrongIssuerTemplateId = string(record(wrongIssuerTemplate.data).id);
+  const wrongIssuerClient = await request("POST", "/oauth-clients", {
+    body: {
+      connectionTemplateId: wrongIssuerTemplateId,
+      connectionTemplateVersion: record(record(wrongIssuerTemplate.data).current).version,
+      displayName: "Other issuer client",
+      clientId: "other-issuer-client",
+      tokenEndpointAuthMethod: "none",
+    },
+  });
+  assert.equal(wrongIssuerClient.status, 201, JSON.stringify(wrongIssuerClient.body));
+  const wrongIssuerCurrent = await request("GET", `/connection-templates/${wrongIssuerTemplateId}`);
+  assert.equal(wrongIssuerCurrent.status, 200, JSON.stringify(wrongIssuerCurrent.body));
+  const wrongIssuerSource = await owner.createSource(
+    {
+      kind: "oauth_refresh_token",
+      namespaceId,
+      name: "Other issuer account",
+      connectionTemplateId: wrongIssuerTemplateId,
+      consent: {
+        kind: "connection_template",
+        ownerPrincipalId: fixture.principal.id,
+        version: Number(record(record(wrongIssuerCurrent.data).current).version),
+        oauthClientId: string(record(wrongIssuerClient.data).id),
+      },
+      grant: {
+        accessToken: "fixture-other-access",
+        refreshToken: "fixture-other-refresh",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: [],
+        grantedScopes: [],
+      },
+    },
+    AbortSignal.timeout(5_000),
+  );
+  const wrongEndpointTemplate = await request("POST", "/connection-templates", {
+    body: {
+      namespaceId,
+      displayName: "Different MCP endpoint",
+      mode: "static_bearer",
+      destinations: [{ method: "POST", host: "mcp.slack.com", port: 443, path: "/different" }],
+    },
+  });
+  assert.equal(wrongEndpointTemplate.status, 201, JSON.stringify(wrongEndpointTemplate.body));
+  const wrongEndpointSource = await request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "Different MCP endpoint account",
+      type: "static",
+      connectionTemplateId: string(record(wrongEndpointTemplate.data).id),
+      secret: { opaque: "fixture-other-mcp-bearer" },
+    },
+  });
+  assert.equal(wrongEndpointSource.status, 201, JSON.stringify(wrongEndpointSource.body));
+  const model = await request("POST", `${base}/secrets`, {
+    body: { name: "Model API key", value: "fixture-model-key" },
   });
   assert.equal(model.status, 201, JSON.stringify(model.body));
-  const modelId = string(record(model.data).id);
+  const modelRef = record(model.data).ref;
   const configurationValues = createHarnessConfiguration("openclaw", "gpt-5.1");
   const configurationResponse = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     body: { kind: "agent", values: configurationValues },
@@ -328,13 +369,18 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.match(configurationId, identifier("cfg"));
   assert.equal(configuration.namespaceId, namespaceId);
   assert.deepEqual(configuration.values, configurationValues);
-  const credentialSources = [{ sourceId: modelId }, { sourceId: googleSourceId }, { sourceId }];
+  const credentialSources = [
+    { sourceId: googleSourceId },
+    { sourceId: wrongIssuerSource.id },
+    { sourceId: string(record(wrongEndpointSource.data).id) },
+    { sourceId },
+  ];
   const created = await request("POST", `${base}/agents`, {
     body: {
       name: "Slack Agent",
       executionMode: "dedicated",
       configurationId,
-      harnessAuth: { method: "credential_source", sourceId: modelId },
+      harnessAuth: { method: "api_key", source: modelRef },
       credentialSources,
     },
   });
@@ -389,6 +435,35 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   );
   assert.equal(tokenReads, 1);
   upstream.length = 0;
+  // Rotation changes TokenService custody; the next discovery must receive the replacement,
+  // without publishing that bearer in the response or reading a Namespace Secret directly.
+  token = "fixture-slack-rotated-token";
+  const rotated = await request("PATCH", `${base}/credential-sources/${sourceId}`, {
+    body: { secret: { opaque: token } },
+  });
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  const next = await discover();
+  assert.equal(next.status, 200, JSON.stringify(next.body));
+  assert.equal(JSON.stringify(next.body).includes(token), false);
+  assert.ok(upstream.some(({ method, authenticated }) => method === "tools/list" && authenticated));
+  assert.equal(tokenReads, 2);
+  upstream.length = 0;
+  // Eligibility follows the current approved Template destinations, including for an existing
+  // Source. Removing the endpoint must reject discovery before TokenService resolves a bearer.
+  const replaceSlackDestinations = (path: string) =>
+    request("PATCH", `/connection-templates/${slackTemplateId}`, {
+      body: {
+        mode: "static_bearer",
+        destinations: [{ method: "POST", host: "mcp.slack.com", port: 443, path }],
+      },
+    });
+  const withdrawnDestination = await replaceSlackDestinations("/different");
+  assert.equal(withdrawnDestination.status, 200, JSON.stringify(withdrawnDestination.body));
+  assertApiError(await discover(), 409, "RESOURCE_CONFLICT");
+  assert.equal(tokenReads, 2);
+  assert.deepEqual(upstream, []);
+  const restoredDestination = await replaceSlackDestinations("/mcp");
+  assert.equal(restoredDestination.status, 200, JSON.stringify(restoredDestination.body));
   tokenReads = 0;
 
   const editor = await fixture.createAuthPrincipal("managed-mcp-editor");
@@ -399,7 +474,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     namespaceId,
     permissions: (["read", "update"] as const).map((action) => ({ action, resourceKind: "agent" })),
   });
-  state.bindings.push({
+  const editorAgentBinding: (typeof state.bindings)[number] = {
     id: "managed-mcp-editor",
     namespaceId,
     subjectKind: "identity",
@@ -407,34 +482,27 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     roleId: "managed-mcp-editor",
     resourceKind: "agent",
     resourceId: agentId,
-  });
-  const forbidden = await request("POST", `${agentPath}/plugins/details`, {
+  };
+  state.bindings.push(editorAgentBinding);
+  // An editor may preview through the Agent's existing grant without receiving a personal
+  // Source grant. Discovery does not create or broaden a binding.
+  const preview = await request("POST", `${agentPath}/plugins/details`, {
     body: discovery,
     session: editor.session,
   });
-  assertApiError(forbidden, 403, "FORBIDDEN");
-  assert.match(string(record(record(forbidden.body).error).message), /CredentialSource operate/);
-  assert.equal(tokenReads, 0);
-  assert.deepEqual(upstream, []);
-  // The editor loses source access while the external Configuration Driver resolves the
-  // pre-dispatch placement. Their grant must be checked again before the peer sees a bearer.
-  const editorSource: (typeof state.bindings)[number] = {
-    id: "editor-slack",
-    namespaceId,
-    subjectKind: "identity",
-    subjectId: editor.principal.id,
-    roleId,
-    resourceKind: "credential_source",
-    resourceId: sourceId,
-  };
-  state.bindings.push(editorSource);
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.equal(tokenReads, 1);
+  assert.ok(upstream.some(({ method, authenticated }) => method === "tools/list" && authenticated));
+  upstream.length = 0;
+  tokenReads = 0;
+  // Losing Agent access during the external lookup must still fence dispatch.
   const { configurationDriver } = fixture;
   const readConfiguration = configurationDriver.read;
   beforeTokenUse = () => {
     configurationDriver.read = async (...args) => {
       const saved = await readConfiguration.apply(configurationDriver, args);
       configurationDriver.read = readConfiguration;
-      assert.equal(state.bindings.pop(), editorSource);
+      assert.equal(state.bindings.pop(), editorAgentBinding);
       return saved;
     };
   };
@@ -447,7 +515,6 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.deepEqual(upstream, []);
   beforeTokenUse = () => {};
   tokenReads = 0;
-  state.bindings.pop();
 
   const agentBinding = state.bindings.pop();
   assert(agentBinding);
@@ -482,7 +549,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const detached = await request("PATCH", agentPath, {
     body: {
       configurationId,
-      credentialSources: [{ sourceId: modelId }],
+      credentialSources: [],
     },
   });
   assert.equal(detached.status, 200, JSON.stringify(detached.body));
@@ -726,7 +793,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   );
 
   describe.mock.resetCalls();
-  // Keep all three sources attached while removing both plugin connections from the draft.
+  // Keep candidate Sources attached while clearing the selected plugin connections.
   const cleared = await request("PATCH", agentPath, {
     body: { configurationId, plugins: google, credentialSources },
   });

@@ -38,7 +38,7 @@ no bundled Claude PluginDriver.
 
 **Experimental** OAuth discovery uses the saved credential source after
 [device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
-The Credential Gateway supplies a usable access token; closing the login session
+The selected TokenService supplies a usable access token; closing the login session
 does not remove plugin-editing access.
 
 ## Lifecycle

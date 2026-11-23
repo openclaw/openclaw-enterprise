@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-22
-last_updated_session: authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768
+updated: 2026-11-23
+last_updated_session: authoring-run/f79523c1-41c8-4d45-8e08-14669a2afd29
 ---
 
 # Agent Plugin Deployment Flow
@@ -35,7 +35,7 @@ graph TD
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
   D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Check source and exact Gateway owner; read unless canceled"]
+  D6 -->|CredentialSource| D9["Resolve fresh credential from exact TokenService owner"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
@@ -74,12 +74,13 @@ cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explic
 CredentialSources (`409`). Saved discovery requires dedicated Agents.
 Unavailable bound sources return `404`. Only hosted catalogs need credentials.
 
-OpenShell metadata/exports use operator mTLS. External Gateways support
-`withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
-Cancellation discards late credentials.
+Hosted Codex resolves a ready OAuth Source through TokenService and passes trusted account
+metadata to the Plugin Driver. OCC rechecks authority, Source, binding and catalog;
+cancellation discards late credentials.
 
-`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools` reads tokens via the Secret Driver,
-rechecking target and grants around `tools/list`. `driverPolicy.toolNames` pins upstream names.
+`plugin-discovery.ts:discoverManagedMcpTools` checks the current Template, resolves the
+TokenService bearer and rechecks editor permission and Agent grant around `tools/list`.
+`driverPolicy.toolNames` pins names.
 
 Closing cancels. Account changes clear results. Harness changes clear
 selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
@@ -344,6 +345,7 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-23 09:20: Trace TokenService discovery. (authoring-run/f79523c1-41c8-4d45-8e08-14669a2afd29 - f1cb47a2c)
 - 2026-11-22 22:57: Clarify preflight outcomes and qualification limits; restore contributor history. (authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768 - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 - 2026-11-22 22:35: Bound WebSocket preflights independently of HTTP. (authoring-run/032774b9-7075-41b5-b108-59a16c9d3d8e - fdf309517b43823b722df9d068ba95495dcbbde6)
 - 2026-11-22 10:23: Distinguish existing Plugin delivery from the credential-design policy path. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)

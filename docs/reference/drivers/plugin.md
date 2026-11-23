@@ -34,13 +34,11 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   The next deployment applies saved selections.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
-- `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
+- `validatePlacement(selections, harness, computeImplementation)`
   (optional): check whether the selected packages can run on this Harness and
-  Compute Driver. `credentialRuntime` gives the implementations of the selected
-  Sandbox Driver and Credential Gateway as `{sandbox, gateway}`; either can be
-  undefined. A plugin that needs a bound credential can refuse an Installation
-  that cannot deliver it. OCC checks placement before saving selections and
-  again when it admits deployment.
+  Compute Driver. OCC checks placement before saving selections and again when
+  it admits deployment. Credential delivery is admitted for the whole Agent
+  revision through the selected Sandbox and Credential Proxy.
 - `describeDeployment({plugin, selection, connections})` (optional) returns
   [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
   for one admitted catalog identity. The OpenClaw Driver accepts
@@ -58,7 +56,12 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   declares no slots.
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
-  metadata that OCC authorized, never credential values.
+  metadata that OCC authorized, never credential values. For Template-backed
+  Sources, OCC also supplies the Template's current approved version in
+  `currentTemplate`. The Driver matches OAuth accounts by the consent issuer
+  and current Template identity, and matches static MCP bearers to the reviewed
+  endpoint's approved POST destination. Generic slot matching does not test
+  granted scopes.
   `choices(sources)` returns each slot with the attached ready sources that
   match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
   capabilities. `validate(selections, sources, modelSourceId)` refuses a
@@ -122,11 +125,10 @@ empty query lists it. Keep the same query while paging and omit the cursor when
 changing the query.
 Both routes require Agent `create` in the Namespace. Stored references must
 belong to that Namespace and require caller `operate` on the exact source.
-OCC uses SecretDriver `withValue` for Secrets. For CredentialSources, the trusted
-bundled OpenShell Backend reader performs ordinary metadata lookup and
-operator-mTLS export; an external Credential Gateway retains its optional
-`withSourceToken` callback. Both paths require the same exact Gateway owner
-match and Namespace checks, with no fallback to another Gateway or tenant.
+OCC uses SecretDriver `withValue` for explicit Secret references. A CredentialSource
+must be a ready built-in Codex OAuth Source owned by the selected TokenService instance.
+OCC resolves a fresh credential through that owner and supplies the Source's trusted Codex
+account metadata to the Plugin Driver. There is no Credential Gateway reader fallback.
 OCC checks authorization, source readiness, attachment where required, and the
 selected catalog before retrieval, then rechecks before catalog dispatch.
 Credentials pass to the PluginDriver in server memory; refresh remains with

@@ -4,9 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
-import { bindOpenShellPluginSourceReader } from "../../apps/controller/src/composition/openshell-plugin-source-reader.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   createOpenShellBackend,
   openShellProviderName,
@@ -116,29 +114,6 @@ test(
         assert.equal(call.request.credential_key, key);
         callback(null, { credentials: [status] });
       },
-      GetProvider(call, callback) {
-        assertBearer(call);
-        assert.equal(call.request.workspace_scope.workspace, workspace);
-        callback(null, {
-          provider: {
-            type: provider,
-            metadata: {
-              name: provider,
-              resource_version: "7",
-              labels: {
-                "app.kubernetes.io/managed-by": "openclaw-enterprise",
-                "openclaw.dev/credential-source-id": sourceId,
-              },
-            },
-            config: {
-              "oce.codex.account": JSON.stringify({
-                accountId: "account-fixture",
-                planType: "plus",
-              }),
-            },
-          },
-        });
-      },
       GetProviderCredentials(call, callback) {
         assert.equal(call.getAuthContext().sslPeerCertificate?.subject.OU, "operator");
         assert.deepEqual(call.metadata.get("authorization"), []);
@@ -221,11 +196,7 @@ test(
         .getProviderCredential(workspace, provider, key, signal),
       { value: current, expirationTime: `${expiry.toISOString().slice(0, 19)}.000000000Z` },
     );
-    const driver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend },
-    );
-    const reader = bindOpenShellPluginSourceReader(backend, driver);
+    const operator = backend.client.credentialClientForNamespace(workspace);
     // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
     const ipBackend = createOpenShellBackend({
       id: "openshell-ip",
@@ -238,45 +209,24 @@ test(
       },
     });
     t.after(() => ipBackend.client.close());
-    const ipDriver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend: ipBackend },
-    );
-    const ipReader = bindOpenShellPluginSourceReader(ipBackend, ipDriver);
-    const context = {
-      signal,
-      namespace: { id: "namespace", name: workspace },
-      source: {
-        id: sourceId,
-        namespaceId: "namespace",
-        driverId: driver.id,
-        type: "codex-oauth",
-        ownerCapability: "credential_gateway",
-        state: "ready",
-      },
-    };
     assert.equal(
-      await ipReader.withSourceToken(context, async ({ accessToken }) => accessToken),
+      (
+        await ipBackend.client
+          .credentialClientForNamespace(workspace)
+          .getProviderCredential(workspace, provider, key, signal)
+      ).value,
       current,
     );
-    const seen = [];
-    const consume = async (token) => {
-      seen.push(token);
-      return "catalog-result";
-    };
-    assert.equal(await reader.withSourceToken(context, consume), "catalog-result");
-    // The fake server represents an already-published replacement. This proves a fresh RPC read,
-    // not OAuth rotation; the separate real-gateway test proves refresh and committed storage.
+    const read = (readSignal = signal) =>
+      operator.getProviderCredential(workspace, provider, key, readSignal);
+    assert.equal((await read()).value, "synthetic-access-first");
+    // The controlled peer represents an already-published replacement. This proves a fresh RPC
+    // read, not OAuth rotation; the separate real-gateway test proves refresh and committed storage.
     current = "synthetic-access-replacement";
-    await reader.withSourceToken(context, consume);
-    assert.deepEqual(
-      seen.map(({ accessToken }) => accessToken),
-      ["synthetic-access-first", "synthetic-access-replacement"],
-    );
-    assert.equal(seen[1].accountId, "account-fixture");
-    assert.equal(rotations, 1, "source reads leave refresh coordination to GetProviderCredentials");
+    assert.equal((await read()).value, current);
+    assert.equal(rotations, 1, "operator reads do not request an explicit rotation");
     denyRead = true;
-    await assert.rejects(reader.withSourceToken(context, consume), (error) => {
+    await assert.rejects(read(), (error) => {
       assert.equal(error.grpcStatus, grpc.status.PERMISSION_DENIED);
       assert.match(error.message, /GetProviderCredentials failed/);
       assert.equal(error.message.includes("synthetic-private-provider-error"), false);
@@ -284,7 +234,7 @@ test(
     });
     denyRead = false;
     // Fail closed on unexpected selection, unusable values, and malformed declared expiry.
-    // These are decoder/adapter checks; this fixture does not simulate gateway refresh decisions.
+    // These are protocol decoder checks; this fixture does not simulate gateway refresh decisions.
     for (const [credentials, error] of [
       [{}, /unexpected credential selection/],
       [{ OTHER_TOKEN: { value: "synthetic-unrequested" } }, /unexpected credential selection/],
@@ -301,29 +251,20 @@ test(
       [{ [key]: { value: current, expiration_time: { seconds: "1" } } }, /expired/],
     ]) {
       readResponse = credentials;
-      await assert.rejects(reader.withSourceToken(context, consume), error);
+      await assert.rejects(read(), error);
     }
-    assert.equal(seen.length, 2, "denied and unusable values never reach plugin discovery");
     readResponse = { [key]: { value: current } };
-    const exported = await backend.client
-      .credentialClientForNamespace(workspace)
-      .getProviderCredential(workspace, provider, key, signal);
-    assert.deepEqual(
-      exported,
-      { value: current },
-      "credentials without declared expiry remain valid",
-    );
+    assert.deepEqual(await read(), { value: current }, "credentials may omit declared expiry");
 
     // Cancellation still bounds a read that may be waiting on gateway-owned refresh.
     pendingRead = true;
     const abort = new AbortController();
-    const reason = new Error("credential discovery cancelled");
-    const pending = reader.withSourceToken({ ...context, signal: abort.signal }, consume);
+    const reason = new Error("credential read cancelled");
+    const pending = read(abort.signal);
     const rejection = assert.rejects(pending, (error) => error === reason);
     await received.promise;
     abort.abort(reason);
     await Promise.all([rejection, cancelled.promise]);
-    assert.equal(seen.length, 2, "cancelled exports never reach plugin discovery");
   },
 );
 

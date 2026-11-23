@@ -1,5 +1,4 @@
 import { describeManagedDeployment } from "./managed-deployment.ts";
-import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -510,10 +509,6 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     selections: PluginDesiredState,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     computeImplementation: string,
-    credentialRuntime?: {
-      readonly sandbox: string | undefined;
-      readonly gateway: string | undefined;
-    },
   ): void {
     const { managed, native } = splitOpenClawSelections(selections);
     const [nativeId] = Object.keys(native);
@@ -531,11 +526,6 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
         throw new ConfigurationHarnessError(`${entry.name} requires Kubernetes Compute.`);
       }
     }
-    requireManagedCredentialRuntime(
-      selections,
-      credentialRuntime?.sandbox,
-      credentialRuntime?.gateway,
-    );
   }
 
   validateAgentConfiguration(

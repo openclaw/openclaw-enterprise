@@ -1,14 +1,13 @@
-import { pluginOwner } from "./agent-plugin-validation.ts";
-import { credentialGatewayOperation } from "./credential-source-drivers.ts";
+import { pluginOwner, pluginCredentialSources } from "./agent-plugin-validation.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isSecretHarnessAuth,
   type Agent,
   type Configuration,
-  type CredentialGatewayDriver,
   type StoredCredentialSource,
-  type CredentialSourceContext,
   type CredentialSourceReference,
+  type CredentialSource,
+  type TokenServiceDriver,
   type HarnessExecutionMode,
   type Namespace,
   type PluginCatalogEntry,
@@ -22,6 +21,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
+import { driverOperation } from "./driver-operation.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -64,20 +64,7 @@ type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
 interface PluginDiscoveryDependencies {
   readonly transactions: Pick<ControllerTransactions, "read">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
-  readonly authorizedCredentialSource: (
-    principalId: string,
-    namespaceId: string,
-    sourceId: string,
-  ) => Promise<{
-    gateway: CredentialGatewayDriver;
-    context: CredentialSourceContext & { signal: AbortSignal };
-  }>;
-  readonly sourceReader:
-    | {
-        readonly gateway: CredentialGatewayDriver;
-        readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
-      }
-    | undefined;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
   readonly secretDriver: (driverId: string) => SecretDriver;
   readonly readConfiguration: (
     metadata: ConfigurationOwnership,
@@ -312,41 +299,51 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     const discover = prepareDiscovery(driver);
     const recheck = () => validateCurrent(driver, source);
     if (credentialSource !== undefined) {
-      const { gateway, context } = await dependencies.authorizedCredentialSource(
-        principalId,
-        namespaceId,
-        credentialSource.id,
-      );
-      const reader = dependencies.sourceReader;
-      const selectedReader = reader?.gateway === gateway ? reader.withSourceToken : undefined;
-      if (!selectedReader && !gateway.withSourceToken) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "The Credential Gateway does not support plugin discovery.",
-        );
-      }
-      if (signal !== undefined) {
-        context.signal = AbortSignal.any([context.signal, signal]);
-      }
+      // TODO: Use authorizedCredentialSource when its shared TokenService Source contract lands.
+      const currentSource = async () => {
+        const found = await read(async (state) => {
+          const namespace = await exactNamespace(state, namespaceId);
+          const source = await state.credentialSources.findCredentialSource(
+            namespaceId,
+            credentialSource.id,
+          );
+          if (
+            namespace.status !== "ready" ||
+            source?.ownerCapability !== "token_service" ||
+            source.state !== "ready" ||
+            source.type !== "oauth2-refresh-token" ||
+            source.consent.kind !== "builtin_codex" ||
+            source.consent.revokedAt !== undefined ||
+            source.consent.revocationRequestedBy !== undefined
+          ) {
+            throw new ResourceStateConflictError(
+              "Choose a ready Codex OAuth credential source in this Namespace.",
+            );
+          }
+          return { source, account: source.consent.account };
+        });
+        return {
+          ...found,
+          owner: dependencies.ownedTokenServiceDriver(found.source.tokenServiceInstanceId),
+        };
+      };
+      const target = await currentSource();
+      const account = target.account;
       return invokePluginDiscovery(
         driver,
         discover,
         (invoke) =>
-          credentialGatewayOperation(() => {
-            context.signal.throwIfAborted();
-            if (selectedReader) {
-              return selectedReader(context, invoke);
-            }
-            // Preserve external callback invocation and its late/disconnect controls.
-            return gateway.withSourceToken!(context, invoke);
-          }),
+          withResolvedSource(target.source, target.owner, signal, (accessToken) =>
+            invoke({ accessToken, accountId: account.accountId, isFedramp: account.isFedramp }),
+          ),
         async () => {
           await recheck();
-          await dependencies.authorizedCredentialSource(
-            principalId,
-            namespaceId,
-            credentialSource.id,
-          );
+          const current = await currentSource();
+          if (current.owner !== target.owner || !isDeepStrictEqual(current.source, target.source)) {
+            throw new ResourceStateConflictError(
+              "The plugin credential changed. Refresh and retry.",
+            );
+          }
         },
         signal,
       );
@@ -365,6 +362,34 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       recheck,
       signal,
     );
+  }
+
+  async function withResolvedSource<T>(
+    source: CredentialSource,
+    owner: TokenServiceDriver,
+    signal: AbortSignal | undefined,
+    use: (credential: string) => Promise<T>,
+  ): Promise<T> {
+    const deadline = AbortSignal.timeout(30_000);
+    const operation = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    operation.throwIfAborted();
+    const resolved = await driverOperation(
+      () =>
+        owner.resolveCredential(
+          {
+            sourceRef: {
+              kind: "credential_source",
+              namespaceId: source.namespaceId,
+              id: source.id,
+            },
+            tokenServiceInstanceId: source.tokenServiceInstanceId,
+          },
+          operation,
+        ),
+      "TokenService",
+    );
+    operation.throwIfAborted();
+    return use(resolved.credential);
   }
 
   async function withPluginDiscoverySecret<T>(
@@ -425,7 +450,11 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
           ...(driver.credentials && agent.executionMode === "dedicated"
-            ? { credentialSlots: driver.credentials.choices(sources) }
+            ? {
+                credentialSlots: driver.credentials.choices(
+                  await pluginCredentialSources(state, sources),
+                ),
+              }
             : {}),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });
@@ -613,8 +642,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     const sourceRef = { kind: "credential_source" as const, id: connection.sourceId, namespaceId };
+    // TODO: Use authorizedCredentialSource for the Agent principal after the shared Source cutover.
     const currentTarget = async () => {
-      await authorize(principalId, "operate", sourceRef);
       const target = await withSavedPluginTarget(
         principalId,
         namespaceId,
@@ -624,15 +653,21 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             namespace.id,
             sourceRef.id,
           );
+          if (
+            namespace.status !== "ready" ||
+            source?.ownerCapability !== "token_service" ||
+            source.state !== "ready" ||
+            !agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
+          ) {
+            throw new ResourceStateConflictError(
+              "Choose a ready, compatible credential source from this Agent's saved credentials.",
+            );
+          }
+          const [qualified] = await pluginCredentialSources(state, [source]);
           const target =
-            namespace.status === "ready" &&
-            source?.state === "ready" &&
-            agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-              ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
-              : undefined;
-          const secretRef =
-            source?.ownerCapability === "token_service" ? undefined : source?.secrets.token;
-          if (!target || !secretRef) {
+            qualified &&
+            driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, qualified);
+          if (!target) {
             throw new ResourceStateConflictError(
               "Choose a ready, compatible credential source from this Agent's saved credentials.",
             );
@@ -641,28 +676,30 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             driver,
             harness,
             source,
-            secretRef,
             servicePrincipalId: agent.servicePrincipalId,
             ...target,
           };
         },
       );
-      await authorize(principalId, "operate", sourceRef);
       await authorize(target.servicePrincipalId, "operate", sourceRef);
       return target;
     };
 
     const target = await currentTarget();
+    const owner = dependencies.ownedTokenServiceDriver(target.source.tokenServiceInstanceId);
     const entry = await target.driver.getCatalogPlugin?.({ pluginId }, signal);
     if (!entry || entry.id !== pluginId) {
       throw new PluginDiscoveryError("invalid_response");
     }
     const selection = { [entry.id]: { enabled: true } };
     dependencies.validatePluginPlacement(target.driver, selection, target.harness);
-    await authorize(principalId, "operate", sourceRef);
     const validateCurrent = async () => {
       const current = await currentTarget();
-      if (current.driver !== target.driver || !isDeepStrictEqual(current, target)) {
+      if (
+        current.driver !== target.driver ||
+        !isDeepStrictEqual(current, target) ||
+        dependencies.ownedTokenServiceDriver(current.source.tokenServiceInstanceId) !== owner
+      ) {
         throw new ResourceStateConflictError(
           "The Agent's plugin credential or catalog changed. Refresh and retry.",
         );
@@ -685,11 +722,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           })),
         };
       },
-      // TODO(#4450): Acquire a usable managed MCP bearer through the Token Service once
-      // it supports these sources (#3811), and cover refresh of expired access tokens.
-      // Preserve the authorization recheck below; this direct Secret read requires a
-      // token that is already usable.
-      (invoke) => withPluginDiscoverySecret(namespaceId, target.secretRef, invoke),
+      (invoke) =>
+        withResolvedSource(target.source, owner, signal, (accessToken) => invoke({ accessToken })),
       validateCurrent,
       signal,
     );

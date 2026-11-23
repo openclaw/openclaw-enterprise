@@ -10,6 +10,7 @@ import {
   type PluginDesiredState,
   type PluginDriver,
   type PluginDriverIdentity,
+  type PluginCredentialSource,
   type RevisionHarnessDescriptor,
 } from "@openclaw-enterprise/contracts";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
@@ -18,12 +19,15 @@ import {
   PluginPolicyValidationError,
   ResourceStateConflictError,
 } from "./errors.ts";
+import {
+  credentialSourceMetadata,
+  oauthCredentialSourceMetadata,
+} from "./credential-source-metadata.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
 
 interface AgentPluginValidationDependencies {
   readonly pluginDriver: (harnessId: string, forConfiguration: boolean) => PluginDriver;
   readonly computeImplementation: () => string;
-  readonly sandboxImplementation: () => string | undefined;
-  readonly credentialGatewayImplementation: () => string | undefined;
 }
 
 function invalidPluginRequest(): never {
@@ -90,6 +94,7 @@ export function validatePluginSettings(
 }
 
 export async function validatePluginCredentialSources(
+  state: PlatformReadView,
   driver: PluginDriver | undefined,
   plugins: PluginDesiredState | undefined,
   sources: readonly StoredCredentialSource[],
@@ -98,10 +103,52 @@ export async function validatePluginCredentialSources(
   if (plugins && Object.keys(plugins).length) {
     await driver?.credentials?.validate(
       plugins,
-      sources,
+      await pluginCredentialSources(state, sources),
       harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
     );
   }
+}
+
+/** Only canonical, Template-backed Sources can qualify for a managed plugin slot. */
+export async function pluginCredentialSources(
+  state: PlatformReadView,
+  sources: readonly StoredCredentialSource[],
+): Promise<readonly PluginCredentialSource[]> {
+  const choices: PluginCredentialSource[] = [];
+  for (const source of sources) {
+    if (
+      source.ownerCapability !== "token_service" ||
+      source.state !== "ready" ||
+      !source.connectionTemplateId ||
+      (source.type === "oauth2-refresh-token" &&
+        (source.consent.kind !== "connection_template" ||
+          source.consent.revokedAt !== undefined ||
+          source.consent.revocationRequestedBy !== undefined))
+    ) {
+      continue;
+    }
+    const template = await state.connectionTemplates.findConnectionTemplate(
+      source.connectionTemplateId,
+    );
+    if (
+      !template ||
+      (template.namespaceId !== undefined && template.namespaceId !== source.namespaceId)
+    ) {
+      continue;
+    }
+    try {
+      const metadata =
+        source.type === "static"
+          ? credentialSourceMetadata(source)
+          : await oauthCredentialSourceMetadata(state, source);
+      choices.push({ ...metadata, currentTemplate: template.current });
+    } catch (error) {
+      if (!(error instanceof ResourceStateConflictError)) {
+        throw error;
+      }
+    }
+  }
+  return choices;
 }
 
 export function createAgentPluginValidation(dependencies: AgentPluginValidationDependencies) {
@@ -137,10 +184,7 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
     if (plugins === undefined || Object.keys(plugins).length === 0) {
       return;
     }
-    driver.validatePlacement?.(plugins, harness, dependencies.computeImplementation(), {
-      sandbox: dependencies.sandboxImplementation(),
-      gateway: dependencies.credentialGatewayImplementation(),
-    });
+    driver.validatePlacement?.(plugins, harness, dependencies.computeImplementation());
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {
       throw new ConfigurationHarnessError(
