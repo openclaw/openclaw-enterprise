@@ -2645,11 +2645,12 @@ if (savedAgentAcl === "source") {
       // Sandbox (through gh and through curl, an admitted Git transport binary) and reach no origin;
       // the Provider carries no endpoint and is attached to this one Sandbox.
       const assertGitOnlyBoundary = async (stage: string) => {
-        // Each probe prints "denied" for an HTTP 403 or no HTTP response at all, else "answered".
+        // Each probe prints "denied" and how (an HTTP 403, or no HTTP response, with the exit
+        // code) for a refusal, else "answered".
         const viaGh =
-          'out=$("$@" 2>&1) && { echo answered; exit 0; }; case "$out" in "HTTP/"*" 403"*) echo denied ;; *"HTTP/"*) echo answered ;; *) echo denied ;; esac';
+          'out=$("$@" 2>&1) && { echo answered; exit 0; }; rc=$?; case "$out" in "HTTP/"*" 403"*) echo "denied http-403 rc=$rc" ;; *"HTTP/"*) echo answered ;; *"HTTP 403"*) echo "denied gh-403 rc=$rc" ;; *) echo "denied no-response rc=$rc" ;; esac';
         const viaCurl =
-          'code=$("$@" -o /dev/null -w "%{http_code}" 2>/dev/null) || true; case "$code" in 403|000) echo denied ;; *) echo answered ;; esac';
+          'code=$("$@" -o /dev/null -w "%{http_code}" 2>/dev/null); rc=$?; case "$code" in 403) echo "denied http-403 rc=$rc" ;; 000) echo "denied no-response rc=$rc" ;; *) echo answered ;; esac';
         const query = "{ viewer { login } }";
         const apiProbes: [string, string, readonly string[]][] = [
           ["rest-gh", viaGh, ghApi("repos/fixture/a/issues", undefined, true)],
@@ -2683,7 +2684,7 @@ if (savedAgentAcl === "source") {
         }
         evidence("api-boundary", { stage, outcomes });
         for (const [name, outcome] of Object.entries(outcomes)) {
-          assert.equal(outcome, "denied", `SOURCE_API_DENIED_${stage}_${name}`);
+          assert.ok(outcome.startsWith("denied "), `SOURCE_API_DENIED_${stage}_${name}`);
         }
         assert.equal(await sourceProvider(target), narrowedProvider);
         const profile = await gatewayClient.getProviderProfile(
