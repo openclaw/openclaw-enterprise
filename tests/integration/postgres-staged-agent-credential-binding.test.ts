@@ -60,8 +60,12 @@ async function controlledRetirementTransport(
   const copies = new Map<string, { provider?: Wire; profile?: Wire }>();
   let refused = false;
   let reads = 0;
-  let effectivePolicyConfirmed = true;
-  const sandboxes = new Map<string, { sandbox: Wire; policyVersion: number }>();
+  let effectivePolicyPermissive = false;
+  let receiptRevoked = true;
+  const sandboxes = new Map<
+    string,
+    { sandbox: Wire; policyVersion: number; protectedRoute: { host: string; port: number } }
+  >();
   const receipts = new Map<string, Wire>();
   const actions: string[] = [];
   const methods: Record<string, (request: Wire) => Wire | undefined> = {
@@ -118,11 +122,17 @@ async function controlledRetirementTransport(
           }
         }
       }
+      if (effectivePolicyPermissive) {
+        (policy.network_policies as Record<string, Wire>)["controlled-permissive"] = {
+          name: "controlled-permissive",
+          endpoints: [{ host: entry.protectedRoute.host, ports: [entry.protectedRoute.port] }],
+        };
+      }
       return {
         policy,
         version: entry.policyVersion,
         workspace,
-        configuration_admitted: effectivePolicyConfirmed,
+        configuration_admitted: true,
       };
     },
     UpdateConfig: (request) => {
@@ -177,8 +187,15 @@ async function controlledRetirementTransport(
       const receipt = receipts.get(String(request.receipt_id));
       assert.ok(receipt);
       assert.equal(request.receipt_id, receipt.receipt_id);
-      actions.push("revoked-observed");
-      return { status: { state: "PROVIDER_READINESS_STATE_REVOKED", receipt } };
+      actions.push(receiptRevoked ? "revoked-observed" : "receipt-pending-observed");
+      return {
+        status: {
+          state: receiptRevoked
+            ? "PROVIDER_READINESS_STATE_REVOKED"
+            : "PROVIDER_READINESS_STATE_PENDING",
+          receipt,
+        },
+      };
     },
     GetProvider: (request) => {
       const copy = copies.get(String(request.name));
@@ -333,7 +350,11 @@ async function controlledRetirementTransport(
           },
         },
       };
-      sandboxes.set(name, { sandbox, policyVersion: 1 });
+      sandboxes.set(name, {
+        sandbox,
+        policyVersion: 1,
+        protectedRoute: { host: request.host, port: request.ports[0]!.from },
+      });
     },
     sandbox(name: string) {
       return sandboxes.get(name)?.sandbox;
@@ -345,8 +366,11 @@ async function controlledRetirementTransport(
     set refused(value: boolean) {
       refused = value;
     },
-    set effectivePolicyConfirmed(value: boolean) {
-      effectivePolicyConfirmed = value;
+    set effectivePolicyPermissive(value: boolean) {
+      effectivePolicyPermissive = value;
+    },
+    set receiptRevoked(value: boolean) {
+      receiptRevoked = value;
     },
   };
 }
@@ -1753,7 +1777,7 @@ test(
     );
     assert.equal(requested.statusCode, 202, requested.body);
     assert.equal(requested.json().data.state, "pending");
-    nativeTransport.effectivePolicyConfirmed = false;
+    nativeTransport.effectivePolicyPermissive = true;
     const worker = createControllerWorker({
       pool: new pg.Pool({ connectionString: databaseUrl }),
       drivers: {
@@ -1774,10 +1798,9 @@ test(
     });
     try {
       await worker.start();
-      // A loaded policy revision alone is insufficient. If the independent effective
-      // configuration is unconfirmed, OCC must leave the withdrawal pending without detaching
-      // either Agent or retiring the shared Provider. A replay can finish after recovery.
-      const pending = await waitFor("an unconfirmed effective policy attempt", async () => {
+      // The effective configuration can report admission while another rule still permits the
+      // protected destination. OCC must leave withdrawal pending without detaching either Agent.
+      const pending = await waitFor("a permissive effective policy attempt", async () => {
         const response = await inject(
           "GET",
           `${withdrawalPath(dedicatedId)}/withdrawal`,
@@ -1802,7 +1825,8 @@ test(
       assert.ok(
         await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
       );
-      nativeTransport.effectivePolicyConfirmed = true;
+      nativeTransport.effectivePolicyPermissive = false;
+      nativeTransport.receiptRevoked = false;
       const replayed = await inject(
         "POST",
         `${withdrawalPath(dedicatedId)}/withdraw`,
@@ -1810,6 +1834,47 @@ test(
         nativeApp,
       );
       assert.equal(replayed.statusCode, 202, replayed.body);
+      // Detach can persist before the supervisor confirms revocation. A pending receipt must
+      // not complete withdrawal or retire the shared Provider; replay finishes when it is revoked.
+      await waitFor("the pending detach receipt attempt to settle", async () => {
+        if (!nativeTransport.actions.includes("receipt-pending-observed")) {
+          return undefined;
+        }
+        const status = await inject(
+          "GET",
+          `${withdrawalPath(dedicatedId)}/withdrawal`,
+          undefined,
+          nativeApp,
+        );
+        const attempts = await pool.query(
+          `SELECT state,reason_code FROM occ.controller_work
+           WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3
+             AND agent_target='credentials_withdrawn' AND state='failed_permanent'
+             AND reason_code='DEPENDENCY_UNAVAILABLE'`,
+          [namespaceId, dedicatedId, revision.id],
+        );
+        return status.statusCode === 200 &&
+          status.json().data.state === "pending" &&
+          status.json().data.reason === "DEPENDENCY_UNAVAILABLE" &&
+          attempts.rowCount === 2
+          ? status.json().data
+          : undefined;
+      });
+      assert.deepEqual((nativeTransport.sandbox(sandboxName)!.spec as Wire).providers, []);
+      assert.deepEqual((nativeTransport.sandbox(siblingSandboxName)!.spec as Wire).providers, [
+        nativeProvider,
+      ]);
+      assert.ok(
+        await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
+      );
+      nativeTransport.receiptRevoked = true;
+      const confirmedReplay = await inject(
+        "POST",
+        `${withdrawalPath(dedicatedId)}/withdraw`,
+        undefined,
+        nativeApp,
+      );
+      assert.equal(confirmedReplay.statusCode, 202, confirmedReplay.body);
       const revoked = await waitFor("the first Agent credential withdrawal", async () => {
         const response = await inject(
           "GET",

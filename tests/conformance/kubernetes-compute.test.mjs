@@ -790,7 +790,11 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     async removeDeployment(_context, removal) {
       events.push("remove-bound");
       removedTarget = removal.targetRef;
-      assert.deepEqual(removal.bindingRefs, [binding.bindingRef]);
+      assert.equal(
+        removal.bindingRefs,
+        undefined,
+        "Stop removes the whole deployment after Sandbox cleanup",
+      );
       if (boundRemovalFailure !== undefined) {
         throw boundRemovalFailure;
       }
