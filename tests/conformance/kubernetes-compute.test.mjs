@@ -12,6 +12,7 @@ import { ConfigurationValidationError as SharedConfigurationValidationError } fr
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { inspect } from "node:util";
@@ -326,6 +327,11 @@ import {
   checkReadOnlyWorkspacePreparation,
   checkWorkspacePreparation,
 } from "./kubernetes-workspace-storage-cases.ts";
+
+const controllerRequire = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+);
+const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 const { context: contextName } = conformanceKubeconfig;
 test(
@@ -1381,11 +1387,18 @@ test("automation transport refuses a Gateway with changed identity or configurat
   // Kubernetes creates Pods from the recorded Deployment template and endpoint
   // slices from the recorded Service. These are protocol observations, not a
   // replacement for Compute's transport eligibility decision.
-  fixture.clients.core.listNamespacedPod = async ({ labelSelector }) => ({
-    items: selectorMatches({ matchLabels: labelSelectorLabels(labelSelector) }, pod.metadata.labels)
-      ? [structuredClone(pod)]
-      : [],
-  });
+  fixture.clients.core.listNamespacedPod = async ({ labelSelector }) =>
+    ObjectSerializer.deserialize(
+      {
+        items: selectorMatches(
+          { matchLabels: labelSelectorLabels(labelSelector) },
+          pod.metadata.labels,
+        )
+          ? [structuredClone(pod)]
+          : [],
+      },
+      "V1PodList",
+    );
   fixture.clients.discovery.listNamespacedEndpointSlice = async ({ labelSelector }) => {
     const name = labelSelectorLabels(labelSelector)["kubernetes.io/service-name"];
     const service = fixture.read("Service", name);
@@ -1470,6 +1483,10 @@ test("automation transport refuses a Gateway with changed identity or configurat
   await refusePodChange("a changed endpoint CA projection must refuse transport", (value) => {
     value.spec.volumes.find(({ name }) => name === "automation-trust").configMap.items[0].path =
       "other.pem";
+  });
+  await refusePodChange("an explicit endpoint CA item mode must refuse transport", (value) => {
+    value.spec.volumes.find(({ name }) => name === "automation-trust").configMap.items[0].mode =
+      0o400;
   });
   await refusePodChange("process-wide endpoint CA trust must refuse transport", (value) => {
     value.spec.containers

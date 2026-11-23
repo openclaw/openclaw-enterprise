@@ -18642,16 +18642,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const trustMap = asRecord(trustVolumes[0]?.configMap);
+    const trustItems = trustMap?.items;
+    const exactTrustItems =
+      Array.isArray(trustItems) &&
+      trustItems.length === trustKeys.length &&
+      trustItems.every((value, index) => {
+        const item = asRecord(value);
+        return (
+          item !== undefined &&
+          Reflect.ownKeys(item).length === 2 &&
+          Object.prototype.propertyIsEnumerable.call(item, "key") &&
+          Object.prototype.propertyIsEnumerable.call(item, "path") &&
+          item.key === trustKeys[index] &&
+          item.path === trustKeys[index] &&
+          item.mode === undefined
+        );
+      });
     const trustMount = trustMounts[0];
     return (
       gatewayAnnotation === sha256Hex(JSON.stringify(trustData)) &&
       trustVolumes.length === 1 &&
       trustMap?.name === configuration.name &&
       trustMap.optional === false &&
-      isDeepStrictEqual(
-        trustMap.items,
-        trustKeys.map((key) => ({ key, path: key })),
-      ) &&
+      exactTrustItems &&
       trustMounts.length === 1 &&
       trustMount?.mountPath === AUTOMATION_TRUST_DIRECTORY &&
       trustMount.readOnly === true &&

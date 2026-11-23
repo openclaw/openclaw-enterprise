@@ -146,7 +146,7 @@ catalog setup may initialize/list siblings before scheduled cap filtering; this
 does not permit forbidden tool calls. Compute renders one revision-selected Gateway
 endpoint policy. A separate Gateway-only `automation-trust` volume mounts exact
 fingerprint-named CA files read-only. Verification checks immutable CA data,
-key/path items, mount, annotation hash and absence after revocation; it rejects
+ordered key/path scalars without `mode`, mount, annotation hash and absence after revocation; it rejects
 automation-derived `NODE_EXTRA_CA_CERTS` while preserving unrelated provider trust.
 Preparation removes owned stale Agent automation policy/CA assets; verification
 rejects Agent automation-specific policy, CA map, Pod volume/mount, environment or
