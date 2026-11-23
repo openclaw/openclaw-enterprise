@@ -51,17 +51,24 @@ For a runtime-only upgrade, use the previous controller receipt and commit when
 checking the unchanged controller. Use a trusted checkout containing the
 verifier and release producers. The source repository may be a separate local
 checkout and need not be at the verifier's commit. Set `UPGRADE_EVIDENCE` to an
-existing private directory for the result.
+existing private directory. Replace `<fresh-attempt>` with a new identifier each
+time. Bash refuses to overwrite an existing regular file.
 
 ```bash
 umask 077
 export CONTROLLER_SOURCE_SHA='<full-lowercase-source-commit>'
 export UPGRADE_EVIDENCE='/secure/occ/upgrades/<private-directory>'
-cd /secure/tools/openclaw-enterprise # trusted checkout containing the verifier
-node scripts/verify-console-release.ts /secure/src/openclaw-enterprise \
-  "$CONTROLLER_SOURCE_SHA" 'https://console.example.com/console/' \
-  > "$UPGRADE_EVIDENCE/console-verification.json"
+(
+  set -C
+  node /secure/tools/openclaw-enterprise/scripts/verify-console-release.ts \
+    /secure/src/openclaw-enterprise \
+    "$CONTROLLER_SOURCE_SHA" 'https://console.example.com/console/' \
+    > "$UPGRADE_EVIDENCE/console-verification-<fresh-attempt>.json"
+)
 ```
+
+Require both exit 0 and a `verified` result. If redirection or Node startup
+fails, there is no new verdict.
 
 To verify the entry module too, add `--entry-sha256 "$CONTROLLER_ENTRY_SHA256"`
 after the URL. Set `CONTROLLER_ENTRY_SHA256` to the 64-character lowercase

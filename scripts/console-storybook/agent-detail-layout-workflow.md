@@ -3,6 +3,12 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
+edit. Scroll until **Save Configuration** is near the middle of the window and
+**Danger zone** is out of view below it. Save and check that **Edit Configuration**
+has focus in view and **Danger zone** stays below the window. The signed-in test
+in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,
