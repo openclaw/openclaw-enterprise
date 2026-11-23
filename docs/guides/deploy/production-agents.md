@@ -19,15 +19,14 @@ occ namespace list
 export NAMESPACE_ID='<ID of the selected Namespace>'
 ```
 
-If the create reply is lost, do not resend it. With the same connection options,
+If the create reply is lost, do not resend. With the same connection options,
 run `occ namespace list` and `occ namespace get ID`. The request may still commit,
-or permissions may hide the Namespace. Ask an Installation administrator to check
-the audit log if needed. Retry only after confirming the original request ended without creating a Namespace.
+or permissions may hide the Namespace. Have an Installation administrator check
+the audit log. Retry only after confirming no Namespace was created.
 
-The worker creates a separate Kubernetes namespace labeled
-`openclaw.dev/namespace=$NAMESPACE_ID`. As soon as that namespace exists, record
-its name and grant the tenant RoleBindings below before waiting for the OCC
-Namespace to report `ready`.
+The worker creates a Kubernetes namespace labeled `openclaw.dev/namespace=$NAMESPACE_ID`.
+Record its name and grant tenant RoleBindings before waiting for the OCC Namespace
+to report `ready`.
 
 ```bash
 TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -88,26 +87,36 @@ and worker/Gateway-observer roles in the execution target. See [two-cluster test
 
 ### Grant automation observation
 
-For automations, bind the chart's deliberately unbound
-`${RELEASE}-openclaw-tenant-automation-observer` ClusterRole to the API in the
-backing tenant namespace for single-cluster Compute. With `executionCluster`, set
-`TENANT_NAMESPACE` to the separately discovered control target (the control-plane
-Gateway namespace), using control-plane `KUBECONFIG_FILE` and `CONTEXT`:
+Bind the control chart's unbound observer to `$API_SA` in the Gateway namespace:
+the backing tenant namespace for single-cluster Compute, or the control target
+with its kubeconfig and context for `executionCluster`:
 
 ```bash
 tenant_kubectl create rolebinding openclaw-enterprise-automation-observer \
   --clusterrole="$RELEASE-openclaw-tenant-automation-observer" --serviceaccount="$API_SA"
 ```
 
-It grants Services, HTTPRoutes and NetworkPolicies `get`, and EndpointSlices `list`.
-ConfigMaps `get` comes from the existing configuration binding. For either eligible
-Harness, bind the observer in the Gateway namespace, never in the dedicated Agent
-execution namespace. The operator creates the binding; the worker does not write RBAC.
+This role grants Services, HTTPRoutes and NetworkPolicies `get`, and EndpointSlices
+`list`. The configuration binding provides ConfigMaps `get`.
+
+For `executionCluster` (dedicated only), set the execution kubeconfig, context,
+release, system namespace and separately discovered Agent tenant namespace.
+Bind the execution API there:
+
+```bash
+kubectl --kubeconfig "${EXECUTION_KUBECONFIG_FILE:?}" --context "${EXECUTION_CONTEXT:?}" \
+  -n "${EXECUTION_TENANT_NAMESPACE:?}" create rolebinding openclaw-enterprise-automation-observer \
+  --clusterrole="${EXECUTION_RELEASE:?}-execution-tenant-automation-observer" \
+  --serviceaccount="${EXECUTION_SYSTEM_NAMESPACE:?}:openclaw-enterprise-api"
+```
+
+This unbound role permits `get` on any named ConfigMap or NetworkPolicy there.
+Never bind the Gateway role there. Operators create bindings; workers do not write RBAC.
 
 ### Confirm the Namespace is ready
 
-Run `occ namespace get "$NAMESPACE_ID"` after applying the bindings. Wait for
-`STATUS` to report `ready` before creating Configurations or Agents.
+After binding, run `occ namespace get "$NAMESPACE_ID"`. Wait for `STATUS` `ready`
+before creating Configurations or Agents.
 
 If status stays `provisioning`, check `namespace.ensure` logs.
 [`KUBERNETES_TENANT_ACCESS_DENIED`](../../reference/drivers/kubernetes-compute.md#failure-conditions)

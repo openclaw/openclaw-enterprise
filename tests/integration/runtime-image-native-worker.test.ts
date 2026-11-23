@@ -182,6 +182,7 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
     async (t) => {
       const directory = await temporaryDirectory(t, "oce-runtime-automation-proxy-");
       const { cert, key } = await selfSigned(directory);
+      const untrusted = await selfSigned(directory, { name: "untrusted" });
       const fixture = await readFile(
         new URL("../fixtures/runtime-automation-mcp-proxy-proof.mjs", import.meta.url),
         "utf8",
@@ -217,12 +218,19 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
           launch,
         ],
         { timeout: 30_000 },
-        JSON.stringify({ cert, key }),
+        JSON.stringify({ cert, key, untrustedCert: untrusted.cert, untrustedKey: untrusted.key }),
       );
       const result = decodedRecord(stdout);
       assert.equal(result.sameOriginSink, 0);
       assert.equal(result.otherOriginSink, 0);
       assert.equal(result.deniedAddressPeerCalls, 0);
+      assert.deepEqual(result.securityNegatives, {
+        wrongHost: 502,
+        untrustedChain: 502,
+        siblingIp: 400,
+        siblingPort: 400,
+        unauthorizedEffects: 0,
+      });
       assert.equal(result.untrustedCaCode, "DEPTH_ZERO_SELF_SIGNED_CERT");
       assert.equal(result.nativeServer, "fixture");
       assert.equal(result.preFixReplayCalls, 1);

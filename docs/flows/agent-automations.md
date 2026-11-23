@@ -117,13 +117,15 @@ checks. The deployed wrapper, read-only root filesystem and no mounts replacing
 The route renders the default backend `weight: 1` explicitly so API defaulting
 does not change the spec used for strict readback.
 
-Automation verification uses the [control chart's](../../deploy/helm/openclaw-enterprise/templates/rbac.yaml)
-separate, deliberately unbound `${RELEASE}-openclaw-tenant-automation-observer`
-ClusterRole. An [operator-created tenant-local binding](../guides/deploy/production-agents.md#grant-automation-observation)
-limits its reads to the Gateway namespace; the shared `tenant-api` role
-does not receive them. Existing `tenant-configuration` bindings provide ConfigMap
-`get`. The worker does not write RBAC, and supported automations need no
-execution-plane binding.
+Verification uses the [control chart's](../../deploy/helm/openclaw-enterprise/templates/rbac.yaml)
+unbound `${RELEASE}-openclaw-tenant-automation-observer`.
+[Operators](../guides/deploy/production-agents.md#grant-automation-observation) bind
+it in the Gateway namespace only; `tenant-api` gains no reads. `tenant-configuration`
+provides ConfigMaps `get`. Split dedicated execution binds the
+[execution chart's](../../deploy/helm/openclaw-execution/templates/access.yaml)
+unbound `${EXECUTION_RELEASE}-execution-tenant-automation-observer` to its API
+ServiceAccount in the Agent namespace for ConfigMaps and NetworkPolicies `get`.
+Workers never write RBAC.
 
 The native adapter checks bounded, nonempty handshake boot ID and same-socket
 `system.info` process-instance ID plus positive PID. Only the hostname is compared

@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const { mkdirSync, readFileSync, readdirSync, writeFileSync } = require("node:fs");
-const { createServer } = require("node:https");
+const { createServer, request: httpsRequest } = require("node:https");
 const { once } = require("node:events");
 const { request: httpRequest } = require("node:http");
 const { spawn } = require("node:child_process");
@@ -19,6 +19,8 @@ const { spawn } = require("node:child_process");
   let approvedCalls = 0;
   let sameOriginSink = 0;
   let otherOriginSink = 0;
+  let siblingIpEffects = 0;
+  let untrustedEffects = 0;
   let lastHeaders;
   let lastBody;
   let lastMethod;
@@ -123,6 +125,41 @@ const { spawn } = require("node:child_process");
   });
   peer.listen(0, "127.0.0.1");
   await once(peer, "listening");
+  // All denied destinations are independently reachable. Their handlers count HTTP
+  // effects, so a failed TLS handshake or target mutation cannot pass unnoticed.
+  const siblingIp = createServer({ cert: input.cert, key: input.key }, (request, response) => {
+    siblingIpEffects++;
+    request.resume();
+    response.end("sibling");
+  });
+  siblingIp.listen(peer.address().port, "127.0.0.2");
+  await once(siblingIp, "listening");
+  const untrustedPeer = createServer(
+    { cert: input.untrustedCert, key: input.untrustedKey },
+    (request, response) => {
+      untrustedEffects++;
+      request.resume();
+      response.end("untrusted");
+    },
+  );
+  untrustedPeer.listen(0, "127.0.0.1");
+  await once(untrustedPeer, "listening");
+  const control = (hostname, port, ca, servername) =>
+    new Promise((resolve, reject) => {
+      const request = httpsRequest({ hostname, port, ca, servername, path: "/mcp" }, (response) => {
+        response.resume();
+        response.once("end", resolve);
+      });
+      request.once("error", reject);
+      request.end();
+    });
+  await control("127.0.0.2", peer.address().port, input.cert, "localhost");
+  await control("localhost", sink.address().port, input.cert, "localhost");
+  await control("localhost", untrustedPeer.address().port, input.untrustedCert, "localhost");
+  assert.deepEqual([siblingIpEffects, otherOriginSink, untrustedEffects], [1, 1, 1]);
+  siblingIpEffects = 0;
+  otherOriginSink = 0;
+  untrustedEffects = 0;
   const target = "https://localhost:" + peer.address().port + "/mcp";
   const route = {
     server: "approved",
@@ -138,7 +175,23 @@ const { spawn } = require("node:child_process");
     path: "/mcp/" + "b".repeat(64),
     egressCidrs: ["127.0.0.2/32"],
   };
-  const configuration = { port: AUTOMATION_MCP_PROXY_PORT, routes: [route, denied] };
+  const wrongHost = {
+    ...route,
+    server: "wrongHost",
+    path: "/mcp/" + "c".repeat(64),
+    url: "https://127.0.0.2:" + peer.address().port + "/mcp",
+    egressCidrs: ["127.0.0.2/32"],
+  };
+  const untrustedChain = {
+    ...route,
+    server: "untrustedChain",
+    path: "/mcp/" + "d".repeat(64),
+    url: "https://localhost:" + untrustedPeer.address().port + "/mcp",
+  };
+  const configuration = {
+    port: AUTOMATION_MCP_PROXY_PORT,
+    routes: [route, denied, wrongHost, untrustedChain],
+  };
   const projection = {
     mcp: {
       servers: Object.fromEntries(
@@ -205,6 +258,36 @@ const { spawn } = require("node:child_process");
     { message: "Automation MCP proxy configuration is invalid." },
   );
   const beforeDenied = approvedCalls;
+  const wrongHostStatus = (await send(wrongHost.path)).status;
+  const untrustedChainStatus = (await send(untrustedChain.path)).status;
+  const mutateHost = (host) =>
+    new Promise((resolve, reject) => {
+      const request = httpRequest(
+        {
+          hostname: "127.0.0.1",
+          port: configuration.port,
+          path: route.path,
+          method: "POST",
+          headers: { host },
+        },
+        (response) => {
+          response.resume();
+          response.once("end", () => resolve(response.statusCode));
+        },
+      );
+      request.once("error", reject);
+      request.end();
+    });
+  const siblingIpStatus = await mutateHost("127.0.0.2:" + peer.address().port);
+  const siblingPortStatus = await mutateHost("127.0.0.1:" + sink.address().port);
+  const securityNegatives = {
+    wrongHost: wrongHostStatus,
+    untrustedChain: untrustedChainStatus,
+    siblingIp: siblingIpStatus,
+    siblingPort: siblingPortStatus,
+    unauthorizedEffects:
+      siblingIpEffects + otherOriginSink + untrustedEffects + approvedCalls - beforeDenied,
+  };
   const badAddress = await send(denied.path);
   assert.equal(badAddress.status, 502);
   const deniedAddressPeerCalls = approvedCalls - beforeDenied;
@@ -359,9 +442,13 @@ const { spawn } = require("node:child_process");
   proxy.close();
   peer.closeAllConnections();
   sink.closeAllConnections();
+  siblingIp.closeAllConnections();
+  untrustedPeer.closeAllConnections();
   await Promise.all([
     new Promise((resolve) => peer.close(resolve)),
     new Promise((resolve) => sink.close(resolve)),
+    new Promise((resolve) => siblingIp.close(resolve)),
+    new Promise((resolve) => untrustedPeer.close(resolve)),
   ]);
   console.log(
     JSON.stringify({
@@ -370,6 +457,7 @@ const { spawn } = require("node:child_process");
       otherOriginSink,
       untrustedCaCode,
       deniedAddressPeerCalls,
+      securityNegatives,
       nativeServer: nativeMessage?.result?.serverInfo?.name,
       preFixReplayCalls,
       preFixReplayBody,

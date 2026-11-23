@@ -243,14 +243,12 @@ re-enablement require current qualification of the guarded launcher/version,
 effective policy and trust. Redeploy a missing guard. After withdrawal,
 `undefined` permits disable, delete and history under existing authorization.
 
-Compute provisions a revision-specific Service and private operator HTTPRoute,
-including for model-only jobs, with existing Envoy authentication, trusted
-headers, scopes and NetworkPolicy. Ready EndpointSlice target UIDs must match the
-sole live Gateway Pod before and after handshake. On the authenticated WebSocket,
-verify `system.info` hostname against that Pod, retain `server.bootId`, and
-recheck Pod UID, container ID and image. Refuse rollover; pin the socket through
-read and mutation without reconnect or replay. Lost possibly sent writes return
-`UNKNOWN_OUTCOME`. Exclude the Agent-wide route; remove revision routes at retirement.
+Every revision gets a private Service/operator HTTPRoute with Envoy authentication,
+trusted headers, scopes and NetworkPolicy. Broad observation stays in the Gateway
+namespace. Split execution supports dedicated Harnesses only; its unbound role
+grants only ConfigMaps and NetworkPolicies `get`. Before and after handshake, Ready
+EndpointSlice target UIDs must match the sole live Gateway Pod. On its WebSocket, match `system.info` hostname, retain `server.bootId`, and recheck Pod
+UID, container ID and image. Pin reads/mutations; refuse rollover, reconnect and replay. Lost possibly sent writes return `UNKNOWN_OUTCOME`. Exclude Agent-wide routes; retire revision routes.
 
 Before **every** native Gateway process spawn, including supervisor respawn
 and kubelet container restart, the launcher verifies the effective plugin

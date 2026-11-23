@@ -60,6 +60,20 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
+  name: {{ .Release.Name }}-execution-tenant-automation-observer
+rules:
+  # An administrator binds this role only when dedicated automations need
+  # to verify absent Agent egress and endpoint trust.
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: {{ .Release.Name }}-execution-tenant-worker
 rules:
   - apiGroups: [""]

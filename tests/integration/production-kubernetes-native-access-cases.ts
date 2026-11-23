@@ -509,6 +509,21 @@ export function registerNativeAdminAndRuntimeLogCases(
         ...executionPodReads,
         ...runtimeLogRules,
       ]);
+      // Automation attestation opts into only the execution-side absence reads.
+      const automationObserver = "oce-execution-tenant-automation-observer";
+      assert.deepEqual(clusterRoleRules(execution, automationObserver), [
+        { apiGroups: [""], resources: ["configmaps"], verbs: ["get"] },
+        { apiGroups: ["networking.k8s.io"], resources: ["networkpolicies"], verbs: ["get"] },
+      ]);
+      assert.equal(
+        execution.some(
+          (object) =>
+            ["RoleBinding", "ClusterRoleBinding"].includes(object.kind) &&
+            asRecord(asRecord(object)?.roleRef)?.name === automationObserver,
+        ),
+        false,
+        "The execution automation observer must remain unbound until an administrator grants it.",
+      );
       assert.equal(
         clusterRoleRules(execution, "oce-execution-tenant-worker").some(isLogRule),
         false,

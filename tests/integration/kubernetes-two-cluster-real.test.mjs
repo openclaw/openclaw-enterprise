@@ -186,6 +186,68 @@ test(
         policy.metadata.name.startsWith("allow-agent-auth-"),
       );
     const first = await deploy();
+
+    // Dedicated automation attestation must prove that its Agent has neither
+    // direct MCP egress nor projected endpoint trust. The execution API identity
+    // needs only named reads for those absent resources, by explicit tenant grant.
+    const executionApi = `system:serviceaccount:${configuration.execution.systemNamespace}:openclaw-enterprise-api`;
+    const shortHash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+    const absentAutomationAssets = [
+      ["configmap", `automation-trust-agent-${shortHash(agent.id)}-rev-${shortHash(first.id)}`],
+      [
+        "networkpolicy",
+        `allow-automation-mcp-agent-rev-${shortHash(first.id)}-${shortHash(agent.id)}`,
+      ],
+    ];
+    const executionApiKubectl = (...args) =>
+      dp.kubectl(...args, "--namespace", namespaces.execution, "--as", executionApi);
+    const forbidden = (error) => String(error.stderr).includes("(Forbidden)");
+    const notFound = (error) => String(error.stderr).includes("(NotFound)");
+    for (const [kind, name] of absentAutomationAssets) {
+      await assert.rejects(executionApiKubectl("get", kind, name), forbidden);
+    }
+    await dp.applyManifest(
+      JSON.stringify({
+        apiVersion: "rbac.authorization.k8s.io/v1",
+        kind: "RoleBinding",
+        metadata: {
+          name: "execution-tenant-automation-observer-api",
+          namespace: namespaces.execution,
+        },
+        subjects: [
+          {
+            kind: "ServiceAccount",
+            name: "openclaw-enterprise-api",
+            namespace: configuration.execution.systemNamespace,
+          },
+        ],
+        roleRef: {
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "ClusterRole",
+          name: `${configuration.execution.release}-execution-tenant-automation-observer`,
+        },
+      }),
+    );
+    for (const [kind, name] of absentAutomationAssets) {
+      await assert.rejects(executionApiKubectl("get", kind, name), notFound);
+    }
+    // The opt-in role must not permit inventory, mutation, credential reads,
+    // or the broader Gateway observer's Service reads in the execution namespace.
+    await assert.rejects(executionApiKubectl("get", "configmaps"), forbidden);
+    await assert.rejects(executionApiKubectl("get", "networkpolicies"), forbidden);
+    await assert.rejects(
+      executionApiKubectl("create", "configmap", "automation-write-denied", "--dry-run=server"),
+      forbidden,
+    );
+    await assert.rejects(
+      executionApiKubectl("get", "secret", "automation-secret-denied"),
+      forbidden,
+    );
+    await assert.rejects(
+      executionApiKubectl("get", "service", "automation-service-denied"),
+      forbidden,
+    );
+
     const pods = (plane, role) =>
       planes[plane].resources(
         "pods",
