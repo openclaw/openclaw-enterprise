@@ -537,8 +537,26 @@
           "notNull": true,
           "default": true
         },
+        "network_proxy_url": {
+          "name": "network_proxy_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "network_proxy_secret_id": {
+          "name": "network_proxy_secret_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "first_deployment_digest": {
           "name": "first_deployment_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "network_proxy_admission": {
+          "name": "network_proxy_admission",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -598,6 +616,14 @@
       },
       "policies": {},
       "checkConstraints": {
+        "agent_revisions_network_proxy_shape": {
+          "name": "agent_revisions_network_proxy_shape",
+          "value": "(\"occ\".\"agent_revisions\".\"network_proxy_url\" IS NULL AND \"occ\".\"agent_revisions\".\"network_proxy_secret_id\" IS NULL) OR (\"occ\".\"agent_revisions\".\"network_proxy_url\" IS NOT NULL AND length(\"occ\".\"agent_revisions\".\"network_proxy_url\") <= 2048 AND \"occ\".\"agent_revisions\".\"network_proxy_url\" ~ '^https?://[^/@[:space:]]+$' AND (\"occ\".\"agent_revisions\".\"network_proxy_secret_id\" IS NULL OR \"occ\".\"agent_revisions\".\"network_proxy_secret_id\" <> ''))"
+        },
+        "agent_revisions_network_proxy_admission_shape": {
+          "name": "agent_revisions_network_proxy_admission_shape",
+          "value": "(\"occ\".\"agent_revisions\".\"network_proxy_url\" IS NULL AND \"occ\".\"agent_revisions\".\"network_proxy_admission\" IS NULL) OR (\"occ\".\"agent_revisions\".\"network_proxy_url\" IS NOT NULL AND \"occ\".\"agent_revisions\".\"network_proxy_admission\" IS NOT NULL AND length(\"occ\".\"agent_revisions\".\"network_proxy_admission\") BETWEEN 1 AND 8192)"
+        },
         "agent_revisions_first_deployment_digest": {
           "name": "agent_revisions_first_deployment_digest",
           "value": "\"occ\".\"agent_revisions\".\"first_deployment_digest\" IS NULL OR (\"occ\".\"agent_revisions\".\"revision_number\" = 1 AND \"occ\".\"agent_revisions\".\"first_deployment_digest\" ~ '^[a-f0-9]{64}$')"
@@ -683,6 +709,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "network_proxy_url": {
+          "name": "network_proxy_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "network_proxy_secret_id": {
+          "name": "network_proxy_secret_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "sandbox_policy_editing": {
           "name": "sandbox_policy_editing",
@@ -949,6 +987,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "agents_network_proxy_shape": {
+          "name": "agents_network_proxy_shape",
+          "value": "(\"occ\".\"agents\".\"network_proxy_url\" IS NULL AND \"occ\".\"agents\".\"network_proxy_secret_id\" IS NULL) OR (\"occ\".\"agents\".\"network_proxy_url\" IS NOT NULL AND length(\"occ\".\"agents\".\"network_proxy_url\") <= 2048 AND \"occ\".\"agents\".\"network_proxy_url\" ~ '^https?://[^/@[:space:]]+$' AND (\"occ\".\"agents\".\"network_proxy_secret_id\" IS NULL OR \"occ\".\"agents\".\"network_proxy_secret_id\" <> ''))"
+        },
         "agents_id_format": {
           "name": "agents_id_format",
           "value": "\"occ\".\"agents\".\"id\" ~ $1"

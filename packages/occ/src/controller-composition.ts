@@ -1032,6 +1032,7 @@ export function createControllerComposition(
       publicController.updateConfiguration(actorId, input),
     installationId: admittedInstallation.id,
     selectedCompute: () => drivers.selection("compute")?.driver as ComputeDriver | undefined,
+    ownedSecretDriver: secretOperations.ownedSecretDriver,
     refuseRepositoryNetworkOverlap: (actorId, policy) =>
       sandboxPolicyOperations.refuseRepositoryNetworkOverlap(actorId, policy),
     bindCreator: iamPolicy.bindCreator,
@@ -1115,6 +1116,7 @@ export function createControllerComposition(
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
+    ownedSecretDriver: secretOperations.ownedSecretDriver,
     validateComputeConfiguration,
     timestamp: resourceValues.timestamp,
     nextIdentifier: resourceValues.nextIdentifier,

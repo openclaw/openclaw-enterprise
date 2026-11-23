@@ -23,6 +23,7 @@ type StoredAgent = {
   backendId?: unknown;
   executionMode?: unknown;
   gatewayManagedMode?: unknown;
+  networkProxy?: unknown;
   harnessAuth?: unknown;
   credentialSources?: unknown;
   plugins?: unknown;
@@ -52,6 +53,7 @@ export type CreatedRevision = {
   revision: number;
   backendId: unknown;
   gatewayManagedMode: unknown;
+  networkProxy?: unknown;
   createdAt: string;
   configurationId: string;
   configurationKind: StoredConfiguration["kind"];
@@ -92,6 +94,7 @@ type UnreadableRevision = Pick<
 };
 type StoredRevision = CreatedRevision | UnreadableRevision;
 type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
+  agentNetworkProxy?: AgentWire["networkProxy"];
   harnessOverrides?: Record<string, unknown>;
   candidateSuperseded?: boolean;
   candidateSelected?: boolean;
@@ -248,6 +251,9 @@ export function createAgentLifecycle(
     configurationId: config.id,
     executionMode: "dedicated",
     gatewayManagedMode: true,
+    ...(scenario.agentNetworkProxy === undefined
+      ? {}
+      : { networkProxy: structuredClone(scenario.agentNetworkProxy) }),
     harnessAuth: selectedAuth,
     credentialSources: structuredClone(
       scenario.credentialSources ??
@@ -297,6 +303,9 @@ export function createAgentLifecycle(
       revision,
       backendId: owner.backendId ?? null,
       gatewayManagedMode: owner.gatewayManagedMode,
+      ...(owner.networkProxy === undefined
+        ? {}
+        : { networkProxy: structuredClone(owner.networkProxy) }),
       configurationId: configuration.id,
       configurationKind: configuration.kind,
       configurationGeneration: configuration.generation,
@@ -584,6 +593,9 @@ export function createAgentLifecycle(
       }
       if (method === "PATCH") {
         Object.assign(saved, body);
+        if (saved.networkProxy === null) {
+          delete saved.networkProxy;
+        }
         return response(saved);
       }
       if (method === "DELETE") {
@@ -660,6 +672,9 @@ export function createAgentLifecycle(
           backendId: item.backendId,
           configurationId: item.configurationId,
           configurationGeneration: item.configurationGeneration,
+          ...("networkProxy" in item && item.networkProxy !== undefined
+            ? { networkProxy: item.networkProxy }
+            : {}),
           harness:
             item.agentId === seedAgentId &&
             scenario.unrecordedHarnessRevision === item.revision &&

@@ -22,6 +22,11 @@ interface MessagePage {
   readonly response_metadata?: { readonly next_cursor?: string };
 }
 
+interface MembersPage {
+  readonly members: readonly string[];
+  readonly response_metadata?: { readonly next_cursor?: string };
+}
+
 interface ChannelQuery {
   readonly channel: string;
 }
@@ -44,6 +49,7 @@ interface RepliesQuery extends PageQuery {
 export interface SlackRequests {
   "auth.test": [body?: Record<string, never>];
   "conversations.info": [body: ChannelQuery];
+  "conversations.members": [body: PageQuery];
   "conversations.history": [body: HistoryQuery];
   "conversations.replies": [body: RepliesQuery];
   "chat.postMessage": [body: ChannelQuery & { readonly text: string }];
@@ -53,6 +59,7 @@ export interface SlackRequests {
 interface SlackResults {
   "auth.test": SlackIdentity;
   "conversations.info": { readonly channel?: unknown };
+  "conversations.members": MembersPage;
   "conversations.history": MessagePage;
   "conversations.replies": MessagePage;
   "chat.postMessage": { readonly channel: string; readonly ts: string };
@@ -105,6 +112,15 @@ const validate: {
   // The destination check owns the channel's identity and exact type flags.
   "conversations.info": (value): value is ObjectValue & SlackResults["conversations.info"] =>
     value !== undefined,
+  "conversations.members": (value): value is ObjectValue & MembersPage => {
+    const metadata = asRecord(value.response_metadata);
+    return (
+      Array.isArray(value.members) &&
+      value.members.every((id) => typeof id === "string") &&
+      (value.response_metadata === undefined ||
+        (metadata !== undefined && isOptionalString(metadata.next_cursor)))
+    );
+  },
   "conversations.history": isMessagePage,
   "conversations.replies": isMessagePage,
   "chat.postMessage": (value): value is ObjectValue & SlackResults["chat.postMessage"] =>

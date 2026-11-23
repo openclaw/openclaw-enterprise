@@ -636,14 +636,28 @@
       "idx": 91,
       "version": "7",
       "when": 1787000000091,
-      "tag": "0091_installation_network_policy_ceiling",
+      "tag": "0091_agent_network_proxy",
       "breakpoints": true
     },
     {
       "idx": 92,
       "version": "7",
       "when": 1787000000092,
-      "tag": "0092_dynamic_installation_network_policy_ceiling",
+      "tag": "0092_agent_network_proxy_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1787000000093,
+      "tag": "0093_installation_network_policy_ceiling",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1787000000094,
+      "tag": "0094_dynamic_installation_network_policy_ceiling",
       "breakpoints": true
     }
   ]

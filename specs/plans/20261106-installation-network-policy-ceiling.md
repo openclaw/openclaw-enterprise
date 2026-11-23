@@ -43,8 +43,7 @@ saved state and never seed it.
 
 ### Task 1: Persistence, startup, API and real callers
 
-Extend contracts, Installation persistence, composition, HTTP handlers, admission
-and worker rechecks. Reject the retired overwrite key.
+Extend Installation persistence, API, admission and worker rechecks. Reject the retired overwrite key.
 Extend PostgreSQL Agent coverage for persistence, restart, stale saves, denials,
 audit rollback, concurrency and absent state; register in CI.
 
@@ -318,6 +317,8 @@ Main `ebcc46a14` owns 0084; ceiling migrations move to 0085–0086 with unchange
 Main `2c78d43bb` owns 0085; ceiling migrations move to 0086–0087 with unchanged SQL.
 
 Main `b3c6ef3d0`: ceiling migrations 0091–0092; extracted operations retain persisted authority.
+
+`b899d185e`: ceiling migrations 0093–0094.
 
 ## Manual Notes
 

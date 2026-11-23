@@ -318,6 +318,7 @@
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
+        "deploy rechecks a saved Network proxy credential after its exact operate grant is revoked",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Guarded stop protects a queued successor and stops the exact deployed Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
