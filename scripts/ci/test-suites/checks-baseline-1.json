@@ -155,6 +155,7 @@
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.ts",
+    "tests/conformance/repository-source-loan.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -1040,6 +1041,15 @@
         "Git denial receipt refuses a replaced supervisor before or during the read",
         "Git removal denial command reports only signed or transport failures",
         "Git ACL environment guard refuses an embedded credential without echoing it"
+      ]
+    },
+    {
+      "path": "tests/conformance/repository-source-loan.test.ts",
+      "expectedTests": [
+        "a Source loan lends its value once under a held row, and a replaced value is new material",
+        "every loan refusal releases the row, names a code, and is reported once per Source version and reason",
+        "a Source loan lasts at most 15 minutes, is renewed half way, and a peer Agent's loan is unaffected",
+        "a Worker holding a loan delays replacement and retirement until its write returns"
       ]
     },
     {
