@@ -10,7 +10,7 @@
   },
   "optionalEnv": [
     "OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER",
-    "OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE"
+    "OCC_TEST_OPENSHELL_SAVED_AGENT_PULL_REQUESTS"
   ],
   "prepare": {},
   "files": [

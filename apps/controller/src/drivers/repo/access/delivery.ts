@@ -7,6 +7,7 @@ import type {
 export type RepositoryGitRestAuthority = readonly Readonly<{
   repository: string;
   readIssues: boolean;
+  readPullRequests?: true;
   createPullRequests?: true;
 }>[];
 
@@ -25,6 +26,7 @@ export function repositoryGitRestOperations(
     return {
       repository,
       readIssues: rest?.readIssues === true,
+      readPullRequests: rest?.readPullRequests === true,
       createPullRequests: write && rest?.createPullRequests === true,
     };
   });

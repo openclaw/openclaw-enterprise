@@ -20,10 +20,6 @@ export function nativeRestMode(
     : "read";
 }
 
-export function restWriteRegistration(name: string) {
-  return name + "-rest-writes";
-}
-
 /** One policy definition, compared again by the Credential Proxy at Compute release. */
 export function openShellGitMiddleware(
   registrationName: string,
@@ -34,12 +30,11 @@ export function openShellGitMiddleware(
   return {
     "oce-prepared-git": {
       name: "oce-prepared-git",
-      middleware:
-        native && rest === "write" ? restWriteRegistration(registrationName) : registrationName,
+      middleware: registrationName,
       config: { fields: { binding_id: { stringValue: bindingId } } },
       on_error: "fail_closed",
       order: 2147483647,
-      // The dedicated registration filters API requests to POST before credential injection.
+      // Stock 0.1.9 selects middleware by host. PR creation also puts API reads on the hook.
       endpoints: {
         include: native
           ? [rest === "read" ? "deny-egress.invalid" : "api.github.com"]

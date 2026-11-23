@@ -39,6 +39,7 @@ export function createOpenShellCapabilities(input: {
     readonly configuration: OpenShellProxyOptions;
     readonly exchangeAuthority?: EgressAuthorityConfiguration;
     readonly preparedProviders: readonly CredentialProviderDefinition[];
+    readonly repositoryOriginRefusal?: string | undefined;
   };
 }) {
   const configuration = input.repository?.configuration;
@@ -68,6 +69,7 @@ export function createOpenShellCapabilities(input: {
       backend: input.backend,
       sandbox,
       preparedProviders: input.proxy.preparedProviders,
+      repositoryOriginRefusal: input.proxy.repositoryOriginRefusal,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),

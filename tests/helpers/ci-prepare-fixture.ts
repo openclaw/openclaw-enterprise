@@ -166,6 +166,29 @@ export function spawnResult(
   });
 }
 
+// Runs a module program that imports prepare.ts (argv[1]) and uses the state at argv[2].
+export function runProgram(
+  program: string,
+  statePath: string,
+  env: NodeJS.ProcessEnv,
+  timeout?: number,
+) {
+  const prepare = new URL("../../scripts/ci/prepare.ts", import.meta.url).href;
+  return spawnResult(process.execPath, ["--input-type=module", "-e", program, prepare, statePath], {
+    env,
+    ...(timeout === undefined ? {} : { timeout }),
+  });
+}
+
+// prepare.ts appends to $GITHUB_ENV when no --github-env is given, and in CI that is the job's
+// own file, so a case passes GITHUB_ENV or GITHUB_OUTPUT on only when it sets them (finding 1216).
+export function runPrepare(args: string[], env: NodeJS.ProcessEnv = {}) {
+  const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
+  return spawnResult(process.execPath, [preparePath, ...args], {
+    env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
+  });
+}
+
 // The host programs the fake commands run by absolute path: the fixture PATH holds only
 // the fakes.
 let shimPrograms: { bash: string; sleep: string; setsid: string } | undefined;

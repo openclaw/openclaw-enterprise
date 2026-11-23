@@ -742,7 +742,6 @@ test("repository API credential issuance is refused while ordinary collaboration
   ];
   let scope = "github-repository";
   let restBinding = {};
-  let registration = "online-git";
   const writes = (pullRequestRepositories = []) => ({
     scopedRestWrites: { pullRequestRepositories },
   });
@@ -791,42 +790,39 @@ test("repository API credential issuance is refused while ordinary collaboration
       body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body)),
       body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
     );
-    input.middleware_name = registration;
     input.target.query = query;
     input.target.host = "api.github.com";
     return send(input);
   };
-  await t.test("filtered registration is exclusive to native API writes", async (t) => {
-    t.after(() => {
-      registration = "online-git";
-      restBinding = {};
-    });
-    const path = "/repos/" + binding.repository + "/pulls";
-    const pull = { title: "Fix", head: "topic", base: "main" };
-    const create = (query = "") => evaluate(path, "POST", pull, query);
-    const before = approvals;
-    registration = "online-git-rest-writes";
-    assert.equal((await create()).decision, 2, "ordinary grant on filtered registration");
-    restBinding = { nativeGit: true };
-    assert.equal((await create()).decision, 2, "missing write authority");
-    restBinding = { nativeGit: true, ...writes([binding.repository]) };
-    for (const query of ["head_repo=other", "issue=3"]) {
-      const result = await create(query);
-      assert.equal(result.decision, 2, query);
-      assert.equal(result.reason_code, "request_not_allowed", query);
-      assert.equal(approvals, before, "POST query must be refused before owner authorization");
-    }
-    assert.equal((await evaluate(path, "GET")).decision, 2);
-    assert.equal((await evaluate(path, "POST", { ...pull, head: "fork:topic" })).decision, 2);
-    const git = pushRequest();
-    git.middleware_name = registration;
-    assert.equal((await send(git)).decision, 2);
-    assert.equal(approvals, before);
-    assert.equal((await create()).decision, 1);
-    registration = "online-git";
-    assert.equal((await create()).decision, 2, "native write on ordinary registration");
-    assert.equal(approvals, before + 1);
-  });
+  await t.test(
+    "stock API middleware permits scoped reads and validates native writes",
+    async (t) => {
+      t.after(() => {
+        restBinding = {};
+      });
+      const path = "/repos/" + binding.repository + "/pulls";
+      const pull = { title: "Fix", head: "topic", base: "main" };
+      const create = (query = "") => evaluate(path, "POST", pull, query);
+      const before = approvals;
+      restBinding = { nativeGit: true };
+      assert.equal((await create()).decision, 2, "missing write authority");
+      restBinding = { nativeGit: true, ...writes([binding.repository]) };
+      for (const query of ["head_repo=other", "issue=3"]) {
+        const result = await create(query);
+        assert.equal(result.decision, 2, query);
+        assert.equal(result.reason_code, "request_not_allowed", query);
+        assert.equal(approvals, before, "POST query must be refused before owner authorization");
+      }
+      assert.equal((await evaluate(path, "PATCH", pull)).decision, 2);
+      assert.equal((await evaluate(path, "POST", { ...pull, head: "fork:topic" })).decision, 2);
+      const git = pushRequest();
+      assert.equal((await send(git)).decision, 2);
+      assert.equal(approvals, before);
+      assert.equal((await create()).decision, 1);
+      assert.equal((await evaluate(path, "GET")).decision, 1);
+      assert.equal(approvals, before + 2);
+    },
+  );
   await t.test(
     "scoped pull creation requires unqualified branches before consulting the owner",
     async () => {
@@ -851,6 +847,10 @@ test("repository API credential issuance is refused while ordinary collaboration
         { ...pull, head: "other%253Afix" },
         { ...pull, head_repo: "other" },
         { ...pull, issue: 3 },
+        { ...pull, draft: "false" },
+        { ...pull, title: "" },
+        { ...pull, body: {} },
+        { ...pull, maintainer_can_modify: 1 },
       ]) {
         assert.equal((await create(body)).reason_code, "request_not_allowed");
       }

@@ -15,14 +15,9 @@ import {
 const middleware = "/openshell.middleware.v1.SupervisorMiddleware/";
 const setup = new Set([middleware + "Describe", middleware + "ValidateConfig"]);
 
-export function assertGitCallbackEndpoint(services: unknown, endpoint: string, filtered = false) {
+export function assertGitCallbackEndpoint(services: unknown, endpoint: string) {
   assert.ok(Array.isArray(services), "Require installed Supervisor middleware readback");
-  const name = filtered ? "oce-prepared-git-rest-writes" : "oce-prepared-git";
-  const git = services.filter((service) => service?.name === name);
-  if (filtered) {
-    assert.deepEqual(git[0]?.bindings, [4]);
-    assert.deepEqual(git[0]?.http_request_methods, ["POST"]);
-  }
+  const git = services.filter((service) => service?.name === "oce-prepared-git");
   assert.ok(
     git.length === 1 &&
       git[0].audience === "oce-prepared-git" &&

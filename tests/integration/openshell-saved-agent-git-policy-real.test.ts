@@ -5,14 +5,17 @@ import { isDeepStrictEqual } from "node:util";
 
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
-import type { AgentDeploymentStatusWire } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  AgentDeploymentStatusWire,
+  AgentReadWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { repositoryCleanupWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { wirePolicy } from "../../apps/controller/src/drivers/egress-proxy/openshell-wire-policy.ts";
 import { assertGitCallbackEndpoint } from "../fixtures/openshell-git-callback-proxy.ts";
 import {
   scopedRestFixturePermissions,
   type startSkipperPrivateGitOrigin,
-  scopedRestWriteFixturePermissions,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import { observeUntil, prepareFiniteGitAgent } from "../helpers/finite-git-agent.ts";
@@ -30,13 +33,16 @@ const emptyDeployRefusal = {
 };
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
-const restWrites = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE;
+const nativePullRequests = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_PULL_REQUESTS;
 assert.ok(
-  restWrites === undefined || restWrites === "v1",
-  "Unsupported saved Agent REST write profile",
+  nativePullRequests === undefined ||
+    nativePullRequests === "read" ||
+    nativePullRequests === "write",
+  "Select the saved Agent pull request mode with read or write",
 );
+const pullWrites = nativePullRequests === "write";
 const issueReads =
-  process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST === "reads" || restWrites !== undefined;
+  process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST === "reads" || nativePullRequests !== undefined;
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
 
@@ -177,11 +183,9 @@ function savedGitProbeTools(fixture: GitInstallation, execute: GitExec) {
 
 type IssuedDeployment = Deployed & { credentialIndex: number };
 
-function ghApi(
-  route: string,
-  body?: Record<string, string>,
-  includeHeaders = false,
-): [string, ...string[]] {
+type GhBody = Readonly<Record<string, string | boolean>>;
+
+function ghApi(route: string, body?: GhBody, includeHeaders = false): [string, ...string[]] {
   return [
     "sh",
     "-ceu",
@@ -191,7 +195,10 @@ function ghApi(
     body ? "POST" : "GET",
     ...(includeHeaders ? ["--include"] : []),
     route,
-    ...Object.entries(body ?? {}).flatMap(([key, value]) => ["--raw-field", key + "=" + value]),
+    ...Object.entries(body ?? {}).flatMap(([key, value]) => [
+      typeof value === "boolean" ? "--field" : "--raw-field",
+      key + "=" + value,
+    ]),
   ];
 }
 
@@ -200,7 +207,7 @@ async function refuseGh(
   execute: GitExec,
   deployed: IssuedDeployment,
   route: string,
-  body?: Record<string, string>,
+  body?: GhBody,
 ) {
   const before = fixture.origin.snapshot().requests;
   await expectGhRefusal(fixture, execute, deployed, route, body);
@@ -216,7 +223,7 @@ async function expectGhRefusal(
   execute: GitExec,
   deployed: IssuedDeployment,
   route: string,
-  body?: Record<string, string>,
+  body?: GhBody,
 ) {
   const { guest } = savedGitProbeTools(fixture, execute);
   const result = await guest(deployed.target, { kind: "success" }, [
@@ -238,6 +245,7 @@ async function exerciseSavedIssueReads(
   execute: GitExec,
   deployed: IssuedDeployment,
   callbackBaseline: number,
+  usesValidator = false,
 ) {
   const { origin, callbacks } = fixture;
   const { network } = origin;
@@ -246,10 +254,7 @@ async function exerciseSavedIssueReads(
     .snapshot()
     .tokens.find(({ index }: { index: number }) => index === deployed.credentialIndex);
   assert.ok(token && !token.revoked);
-  assert.deepEqual(
-    token.permissions,
-    restWrites ? scopedRestWriteFixturePermissions : scopedRestFixturePermissions,
-  );
+  assert.deepEqual(token.permissions, scopedRestFixturePermissions);
   assert.ok(Array.isArray(token.repositoryIds));
   assert.deepEqual(
     [...token.repositoryIds].sort(),
@@ -294,8 +299,9 @@ async function exerciseSavedIssueReads(
     }
   }
 
+  assert.equal(await callbacks.read(), callbackBaseline + (usesValidator ? 4 : 0));
   // The first four requests calibrate the same whole-origin counter used here.
-  // Keep this journey read-only and require an HTTP refusal before the origin.
+  // Require an HTTP refusal before the origin.
   for (const route of [
     "repos/fixture/c/issues",
     "repos/fixture/c/issues/42",
@@ -303,11 +309,17 @@ async function exerciseSavedIssueReads(
   ]) {
     await refuseGh(fixture, execute, deployed, route);
   }
-  assert.equal(await callbacks.read(), callbackBaseline);
+  if (!nativePullRequests) {
+    await refuseGh(fixture, execute, deployed, bPulls);
+    await refuseGh(fixture, execute, deployed, `${bPulls}/42`);
+  }
+  if (!usesValidator) {
+    assert.equal(await callbacks.read(), callbackBaseline);
+  }
 }
 
 const pull = { title: "Saved Agent pull", head: "approved", base: "main" };
-const issue = { title: "Saved Agent issue", body: "From the saved repository policy" };
+const issue = { title: "Unregistered issue write" };
 const bPulls = "repos/fixture/b/pulls";
 const bIssues = "repos/fixture/b/issues";
 
@@ -339,7 +351,7 @@ async function refuseRawPull(
   assert.equal(fixture.origin.snapshot().requests, before, "Denied raw request reached the origin");
 }
 
-async function refuseIssueRedirect(
+async function refusePullRedirect(
   fixture: GitInstallation,
   execute: GitExec,
   deployed: IssuedDeployment,
@@ -349,8 +361,8 @@ async function refuseIssueRedirect(
   assert.ok(network);
   const before = origin.snapshot();
   const offset = network.requests().length;
-  network.redirectNextIssueReadToC();
-  await expectGhRefusal(fixture, execute, deployed, `${bIssues}/42`);
+  network.redirectNextPullReadToC();
+  await expectGhRefusal(fixture, execute, deployed, `${bPulls}/42`);
   const after = origin.snapshot();
   const redirectReplies =
     (after.endpoints["scoped-rest:302"] ?? 0) - (before.endpoints["scoped-rest:302"] ?? 0);
@@ -360,7 +372,7 @@ async function refuseIssueRedirect(
   assert.deepEqual(network.requests().slice(offset), [
     {
       repository: "fixture/b",
-      operation: "rest-issue-read",
+      operation: "rest-pull-read",
       method: "GET",
       authenticated: true,
       credentialIndex: deployed.credentialIndex,
@@ -368,78 +380,150 @@ async function refuseIssueRedirect(
   ]);
 }
 
-async function exerciseSavedRestWrites(
+async function exerciseSavedPullReads(
+  fixture: GitInstallation,
+  execute: GitExec,
+  deployed: IssuedDeployment,
+  usesValidator = false,
+) {
+  const { callbacks, origin } = fixture;
+  const network = origin.network;
+  assert.ok(network && callbacks);
+  const { guest } = savedGitProbeTools(fixture, execute);
+  const beforeCallbacks = await callbacks.read();
+  for (const repository of ["fixture/a", "fixture/b"]) {
+    const seeded = { number: 42, title: `Fixture pull in ${repository}`, state: "open" };
+    for (const [route, operation, expected] of [
+      ["pulls", "rest-pull-list", [seeded, ...network.pullRequests(repository)]],
+      ["pulls/42", "rest-pull-read", seeded],
+    ] as const) {
+      const before = origin.snapshot().requests;
+      const offset = network.requests().length;
+      const response = await guest(
+        deployed.target,
+        { kind: "success" },
+        ghApi(`repos/${repository}/${route}`),
+      );
+      assert.deepEqual(JSON.parse(response.stdout.toString("utf8")), expected);
+      assert.equal(origin.snapshot().requests, before + 1);
+      assert.deepEqual(network.requests().slice(offset), [
+        {
+          repository,
+          operation,
+          method: "GET",
+          authenticated: true,
+          credentialIndex: deployed.credentialIndex,
+        },
+      ]);
+    }
+  }
+  assert.equal(await callbacks.read(), beforeCallbacks + (usesValidator ? 4 : 0));
+  for (const route of ["repos/fixture/c/pulls", "repos/fixture/c/pulls/42", `${bPulls}/comments`]) {
+    await refuseGh(fixture, execute, deployed, route);
+  }
+  if (!usesValidator) {
+    assert.equal(await callbacks.read(), beforeCallbacks);
+  }
+}
+
+async function exerciseSavedPullWrites(
   fixture: GitInstallation,
   execute: GitExec,
   deployed: IssuedDeployment,
   pushed: string,
-  count: number,
+  callbackBaseline: number,
 ) {
   const { origin, callbacks } = fixture;
   const network = origin.network;
   assert.ok(callbacks && network);
   const { guest } = savedGitProbeTools(fixture, execute);
-  const deny = (path: string, payload: Record<string, string>) =>
+  const deny = (path: string, payload: GhBody) =>
     refuseGh(fixture, execute, deployed, path, payload);
-  const create = async (path: string, payload: Record<string, string>, operation: string) => {
-    const before = origin.snapshot().requests;
+  assert.equal(await callbacks.resume(), callbackBaseline);
+  await exerciseSavedPullReads(fixture, execute, deployed, true);
+  for (const repository of ["a", "c"]) {
+    await deny(`repos/fixture/${repository}/pulls`, pull);
+  }
+  await deny(bIssues, issue);
+  await refusePullRedirect(fixture, execute, deployed);
+
+  // A qualified head or alternate head repository must be blocked even through gh.
+  // Direct JSON clients can also send malformed or ambiguous bodies.
+  let attempts = await callbacks.read();
+  for (const body of [
+    { ...pull, head: "fork:approved" },
+    { ...pull, head_repo: "fork/b" },
+  ]) {
+    await deny(bPulls, body);
+    assert.equal(await callbacks.read(), ++attempts);
+  }
+  for (const body of [
+    '{"title":',
+    JSON.stringify({ issue: 42, head: pull.head, base: pull.base }),
+  ]) {
+    await refuseRawPull(fixture, execute, deployed, body);
+    assert.equal(await callbacks.read(), ++attempts);
+  }
+
+  // The mandatory callback protects the entire API host of this revision.
+  // Both API reads and a valid pull creation must fail before any origin HTTP.
+  assert.equal(await callbacks.disable(), attempts);
+  await refuseGh(fixture, execute, deployed, `${bPulls}/42`);
+  assert.equal(await callbacks.read(), ++attempts);
+  await refuseGh(fixture, execute, deployed, `${bIssues}/42`);
+  assert.equal(await callbacks.read(), ++attempts);
+  await deny(bPulls, pull);
+  assert.equal(await callbacks.read(), ++attempts);
+  assert.deepEqual(network.pullRequests("fixture/b"), []);
+
+  // The same valid POST succeeds once the Worker callback becomes available.
+  assert.equal(await callbacks.resume(), attempts);
+  const draftHead = "before-rotation";
+  const draftOid = await network.ref("fixture/b", `refs/heads/${draftHead}`);
+  assert.ok(draftOid && draftOid !== pushed);
+  for (const [index, payload, headOid] of [
+    [0, pull, pushed],
+    [1, { ...pull, title: "Saved Agent draft", head: draftHead, draft: true }, draftOid],
+  ] as const) {
+    const before = origin.snapshot();
     const offset = network.requests().length;
-    const response = await guest(deployed.target, { kind: "success" }, ghApi(path, payload));
-    assert.equal(origin.snapshot().requests, before + 1);
+    const response = await guest(deployed.target, { kind: "success" }, ghApi(bPulls, payload));
+    const after = origin.snapshot();
+    assert.equal(after.requests, before.requests + 1);
+    assert.equal(
+      after.endpoints["scoped-rest:201"],
+      (before.endpoints["scoped-rest:201"] ?? 0) + 1,
+    );
     assert.deepEqual(network.requests().slice(offset), [
       {
         repository: "fixture/b",
-        operation,
+        operation: "rest-pull-create",
         method: "POST",
         authenticated: true,
         credentialIndex: deployed.credentialIndex,
       },
     ]);
-    assert.equal(await callbacks.read(), ++count);
-    return JSON.parse(response.stdout.toString("utf8")) as unknown;
-  };
-  assert.equal(await callbacks.resume(), count);
-  for (const repository of ["a", "c"]) {
-    await deny(`repos/fixture/${repository}/pulls`, pull);
-    await deny(`repos/fixture/${repository}/issues`, issue);
-  }
-  await deny(bIssues, issue);
-  assert.equal(network.createdIssue("fixture/b"), undefined);
-  assert.equal(await callbacks.read(), count);
-
-  // Direct JSON clients can send shapes the bundled CLI never generates.
-  const rejectedBodies = [
-    '{"title":',
-    JSON.stringify({ ...pull, head: "fork:approved" }),
-    JSON.stringify({ issue: 42, head: pull.head, base: pull.base }),
-  ];
-  for (const body of rejectedBodies) {
-    await refuseRawPull(fixture, execute, deployed, body);
-    assert.equal(await callbacks.read(), ++count);
+    const readback = network.pullRequests("fixture/b");
+    assert.equal(readback.length, index + 1);
+    const repo = { id: 74, full_name: "fixture/b" };
+    const expected = {
+      number: index + 1,
+      title: payload.title,
+      state: "open",
+      draft: index === 1,
+      head: { ref: payload.head, sha: headOid, repo },
+      base: { ref: payload.base, sha: origin.initialSha, repo },
+    };
+    assert.deepEqual(readback[index], expected);
+    assert.deepEqual(JSON.parse(response.stdout.toString("utf8")), expected);
+    assert.equal(await callbacks.read(), ++attempts);
   }
 
-  assert.equal(network.pullRequest("fixture/b"), undefined);
-  const response = await create(bPulls, pull, "rest-pull-create");
-  const created = network.pullRequest("fixture/b");
-  assert.ok(created && created.head.sha === pushed && created.base.sha === origin.initialSha);
-  assert.equal(created.number, 1);
-  assert.equal(created.title, pull.title);
-  assert.equal(created.draft, false);
-  assert.equal(created.head.ref, pull.head);
-  assert.equal(created.base.ref, pull.base);
-  assert.equal(created.head.repo.full_name, "fixture/b");
-  assert.equal(created.base.repo.full_name, "fixture/b");
-  assert.deepEqual(response, created);
-
-  assert.equal(await callbacks.disable(), count);
-  await exerciseSavedIssueReads(fixture, execute, deployed, count);
-  // The host stays the same across the redirect. The new repository path still
-  // has to be authorized before any follow-up request can reach the origin.
-  await refuseIssueRedirect(fixture, execute, deployed);
-  assert.equal(await callbacks.read(), count);
-  await deny(bPulls, pull);
-  assert.equal(await callbacks.read(), ++count);
-  return count;
+  assert.equal(await callbacks.disable(), attempts);
+  for (const repository of ["fixture/a", "fixture/c"]) {
+    assert.deepEqual(network.pullRequests(repository), []);
+  }
+  return attempts;
 }
 
 async function deployWithIssuance(
@@ -709,32 +793,45 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
     return { originalIndex, replacementIndex: undefined };
   }
-  if (restWrites) {
+  // Calibrate and replay once with the rotated credential before downgrading B.
+  const outcomes = await network.checkGitVariants(
+    originalIndex,
+    async ({ method, target, service, path, body }) => {
+      const reply = await guest(original, { kind: "variant", method, path, host: "github.com" }, [
+        ...curl,
+        "--http1.1",
+        "--path-as-is",
+        "--request-target",
+        target,
+        ...(method === "HEAD" ? ["--head"] : ["-X", method]),
+        ...(body === undefined
+          ? []
+          : ["-H", `Content-Type: application/x-${service}-request`, "--data-binary", body]),
+        `https://github.com${target}`,
+      ]);
+      return reply.stdout.toString("utf8");
+    },
+  );
+  await verifyCallbackCount();
+  t.diagnostic(JSON.stringify({ event: "saved-git-acl-variants", outcomes }));
+  if (pullWrites) {
     let validated: number | undefined;
-    await t.test(
-      "Saved Agent validates v1 REST writes and preserves reads during validator outage",
-      async () => {
-        validated = await exerciseSavedRestWrites(
-          fixture,
-          execute,
-          owner,
-          pushed,
-          expectedCallbacks,
-        );
-      },
-    );
-    assert.ok(validated !== undefined, "Mixed REST phase failed");
+    await t.test("Saved Agent creates pulls and fails closed during validator outage", async () => {
+      validated = await exerciseSavedPullWrites(fixture, execute, owner, pushed, expectedCallbacks);
+    });
+    assert.ok(validated !== undefined, "Pull request phase failed");
     expectedCallbacks = validated;
+
+    // The native Git routes remain independent of the unavailable API callback.
     await allowReplay(original, originalIndex, "a", requests[0]);
     await denyReplay(original, originalIndex, "c", requests[0]);
     await verifyCallbackCount();
   }
   const successor = await replace(originalIndex, expectedCallbacks);
-  if (restWrites) {
-    await refuseGh(fixture, execute, successor, bPulls, { ...pull, title: "After downgrade" });
-    await refuseGh(fixture, execute, successor, bIssues, issue);
-    assert.equal(network.createdIssue("fixture/b"), undefined);
-    assert.equal(network.pullRequest("fixture/b")?.head.sha, pushed);
+  if (nativePullRequests) {
+    const readback = network.pullRequests("fixture/b");
+    await refuseGh(fixture, execute, successor, bPulls, pull);
+    assert.deepEqual(network.pullRequests("fixture/b"), readback);
     await verifyCallbackCount();
   }
   const replacement = successor.target;
@@ -818,9 +915,16 @@ git -C '${local}' rev-parse HEAD HEAD^`,
   return { originalIndex, replacementIndex };
 }
 
-if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
+// The openshell-saved-agent lane selects "1". To exercise natural expiry instead,
+// use its fixture environment and run this file with node --test and
+// OCC_TEST_OPENSHELL_SAVED_AGENT_ACL=expiry. Both modes own one installation.
+const savedAgentAcl = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL;
+const autonomousExpiry = savedAgentAcl === "expiry";
+if (savedAgentAcl === "1" || autonomousExpiry) {
   test(
-    "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
+    autonomousExpiry
+      ? "OpenShell retires a saved Agent at its finite Git grant deadline"
+      : "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
     { timeout: 45 * 60_000 },
     settleBeforeFixtureTeardown(async (t) => {
       assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
@@ -841,10 +945,14 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
             process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
         "Use the inert Local Setup credential with the synthetic startup model",
       );
+      assert.ok(
+        !nativePullRequests || !autonomousExpiry,
+        "Select the saved ACL journey for pull requests",
+      );
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
         issueReads,
-        ...(restWrites && { restWrites }),
+        ...(nativePullRequests && { nativePullRequests }),
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
@@ -918,15 +1026,7 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
         assert.equal(config.workspace, workspace);
         assert.equal(config.configuration_admitted, true);
         assert.equal(config.policy_validation_failure_mode, "fail_closed");
-        const filtered =
-          !!restWrites &&
-          mode !== "peer" &&
-          desired.repositoryNetworkPolicy?.some(({ access }) => access === "write");
-        assertGitCallbackEndpoint(
-          config.supervisor_middleware_services,
-          callbacks.endpoint,
-          filtered,
-        );
+        assertGitCallbackEndpoint(config.supervisor_middleware_services, callbacks.endpoint);
         const admitted = serving.sandbox.configurationAdmission;
         assert.ok(admitted && admitted.state === 2);
         assert.equal(admitted.instance_id, config.configuration_instance_id);
@@ -971,6 +1071,31 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
         const grants = desired.repositoryNetworkPolicy;
         assert.ok(grants);
         const restEnabled = issueReads && mode !== "peer";
+        if (nativePullRequests && restEnabled) {
+          const postEnabled =
+            restEnabled && pullWrites && grants.some(({ access }) => access === "write");
+          const middlewares = asRecord(asRecord(config.policy)?.network_middlewares);
+          const routes = Object.values(middlewares ?? {}).flatMap((entry) => {
+            const middleware = asRecord(entry);
+            const include = asRecord(middleware?.endpoints)?.include;
+            return Array.isArray(include) && include.includes("api.github.com")
+              ? [{ middleware: middleware?.middleware, onError: middleware?.on_error, include }]
+              : [];
+          });
+          assert.deepEqual(
+            routes,
+            postEnabled
+              ? [
+                  {
+                    middleware: "oce-prepared-git",
+                    onError: "fail_closed",
+                    include: ["api.github.com"],
+                  },
+                ]
+              : [],
+            "Only a compiled pull POST selects the mandatory API host callback",
+          );
+        }
         assert.equal(github.length, grants.length * (restEnabled ? 2 : 1));
         const git = github.find(({ endpoint }) => endpoint?.host === "github.com");
         assert.ok(git?.endpoint && desired.repositoryNetworkPolicy);
@@ -1070,24 +1195,39 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
         );
         const restRoutes = restEnabled
           ? grants.map(({ repository, access }) => {
-              const path = `/repos/${repository}/issues`;
+              const root = `/repos/${repository}`;
+              const readPaths = ["issues", ...(nativePullRequests ? ["pulls"] : [])];
               return {
-                path: `/repos/${repository}/**`,
+                path: `${root}/**`,
                 rules: [
-                  ...(restWrites && access === "write"
-                    ? [{ allow: { method: "POST", path: `/repos/${repository}/pulls` } }]
+                  ...(pullWrites && access === "write"
+                    ? [{ allow: { method: "POST", path: `${root}/pulls` } }]
                     : []),
-                  { allow: { method: "GET", path } },
-                  ...Array.from({ length: 19 }, (_, width) => ({
-                    allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width)}` },
-                  })),
+                  ...readPaths.flatMap((resource) => [
+                    { allow: { method: "GET", path: `${root}/${resource}` } },
+                    ...Array.from({ length: 19 }, (_, width) => ({
+                      allow: {
+                        method: "GET",
+                        path: `${root}/${resource}/[1-9]${"[0-9]".repeat(width)}`,
+                      },
+                    })),
+                  ]),
                 ],
               };
             })
           : [];
+        const byRoute = (left: unknown, right: unknown) =>
+          JSON.stringify(wirePolicy(left)).localeCompare(JSON.stringify(wirePolicy(right)), "en");
         assert.deepEqual(
-          wirePolicy(apiEndpoints.map(({ path, rules }) => ({ path, rules }))),
-          wirePolicy(restRoutes),
+          wirePolicy(
+            apiEndpoints.map(({ path, rules }) => {
+              assert.ok(Array.isArray(rules));
+              return { path, rules: rules.toSorted(byRoute) };
+            }),
+          ),
+          wirePolicy(
+            restRoutes.map(({ path, rules }) => ({ path, rules: rules.toSorted(byRoute) })),
+          ),
           "Loaded REST routes must match the saved repositories and registered operations",
         );
         const generation = {
@@ -1128,6 +1268,9 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
             "GET",
             `${owner.path}/deployments/${deployed.revision.id}`,
           );
+          assert.equal(deployment.deploymentId, deployed.revision.id);
+          assert.equal(deployment.agentId, owner.agentId);
+          assert.equal(deployment.namespaceId, deployed.agent.namespaceId);
           assert.notEqual(deployment.cleanup?.status, "failed");
           const sandbox = await gatewayClient.getSandbox(
             { workspace: owner.workspace, name: deployed.target.sandboxName },
@@ -1349,7 +1492,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       const beforeDeploy = origin.snapshot();
       const beforeDeployGit = network.requests().length;
       network.shortenNextTokenForRenewal();
-      let original = await deployPolicy();
+      const restricted = await deployPolicy();
       const afterDeploy = origin.snapshot();
       const appIssuances =
         (afterDeploy.endpoints["issue:201"] ?? 0) - (beforeDeploy.endpoints["issue:201"] ?? 0);
@@ -1357,7 +1500,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       t.diagnostic(
         JSON.stringify({
           event: "saved-git-acl-startup-origin",
-          revision: savedGitAclIdentity(original.revision.id),
+          revision: savedGitAclIdentity(restricted.revision.id),
           originHttp,
           appIssuances,
         }),
@@ -1370,9 +1513,9 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       );
       assert.equal(await callbacks.read(), nativeCallbackBaseline);
       await retire(permissive.deployed, permissive.provider, permissive.index);
-      const installed = await loadPolicy(original, write, "read-write");
-      deadlines.set(original.target.sandboxId, original.deadlineWallMs);
-      {
+      const installed = await loadPolicy(restricted, write, "read-write");
+      deadlines.set(restricted.target.sandboxId, restricted.deadlineWallMs);
+      const rotate = async (original: IssuedDeployment) => {
         const index = original.credentialIndex;
         const before = origin.snapshot();
         const token = before.tokens.find((candidate) => candidate.index === index);
@@ -1413,11 +1556,12 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
         assert.ok(!next.revoked && next.expires > token.expires);
         assert.deepEqual(next.repositoryIds, token.repositoryIds);
         assert.deepEqual(next.permissions, token.permissions);
+        const rotatedGeneration = await loadPolicy(original, write, "read-write");
         const {
           resourceVersion: updated,
           providerRevision: environment,
           ...rotated
-        } = await loadPolicy(original, write, "read-write");
+        } = rotatedGeneration;
         assert.deepEqual(
           rotated,
           binding,
@@ -1430,7 +1574,6 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
           service: "git-upload-pack",
         });
         assert.deepEqual(old, { status: 401, type: "application/json" });
-        original = { ...original, credentialIndex: next.index };
         assert.equal(await callbacks.read(), nativeCallbackBaseline);
         t.diagnostic(
           JSON.stringify({
@@ -1444,7 +1587,9 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
             oldStatus: old.status,
           }),
         );
-      }
+        return { ...original, credentialIndex: next.index, generation: rotatedGeneration };
+      };
+      const original = await rotate(restricted);
       const startPeer = async () => {
         const independent = fixture.independent;
         assert.ok(independent?.modelSource);
@@ -1584,10 +1729,132 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
       };
       if (issueReads) {
         await t.test("Saved native Git grants admit read-only gh API on A and B", async () => {
-          await exerciseSavedIssueReads(fixture, exec, original, nativeCallbackBaseline);
+          if (pullWrites) {
+            assert.equal(await callbacks.resume(), nativeCallbackBaseline);
+          }
+          await exerciseSavedIssueReads(
+            fixture,
+            exec,
+            original,
+            nativeCallbackBaseline,
+            pullWrites,
+          );
+          if (pullWrites) {
+            nativeCallbackBaseline = await callbacks.disable();
+          }
+        });
+      }
+      if (nativePullRequests === "read") {
+        await t.test("Saved Agent permits pull reads without an online validator", async () => {
+          await exerciseSavedPullReads(fixture, exec, original);
+          await refuseGh(fixture, exec, original, bPulls, pull);
+          assert.equal(await callbacks.read(), nativeCallbackBaseline);
         });
       }
       const peer = await startPeer();
+      const finishPeer = async (stage: "after-expiry" | "after-stop") => {
+        await peer.prove(stage);
+        await stop(peer.deployed);
+        await retire(peer.deployed, peer.provider, peer.credentialIndex, {
+          path: peer.deployed.path,
+          workspace: peer.workspace,
+          agentId: peer.deployed.agent.id,
+        });
+        assert.equal(await callbacks.read(), nativeCallbackBaseline);
+      };
+      if (autonomousExpiry) {
+        const deadline = original.deadlineWallMs;
+        assert.ok(
+          deadline < peer.deployed.deadlineWallMs,
+          "The peer must outlive the original grant",
+        );
+        requireTimelyGit(original.target);
+        assert.deepEqual(await loadPolicy(original, write, "read-write"), original.generation);
+        const before = origin.snapshot();
+        const token = before.tokens.find(({ index }) => index === original.credentialIndex);
+        assert.ok(token && !token.revoked && token.expires > deadline);
+        const { allowReplay, requests } = savedGitProbeTools(fixture, exec);
+        await allowReplay(original.target, original.credentialIndex, "b", requests[0]);
+        assert.equal(await callbacks.read(), nativeCallbackBaseline);
+        requireTimelyGit(original.target);
+
+        // Only the Worker's finite deadline may initiate the original revision's retirement.
+        await observeUntil(
+          "the admitted Git deadline",
+          t.signal,
+          async () => (Date.now() >= deadline ? true : undefined),
+          deadline - Date.now() + 10_000,
+        );
+        const workId = repositoryCleanupWorkKey(original.revision.id, "expiry");
+        await observeUntil("the exact Worker Git expiry completion", t.signal, async () => {
+          const logs: string = await fixture.kube([
+            "logs",
+            "deployment/openclaw-enterprise-worker",
+            "-n",
+            fixture.platform,
+            "-c",
+            "worker",
+            "--tail=2000",
+            "--timestamps=true",
+          ]);
+          const completed = logs.split("\n").some((line) => {
+            try {
+              const separator = line.indexOf(" ");
+              const observedAt = Date.parse(line.slice(0, separator));
+              const event = asRecord(JSON.parse(line.slice(separator + 1)));
+              return (
+                observedAt >= deadline &&
+                event?.event === "worker.completed" &&
+                event.workId === workId &&
+                event.namespaceId === fixture.namespace.id &&
+                event.agentId === agent.id &&
+                event.revisionId === original.revision.id &&
+                event.code === "REPOSITORY_RUNTIME_RETIREMENT_QUEUED" &&
+                event.outcome === "success"
+              );
+            } catch {
+              // Ignore non-JSON startup lines without disclosing their contents.
+              return false;
+            }
+          });
+          return completed ? true : undefined;
+        });
+        await retire(original, installed.provider, original.credentialIndex);
+        const current: AgentReadWire = await request("GET", path);
+        assert.equal(current.id, agent.id);
+        assert.equal(current.namespaceId, fixture.namespace.id);
+        assert.equal(current.status, "active");
+        assert.equal(current.desiredRuntimeState, "running");
+        assert.equal(current.activeRevisionId, undefined);
+        assert.ok(
+          Date.now() < token.expires,
+          "The credential issuer deadline must still be in the future",
+        );
+        const after = origin.snapshot();
+        assert.equal(after.issued, before.issued);
+        // Only the pre-expiry Git read, issuer DELETE and direct revoked-token probe.
+        assert.equal(after.requests - before.requests, 3);
+        assert.deepEqual(after.endpoints, {
+          ...before.endpoints,
+          "upload-advertise:200": (before.endpoints["upload-advertise:200"] ?? 0) + 1,
+          "revoke:204": (before.endpoints["revoke:204"] ?? 0) + 1,
+          "upload-advertise:401": (before.endpoints["upload-advertise:401"] ?? 0) + 1,
+        });
+        assert.equal(await callbacks.read(), nativeCallbackBaseline);
+        await finishPeer("after-expiry");
+        assert.equal(origin.snapshot().issued, before.issued);
+        t.diagnostic(
+          JSON.stringify({
+            event: "saved-git-acl-expired",
+            revision: savedGitAclIdentity(original.revision.id),
+            work: savedGitAclIdentity(workId),
+            deadline,
+            code: "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+            originHttp: after.requests - before.requests,
+          }),
+        );
+        return;
+      }
       let successor: Deployed | undefined;
       let successorProvider: string | undefined;
       const { originalIndex, replacementIndex } = await exerciseSavedGitAcl(
@@ -1631,6 +1898,9 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
             await t.test("Downgraded native Git grants retain read-only gh API", async () => {
               await exerciseSavedIssueReads(fixture, exec, replacement, nativeCallbackBaseline);
             });
+          }
+          if (nativePullRequests) {
+            await exerciseSavedPullReads(fixture, exec, replacement);
           }
           await peer.prove("after-downgrade");
           successor = replacement;
@@ -1707,18 +1977,7 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
         5_000,
       );
       assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
-      await peer.prove("after-stop");
-      await stop(peer.deployed);
-      await retire(peer.deployed, peer.provider, peer.credentialIndex, {
-        path: peer.deployed.path,
-        workspace: peer.workspace,
-        agentId: peer.deployed.agent.id,
-      });
-      assert.equal(
-        await callbacks.read(),
-        nativeCallbackBaseline,
-        "Stop and retirement must not add callbacks",
-      );
+      await finishPeer("after-stop");
       t.diagnostic(
         "Saved Git ACL clear persisted; deploy refused deny-all and explicit Stop retired both generations",
       );

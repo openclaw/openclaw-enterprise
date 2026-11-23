@@ -533,36 +533,11 @@ process.exit(73);
     });
   }
 
-  test("formats baseline runtime build timing from BuildKit progress", () => {
-    const header = "#12 [node-compiled 5/7] RUN --network=none sh /node-repair/build.sh";
-    const cases = [
-      [
-        "completed in 1577.2s",
-        [
-          header,
-          "#13 [openclaw-build 5/9] RUN pnpm build",
-          "#13 CACHED",
-          "#12 DONE 1577.2s",
-          header,
-        ],
-      ],
-      ["cached", [header, "#12 CACHED"]],
-      ["completed (duration unknown)", [header, "#12 DONE"]],
-      ["completion unobserved", [header]],
-      ["completion unobserved", [header, "#120 CACHED", "#12 DONE 1..2s", "#12 1.2 #12 CACHED"]],
-      ["completion unobserved", [header, "#12 DONE 9.2s::notice::synthetic"]],
-      ["ambiguous", [header, "#12 CACHED", header.replace("#12 ", "#14 ")]],
-      ["canceled", [header, "#12 CANCELED"]],
-      ["failed", [header, "#12 ERROR: exit code 1"]],
-      ["unobserved", [`${header} && other-command`, "#12 DONE 1.2s"]],
-    ] as const;
-    for (const [state, lines] of cases) {
-      assert.equal(
-        formatBaselineRuntimeBuildNotice(3210, lines.join("\r\n")),
-        `::notice title=Baseline runtime image build 3.2s (node-compiled ${state})::` +
-          "BuildKit progress for the pinned upgrade image.\n",
-      );
-    }
+  test("formats the elapsed baseline runtime image build time", () => {
+    assert.equal(
+      formatBaselineRuntimeBuildNotice(3210),
+      "::notice title=Baseline runtime image build 3.2s::Elapsed time for the pinned upgrade image.\n",
+    );
   });
 
   const warmCacheEnv = {

@@ -64,6 +64,7 @@ interface WorkspaceContext {
 interface WorkspaceDraft {
   text: string;
   baseline: string | undefined;
+  editBaseline: string | undefined;
   outcomeUnknown: boolean;
 }
 
@@ -311,6 +312,8 @@ export function renderWorkspaceFiles(
     let pending = false;
     let loaded = false;
     let baseline: string | undefined;
+    // Save compares against the latest read. A dirty draft keeps the version its edits began on.
+    let editBaseline = retained?.editBaseline;
     let outcomeUnknown = retained?.outcomeUnknown ?? false;
     let writing = false;
     let initialized = false;
@@ -324,13 +327,14 @@ export function renderWorkspaceFiles(
         return retained;
       }
       return writing || outcomeUnknown || editor.value !== (baseline ?? "")
-        ? { text: editor.value, baseline, outcomeUnknown: outcomeUnknown || writing }
+        ? { text: editor.value, baseline, editBaseline, outcomeUnknown: outcomeUnknown || writing }
         : undefined;
     });
     // A secondary button: the view's one primary action is the draft's Deploy new version or
     // a deployment recovery, not each file's Save (finding 1968).
     const save = element("button", { type: "submit", disabled: true }, `Save ${name}`);
     const reload = button(`Reload ${name}`, () => void load(true));
+    const changedFile = `${name} changed since you started editing. Save replaces the current file with your edits. Reload discards your edits.`;
     const missingCreate = `${name} is missing. Save to create it.`;
     const missingText = () => (operateDenied ? `${name} is missing.` : missingCreate);
     const form = element(
@@ -380,6 +384,12 @@ export function renderWorkspaceFiles(
         save.removeAttribute("aria-describedby");
       }
       const dirty = loaded && editor.value !== (baseline ?? "");
+      if (loaded && !dirty && !outcomeUnknown) {
+        editBaseline = baseline;
+        if (status.textContent === changedFile) {
+          status.textContent = "";
+        }
+      }
       const needsAttention = Boolean(errorNotice.textContent) || rereadFailed;
       let state = "";
       let tone = "neutral";
@@ -457,11 +467,15 @@ export function renderWorkspaceFiles(
         status.textContent = `${name} loaded.`;
         if (!discard && retained && !initialized) {
           editor.value = retained.text;
-          baseline = retained.baseline;
           outcomeUnknown = retained.outcomeUnknown;
-          status.textContent = outcomeUnknown
-            ? "Outcome unknown. Reload this file before saving again."
-            : "Unsaved edits restored. Reload replaces them with the current file.";
+          if (outcomeUnknown) {
+            status.textContent = "Outcome unknown. Reload this file before saving again.";
+          } else if (editor.value !== baseline) {
+            status.textContent =
+              baseline === editBaseline
+                ? "Unsaved edits restored. Reload replaces them with the current file."
+                : changedFile;
+          }
         }
         initialized = true;
       } catch (failure) {

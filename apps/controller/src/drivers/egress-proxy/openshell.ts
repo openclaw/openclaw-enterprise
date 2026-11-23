@@ -32,6 +32,7 @@ import {
   DependencyUnavailableError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
+  ResourceStateConflictError,
   RetryLaterError,
 } from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
@@ -298,6 +299,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
   private readonly options: OpenShellProxyOptions;
+  private readonly repositoryOriginRefusal: string | undefined;
 
   static readonly configurationSchema = {
     type: "object",
@@ -354,6 +356,8 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
+      /** Why repository.openShell cannot reach this Installation's GitHub origin, if it cannot. */
+      readonly repositoryOriginRefusal?: string | undefined;
     },
   ) {
     requireConfiguration(OpenShellLegacyEgressProxyDriver, options);
@@ -381,6 +385,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
     this.options = immutableCopy(options);
+    this.repositoryOriginRefusal = selection.repositoryOriginRefusal;
     this.sourceControl = Object.freeze({
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
@@ -470,6 +475,11 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
   protected assertRepositoryGitProfileAvailable(
     profile: RepositoryGitDeliveryProfile | undefined,
   ): void {
+    // The Installation still starts and serves Agents without repository Git; Git work is
+    // refused here, at deploy, rather than when its credential is released.
+    if (profile !== undefined && this.repositoryOriginRefusal !== undefined) {
+      throw new ResourceStateConflictError(this.repositoryOriginRefusal);
+    }
     if (
       (profile === "repository_git" || profile === "github_repository") &&
       !this.mandatoryEnforcement

@@ -1,9 +1,5 @@
 import type { compileOpenShellBoundGitRule } from "../sandbox/openshell-git-network-policy.ts";
-import {
-  nativeRestMode,
-  openShellGitMiddleware,
-  restWriteRegistration,
-} from "./openshell-git-middleware.ts";
+import { nativeRestMode, openShellGitMiddleware } from "./openshell-git-middleware.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -210,9 +206,8 @@ export async function previewPolicyAndRecipient({
   ) {
     return;
   }
-  const filtered = native && nativeRestMode(boundGitRule) === "write";
-  const expectedRegistration = filtered ? restWriteRegistration(registration) : registration;
-  if (filtered) {
+  const validatesWrites = native && nativeRestMode(boundGitRule) === "write";
+  if (validatesWrites) {
     if (!bindingId) {
       return;
     }
@@ -227,14 +222,14 @@ export async function previewPolicyAndRecipient({
   }
   const services = c.supervisor_middleware_services;
   const selected = Array.isArray(services)
-    ? services.filter((s) => asRecord(s)?.name === expectedRegistration)
+    ? services.filter((s) => asRecord(s)?.name === registration)
     : [];
   const service = selected.length === 1 && asRecord(selected[0]);
   // Legacy observed-only registrations omit both fields. Absence proves no mandatory
   // support: strict grants never use it, and explicit/partial values cannot fall back.
   // The recipient fingerprint below fences changes after the registration is witnessed.
   const legacyObserved =
-    !filtered &&
+    !validatesWrites &&
     !mandatory &&
     service &&
     !Object.hasOwn(service, "binding_policy") &&
@@ -249,8 +244,7 @@ export async function previewPolicyAndRecipient({
       (![2, 3].includes(service.binding_policy as number) ||
         !Array.isArray(service.bindings) ||
         service.bindings.length !== 1 ||
-        service.bindings[0] !== (filtered ? 4 : 1))) ||
-    !isDeepStrictEqual(service.http_request_methods ?? [], filtered ? ["POST"] : []) ||
+        service.bindings[0] !== 1)) ||
     service.allow_insecure_transport ||
     timeout?.seconds !== "5" ||
     timeout.nanos ||

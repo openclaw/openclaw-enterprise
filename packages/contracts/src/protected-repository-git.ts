@@ -115,7 +115,7 @@ export interface ProtectedRepositoryGitAuthority extends RepositoryGitAuthority<
   readonly online: RepositoryGitAuthority<RepositoryGitOnlineAllow>;
   /** Separately selected, only for a v6 admission on the bundled observed route. */
   readonly observedHook?: GitHubInstallationAuthority<RepositoryGitOnlineAllow>;
-  /** v8 installs material at the verified recipient and authorizes scoped REST requests. */
+  /** Native Git v9 installs material at the verified recipient and authorizes scoped REST requests. */
   readonly networkPolicy?: {
     readonly readMaterial: NonNullable<
       RepositoryGitAuthority<RepositoryGitOnlineAllow>["githubRepository"]

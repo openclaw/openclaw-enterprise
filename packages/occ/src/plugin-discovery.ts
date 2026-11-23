@@ -1,3 +1,5 @@
+import { pluginOwner } from "./agent-plugin-validation.ts";
+import { credentialGatewayOperation } from "./credential-source-drivers.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isSecretHarnessAuth,
@@ -70,7 +72,6 @@ interface PluginDiscoveryDependencies {
     gateway: CredentialGatewayDriver;
     context: CredentialSourceContext & { signal: AbortSignal };
   }>;
-  readonly credentialGatewayOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly sourceReader:
     | {
         readonly gateway: CredentialGatewayDriver;
@@ -83,7 +84,6 @@ interface PluginDiscoveryDependencies {
   ) => Promise<Readonly<Configuration>>;
   readonly modelPolicyAgent: (executionMode: HarnessExecutionMode) => ModelPolicyAgent;
   readonly pluginDriver: (harnessId: string) => PluginDriver;
-  readonly assertPluginOwner: (driver: PluginDriver, agent: Readonly<Agent>) => void;
   readonly validatePluginPlacement: (
     driver: PluginDriver,
     plugins: PluginDesiredState,
@@ -332,7 +332,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         driver,
         discover,
         (invoke) =>
-          dependencies.credentialGatewayOperation(() => {
+          credentialGatewayOperation(() => {
             context.signal.throwIfAborted();
             if (selectedReader) {
               return selectedReader(context, invoke);
@@ -598,7 +598,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         mode: agent.executionMode,
       };
       const driver = dependencies.pluginDriver(harness.id);
-      dependencies.assertPluginOwner(driver, agent);
+      pluginOwner(driver, agent);
       return use({ state, namespace, agent, driver, harness });
     });
   }

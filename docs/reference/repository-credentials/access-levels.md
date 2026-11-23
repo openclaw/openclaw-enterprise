@@ -60,44 +60,47 @@ Sandbox is the Provider's sole recipient and the workspace has no additional
 members. Operators must retain exclusive control of workspace, Sandbox and
 Provider writes for this delivery mode.
 
-To allow issue reads with the stock OpenShell Supervisor and managed installation
-Provider, set `scopedRest: "v1"` on the repository's Namespace registration alongside
-`nativeGit: "v1"`. The registry's `permissions.issues` must be `read` or `write`, and
-the GitHub App must already have that permission. The setting does not expand the
-issued token's permissions. Deploy a saved read or
-write grant for that repository, then use the supplied `GITHUB_TOKEN` placeholder:
+To allow issue reads with stock OpenShell 0.1.9 and the managed Installation
+Provider, set `scopedRest: "v1"` alongside `nativeGit: "v1"` on the Installation's
+registration for the OCE Namespace. Issue reads also require `permissions.issues`
+set to `read` or `write`, the corresponding GitHub App permission, and a saved
+Read or Write repository grant. `scopedRest: "v1"` alone adds issue reads only.
+
+Complete the compatible Worker rollout before enabling these settings. After
+changing the registration, rebind existing repository access under the usual
+credential approval and deploy or redeploy the Agent. Use the supplied
+`GITHUB_TOKEN` placeholder:
 
 ```sh
 gh api --method GET repos/OWNER/REPO/issues
 gh api --method GET repos/OWNER/REPO/issues/NUMBER
 ```
 
-`NUMBER` must be a positive decimal issue number of at most 19 digits. OpenShell injects the real credential
-outside the Agent and permits only these issue GET paths. Unlisted repositories,
-adjacent paths such as comments, REST writes and GraphQL remain denied. Omitting
-`scopedRest` keeps native delivery Git-only.
+`NUMBER` must be a positive decimal number of at most 19 digits. OpenShell
+injects the real credential outside the Agent. Omitting `scopedRest` keeps native
+delivery Git-only.
+
+To add pull request reads, set `nativePullRequests: "read"` or `"write"` on the
+same Namespace registration. Both modes require `scopedRest: "v1"`,
+`permissions.pull_requests` set to `read` or `write`, the corresponding GitHub
+App permission, and a saved Read or Write grant for the repository:
+
+```sh
+gh api --method GET repos/OWNER/REPO/pulls
+gh api --method GET repos/OWNER/REPO/pulls/NUMBER
+```
+
+The same positive-number limit applies to pull request detail. These settings
+do not permit comments, reviews, PR updates or merges, issue writes, GraphQL,
+or access to repositories without a saved grant.
 
 #### Pull request creation
 
-Creating a pull request requires a Gateway and Supervisor that support
-pre-credential middleware selection by HTTP method. The pinned 0.1.8 Gateway
-rejects the `http_request_methods` setting. Keep `nativeRestWrites` unset on
-that release to use native Git and issue reads.
-
-On a release qualified for method filtering, copy the existing
-[request-phase service registration](protected-openshell-git.md#register-the-request-phase-service).
-Append `-rest-writes` to the copy's name and set `http_request_methods = ["POST"]`
-in the copy. Use the same Worker endpoint, CA, audience, timeout and required
-binding. Keep the original registration for existing profiles. OCE checks the
-second registration before preparing the Git Provider and verifies the POST
-filter on the loaded Sandbox before installing the credential.
-
-On a qualified installation, set `nativeRestWrites: true` alongside
-`nativeGit: "v1"` and `scopedRest: "v1"` on the repository's Namespace
-registration. The GitHub App and registry must already grant
-`pull_requests: "write"`. Rebind the credential, save Write for that repository
-and deploy the Agent. Save the request in `pull.json` with two unqualified
-branch names in the approved repository.
+To create a normal or draft pull request, select `nativePullRequests: "write"`,
+grant `pull_requests: "write"` in both the registration and GitHub App, save a
+Write repository grant, rebind the credential, and deploy or redeploy the Agent.
+Save the request in `pull.json` with two unqualified branch names in the same
+approved repository:
 
 ```json
 { "title": "Fix", "head": "topic/fix", "base": "main" }
@@ -107,14 +110,23 @@ branch names in the approved repository.
 gh api --method POST repos/OWNER/REPO/pulls --input pull.json
 ```
 
-The validator rejects fork selectors, issue conversion and unknown fields before
-credential use. Optional fields are `body`, `draft` and `maintainer_can_modify`.
-Version v1 denies issue creation. OpenShell rechecks redirected destinations.
-If the validator is unavailable after startup,
-OpenShell refuses creation and continues to serve permitted Git and issue reads.
-If the result is uncertain, inspect the repository before submitting again.
-To withdraw creation, save Read for the repository and redeploy. Verify that
-the old Sandbox retires.
+The Worker accepts a JSON body of at most 1 MiB. It requires a nonempty `title`,
+`head`, and `base`. Optional fields are `body`, `draft`, and
+`maintainer_can_modify`. It rejects fork selectors, issue conversion, and unknown
+fields before credential use. OpenShell rechecks redirected destinations.
+
+Stock OpenShell 0.1.9 selects middleware by host. When the Agent's compiled
+policy contains a PR POST rule, OCE uses the existing mandatory middleware for
+`api.github.com`. All permitted API reads for that Agent then require the Worker
+as well. If the validator is unavailable, API reads and PR creation fail closed.
+Native Git continues locally. Agents with no compiled POST rule keep their
+permitted API reads local and do not depend on this validator. No separate
+registration, method filter, or OpenShell fork is required.
+
+If a creation result is uncertain, inspect the repository before submitting
+again. To withdraw creation, save Read for the repository and redeploy. Verify
+that the old Sandbox retires. The host-wide middleware is removed when the new
+policy contains no other PR POST rule.
 
 ## Console access levels
 

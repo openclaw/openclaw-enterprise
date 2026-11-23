@@ -41,8 +41,8 @@ export interface GitHubRepositoryRegistration {
     permissions?: Readonly<Record<string, string>>;
     /** Select deployment-scoped native Git for this repository registration. */
     nativeGit?: "v1";
-    /** Opt into REST creation when a POST-only validator is available. */
-    nativeRestWrites?: true;
+    /** Add pull request reads or validated creation to the scoped REST routes. */
+    nativePullRequests?: "read" | "write";
     scopedRest?: "v1";
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
@@ -206,7 +206,7 @@ export function validateGitHubRepositoryRegistry(
         "profiles",
         "permissions",
         "nativeGit",
-        "nativeRestWrites",
+        "nativePullRequests",
         "scopedRest",
         "allowStandingApproval",
         "pushRefAllowlist",
@@ -228,14 +228,17 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      const scopedRest = policy.scopedRest;
+      const { scopedRest, nativePullRequests } = policy;
       if (
-        Object.hasOwn(policy, "nativeRestWrites") &&
-        (policy.nativeRestWrites !== true || policy.nativeGit !== "v1" || !scopedRest)
+        Object.hasOwn(policy, "nativePullRequests") &&
+        (scopedRest !== "v1" || (nativePullRequests !== "read" && nativePullRequests !== "write"))
       ) {
         return invalid();
       }
-      if (Object.hasOwn(policy, "scopedRest") && (scopedRest !== "v1" || !selected)) {
+      if (
+        Object.hasOwn(policy, "scopedRest") &&
+        (!selected || policy.scopedRest !== "v1" || policy.nativeGit !== "v1")
+      ) {
         return invalid();
       }
       if (
@@ -302,7 +305,9 @@ export function validateGitHubRepositoryRegistry(
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
         ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
-        ...(policy.nativeRestWrites === true && { nativeRestWrites: true as const }),
+        ...((nativePullRequests === "read" || nativePullRequests === "write") && {
+          nativePullRequests,
+        }),
         ...(scopedRest === "v1" && { scopedRest: "v1" as const }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
@@ -410,7 +415,10 @@ function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"
   const issues = policy.permissions?.issues;
   return {
     version,
-    ...(policy.nativeRestWrites &&
+    ...(policy.nativePullRequests &&
+      (policy.permissions?.pull_requests === "read" ||
+        policy.permissions?.pull_requests === "write") && { readPullRequests: true as const }),
+    ...(policy.nativePullRequests === "write" &&
       policy.permissions?.pull_requests === "write" && { createPullRequests: true as const }),
     readIssues: issues === "read" || issues === "write",
   };

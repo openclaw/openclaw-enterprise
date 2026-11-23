@@ -144,6 +144,7 @@ import {
   type AuthorizationSnapshot as DeployAgentAuthorization,
 } from "./controller-authority.ts";
 
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { DeploymentStatusResult } from "./controller-work.ts";
 import { type ProvisionAgentInput, type ProvisionAgentResult } from "./agent-provisioning.ts";
@@ -1860,8 +1861,11 @@ export class OpenClawController {
   }
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.composition.transactions.transact(work);
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: Parameters<ControllerTransactions["transact"]>[1],
+  ): Promise<T> {
+    return this.composition.transactions.transact(work, options);
   }
 
   /** Compensate a Driver side effect if the owning resource transaction fails. */

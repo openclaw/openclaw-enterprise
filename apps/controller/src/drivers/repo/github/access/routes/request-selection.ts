@@ -224,6 +224,12 @@ function permitsSameRepositoryPull(body: object): boolean {
   // head_repo selects a fork and issue converts an existing issue. Only accept creation fields.
   const fields = ["title", "head", "base", "body", "draft", "maintainer_can_modify"];
   return (
+    "title" in body &&
+    typeof body.title === "string" &&
+    body.title.trim().length > 0 &&
+    (!("body" in body) || typeof body.body === "string") &&
+    (!("draft" in body) || typeof body.draft === "boolean") &&
+    (!("maintainer_can_modify" in body) || typeof body.maintainer_can_modify === "boolean") &&
     "head" in body &&
     isUnqualifiedBranch(body.head) &&
     "base" in body &&
