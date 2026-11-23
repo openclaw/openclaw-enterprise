@@ -25,7 +25,7 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   persistedDeploymentError,
   accessBindingPostRequests,

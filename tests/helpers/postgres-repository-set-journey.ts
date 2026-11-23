@@ -13,7 +13,7 @@ import {
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
 } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import { writeFile } from "node:fs/promises";

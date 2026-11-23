@@ -40,7 +40,7 @@ import {
   withGatewaySecurityDefaults,
 } from "../helpers/admitted-configuration.mjs";
 import { servedAs } from "../helpers/agent-identity.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

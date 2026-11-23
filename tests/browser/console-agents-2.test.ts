@@ -40,7 +40,7 @@ import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpe
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   persistedDeploymentError,
   apiRequests,

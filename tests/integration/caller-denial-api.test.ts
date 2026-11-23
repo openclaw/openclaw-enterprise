@@ -13,7 +13,7 @@ import type {
 import { assertApiError } from "../helpers/api-error.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   agentPrincipalDenied,

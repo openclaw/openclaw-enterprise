@@ -19,7 +19,7 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { jsonRequestInit } from "../helpers/inject-json.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
 import {

@@ -20,7 +20,7 @@ import {
   type UpdateManagedCredentialSourceInput,
 } from "../../packages/occ/src/index.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
-import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, testPool } from "../helpers/postgres-database.mjs";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";

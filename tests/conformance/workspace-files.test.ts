@@ -12,7 +12,7 @@ import {
 import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import {
   createTenantReaderFixture,

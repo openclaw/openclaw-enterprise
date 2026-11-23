@@ -6,7 +6,7 @@ import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import {
   first,

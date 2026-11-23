@@ -18,7 +18,7 @@ import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const tokenOrigin = process.env.OCC_TEST_KEYCLOAK_TOKEN_ORIGIN;

@@ -41,8 +41,8 @@ import {
   type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { registerAndSelectDrivers } from "../helpers/development.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { registerAndSelectDrivers } from "../helpers/development.ts";
 import { bindRole, permissionsFor } from "../helpers/iam-grants.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";

@@ -32,9 +32,9 @@ import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-dat
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.ts";

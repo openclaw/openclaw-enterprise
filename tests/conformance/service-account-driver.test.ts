@@ -33,7 +33,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
-} from "../helpers/development.mjs";
+} from "../helpers/development.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { within } from "../helpers/wait-for.ts";
 

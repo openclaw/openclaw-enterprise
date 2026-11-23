@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import {
   containerLogTail,

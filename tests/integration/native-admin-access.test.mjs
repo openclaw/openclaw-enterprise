@@ -20,7 +20,7 @@ import {
 import { grantRole } from "../helpers/iam-grants.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture, denialsDuring } from "../helpers/console-app.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import {
   createHarnessConfiguration,
   withNativeAdminGateway,

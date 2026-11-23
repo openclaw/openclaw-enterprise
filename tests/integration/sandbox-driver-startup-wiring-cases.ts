@@ -32,7 +32,7 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { reservedPortArgs } from "../helpers/available-port.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
 import { createCredentialWithdrawalChecks } from "./sandbox-driver-credential-withdrawal-cases.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";

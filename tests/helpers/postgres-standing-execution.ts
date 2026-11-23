@@ -1,4 +1,4 @@
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
 import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";

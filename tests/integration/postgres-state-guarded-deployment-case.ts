@@ -29,7 +29,7 @@ export async function persistGuardedDeployment(context: TestContext) {
     import("../../packages/occ/src/index.ts"),
     import("../../packages/iam/src/index.ts"),
     import("../helpers/configuration-driver.ts"),
-    import("../helpers/secret-driver.mjs"),
+    import("../helpers/secret-driver.ts"),
     import("../helpers/development.ts"),
     import("../../apps/controller/src/drivers/channel/slack.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),

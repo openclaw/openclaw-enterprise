@@ -11,15 +11,15 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
-import { jsonLineDestination } from "./json-lines.mjs";
-import { createTestSecretDriver } from "./secret-driver.mjs";
+import { jsonLineDestination } from "./json-lines.ts";
+import { createTestSecretDriver } from "./secret-driver.ts";
 import {
   privateBootstrapDirectory,
   productionBootstrapEnvironment,
   runBootstrapInstallation,
 } from "./bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
-import { createReadyComputeDriver } from "./development.mjs";
+import { createReadyComputeDriver } from "./development.ts";
 import { createOidcProvider } from "./oidc-provider.ts";
 import { composeProduction } from "./password-hasher.ts";
 

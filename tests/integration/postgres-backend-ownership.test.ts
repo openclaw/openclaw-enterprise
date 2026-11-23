@@ -37,7 +37,7 @@ import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import {
   createConsoleFixtureTransport,

@@ -19,7 +19,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type HttpResponse = { status: number; body: unknown };

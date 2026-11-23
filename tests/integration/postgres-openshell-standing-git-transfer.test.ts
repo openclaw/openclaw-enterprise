@@ -9,7 +9,7 @@ import {
 import { witnessOpenShellGitLaunch } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { openShellGitExecutionIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts";
 
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";

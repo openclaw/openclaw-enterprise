@@ -65,7 +65,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {

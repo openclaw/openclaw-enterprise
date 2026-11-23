@@ -9,7 +9,7 @@ import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/e
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createBackendWorkerDrivers } from "./postgres-backend-state.mjs";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
 import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";

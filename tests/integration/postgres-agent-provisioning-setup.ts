@@ -27,7 +27,7 @@ import {
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";

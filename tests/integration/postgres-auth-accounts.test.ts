@@ -24,7 +24,7 @@ import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";

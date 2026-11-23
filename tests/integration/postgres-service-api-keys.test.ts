@@ -20,7 +20,7 @@ import {
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { injectJson } from "../helpers/inject-json.ts";
 import {

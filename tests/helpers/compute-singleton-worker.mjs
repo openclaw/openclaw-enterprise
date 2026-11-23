@@ -23,13 +23,13 @@ async function setup(context, { sandboxDriver } = {}) {
   ] = await Promise.all([
     import("pg"),
     import("../../apps/controller/src/worker.ts"),
-    import("../helpers/development.mjs"),
+    import("../helpers/development.ts"),
     import("../../packages/iam/src/index.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
     import("../helpers/configuration-driver.ts"),
     import("../helpers/installation-driver-configuration.ts"),
-    import("../helpers/secret-driver.mjs"),
+    import("../helpers/secret-driver.ts"),
     import("../helpers/development-iam-state.ts"),
   ]);
 

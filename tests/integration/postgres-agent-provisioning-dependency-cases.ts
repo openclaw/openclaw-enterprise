@@ -28,7 +28,7 @@ import {
   type WorkClaim,
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {

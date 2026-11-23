@@ -17,8 +17,8 @@ import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/d
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { registerCredentialSourceEndpointCases } from "./credential-source-endpoint-cases.ts";
 
 // Tool source types, the Secret field each takes, and a valid config each starts from.

@@ -5,7 +5,7 @@ import type {
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   apiRequests,

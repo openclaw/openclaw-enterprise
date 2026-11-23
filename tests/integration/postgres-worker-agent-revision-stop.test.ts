@@ -25,13 +25,13 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   repositoryRestartInventory,
   repositoryRestartState,
 } from "../helpers/postgres-repository-restart-inventory.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { waitFor, within } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {

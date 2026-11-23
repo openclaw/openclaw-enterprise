@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
 import type { ProvisioningEffectReceipt } from "../../packages/occ/src/ports/agent-provisioning.ts";
 import type { AgentProvisioningRecord } from "../../packages/occ/src/ports/agent-provisioning.ts";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 
 type ProvisionRuntimeCredentials = NonNullable<ComputeDriver["provisionAgentRuntimeCredentials"]>;
 type RuntimeCredentialBinding = Parameters<ProvisionRuntimeCredentials>[0];

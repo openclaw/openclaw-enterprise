@@ -39,7 +39,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
-import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.ts";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";

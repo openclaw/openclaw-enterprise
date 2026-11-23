@@ -9,7 +9,7 @@ import {
 } from "../../packages/occ/src/browser-authorization.ts";
 import { OAuthGrantStore } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { refreshPinnedOAuthGrant } from "../../packages/occ/src/index.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { registerOAuthRenewalRefusalCases } from "./oauth-renewal-refusal-cases.ts";
 
 test("the browser code exchange passes only granted scopes to refresh", async (t) => {

@@ -31,7 +31,7 @@ export async function persistPluginState(context: TestContext): Promise<void> {
     import("pg"),
     import("../../apps/controller/src/drivers/plugin/index.ts"),
     import("../../apps/controller/src/worker.ts"),
-    import("../helpers/development.mjs"),
+    import("../helpers/development.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
     import("../helpers/configuration-driver.ts"),
     import("../helpers/postgres-backend-state.mjs"),
@@ -58,7 +58,7 @@ export async function persistPluginState(context: TestContext): Promise<void> {
   const configurationDriver = createTestConfigurationDriver({
     id: `configuration-plugin-${randomUUID()}`,
   });
-  const { createTestSecretDriver } = await import("../helpers/secret-driver.mjs");
+  const { createTestSecretDriver } = await import("../helpers/secret-driver.ts");
   const harnessSecretDriver = createTestSecretDriver();
   controller.registerDriver(harnessSecretDriver);
   controller.selectDriver("secret", harnessSecretDriver.id);

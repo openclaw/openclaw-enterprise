@@ -82,9 +82,9 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   AGENT_DELETING,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
