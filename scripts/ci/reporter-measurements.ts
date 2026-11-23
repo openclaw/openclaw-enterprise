@@ -195,6 +195,12 @@ function safeMeasurement(value: unknown): object | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
+  if (value.kind === "released-controller-history") {
+    const { kind, status } = value;
+    return isChoice(status, ["current", "unsupported", "unconfirmed"])
+      ? { kind, status }
+      : undefined;
+  }
   if (value.kind === "keycloak-enrollment-interrupted") {
     const { kind, row, operation } = value;
     return isSafeInteger(row) &&
