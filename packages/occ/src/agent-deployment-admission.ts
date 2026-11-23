@@ -32,6 +32,7 @@ import {
   type CredentialProxyDriver,
   type CredentialSource,
   type CredentialBindingAuthority,
+  type CredentialInjectionPolicy,
   type DeploymentCredentialBinding,
   type DeploymentPolicy,
   type DeploymentRequestMatch,
@@ -294,10 +295,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     return { source, preset, ...prepareCredentialDelivery(sandbox) };
   }
 
-  function admitModelCredentialPolicy(
-    { source, preset, owner, proxy, sandbox }: PreparedModelCredentialDeployment,
-    networkGrants: readonly SandboxNetworkGrant[],
-  ): NonNullable<AgentRevision["credentialDeployment"]> {
+  function admitModelCredentialBinding(
+    { source, preset }: PreparedModelCredentialDeployment,
+    networkGrants: readonly DeploymentRequestMatch[],
+  ) {
     const destination = inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol);
     const grants = networkGrants.filter(
       (grant) =>
@@ -321,48 +322,44 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       consumer: { kind: "model", providerId: preset.providerId },
       projection: preset.projection,
     };
-    const deployment: DeploymentPolicy = {
-      networkAccessPolicy: {
-        allowed: networkGrants.map(({ binary, host, ports }) => ({ binary, host, ports })),
-      },
-      bindings: [binding],
-      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
-    };
-    let supported: boolean;
+    let approved: boolean;
     try {
-      supported =
+      approved =
         modelProviderRequestApproved(preset.provider, preset.template) &&
-        sandboxNetworkGrantsWithinCeiling(
-          deployment.networkAccessPolicy.allowed,
-          dependencies.sandboxNetworkPolicyCeiling,
-        ) &&
-        sandboxNetworkGrantsWithinCeiling([request], deployment.networkAccessPolicy.allowed) &&
-        dependencies.supportsCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
-          true;
+        sandboxNetworkGrantsWithinCeiling([request], networkGrants);
     } catch {
-      supported = false;
+      approved = false;
     }
-    if (!supported) {
+    if (!approved) {
       throw new ResourceStateConflictError(
         "The staged model credential and network policy cannot be enforced.",
       );
     }
-    return immutableCopy({ ...deployment, driver: owner.ref, proxyDriverId: proxy.id });
+    return {
+      binding,
+      injectionPolicy: { bindingRef: binding.bindingRef, allowedRequests: [request] },
+    };
   }
 
-  function admitPluginCredentialPolicy(
+  function admitCredentialPolicy(
     delivery: ReturnType<typeof prepareCredentialDelivery>,
+    stagedModel: PreparedModelCredentialDeployment | undefined,
     descriptions: ReadonlyMap<string, PluginDeploymentDescription>,
     destinations: ReadonlyMap<string, CredentialBindingAuthority["destinations"]>,
     additions: readonly SandboxNetworkGrant[],
-    model?: NonNullable<AgentRevision["credentialDeployment"]>,
   ): NonNullable<AgentRevision["credentialDeployment"]> {
-    const network = [
-      ...(model?.networkAccessPolicy.allowed ??
-        additions.map(({ binary, host, ports }) => ({ binary, host, ports }))),
-    ];
-    const bindings: DeploymentCredentialBinding[] = [...(model?.bindings ?? [])];
-    const injections = [...(model?.injectionPolicies ?? [])];
+    const network: DeploymentRequestMatch[] = additions.map(({ binary, host, ports }) => ({
+      binary,
+      host,
+      ports,
+    }));
+    const bindings: DeploymentCredentialBinding[] = [];
+    const injections: CredentialInjectionPolicy[] = [];
+    if (stagedModel !== undefined) {
+      const { binding, injectionPolicy } = admitModelCredentialBinding(stagedModel, network);
+      bindings.push(binding);
+      injections.push(injectionPolicy);
+    }
     const environments = new Set(bindings.map(({ projection }) => projection.environment));
     for (const [pluginId, description] of descriptions) {
       const credentialRequirements = new Set(
@@ -419,7 +416,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     }
     if (!supported) {
       throw new ResourceStateConflictError(
-        "The selected Sandbox and Credential Proxy cannot enforce the Plugin credential policy.",
+        descriptions.size > 0
+          ? "The selected Sandbox and Credential Proxy cannot enforce the Plugin credential policy."
+          : "The staged model credential and network policy cannot be enforced.",
       );
     }
     return immutableCopy({
@@ -1038,21 +1037,18 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "Standalone execution cannot enforce the saved repository network policy. Review the policy and execution mode before deploying.",
         );
       }
-      const modelDeployment =
-        stagedModel === undefined
-          ? undefined
-          : admitModelCredentialPolicy(stagedModel, policy?.additions ?? []);
-      const pluginDelivery =
-        admittedSources.descriptions.size === 0 ? undefined : prepareCredentialDelivery(sandbox);
+      const delivery =
+        stagedModel ??
+        (admittedSources.descriptions.size > 0 ? prepareCredentialDelivery(sandbox) : undefined);
       const credentialDeployment =
-        pluginDelivery === undefined
-          ? modelDeployment
-          : admitPluginCredentialPolicy(
-              pluginDelivery,
+        delivery === undefined
+          ? undefined
+          : admitCredentialPolicy(
+              delivery,
+              stagedModel,
               admittedSources.descriptions,
               admittedSources.destinations,
               policy?.additions ?? [],
-              modelDeployment,
             );
       const proxyAdmission =
         credentialDeployment === undefined
@@ -1085,9 +1081,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           const admission = { ...execution, harnessAuth, credentialSources, repositoryCredentials };
           compute.validateExecutionAdmission(
             admission,
-            stagedModel?.owner ??
-              pluginDelivery?.owner ??
-              (egressPlan && dependencies.selectedProxyOwner()),
+            delivery?.owner ?? (egressPlan && dependencies.selectedProxyOwner()),
           );
         }
       } catch {
@@ -1224,11 +1218,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       if (prepared !== undefined) {
         dependencies.channels.assertPreparedDeploymentDrivers(prepared);
       }
-      if (stagedModel !== undefined || pluginDelivery !== undefined) {
+      if (delivery !== undefined) {
         if (stagedModel !== undefined) {
           dependencies.ownedTokenServiceDriver(stagedModel.source.tokenServiceInstanceId);
         }
-        const delivery = stagedModel ?? pluginDelivery!;
         let owner: InstalledDriver | undefined;
         try {
           owner = dependencies.selectedCredentialDeliveryOwner();

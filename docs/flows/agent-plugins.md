@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-22
-last_updated_session: authoring-run/9c1cc37f-afd5-4b33-9600-8498ec28a156
+updated: 2026-11-23
+last_updated_session: authoring-run/338bac1c-8735-4511-bc75-825589e83705
 ---
 
 # Agent Plugin Deployment Flow
@@ -148,9 +148,9 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At preflight, save, and deploy, [`selectedPluginBindings`](../../packages/occ/src/plugin-credential-bindings.ts) asks the Plugin Driver for selected Source IDs. OCC authorizes exact Source `operate`, resolves the approved Template version or OAuth consent, and supplies authorized references to `describeDeployment`. No separate Agent Source attachment is needed.
+At preflight, save, and deploy, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.ts) reports selected Source IDs without separate attachments. OCC checks exact Source `operate`, resolves approved Template versions or OAuth consent, and supplies authorized references to `describeDeployment`.
 
-[`admitAgentDeployment`](../../packages/occ/src/agent-deployment-admission.ts) intersects reviewed credential requests with each exact pin and keeps public requests separate. Native Plugin placement and the OpenShell delivery Proxy currently refuse this topology; OAuth also lacks a staged resolver, and MCP lacks enforceable transport/RPC conjunction.
+[OCC](../../packages/occ/src/agent-deployment-admission.ts) intersects reviewed requests with each pin, keeps public requests credential-free, and qualifies the complete model and Plugin policy once. Native placement and OpenShell Proxy refuse Plugin delivery. OAuth needs a staged resolver. MCP needs combined transport and RPC enforcement.
 
 OCC freezes Configuration, Driver, and selections. Worker and Gateway verify Compute descriptors. For CLI packages, the Harness runs the pinned executable. Google’s [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) verifies the signed guard before attachment; the guard enforces Source scope and approved requests. For hosted MCP, Worker advertises selected tools; Gateway grants same-node execution; OpenShell enforces exact tool names and rejects overlapping routes. Native startup installs packages and verifies policy. Withdrawal removes injection; recovery preserves other attachments.
 
@@ -381,6 +381,7 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-23 08:12: Qualify complete policies. (authoring-run/338bac1c-8735-4511-bc75-825589e83705 - 0d46243a3)
 - 2026-11-22 16:16: Trace Plugin Source selection and pinned admission. (authoring-run/9c1cc37f-afd5-4b33-9600-8498ec28a156 - 31fb3e9a80f31eaf63f2813bad960ed99e73eb21)
 - 2026-11-22 10:23: Distinguish existing Plugin delivery from the credential-design policy path. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)
 - 2026-11-21 22:12: Document saved-Agent access recovery. (authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356 - e9abd3462452c20c0919e8b96ae1db2f5cd79507)
