@@ -71,6 +71,9 @@ import type {
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
+  CredentialProxyDriver,
+  CredentialSourceReference,
+  DeploymentPolicy,
   Installation,
   InstallationDeploymentInventory,
   Namespace,
@@ -90,6 +93,7 @@ import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createAgentQueries, type ActiveAgentRevisionSelection } from "./agent-queries.ts";
 import { createDeploymentChannelChecks } from "./deployment-channels.ts";
 import { createAgentDeploymentOperations } from "./agent-deployment-requests.ts";
+import type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { createAgentDraftOperations } from "./agent-drafts.ts";
 import { createAgentPluginValidation } from "./agent-plugin-validation.ts";
@@ -163,7 +167,27 @@ export interface ControllerOptions {
     readonly gateway: CredentialGatewayDriver;
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
+  /** Code-only binding for Source-scoped cleanup owned by the selected delivery Proxy. */
+  readonly credentialSourceDelivery?:
+    | ((
+        proxy: CredentialProxyDriver,
+        namespace: Readonly<Namespace>,
+        source: CredentialSourceReference,
+        signal: AbortSignal,
+      ) => Promise<void>)
+    | undefined;
   readonly preparedTokens?: TokenService | undefined;
+  readonly modelCredentialPreset?: (input: {
+    readonly presetId: string;
+    readonly configuration: Readonly<Record<string, unknown>>;
+    readonly harness: RevisionHarnessDescriptor;
+  }) => ModelCredentialPreset | undefined;
+  /** Composition reviews the selected implementations for this first managed-model policy. */
+  readonly supportsModelCredentialDeployment?: (input: {
+    readonly sandbox: SandboxDriver;
+    readonly proxy: CredentialProxyDriver;
+    readonly policy: DeploymentPolicy;
+  }) => boolean;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -467,6 +491,7 @@ function createCredentialServices({
   drivers,
   publicController,
   preparedTokens,
+  credentialSourceDelivery,
   deviceCipher,
   canUseNativeAuthorization,
 }: {
@@ -486,6 +511,7 @@ function createCredentialServices({
     | "finishConnectionRevocation"
   >;
   preparedTokens: TokenService | undefined;
+  credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
@@ -554,6 +580,22 @@ function createCredentialServices({
         sourceDrivers: credentialSourceDrivers,
         iamPolicy,
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+        retireDelivery: async (namespace, source, signal) => {
+          if (!drivers.hasSelection("credential_proxy_delivery")) {
+            return;
+          }
+          if (!credentialSourceDelivery) {
+            throw new DependencyUnavailableError(
+              "The selected credential delivery Proxy cannot retire this Source.",
+            );
+          }
+          await credentialSourceDelivery(
+            publicController.selectedDriver("credential_proxy_delivery"),
+            namespace,
+            source,
+            signal,
+          );
+        },
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
@@ -721,6 +763,7 @@ export function createControllerComposition(
     drivers,
     publicController,
     preparedTokens,
+    credentialSourceDelivery: options.credentialSourceDelivery,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
   });
@@ -750,6 +793,7 @@ export function createControllerComposition(
     { record: workRecorder.record, requestAuditId: currentRequestAuditId },
   );
   const sandboxPolicyOperations = createSandboxPolicyOperations({
+    qualifyRepositoryEdit: (...args) => repositoryPolicy.qualifyRepositoryEdit(...args),
     repositoryCeiling: (namespaceId) =>
       repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,
@@ -826,6 +870,9 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    configurationDriver: configurationOperations.selectedDriver,
+    selectedProxyOwner: () => drivers.selectedProxyOwner(),
+    credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
     repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
       options.repositoryNetworkPolicyCeiling ?? [],
     ),
@@ -946,6 +993,8 @@ export function createControllerComposition(
     backends: backendMap,
     secrets: secretOperations,
     hasCredentialGateway: () => drivers.hasSelection("credential_gateway"),
+    hasCredentialProxyDelivery: () => drivers.hasSelection("credential_proxy_delivery"),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     serviceAccounts: serviceAccountOperations,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
@@ -1026,6 +1075,7 @@ export function createControllerComposition(
       publicController.deployAgent(principalId, input, resolveHarness),
   });
   const deploymentRequests = createAgentDeploymentOperations(admittedInstallation.id, {
+    selection: (capability) => drivers.selection(capability),
     transactions,
     authority,
     channels: deploymentChannels,
@@ -1045,6 +1095,11 @@ export function createControllerComposition(
     configurationDriver: configurationOperations.selectedDriver,
     configuration: configurationOperations,
     modelPolicyAgent,
+    modelCredentialPreset: options.modelCredentialPreset,
+    supportsModelCredentialDeployment: options.supportsModelCredentialDeployment,
+    sandboxNetworkPolicyCeiling,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
     validateComputeConfiguration,

@@ -1,10 +1,26 @@
+import { assertAgentConfiguration } from "./deployment-policy.ts";
+import { unchangedDriver, type RegisteredDriver } from "./driver-registry.ts";
+import {
+  assertSelectedRepositoryGrants,
+  assertScopedRepositoryHistory,
+  admitDeploymentRepositoryPolicy,
+} from "./repository-network-policy.ts";
+import {
+  computeRepositoryPolicyAdmission,
+  bindProtectedRepositoryPolicySandbox,
+} from "./deployment-policy.ts";
 import { validateRepositoryBrokerNetworkProxy } from "./repository-policy.ts";
 import { driverOperation } from "./driver-operation.ts";
-import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
+import { deploymentSandboxPolicy, type createSandboxPolicyOperations } from "./sandbox-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
+  inferenceKeyDestination,
+  isSourceProviderPresetId,
+  modelProviderRequestApproved,
+  sandboxNetworkGrantsWithinCeiling,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type Agent,
   type AgentRevision,
   type AuditEvent,
@@ -12,19 +28,30 @@ import {
   type ComputeDriver,
   type Configuration,
   type ConfigurationDriver,
+  type CredentialProxyDriver,
+  type CredentialSource,
+  type DeploymentCredentialBinding,
+  type DeploymentPolicy,
+  type DeploymentRequestMatch,
+  type ExecutionAdmission,
   type FirstDeploymentReceipt,
   type HarnessExecutionMode,
+  type HarnessAuthSnapshot,
   type LoggingLevel,
   type Namespace,
+  type ModelProviderSettings,
   type OpenClawConfigurationDocument,
   type PluginDriver,
   type PluginRevisionState,
   type ResourceKind,
   type ResourceRef,
+  type RevisionHarnessDescriptor,
   type SandboxDriver,
+  type SandboxNetworkGrant,
+  type StaticKeyTemplateValues,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
-import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { validExecutionMode } from "./agent-provisioning.ts";
 import {
   authorizeFirstDeploymentReceipt,
@@ -67,6 +94,7 @@ import {
   type createConfigurationOperations,
 } from "./configuration-operations.ts";
 import type { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
+import { credentialSourceRef, isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import { secretOperation } from "./secret-operations.ts";
 import type {
   createDeploymentChannelChecks,
@@ -89,13 +117,33 @@ import { withAgentIdentityName } from "./openclaw-roster.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { createRepositoryPolicyOperations } from "./repository-policy.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
-import type { createSandboxPolicyOperations } from "./sandbox-policy.ts";
 
 export interface FirstDeploymentGuard {
   readonly digest: string;
   readonly intent: FirstDeploymentIntent;
   readonly preparation:
     { readonly prepared: PreparedDeploymentChannels } | { readonly error: unknown };
+}
+
+/** A composition-owned, reviewed static credential profile for an explicitly selected model. */
+export interface ModelCredentialPreset {
+  readonly providerId: string;
+  readonly provider: Pick<ModelProviderSettings, "baseUrl" | "protocol">;
+  readonly template: StaticKeyTemplateValues;
+  readonly projection: Extract<
+    DeploymentCredentialBinding,
+    { readonly consumer: { readonly kind: "model" } }
+  >["projection"];
+}
+
+interface PreparedModelCredentialDeployment {
+  readonly source: Readonly<
+    CredentialSource & { ownerCapability: "token_service"; tokenServiceInstanceId: string }
+  >;
+  readonly preset: ModelCredentialPreset;
+  readonly owner: InstalledDriver;
+  readonly proxy: CredentialProxyDriver;
+  readonly sandbox: SandboxDriver;
 }
 
 export interface DeploymentAdmissionDependencies {
@@ -106,7 +154,9 @@ export interface DeploymentAdmissionDependencies {
   >;
   readonly channels: Pick<
     ReturnType<typeof createDeploymentChannelChecks>,
-    "validateDeploymentChannels" | "assertPreparedDeploymentDrivers"
+    | "prepareOrdinaryDeploymentChannels"
+    | "validatePreparedChannels"
+    | "assertPreparedDeploymentDrivers"
   >;
   readonly harnessAuth: Pick<
     ReturnType<typeof createHarnessAuthOperations>,
@@ -114,7 +164,10 @@ export interface DeploymentAdmissionDependencies {
   >;
   readonly repositoryPolicy: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
-    "admitRepositoryCredentials" | "applyRepositoryStandingApproval"
+    | "admitRepositoryCredentials"
+    | "applyRepositoryStandingApproval"
+    | "repositoryNetworkPolicyCeiling"
+    | "repositoryGrantAuthority"
   >;
   readonly sandboxPolicy: Pick<
     ReturnType<typeof createSandboxPolicyOperations>,
@@ -123,6 +176,9 @@ export interface DeploymentAdmissionDependencies {
   readonly plugins: Pick<ReturnType<typeof createAgentPluginValidation>, "validatePluginPlacement">;
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly pluginDriver: (harnessId: string, byConfiguration: boolean) => PluginDriver;
+  readonly selection: (
+    capability: "compute" | "sandbox" | "credential_proxy",
+  ) => RegisteredDriver | undefined;
   readonly selectedCompute: () => ComputeDriver;
   readonly sandboxDriver: () => SandboxDriver | undefined;
   readonly nativeWorkers: NativeWorkerSupportSource | undefined;
@@ -151,10 +207,147 @@ export interface DeploymentAdmissionDependencies {
   readonly nextIdentifier: (kind: ResourceKind) => string;
   readonly egress: Pick<ReturnType<typeof createCredentialEgressAdmission>, "admitProxyPlan">;
   readonly selectedProxyOwner: () => InstalledDriver;
+  readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
+  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
+  readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  readonly modelCredentialPreset:
+    | ((input: {
+        readonly presetId: string;
+        readonly configuration: Readonly<Record<string, unknown>>;
+        readonly harness: RevisionHarnessDescriptor;
+      }) => ModelCredentialPreset | undefined)
+    | undefined;
+  readonly supportsModelCredentialDeployment:
+    | ((input: {
+        readonly sandbox: SandboxDriver;
+        readonly proxy: CredentialProxyDriver;
+        readonly policy: DeploymentPolicy;
+      }) => boolean)
+    | undefined;
   readonly workRecorder: Pick<ControllerWorkRecorder, "record">;
 }
 
 export function createAgentDeploymentAdmission(dependencies: DeploymentAdmissionDependencies) {
+  async function prepareModelCredentialDeployment(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    auth: HarnessAuthSnapshot,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+    sandbox: SandboxDriver | undefined,
+  ): Promise<PreparedModelCredentialDeployment | undefined> {
+    if (auth.method !== "credential_source" || auth.tokenServiceInstanceId === undefined) {
+      return undefined;
+    }
+    const source = await state.credentialSources.lockCredentialSource(
+      agent.namespaceId,
+      auth.sourceId,
+    );
+    if (
+      !isManagedTokenServiceSource(source) ||
+      source.state !== "ready" ||
+      source.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+      source.type !== auth.sourceType
+    ) {
+      throw new ScopeViolationError("The Harness credential source is unavailable.");
+    }
+    const presetId = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+    if (!isSourceProviderPresetId(presetId)) {
+      throw new ResourceStateConflictError(
+        "The Harness credential source has no permitted model provider preset.",
+      );
+    }
+    let preset: ModelCredentialPreset | undefined;
+    try {
+      preset = dependencies.modelCredentialPreset?.({ presetId, configuration, harness });
+    } catch {
+      preset = undefined;
+    }
+    if (preset === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected model has no matching approved source preset and explicit inference route.",
+      );
+    }
+    if (sandbox === undefined || dependencies.supportsModelCredentialDeployment === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
+      );
+    }
+    let owner: InstalledDriver | undefined;
+    let proxy: CredentialProxyDriver | undefined;
+    try {
+      owner = dependencies.selectedCredentialDeliveryOwner();
+      proxy = owner.require("credential_proxy_delivery");
+      if (owner.require("sandbox") !== sandbox) {
+        owner = undefined;
+      }
+    } catch {
+      owner = undefined;
+    }
+    if (owner === undefined || proxy === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
+      );
+    }
+    return { source, preset, owner, proxy, sandbox };
+  }
+
+  function admitModelCredentialPolicy(
+    { source, preset, owner, proxy, sandbox }: PreparedModelCredentialDeployment,
+    networkGrants: readonly SandboxNetworkGrant[],
+  ): NonNullable<AgentRevision["credentialDeployment"]> {
+    const destination = inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol);
+    const grants = networkGrants.filter(
+      (grant) =>
+        grant.host === destination.host &&
+        grant.ports.some(({ from, to }) => from <= destination.port && destination.port <= to),
+    );
+    if (grants.length !== 1) {
+      throw new ResourceStateConflictError(
+        "The staged model credential needs one exact, unambiguous network grant for its approved inference route.",
+      );
+    }
+    const request: DeploymentRequestMatch = {
+      binary: grants[0]!.binary,
+      host: destination.host,
+      ports: [{ from: destination.port, to: destination.port }],
+      requestPolicy: { type: "http", method: destination.method, path: destination.path },
+    };
+    const binding: DeploymentCredentialBinding = {
+      bindingRef: "model",
+      sourceRef: credentialSourceRef(source),
+      consumer: { kind: "model", providerId: preset.providerId },
+      projection: preset.projection,
+    };
+    const deployment: DeploymentPolicy = {
+      networkAccessPolicy: {
+        allowed: networkGrants.map(({ binary, host, ports }) => ({ binary, host, ports })),
+      },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    };
+    let supported: boolean;
+    try {
+      supported =
+        modelProviderRequestApproved(preset.provider, preset.template) &&
+        sandboxNetworkGrantsWithinCeiling(
+          deployment.networkAccessPolicy.allowed,
+          dependencies.sandboxNetworkPolicyCeiling,
+        ) &&
+        sandboxNetworkGrantsWithinCeiling([request], deployment.networkAccessPolicy.allowed) &&
+        dependencies.supportsModelCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
+          true;
+    } catch {
+      supported = false;
+    }
+    if (!supported) {
+      throw new ResourceStateConflictError(
+        "The staged model credential and network policy cannot be enforced.",
+      );
+    }
+    return immutableCopy({ ...deployment, driver: owner.ref, proxyDriverId: proxy.id });
+  }
+
   async function admitConfiguration(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -171,11 +364,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       agent.namespaceId,
       agent.configurationId,
     );
-    if (!metadata || metadata.kind !== "agent") {
-      throw new ScopeViolationError(
-        "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
-      );
-    }
+    assertAgentConfiguration(metadata, agent.namespaceId, agent.configurationId);
     if (prepared !== undefined && metadata.generation !== prepared.configuration.generation) {
       throw new ResourceStateConflictError(
         !guarded
@@ -252,6 +441,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       );
     }
     const binding = { namespace, agent };
+    assertProvidersCurrent();
     const status = runtimeCredentialStatus(
       await runtimeCredentialOperation(() => compute.getAgentRuntimeCredentialStatus!(binding)),
     );
@@ -308,10 +498,54 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     }
     const ordinaryPreparation =
       first === undefined
-        ? await dependencies.channels.validateDeploymentChannels(principalId, input)
+        ? await dependencies.channels.prepareOrdinaryDeploymentChannels(principalId, input)
         : undefined;
+    const request = { principalId, input, resolveHarness, ordinaryPreparation, first, auditEvent };
+    const prepared =
+      ordinaryPreparation ??
+      (first && "prepared" in first.preparation ? first.preparation.prepared : undefined);
+    if (prepared) {
+      try {
+        await dependencies.channels.validatePreparedChannels(principalId, input, prepared, () =>
+          admitPreparedDeployment(request, true),
+        );
+      } catch (error) {
+        if (!first) {
+          throw error;
+        }
+        // A concurrent matching first-deployment receipt wins over validation failure.
+        request.first = { ...first, preparation: { error } };
+      }
+    }
+    return admitPreparedDeployment(request);
+  }
+
+  type AdmissionRequest = {
+    principalId: string;
+    input: NormalizedDeploymentInput;
+    resolveHarness: HarnessResolver;
+    ordinaryPreparation: PreparedDeploymentChannels | undefined;
+    first: FirstDeploymentGuard | undefined;
+    auditEvent: ((result: Readonly<AuthorizedAgentDeployment>) => AuditEvent) | undefined;
+  };
+
+  function admitPreparedDeployment(request: AdmissionRequest, preview: true): Promise<() => void>;
+  function admitPreparedDeployment(
+    request: AdmissionRequest,
+  ): Promise<Readonly<AuthorizedAgentDeployment> | Readonly<FirstDeploymentReceipt>>;
+  function admitPreparedDeployment(
+    {
+      principalId,
+      input,
+      resolveHarness,
+      ordinaryPreparation,
+      first,
+      auditEvent,
+    }: AdmissionRequest,
+    preview = false,
+  ) {
     namespaceIdentity(input.namespaceId);
-    return dependencies.transactions.transact(async (state) => {
+    const admit = async (state: PlatformUnitOfWork) => {
       await dependencies.authority.holdAuthority(state);
       const target: ResourceRef = {
         kind: "agent",
@@ -337,12 +571,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           namespace.id,
           agent.id,
         );
-        await dependencies.provisioningWorker.guardAgentProvisioning(
-          state,
-          namespace.id,
-          agent.id,
-          true,
-        );
+        if (!preview) {
+          await dependencies.provisioningWorker.guardAgentProvisioning(
+            state,
+            namespace.id,
+            agent.id,
+            true,
+          );
+        }
       }
       const lockedAgent = await state.agents.lockAgent(namespace.id, agent.id);
       if (!lockedAgent) {
@@ -370,6 +606,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           first.digest,
         );
         if (receipt !== undefined) {
+          if (preview) {
+            throw new ResourceStateConflictError("The first deployment already has a receipt.");
+          }
           return receipt;
         }
         if (lockedAgent.status !== "active") {
@@ -406,6 +645,19 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           );
         }
       }
+      const activeRevision =
+        lockedAgent.activeRevisionId === undefined
+          ? undefined
+          : await state.revisions.findRevision(
+              namespace.id,
+              lockedAgent.id,
+              lockedAgent.activeRevisionId,
+            );
+      if (activeRevision?.executionAdmission.version === 8) {
+        throw new ResourceStateConflictError(
+          "Replacing an active staged managed-credential revision is not supported. Complete Stop before deploying again.",
+        );
+      }
       const policy = await deploymentSandboxPolicy(
         state,
         dependencies.authority,
@@ -420,6 +672,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         throw new DependencyUnavailableError("The selected Harness descriptor is unavailable.");
       }
 
+      const computeSelection = dependencies.selection("compute");
+      const sandboxSelection = dependencies.selection("sandbox");
+      const proxySelection = dependencies.selection("credential_proxy");
       let compute: ComputeDriver;
       try {
         compute = dependencies.selectedCompute();
@@ -449,7 +704,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         prepared,
         first !== undefined,
       );
-      if (first !== undefined) {
+      if (first !== undefined && !preview) {
         await dependencies.provisioningWorker.guardAgentProvisioning(
           state,
           namespace.id,
@@ -499,6 +754,23 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         principalId,
         lockedAgent,
       );
+      if (
+        lockedAgent.activeRevisionId !== undefined &&
+        harnessAuth.method === "credential_source" &&
+        harnessAuth.tokenServiceInstanceId !== undefined
+      ) {
+        throw new ResourceStateConflictError(
+          "Replacing an active Agent revision with a staged managed credential is not supported.",
+        );
+      }
+      const stagedModel = await prepareModelCredentialDeployment(
+        state,
+        lockedAgent,
+        harnessAuth,
+        requestedHarness,
+        configuration.values,
+        sandbox,
+      );
       const revisionHarness = immutableCopy({
         ...requestedHarness,
         configuration:
@@ -508,6 +780,32 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             configuration.values,
           ) ?? {},
       });
+      if (stagedModel !== undefined) {
+        const resolvedProvider = asRecord(revisionHarness.configuration?.modelProvider);
+        let matches: boolean;
+        try {
+          matches =
+            resolvedProvider?.protocol === stagedModel.preset.provider.protocol &&
+            typeof resolvedProvider.baseUrl === "string" &&
+            isDeepStrictEqual(
+              inferenceKeyDestination(
+                resolvedProvider.baseUrl,
+                stagedModel.preset.provider.protocol,
+              ),
+              inferenceKeyDestination(
+                stagedModel.preset.provider.baseUrl,
+                stagedModel.preset.provider.protocol,
+              ),
+            );
+        } catch {
+          matches = false;
+        }
+        if (!matches) {
+          throw new ResourceStateConflictError(
+            "The frozen Harness model route does not match the admitted source preset.",
+          );
+        }
+      }
       dependencies.harnessAuth.requireCredentialSourceDrivers(harnessAuth, sandbox);
       const driver =
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
@@ -610,7 +908,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = dependencies.timestamp();
-      const resolvedRepositoryCredentials =
+      const admitRepository = () =>
         dependencies.repositoryPolicy.admitRepositoryCredentials(
           lockedAgent,
           compute,
@@ -618,6 +916,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           sandbox?.id,
           Date.parse(createdAt),
         );
+      const admittedRepository = admitRepository();
+      const resolvedRepositoryCredentials = admittedRepository?.credentials;
       if (resolvedRepositoryCredentials !== undefined) {
         validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
       }
@@ -631,19 +931,56 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = dependencies.nextIdentifier("agent_revision");
-      const proxyAdmission = await dependencies.egress.admitProxyPlan(
-        state,
-        lockedAgent,
-        revisionId,
-        admittedConfiguration,
-        sandbox?.id,
-        repositoryCredentials,
-        harnessAuth,
-        revisionHarness.configuration,
-      );
+      if (stagedModel !== undefined && policy !== undefined && policy.additions.length > 0) {
+        await dependencies.authority.authorize(principalId, "read", {
+          kind: "sandbox_policy",
+          id: policy.id,
+          namespaceId: namespace.id,
+        });
+      }
+      if (
+        stagedModel !== undefined &&
+        (repositoryCredentials !== undefined || credentialSources.length !== 1)
+      ) {
+        throw new ResourceStateConflictError(
+          "A staged model credential cannot share an execution with other credential delivery.",
+        );
+      }
+      if (stagedModel !== undefined && policy?.repositoryNetworkPolicy !== undefined) {
+        throw new ResourceStateConflictError(
+          "Standalone execution cannot enforce the saved repository network policy. Review the policy and execution mode before deploying.",
+        );
+      }
+      const credentialDeployment =
+        stagedModel === undefined
+          ? undefined
+          : admitModelCredentialPolicy(stagedModel, policy?.additions ?? []);
+      const proxyAdmission =
+        credentialDeployment === undefined
+          ? await dependencies.egress.admitProxyPlan(
+              state,
+              lockedAgent,
+              revisionId,
+              admittedConfiguration,
+              sandbox?.id,
+              repositoryCredentials,
+              harnessAuth,
+              revisionHarness.configuration,
+              policy?.repositoryNetworkPolicy === undefined
+                ? undefined
+                : admittedRepository?.nativeGit,
+            )
+          : undefined;
       const egressPlan = proxyAdmission?.plan;
-      const executionAdmission = executionAdmissionFor(egressPlan);
-      const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
+      const executionAdmission: ExecutionAdmission =
+        credentialDeployment === undefined
+          ? executionAdmissionFor(egressPlan)
+          : { version: 8, mode: "standalone" };
+      const execution = {
+        executionAdmission,
+        ...(egressPlan === undefined ? {} : { egressPlan }),
+        ...(credentialDeployment === undefined ? {} : { credentialDeployment }),
+      };
       assertExecutionAdmission(execution);
       try {
         if (compute.validateExecutionAdmission === undefined) {
@@ -652,7 +989,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           const admission = { ...execution, harnessAuth, credentialSources, repositoryCredentials };
           compute.validateExecutionAdmission(
             admission,
-            egressPlan && dependencies.selectedProxyOwner(),
+            stagedModel?.owner ?? (egressPlan && dependencies.selectedProxyOwner()),
           );
         }
       } catch {
@@ -660,7 +997,16 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
         );
       }
-      const sandboxPolicy = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
+      const protectedExecution = executionAdmission.mode === "protected";
+      const repositoryGrants = policy?.repositoryNetworkPolicy;
+      const protectedSandbox =
+        protectedExecution && repositoryGrants !== undefined
+          ? bindProtectedRepositoryPolicySandbox(compute, sandbox)
+          : undefined;
+      if (protectedSandbox) {
+        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.selectedGrants);
+      }
+      const sandboxSnapshot = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
         policy,
         principalId,
         lockedAgent,
@@ -668,17 +1014,15 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         sandbox,
         executionAdmission,
         repositoryCredentials !== undefined,
+        stagedModel !== undefined,
       );
-      if (compute.requiresAgentRuntimeCredentials === true) {
-        await ensureRuntimeCredentials(
-          compute,
-          principalId,
-          namespace,
-          lockedAgent,
-          previous.length,
-          () => proxyAdmission?.assertProvidersCurrent(),
-        );
-      }
+      const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
+        () => sandboxSnapshot,
+        repositoryGrants,
+        dependencies.repositoryPolicy.repositoryNetworkPolicyCeiling,
+        protectedSandbox?.driver ?? sandbox,
+        () => dependencies.repositoryPolicy.repositoryGrantAuthority(namespace.id),
+      );
       const revisionDraft: AgentRevision = {
         id: revisionId,
         ...execution,
@@ -716,12 +1060,92 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       ) {
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
-      const candidate = prepareComputeRevision(compute, revisionDraft);
+      const policyCompute =
+        sandboxPolicy?.repositoryNetworkPolicy === undefined
+          ? undefined
+          : computeRepositoryPolicyAdmission(compute, protectedSandbox);
+      const assertRepositoryNetworkPolicyDrivers = () => {
+        // State locks do not freeze the process-local Driver registrations.
+        if (
+          policyCompute &&
+          (computeSelection === undefined ||
+            dependencies.selection("compute") !== computeSelection ||
+            !unchangedDriver(computeSelection) ||
+            sandboxSelection === undefined ||
+            dependencies.selection("sandbox") !== sandboxSelection ||
+            !unchangedDriver(sandboxSelection) ||
+            (protectedSandbox &&
+              (proxySelection === undefined ||
+                dependencies.selection("credential_proxy") !== proxySelection ||
+                !unchangedDriver(proxySelection))) ||
+            !policyCompute.unchanged() ||
+            ownerUnchanged?.() === false)
+        ) {
+          throw new ResourceStateConflictError(
+            "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
+          );
+        }
+        if (protectedSandbox && admittedRepository) {
+          const current = admitRepository();
+          assertSelectedRepositoryGrants(repositoryGrants, current?.selectedGrants);
+          if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
+            throw new ResourceStateConflictError(
+              "The selected repository credentials changed during deployment.",
+            );
+          }
+        }
+      };
+      if (policyCompute) {
+        assertScopedRepositoryHistory(previous);
+      }
+      const policyAdmittedRevision = await policyCompute?.admit(
+        revisionDraft,
+        assertRepositoryNetworkPolicyDrivers,
+      );
+      const assertProvidersCurrent = () => {
+        proxyAdmission?.assertProvidersCurrent();
+        assertRepositoryNetworkPolicyDrivers();
+      };
+      if (preview) {
+        // The Channel caller starts validation under these locks and rolls back its unit.
+        return assertProvidersCurrent;
+      }
+      if (compute.requiresAgentRuntimeCredentials === true) {
+        await ensureRuntimeCredentials(
+          compute,
+          principalId,
+          namespace,
+          lockedAgent,
+          previous.length,
+          assertProvidersCurrent,
+        );
+      }
+
+      const candidate = policyAdmittedRevision ?? prepareComputeRevision(compute, revisionDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         dependencies.channels.assertPreparedDeploymentDrivers(prepared);
       }
-      proxyAdmission?.assertProvidersCurrent();
+      if (stagedModel !== undefined) {
+        dependencies.ownedTokenServiceDriver(stagedModel.source.tokenServiceInstanceId);
+        let owner: InstalledDriver | undefined;
+        try {
+          owner = dependencies.selectedCredentialDeliveryOwner();
+        } catch {
+          // Process-local selections can change while awaited Driver work is in progress.
+        }
+        if (
+          owner === undefined ||
+          owner !== stagedModel.owner ||
+          owner.require("sandbox") !== sandbox ||
+          owner.require("credential_proxy_delivery") !== stagedModel.proxy
+        ) {
+          throw new DependencyUnavailableError(
+            "The staged credential enforcing Drivers changed during admission.",
+          );
+        }
+      }
+      assertProvidersCurrent();
       const revision = await state.revisions.createRevision(candidate, first?.digest);
       if (
         lockedAgent.activeRevisionId &&
@@ -768,7 +1192,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         await state.audit.append(auditEvent(result));
       }
       return result;
-    });
+    };
+    // Authorization after a lock wait must see IAM changes committed by the lock holder.
+    return dependencies.transactions.transact(admit, { readCommitted: true });
   }
 
   return admitAgentDeployment;

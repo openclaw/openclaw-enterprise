@@ -37,6 +37,7 @@ const failureCodes = [
 ] as const;
 const failureLocation = "tests/helpers/openshell-sandbox-workflows.mjs";
 const openShellStages = [
+  "plugin-check",
   "exposure-auth",
   "installation",
   "scratch-sibling-isolation",

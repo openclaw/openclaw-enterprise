@@ -24,6 +24,7 @@ import {
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationStartError,
   BrowserAuthorizationError,
   IAMAccessBindingRoleError,
@@ -945,6 +946,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       result.registrationRetryAfterSeconds = error.retryAfterSeconds;
     }
     return result;
+  }
+  if (error instanceof CredentialDeliveryFailedError) {
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (isDependencyUnavailable(error)) {
     return dependencyUnavailable();

@@ -32,6 +32,7 @@ import {
 } from "./credential-source-metadata.ts";
 import {
   CredentialSourceConfigError,
+  CredentialDeliveryFailedError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DriverSelectionError,
@@ -101,6 +102,11 @@ interface ManagedCredentialSourceDependencies {
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  readonly retireDelivery: (
+    namespace: Readonly<Namespace>,
+    source: CredentialSourceReference,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly clock: () => Date;
   readonly timestamp: () => string;
   readonly tokenServiceTimeoutMs: number;
@@ -370,9 +376,18 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       return credentialSourceMetadata(updated);
     } catch (error) {
       try {
-        await dependencies.transactions.transact((state) =>
-          state.audit.append(failureAudit("CREDENTIAL_SOURCE_UPDATE_FAILED")),
-        );
+        await dependencies.transactions.transact(async (state) => {
+          if (error instanceof CredentialDeliveryFailedError) {
+            await state.audit.append(completedAudit());
+          }
+          await state.audit.append(
+            failureAudit(
+              error instanceof CredentialDeliveryFailedError
+                ? "CREDENTIAL_DELIVERY_FAILED"
+                : "CREDENTIAL_SOURCE_UPDATE_FAILED",
+            ),
+          );
+        });
       } catch {
         // Preserve the original failure when audit storage is unavailable.
       }
@@ -486,6 +501,16 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
+      try {
+        await dependencies.retireDelivery(
+          namespace,
+          identity.sourceRef,
+          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+        );
+      } catch {
+        // Native errors can contain credential or Workspace details.
+        throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+      }
       const removed = await driverOperation(
         () => owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
         "TokenService",

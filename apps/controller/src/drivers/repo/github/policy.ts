@@ -20,6 +20,21 @@ import {
   type GitHubRepositoryRegistry,
 } from "./access/registry.ts";
 
+/** Desired-state bounds only. Release checks the credential’s actual delivery scope. */
+function selectedRepositoryGitNetworkGrants({
+  repositories,
+  permissions,
+  mixedNativeGit,
+}: ReturnType<typeof resolveSelectedRepositoryScope>): readonly RepositoryNetworkGrant[] {
+  if (mixedNativeGit) {
+    return [];
+  }
+  const access = permissions.contents;
+  return access === "read" || access === "write"
+    ? Object.freeze(repositories.map(({ repository }) => Object.freeze({ repository, access })))
+    : [];
+}
+
 /** Repository selection and approval policy, independent of credential transport. */
 export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   static readonly configurationSchema: JSONSchema = {
@@ -146,14 +161,15 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution {
-    return this.resolveBindings(input);
+    const { bindings, sessionDurationSeconds } = this.resolveBindings(input);
+    return Object.freeze({ bindings, sessionDurationSeconds });
   }
 
   /** Provider policy shared by Installation admission and the legacy Driver adapter. */
   resolveBindings(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
-  }): RepositoryCredentialResolution {
+  }) {
     try {
       if (
         !Array.isArray(input.bindings) ||
@@ -162,21 +178,27 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       ) {
         throw new Error("invalid-bindings");
       }
-      const resolved = Object.freeze({
-        bindings: Object.freeze(
-          input.bindings.map((entry) =>
-            resolveGitHubRepositoryBinding(this.#registry, {
-              ...entry,
-              namespaceId: input.namespaceId,
-            }),
-          ),
+      const bindings = Object.freeze(
+        input.bindings.map((entry) =>
+          resolveGitHubRepositoryBinding(this.#registry, {
+            ...entry,
+            namespaceId: input.namespaceId,
+          }),
         ),
+      );
+      const selected = bindings.some((binding) => binding.profile === "github-repository")
+        ? resolveSelectedRepositoryScope(this.#registry, input.namespaceId, bindings)
+        : undefined;
+      return Object.freeze({
+        bindings,
         sessionDurationSeconds: this.#duration,
+        ...(selected === undefined
+          ? {}
+          : {
+              selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
+              ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
+            }),
       });
-      if (resolved.bindings.some((b) => b.profile === "github-repository")) {
-        resolveSelectedRepositoryScope(this.#registry, input.namespaceId, resolved.bindings);
-      }
-      return resolved;
     } catch {
       throw new ScopeViolationError(
         "The requested repository bindings are not permitted for this Namespace.",

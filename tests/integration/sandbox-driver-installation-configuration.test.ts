@@ -4,10 +4,18 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { InstallationFieldError } from "../../apps/controller/src/composition/installation-fields.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  CredentialProxyRepositoryOnlyError,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/errors.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
+import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { makeStructuralRefusal as structuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
@@ -438,4 +446,71 @@ test("repository.openShell names each unmet requirement, including ones earlier 
   assert.deepEqual(refusal({ ...met, backend: { ...backend, configuration: unauthenticated } }), [
     ["/backend/2/configuration/auth/mode", "INVALID_VALUE"],
   ]);
+});
+
+test("repository.openShell with another GitHub origin starts and refuses Git at admission, naming the origin", async (t) => {
+  const registry = {
+    version: 1,
+    backendId: "origin-repository",
+    providerInstanceId: "origin-test",
+    appId: "123",
+    githubInstallationId: "456",
+    maximumDurationSeconds: 3600,
+    repositories: [
+      {
+        repositoryRef: "application",
+        repositoryId: "789",
+        repository: "example/application",
+        namespaces: [
+          {
+            namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+            profiles: ["github-repository"],
+            permissions: { contents: "write", metadata: "read" },
+          },
+        ],
+      },
+    ],
+  };
+  const refusal =
+    "repository.openShell reaches only https://github.com and https://api.github.com but repository.preparedGitHub.apiOrigin is ghe.example.test:8443. Remove apiOrigin to use github.com: repository.openShell supports no other GitHub origin.";
+  for (const apiOrigin of [undefined, "https://api.github.com", "https://ghe.example.test:8443"]) {
+    // Startup is unchanged: an Installation that started before still starts.
+    const installation = await loadedProxyInstallation(t, {
+      profile: "repository",
+      id: "origin-sandbox",
+      registry,
+      ...(apiOrigin && { apiOrigin }),
+      createOpenShellBackend: (definition) =>
+        createOpenShellBackend(definition, {
+          gatewayClient: completeOpenShellGatewayClient({
+            ...openShellWorkspaceProtocol(),
+            async getGatewayInfo() {
+              return {
+                gateway_version: "0.1.8",
+                extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
+              };
+            },
+          }),
+        }),
+    });
+    t.after(() => installation.protectedDriver?.close());
+    const control = installation.proxyDriver!.sourceControl;
+    const git = control.assertAvailable(AbortSignal.timeout(5_000), "github_repository");
+    if (apiOrigin === "https://ghe.example.test:8443") {
+      await assert.rejects(
+        git,
+        (error) => error instanceof ResourceStateConflictError && error.message === refusal,
+      );
+    } else {
+      assert.deepEqual(await git, {
+        profile: "github_repository",
+        authorization: "online-request",
+      });
+    }
+    // Work without repository Git is decided as before, whatever the origin.
+    await assert.rejects(
+      control.assertAvailable(AbortSignal.timeout(5_000)),
+      CredentialProxyRepositoryOnlyError,
+    );
+  }
 });

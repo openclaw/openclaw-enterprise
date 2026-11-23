@@ -132,8 +132,17 @@ Compare the saved manifest with live OCC resources, including Collector Pods and
 failure remnants. Stop on uncertain identity, ownership or state; follow
 [recovery](demo-cleanup.md#recover-an-incomplete-setup) after interrupted creation.
 
-Use the Kubernetes API's translated IPv4 addresses as `/32` and port in
-`$OBS_FILES/demo.yaml`:
+Before you create `$OBS_FILES/demo.yaml`, read the saved OCC port with
+`yq '.metrics.port' "$OBS_FILES/occ-before.yaml"`. The example uses the
+`occ.metricsPort` default of `9464`. If the saved port differs, add `metricsPort`
+under `occ` alongside `release`. Set it to the number that `yq` prints.
+
+In `demo.yaml`, give each translated Kubernetes API IPv4 address a `/32` suffix.
+Set `cluster.port` to the actual API endpoint port. The chart defaults to `443`
+and the example uses `6443`.
+
+Write both demo ports as decimal integers from 1 through 65535 with no leading
+zero. Helm rejects the string `"010"` before it changes the policy.
 
 ```yaml
 occ:
@@ -169,10 +178,6 @@ After you update the checkout for an OCC upgrade, rerun this block to pick up
 dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus,
 Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
 Grafana stops working until you start it again.
-
-`cluster.port` and `occ.metricsPort` must be decimal integers from 1 through
-65535 with no leading zero. Defaults are 443 and 9464. The block refuses
-another spelling, such as the string `"010"`, before it changes the policy.
 
 For a custom release, read its generated Service names with
 `helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
@@ -221,9 +226,7 @@ If Secret creation fails, the first may exist. Follow
 
 Create `$OBS_FILES/occ-demo.yaml` from saved values. Replace selector maps because
 Helm merges overlays and can retain old labels. Keep `occ-before.yaml` unchanged
-for restoration. This enables metrics at their existing port; if it is not 9464,
-match demo `occ.metricsPort` to `metrics.port`. Write that port as a decimal
-with no leading zero.
+for restoration. This block enables metrics on the saved port.
 
 ```bash
 (

@@ -64,6 +64,8 @@ import {
 } from "./runner-preparation.ts";
 import { jobCancelling, killDescendants, runNode, type NodeResult } from "./runner-process.ts";
 import {
+  nativeProofCaseFailed,
+  nativeProofFailureStage,
   readFileEvidence,
   validateExpectedTests,
   type FileEvidence,
@@ -100,6 +102,7 @@ function emptyFileResult(path: string, issues: RunnerIssue[]) {
     tests,
     issues,
     cleanup: null,
+    [nativeProofCaseFailed]: false,
   };
 }
 
@@ -549,6 +552,7 @@ async function runFile(
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
     ...(openShellReplacement ? { openShellReplacement } : {}),
+    [nativeProofCaseFailed]: evidence[nativeProofCaseFailed],
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -663,6 +667,18 @@ async function runLane(
           process.stderr.write(
             `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
           );
+          const proofStage =
+            result[nativeProofCaseFailed] &&
+            result.cleanup?.status === "passed" &&
+            result.issues.every(
+              ({ code, status }) => code === "expected-test-not-passed" && status === "failed",
+            ) &&
+            nativeProofFailureStage(result.tests);
+          if (proofStage) {
+            process.stderr.write(
+              `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${proofStage}.\n`,
+            );
+          }
         }
       }
       process.stderr.write(
@@ -791,7 +807,7 @@ async function completePhaseChild() {
   });
   let exitCode = 1;
   let uncertain = false;
-  let error: { code: "phase-failed" } | undefined;
+  let phaseError: { code: "phase-failed"; reason?: "docker-subnet-exhausted" } | undefined;
   try {
     // Null has no fields. Other JSON values with no phase leave the default reply.
     if (request === null || request === undefined) {
@@ -837,13 +853,22 @@ async function completePhaseChild() {
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
-  } catch {
-    // Command owners can embed opaque argv and output in Error.message. Only
-    // this closed category crosses the phase boundary, never exception text.
-    error = { code: "phase-failed" };
+  } catch (error) {
+    // Command owners can embed opaque argv and output in Error.message. Send
+    // only fixed categories and reasons across the phase boundary.
+    phaseError = { code: "phase-failed" };
+    if (
+      isRecord(request) &&
+      request.phase === "prepare" &&
+      error instanceof Error &&
+      "dockerSubnetExhausted" in error &&
+      error.dockerSubnetExhausted === true
+    ) {
+      phaseError.reason = "docker-subnet-exhausted";
+    }
     exitCode = 1;
   }
-  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error: phaseError });
   await new Promise(() => {});
 }
 
