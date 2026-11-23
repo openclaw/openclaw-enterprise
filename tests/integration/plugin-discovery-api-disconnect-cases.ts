@@ -562,6 +562,49 @@ export async function savedAgentCredentialSourceGrants(t: TestContext) {
     resource: source,
   }).binding;
   const path = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`;
+  const alternate = await owner.createSource(
+    {
+      kind: "oauth_refresh_token",
+      namespaceId: fixture.namespace.id,
+      name: "Other Codex account",
+      consent: {
+        kind: "builtin_codex",
+        ownerPrincipalId: fixture.principal.id,
+        account: { ...account, accountId: "account-other" },
+      },
+      grant: {
+        accessToken: "at-other-codex-account",
+        refreshToken: "synthetic-refresh-other",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: ["openid"],
+        grantedScopes: ["openid"],
+      },
+    },
+    AbortSignal.timeout(5_000),
+  );
+  const alternateSource = { ...source, id: alternate.id };
+  grantRole(fixture.policy, actor.principal.id, {
+    id: "source-other-caller-operator",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: alternateSource,
+  });
+
+  // A person's access to a different account cannot override this saved Agent's Harness binding.
+  for (const [suffix, body] of operations) {
+    const preAgent = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      session,
+      body: { harnessId: "codex", credentialSource: alternateSource, ...body },
+    });
+    assert.equal(preAgent.status, 200, JSON.stringify(preAgent.body));
+    const beforeSavedOverride = owner.resolves;
+    const result = await fixture.request("POST", `${path}${suffix}`, {
+      session,
+      body: { ...body, credentialSource: alternateSource },
+    });
+    assertApiError(result, 404, "NOT_FOUND");
+    assert.equal(owner.resolves, beforeSavedOverride, "an unbound account must not reach custody");
+  }
   for (const [suffix, body] of operations) {
     const result = await fixture.request("POST", `${path}${suffix}`, { session, body });
     assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -571,6 +614,11 @@ export async function savedAgentCredentialSourceGrants(t: TestContext) {
       isFedramp: account.isFedramp,
       ...body,
     });
+    const explicit = await fixture.request("POST", `${path}${suffix}`, {
+      session,
+      body: { ...body, credentialSource: source },
+    });
+    assert.equal(explicit.status, 200, JSON.stringify(explicit.body));
   }
   const driverCalls = fixture.calls.length;
   for (const binding of [callerBinding, agentBinding]) {
@@ -578,14 +626,58 @@ export async function savedAgentCredentialSourceGrants(t: TestContext) {
     const before = owner.resolves;
     for (const [suffix, body] of operations) {
       await expectDenied(context, `${path}${suffix}`, body, driverCalls);
+      await expectDenied(
+        context,
+        `${path}${suffix}`,
+        { ...body, credentialSource: source },
+        driverCalls,
+      );
     }
     assert.equal(owner.resolves, before);
     fixture.policy.bindings.push(binding);
     for (const [suffix, body] of operations) {
-      owner.afterResolved = () => removeBinding(fixture, binding);
-      await expectDenied(context, `${path}${suffix}`, body, driverCalls);
-      owner.afterResolved = undefined;
-      fixture.policy.bindings.push(binding);
+      for (const requestBody of [body, { ...body, credentialSource: source }]) {
+        owner.afterResolved = () => removeBinding(fixture, binding);
+        await expectDenied(context, `${path}${suffix}`, requestBody, driverCalls);
+        owner.afterResolved = undefined;
+        fixture.policy.bindings.push(binding);
+      }
     }
+  }
+}
+
+export async function refusesUnboundSavedAgentSource(t: TestContext) {
+  const { fixture, owner, source, account, actor, session } = await codexSourceFixture(t);
+  const { agent, path } = await createSavedAgent(fixture);
+  grantRole(fixture.policy, actor.principal.id, {
+    id: "source-saved-agent-editor",
+    namespaceId: fixture.namespace.id,
+    permissions: { agent: ["read", "update"] },
+    resource: { kind: "agent", id: agent.id },
+  });
+  for (const [suffix, body] of operations) {
+    // Pre-Agent discovery is governed by the caller's exact Source operate grant.
+    const preAgent = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      session,
+      body: { harnessId: "codex", credentialSource: source, ...body },
+    });
+    assert.equal(preAgent.status, 200, JSON.stringify(preAgent.body));
+    assert.deepEqual(fixture.calls.at(-1)?.input, {
+      accessToken,
+      accountId: account.accountId,
+      isFedramp: account.isFedramp,
+      ...body,
+    });
+
+    // The same Source cannot be used on a saved Agent whose Harness is bound elsewhere.
+    const resolves = owner.resolves;
+    const calls = fixture.calls.length;
+    const saved = await fixture.request("POST", `${path}${suffix}`, {
+      session,
+      body: { credentialSource: source, ...body },
+    });
+    assertApiError(saved, 404, "NOT_FOUND");
+    assert.equal(owner.resolves, resolves);
+    assert.equal(fixture.calls.length, calls);
   }
 }

@@ -810,7 +810,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             "Saved plugin discovery requires a dedicated Agent.",
           );
         }
-        if (credentialSource !== undefined || target.driver.discoveryCredential === "none") {
+        if (target.driver.discoveryCredential === "none") {
           return {
             ...target,
             source: undefined,
@@ -818,6 +818,16 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           };
         }
         const binding = harnessAuthBinding(agent.harnessAuth);
+        if (
+          credentialSource !== undefined &&
+          (binding?.method !== "credential_source" ||
+            credentialSource.namespaceId !== namespaceId ||
+            credentialSource.id !== binding.sourceId)
+        ) {
+          throw new ScopeViolationError(
+            "The selected credential source is not bound to this Agent's Harness.",
+          );
+        }
         if (binding?.method === "credential_source") {
           const reference = {
             kind: "credential_source" as const,

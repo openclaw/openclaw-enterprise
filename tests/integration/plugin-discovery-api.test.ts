@@ -20,6 +20,7 @@ import {
 } from "./plugin-discovery-api-fixture.ts";
 import {
   honorsDisconnectsDuringIam,
+  refusesUnboundSavedAgentSource,
   rechecksCredentialSourceGrants,
   savedAgentCredentialSourceGrants,
   suppressesSourceResolutionErrors,
@@ -96,6 +97,10 @@ test(
 test(
   "Saved Agent Codex Source discovery requires caller and Agent grants around resolution",
   savedAgentCredentialSourceGrants,
+);
+test(
+  "Saved Agent Codex discovery refuses a caller-selected Source outside its Harness binding",
+  refusesUnboundSavedAgentSource,
 );
 test(
   "Saved Agent plugin discovery rechecks Secret authority after the backend read",

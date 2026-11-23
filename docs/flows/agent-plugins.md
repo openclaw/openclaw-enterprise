@@ -74,9 +74,9 @@ cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explic
 CredentialSources (`409`). Saved discovery requires dedicated Agents.
 Unavailable bound sources return `404`. Only hosted catalogs need credentials.
 
-Hosted Codex resolves a ready OAuth Source through TokenService and passes trusted account
-metadata to the Plugin Driver. OCC rechecks authority, Source, binding and catalog;
-cancellation discards late credentials.
+Hosted Codex resolves a ready OAuth Source through TokenService. Saved discovery requires the
+Harness-bound Source and caller and Agent `operate`; an explicit ID cannot change it. OCC
+rechecks authority and binding. Cancellation discards late credentials.
 
 `plugin-discovery.ts:discoverManagedMcpTools` checks Template and Agent authority, resolves
 the TokenService bearer and restricts SDK requests to permitted methods.
