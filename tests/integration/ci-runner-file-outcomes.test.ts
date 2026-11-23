@@ -10,7 +10,11 @@ import test from "node:test";
 import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
 import { projectFailureDiagnostic } from "../../scripts/ci/reporter-diagnostics.ts";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
-import { nativeProofFailure } from "../../scripts/ci/runner-reporter-output.ts";
+import {
+  readFileEvidence,
+  splitCaseFailure,
+  type FileEvidence,
+} from "../../scripts/ci/runner-reporter-output.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -496,13 +500,63 @@ test(${JSON.stringify(parentCase)}, async (t) => {
       ],
     );
 
-    // The same siblings remain first. Only the named case supplies the notice.
-    const selected = (diagnostic: unknown, compose = true) =>
-      nativeProofFailure(
-        [...installerOutcome.tests.slice(0, 2), { name: nativeCase, error: { diagnostic } }],
-        compose,
+    // Feed the runner's real evidence reader terminal events. Keep the siblings
+    // first to detect attribution to a sibling when the named case has no usable diagnostic.
+    const failure = (name: string, diagnostic: unknown) => ({
+      type: "test:fail",
+      data: {
+        file: nativeDeclaration,
+        line: 1,
+        name,
+        nesting: 1,
+        testType: "test",
+        error: { location: {}, diagnostic },
+      },
+    });
+    const siblings = [
+      failure("different proof stage", { ...modelOutcome, failureStage: "exec-proof" }),
+      failure("initial proof sibling", { ...modelOutcome, modelPhase: "initial" }),
+    ];
+    const selected = (
+      diagnostic: unknown,
+      relativePath = installerFailure.path,
+      interrupted = false,
+    ) => {
+      const events = [...siblings, failure(nativeCase, diagnostic)];
+      const stdout = [
+        ...events.map((event) => JSON.stringify(event)),
+        ...(interrupted ? [JSON.stringify({ type: "test:interrupted", data: {} })] : []),
+      ].join("\n");
+      const evidence: FileEvidence = {
+        measurements: [],
+        testRunExercised: false,
+        tests: [],
+        skippedSuites: [],
+      };
+      readFileEvidence(
+        { stdout, status: 1, signal: null },
+        {
+          root,
+          absolutePath: join(root, relativePath),
+          relativePath,
+          laneName: "openshell-installers",
+          expectedTests: [nativeCase],
+          env,
+          focused: false,
+        },
+        evidence,
+        [],
       );
-    assert.deepEqual(selected({ ...modelOutcome, modelPhase: "resumed" }, false), modelOutcome);
+      return evidence[splitCaseFailure];
+    };
+    const resumed = { ...modelOutcome, modelPhase: "resumed" };
+    const initial = { ...modelOutcome, modelPhase: "initial" };
+    assert.deepEqual(selected(initial), initial);
+    assert.deepEqual(
+      selected(resumed, "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"),
+      modelOutcome,
+    );
+    assert.equal(selected(resumed, installerFailure.path, true), undefined);
     assert.equal(selected(undefined), undefined);
     assert.equal(
       selected({ ...modelOutcome, failureStage: "private\n::warning::stage" }),

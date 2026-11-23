@@ -538,7 +538,7 @@ export function readFileEvidence(
 
 // Read the redacted error on the named case. A sibling may report a different
 // native proof failure, so scanning the file for any usable diagnostic is unsafe.
-export function nativeProofFailure(
+function nativeProofFailure(
   tests: readonly { name: unknown; error?: unknown }[],
   compose: boolean,
 ) {
