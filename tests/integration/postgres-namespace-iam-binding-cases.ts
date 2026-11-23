@@ -319,14 +319,14 @@ export async function namespaceRolePermissions(context: TestContext) {
         { id: roleId, namespaceId: namespace.id, permissions },
       ),
     ),
-    /managed Namespace Role permissions support only read/,
+    /managed Namespace Roles can read the Namespace or publish plugins/,
   );
   // The State writer refuses the Role even when a caller bypasses the IAM Driver.
   await assert.rejects(
     state.transact((unit) =>
       unit.iamPolicy.createRole({ id: roleId, namespaceId: namespace.id, permissions }),
     ),
-    { name: "ScopeViolationError", message: /support only Namespace read/ },
+    { name: "ScopeViolationError", message: /can read the Namespace or publish plugins/ },
   );
   assert.equal(
     await state.transact((unit) => unit.iamPolicy.getRole(namespace.id, roleId)),
@@ -356,7 +356,7 @@ export async function namespaceRolePermissions(context: TestContext) {
         },
       ),
     ),
-    { name: "IAMPolicyValidationError", message: /support only Namespace read/ },
+    { name: "IAMPolicyValidationError", message: /can read the Namespace or publish plugins/ },
   );
   assert.deepEqual(
     await state.transact((unit) => unit.iamPolicy.listAccessBindings(namespace.id)),

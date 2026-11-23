@@ -536,6 +536,9 @@ export function createNamespaceOperations({
         if (current.status !== "deleting") {
           return current;
         }
+        if (deleted) {
+          await state.pluginReleases.purgeNamespace(current.id);
+        }
         const updated = deleted
           ? await state.namespaces.markNamespaceDeleted(current.id, timestamp())
           : current;

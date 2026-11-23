@@ -14,6 +14,7 @@ import type { InstallationRepository } from "./installations.ts";
 import type { NamespaceRepository } from "./namespaces.ts";
 import type { PlatformOperationRepository } from "./platform-operations.ts";
 import { platformReadMethods, type PlatformReadView } from "./platform-read-view.ts";
+import type { PluginReleaseRepository } from "./plugin-releases.ts";
 import type { PresetRepository } from "./presets.ts";
 import type { RepositorySessionRepository } from "./repository-sessions.ts";
 import type { SavedConnectionRepository } from "./saved-connections.ts";
@@ -42,6 +43,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly connectionTemplates: ConnectionTemplateRepository;
   readonly savedConnections: SavedConnectionRepository;
   readonly presets: PresetRepository;
+  readonly pluginReleases: PluginReleaseRepository;
   readonly authenticationStates: AuthenticationStateRepository;
   readonly secrets: SecretRepository;
   readonly credentialSources: CredentialSourceRepository;
@@ -113,6 +115,11 @@ export function bindPlatformUnitOfWork(
       "lockPreset",
       "updatePreset",
       "deletePreset",
+    ]),
+    pluginReleases: bindRepository(repositories.pluginReleases, lifetime, [
+      ...platformReadMethods.pluginReleases,
+      "publish",
+      "purgeNamespace",
     ]),
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
       ...platformReadMethods.connectionTemplates,

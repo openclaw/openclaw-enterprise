@@ -12,6 +12,8 @@ This guide walks through two managed plugin types:
 - **CLI plugins** using **Google Workspace** (`occ-plugin:google@1.0.0`), which runs the pinned `gog` command on the worker.
 - **Hosted MCP plugins** using **Slack** (`occ-plugin:slack`), which connects to a streamable Model Context Protocol endpoint.
 
+To publish a package with skills or hosted MCP servers in your Namespace, follow [Import a plugin for a dedicated OpenClaw Agent](plugins-configure.md#import-a-plugin-for-a-dedicated-openclaw-agent).
+
 > [!NOTE]
 > Dedicated Codex Agents use a separate curated app catalog and approval model. If you use Codex, see [Add Codex plugins to an OpenShell Agent](../integrations/codex-plugins.md).
 
@@ -22,7 +24,7 @@ Before you add plugins to an Agent, make sure your environment meets these requi
 1. **Dedicated OpenClaw on Kubernetes**: The Agent must use the dedicated OpenClaw Harness on Kubernetes Compute. Embedded OpenClaw supports only the bundled Diffs plugin.
 2. **Plugin Driver enabled**: The Installation profile must select the bundled OpenClaw Plugin Driver (`occ-plugin` under `drivers.plugin`). See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 3. **Operator permissions**: You need `agent:read`, `agent:update`, and `agent:deploy` on the target Agent, plus `credential_source:operate` on any attached account source.
-4. **Network connectivity**: For hosted MCP discovery, the OCC API must be able to reach the MCP HTTPS endpoint on port 443. Configure `api.pluginDiscoveryCidrs` in your Helm values to allow egress to the server IP addresses.
+4. **Network connectivity**: The OCC API Server must reach the hosted MCP endpoint over HTTPS to discover tools. The Helm chart leaves API Server egress open. If your installation applies its own egress policy, allow the endpoint there.
 
 ---
 
@@ -209,7 +211,6 @@ Certain advanced account management capabilities are currently tracked in active
 - **Saved OAuth account refresh**: Background renewal of Namespace OAuth credentials through the shared Token Service is implemented in [PR #4671](https://github.com/openclaw/openclaw-enterprise/pull/4671).
 - **Direct in-slot consent**: Granting Agents access to saved accounts and launching fresh browser consent directly from a plugin slot is tracked in [PR #4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
 - **Multi-account plugin slots**: Selecting between multiple connected accounts for the same provider on an Agent is tracked in [Issue #4815](https://github.com/openclaw/openclaw-enterprise/issues/4815) ([PR #4732](https://github.com/openclaw/openclaw-enterprise/pull/4732)).
-- **Custom namespace plugins**: Importing custom skills and remote MCP descriptors beyond bundled packages is tracked in [Issue #4816](https://github.com/openclaw/openclaw-enterprise/issues/4816) ([PR #4734](https://github.com/openclaw/openclaw-enterprise/pull/4734)).
 
 ---
 

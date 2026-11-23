@@ -74,6 +74,7 @@ export interface PluginFieldsOptions {
   onCancelDiscovery?: (() => void) | null;
   onRecheckAccess?: ((slot?: AgentPluginCredentialSlot) => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
+  connectionTemplatesHref?: string;
   saveHint?: string;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
@@ -219,6 +220,7 @@ export function createPluginFields({
   onCancelDiscovery = null,
   onRecheckAccess = null,
   onLoadTools = null,
+  connectionTemplatesHref,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
 }: PluginFieldsOptions) {
@@ -1275,7 +1277,41 @@ export function createPluginFields({
       const hasManagedTools = credentialSlots.some((slot) => slot.toolDiscovery);
       let managedTools: ManagedTools | undefined;
       if (selected?.enabled) {
+        if (entry.id.startsWith("occ-import:")) {
+          details.append(
+            element(
+              "p",
+              { className: "hint" },
+              "Imported skills cannot deploy until the pinned OpenClaw runtime supports skill installation. Deployment of a release that contains skills is refused.",
+            ),
+          );
+        }
         for (const slot of credentialSlots) {
+          if (entry.id.startsWith("occ-import:")) {
+            details.append(
+              element(
+                "div",
+                { className: "form-field" },
+                element("strong", {}, slot.label),
+                slot.serverUrl
+                  ? element("p", { className: "hint" }, element("code", {}, slot.serverUrl))
+                  : null,
+                element(
+                  "p",
+                  { className: "hint" },
+                  "This hosted MCP server requires a Connection Template and an enrolled Source. Plugin credential delivery is not available yet, so this server will not run when the Agent deploys.",
+                ),
+                connectionTemplatesHref
+                  ? element(
+                      "a",
+                      { href: connectionTemplatesHref, target: "_blank", rel: "noopener" },
+                      "Open Connection templates",
+                    )
+                  : null,
+              ),
+            );
+            continue;
+          }
           const bindings = selected.driverPolicy?.credentials;
           const current = isObject(bindings) ? bindings[slot.id] : undefined;
           const stale =
@@ -1353,8 +1389,13 @@ export function createPluginFields({
           }
         }
       }
-      const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
+      const enablementOnly =
+        entry.policyScope === "enablement_only" ||
+        capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
       if (selected) {
+        const managedToolsHint = entry.id.startsWith("occ-import:")
+          ? "Hosted MCP tools are unavailable until Plugin credential delivery is supported."
+          : "Plugin-wide tool defaults are not supported for this plugin. Configure each tool below.";
         const policyDefaultsSupported = !enablementOnly && !hasManagedTools;
         const defaults = policyDefaultsSupported ? (selected.toolDefaults ?? {}) : {};
         const writeDefault: WritePolicy = (key, value) => writeToolPolicy(entry.id, key, value);
@@ -1378,7 +1419,7 @@ export function createPluginFields({
               "p",
               { className: "hint" },
               hasManagedTools
-                ? "Plugin-wide tool defaults are not supported for this plugin. Configure each tool below."
+                ? managedToolsHint
                 : enablementOnly
                   ? "Enable plugin controls whether the next deployment includes this plugin."
                   : "Approval applies to current and future actions unless a tool overrides it. Reviewer selects who reviews; automatic review may deny a call.",

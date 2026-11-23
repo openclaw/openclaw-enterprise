@@ -98,9 +98,30 @@ test("controller topology keeps API-only fixture inputs separate from the worker
   const workerPolicy = manifests.items.find(
     ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === `${workerName}-isolation`,
   );
-  assert.ok(apiPolicy?.spec && "egress" in apiPolicy.spec && apiPolicy.spec.egress);
-  assert.ok(workerPolicy?.spec && "egress" in workerPolicy.spec && workerPolicy.spec.egress);
-  assert.deepEqual(workerPolicy.spec.egress, apiPolicy.spec.egress);
-  assert.notEqual(workerPolicy.spec.egress, apiPolicy.spec.egress);
-  assert.notEqual(workerPolicy.spec.egress[0], apiPolicy.spec.egress[0]);
+  // The Installation operator controls API egress. The worker receives only its three required routes.
+  assert.deepEqual(apiPolicy?.spec, {
+    podSelector: { matchLabels: labels },
+    policyTypes: ["Ingress"],
+  });
+  assert.deepEqual(workerPolicy?.spec, {
+    podSelector: { matchLabels: workerLabels },
+    policyTypes: ["Ingress", "Egress"],
+    ingress: [],
+    egress: [
+      {
+        to: [
+          {
+            namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
+            podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
+          },
+        ],
+        ports: [
+          { protocol: "UDP", port: 53 },
+          { protocol: "TCP", port: 53 },
+        ],
+      },
+      { to: [{ ipBlock: { cidr: "192.0.2.11/32" } }], ports: [{ protocol: "TCP", port: 5432 }] },
+      { to: [{ ipBlock: { cidr: "192.0.2.12/32" } }], ports: [{ protocol: "TCP", port: 6443 }] },
+    ],
+  });
 });

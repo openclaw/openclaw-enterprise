@@ -436,6 +436,13 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
   );
 }
 
+function isPluginReleaseUpload(operation: OccApiRoute): boolean {
+  return (
+    operation.operationId === "previewPluginRelease" ||
+    operation.operationId === "publishPluginRelease"
+  );
+}
+
 function operationTarget(
   operation: RequestOperation,
   installationId: string,
@@ -1930,6 +1937,38 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (isPluginReleaseUpload(operation)) {
+      const result = await controller.importPluginRelease(
+        context.actorId,
+        namespaceId,
+        {
+          archiveBase64: body?.archiveBase64 as string,
+          ...(body?.marketplaceEntry === undefined
+            ? {}
+            : { marketplaceEntry: body.marketplaceEntry as string }),
+        },
+        operation.operationId === "publishPluginRelease"
+          ? {
+              digest: body?.digest as string,
+              archiveSha256: body?.archiveSha256 as string,
+              audit: (digest: string) =>
+                event(
+                  operation,
+                  request,
+                  { kind: "namespace", id: namespaceId, namespaceId },
+                  "mutation",
+                  context,
+                  undefined,
+                  { outcome: "success", details: { digest } },
+                ),
+            }
+          : undefined,
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: result, meta: { requestId: request.id } });
+      return;
+    }
+
     if (
       operation.operationId === "discoverAgentPlugins" ||
       operation.operationId === "discoverAgentPluginDetails"
@@ -3338,6 +3377,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         handler,
       });
     }
+    const pluginUploadRateLimit = new RequestRateLimiter(20, 1 / 3);
     for (const operation of occApiRoutes) {
       // Bootstrap has its own transactional evidence. Runtime log reads have their own
       // disclosure gate and can also return a download.
@@ -3359,23 +3399,27 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
+      const route: Parameters<
+        typeof routes.route<RouteGenericInterface, { auditManagementRequest?: true }>
+      >[0] = {
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
         ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" ||
-              operation.operationId === "validateAgentCreate" ||
-              operation.operationId === "provisionAgent"
-            ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
-              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : operation.operationId === "createConfiguration" ||
-                  operation.operationId === "updateConfiguration"
-                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
-                : {}),
+          : isPluginReleaseUpload(operation)
+            ? { bodyLimit: options.maxBodyBytes ?? 4 * Math.ceil((16 * 1024 * 1024) / 3) + 1024 }
+            : operation.operationId === "createAgent" ||
+                operation.operationId === "validateAgentCreate" ||
+                operation.operationId === "provisionAgent"
+              ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
+              : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+                ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+                : operation.operationId === "createConfiguration" ||
+                    operation.operationId === "updateConfiguration"
+                  ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                  : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);
@@ -3408,7 +3452,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
-        ...(authorizesBeforeBody(operation)
+        ...(authorizesBeforeBody(operation) || isPluginReleaseUpload(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => {
@@ -3474,7 +3518,42 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 return payload;
               },
             }),
-      });
+      };
+      if (isPluginReleaseUpload(operation)) {
+        const { method: _method, url: _url, handler, onRequest: _onRequest, ...shared } = route;
+        routes.post<
+          RouteGenericInterface,
+          { auditManagementRequest?: true; rateLimit: RequestRateLimiter }
+        >(
+          operation.path,
+          {
+            ...shared,
+            config: { ...shared.config, rateLimit: pluginUploadRateLimit },
+            onRequest: async (request, reply) => {
+              await admit(request, operation);
+              await resolveIdentity(request, operation);
+              const context = contexts.get(request)!;
+              const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "RATE_LIMITED",
+                  "Too many plugin upload requests. Wait before retrying.",
+                );
+              }
+              if (controller === undefined) {
+                throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+              }
+              const params = request.params as Record<string, string>;
+              await controller.authorizePluginPublication(context.actorId, params.namespaceId!);
+            },
+          },
+          handler,
+        );
+      } else {
+        routes.route(route);
+      }
     }
   });
 

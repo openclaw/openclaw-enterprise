@@ -65,7 +65,11 @@ import {
   type ReplacementRuntime,
 } from "./replacement-runtime.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
-import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  ConfigurationValidationError,
+  importedPluginDigest,
+} from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import { nativeOpenAiModelSelections } from "../../native-openai-catalog.ts";
 import {
@@ -354,6 +358,11 @@ import {
   gatewayRuntimeEntrypoint,
 } from "./runtime-entrypoints.ts";
 
+import {
+  importedPluginMaterial,
+  importedPluginDeployment,
+  type ImportedPluginMaterial,
+} from "./imported-plugin-skills.ts";
 import {
   REPOSITORY_MATERIAL_GENERATION,
   repositoryMaterialCurrent,
@@ -732,6 +741,7 @@ const MANAGED_OPENSHELL_ADMISSION_PREFIX = "openshell-managed:v1:";
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
+  readonly importedMaterial?: ImportedPluginMaterial;
   readonly runtime: PluginRuntimeSpec;
 }
 
@@ -7648,13 +7658,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return { ...result, repositoryCredentialMaterialMissing: material.missing };
     }
     const repositoryMaterial = material?.spec;
-    const pluginRuntime = this.pluginRuntimeSnapshot(
-      admittedRevision,
-      this.codexRepositoryBrokerNetworkPolicy(
+    const pluginRuntime = await this.withImportedPluginMaterial(
+      this.pluginRuntimeSnapshot(
         admittedRevision,
-        repositoryConsumer,
-        repositoryMaterial,
+        this.codexRepositoryBrokerNetworkPolicy(
+          admittedRevision,
+          repositoryConsumer,
+          repositoryMaterial,
+        ),
       ),
+      context,
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -7833,9 +7846,52 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
     );
     if (!embedded && pluginRuntime !== undefined) {
-      await this.prepareRevisionStage("plugin_runtime", () =>
-        this.reconcilePluginRuntimeConfigMap(pluginRuntime, pluginOwnership, gatewayNamespace),
-      );
+      await this.prepareRevisionStage("plugin_runtime", async () => {
+        await this.reconcilePluginRuntimeConfigMap(
+          pluginRuntime,
+          pluginOwnership,
+          gatewayNamespace,
+        );
+        if (pluginRuntime.importedMaterial) {
+          // The revision snapshot is deleted after cutover or rollback; its immutable chunks follow it.
+          const parent = await this.getOwned(
+            "ConfigMap",
+            pluginRuntime.name,
+            gatewayNamespace,
+            pluginOwnership,
+          );
+          const uid = parent?.metadata?.uid;
+          if (typeof uid !== "string" || !uid) {
+            throw new DependencyUnavailableError(
+              "The imported plugin snapshot has no Kubernetes owner UID.",
+            );
+          }
+          for (const chunk of pluginRuntime.importedMaterial.chunks) {
+            const object = this.manifest(
+              "v1",
+              "ConfigMap",
+              chunk.name,
+              pluginOwnership,
+              gatewayNamespace,
+            );
+            await this.reconcile(
+              {
+                ...object,
+                metadata: {
+                  ...object.metadata,
+                  ownerReferences: [
+                    { apiVersion: "v1", kind: "ConfigMap", name: pluginRuntime.name, uid },
+                  ],
+                },
+                immutable: true,
+                data: { content: chunk.content },
+              },
+              pluginOwnership,
+              gatewayNamespace,
+            );
+          }
+        }
+      });
     }
     let launchPrepared = false;
     try {
@@ -8983,7 +9039,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
         materialInput,
       );
-      const pluginRuntime = this.pluginRuntimeSnapshot(
+      const snapshot = this.pluginRuntimeSnapshot(
         admittedRevision,
         this.codexRepositoryBrokerNetworkPolicy(
           admittedRevision,
@@ -8995,6 +9051,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         currentRevisionId !== revision.id ||
         annotations[REPOSITORY_MATERIAL_GENERATION] !== repositoryMaterial?.generation
       ) {
+        const pluginRuntime = await this.withImportedPluginMaterial(snapshot, context);
         const deliveredHarnessAuth = await this.deliverHarnessAuth(
           admittedRevision,
           context,
@@ -9090,13 +9147,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace,
       materialInput,
     );
-    const pluginRuntime = this.pluginRuntimeSnapshot(
-      admittedRevision,
-      this.codexRepositoryBrokerNetworkPolicy(
+    const pluginRuntime = await this.withImportedPluginMaterial(
+      this.pluginRuntimeSnapshot(
         admittedRevision,
-        repositoryConsumer,
-        repositoryMaterial,
+        this.codexRepositoryBrokerNetworkPolicy(
+          admittedRevision,
+          repositoryConsumer,
+          repositoryMaterial,
+        ),
       ),
+      context,
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -13113,7 +13173,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       runtime.kind === "openclaw" &&
       selectedIds.length > 0 &&
-      selectedIds.every((id) => managedInstalls.some((install) => install.id === id))
+      selectedIds.every(
+        (id) =>
+          id.startsWith("occ-import:") || managedInstalls.some((install) => install.id === id),
+      )
     ) {
       return []; // The image supplies all selected packages.
     }
@@ -16606,10 +16669,56 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (runtime === undefined) {
       return undefined;
     }
-    return {
-      name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
-      runtime,
-    };
+    const name = `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+    if (
+      runtime.kind === "openclaw" &&
+      Object.entries(runtime.selections).some(
+        ([id, selection]) => selection.enabled && importedPluginDigest(id),
+      ) &&
+      (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated")
+    ) {
+      throw new ConfigurationFailure("Imported plugins require a dedicated OpenClaw Harness.");
+    }
+    return { name, runtime };
+  }
+
+  private async withImportedPluginMaterial(
+    snapshot: PluginRuntimeSnapshot | undefined,
+    context: ComputeRevisionContext | undefined,
+  ): Promise<PluginRuntimeSnapshot | undefined> {
+    const importedIds =
+      snapshot?.runtime.kind === "openclaw"
+        ? Object.entries(snapshot.runtime.selections)
+            .filter(([id, selection]) => selection.enabled && importedPluginDigest(id))
+            .map(([id]) => id)
+        : [];
+    if (!snapshot || importedIds.length === 0) {
+      return snapshot;
+    }
+    const releases = await context?.loadImportedPluginReleases?.();
+    if (
+      !releases ||
+      Object.keys(releases).length !== importedIds.length ||
+      !importedIds.every((id) => releases[id]?.digest === importedPluginDigest(id))
+    ) {
+      throw new ConfigurationFailure(
+        "The imported plugin material does not match the admitted release pins.",
+      );
+    }
+    if (Object.values(releases).some((release) => release.skills.length > 0)) {
+      // TODO(OpenClaw pinned skill sources): allow delivery after the upstream Gateway can
+      // enforce revision-selected skill sources over writable workspace skills.
+      throw new ConfigurationFailure(
+        "Imported skill deployment requires an upstream pinned skill source capability.",
+      );
+    }
+    try {
+      return { ...snapshot, importedMaterial: importedPluginMaterial(snapshot.name, releases) };
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error ? error.message : "Invalid imported plugin release.",
+      );
+    }
   }
 
   private pluginRuntimeOwnership(revision: AgentRevision): Ownership {
@@ -18609,6 +18718,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
+    if (role === "gateway" && pluginRuntime?.importedMaterial) {
+      const delivery = importedPluginDeployment(pluginRuntime.importedMaterial, image);
+      volumes.push(...delivery.volumes);
+      volumeMounts.push(...delivery.volumeMounts);
+      initContainers.push({ ...delivery.initContainer });
+    }
     if (repositoryMaterial !== undefined) {
       if ((role === "gateway" && !embedded) || runtime === undefined) {
         throw new ConfigurationFailure(
@@ -19144,6 +19259,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         const existingData = existing.data ?? {};
         if (
           existing.immutable !== true ||
+          (desired.metadata.ownerReferences !== undefined &&
+            !isDeepStrictEqual(
+              existing.metadata.ownerReferences,
+              desired.metadata.ownerReferences,
+              // The Kubernetes client deserializes wire references into V1OwnerReference instances.
+              { skipPrototype: true },
+            )) ||
           Object.entries(annotations).some(
             ([name, value]) => existing.metadata.annotations?.[name] !== value,
           ) ||

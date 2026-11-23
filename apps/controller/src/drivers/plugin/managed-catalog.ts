@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
   type CredentialSource,
+  type PluginConnectionRelease,
   type PluginCatalogEntry,
   type PluginDesiredState,
   type PluginDeploymentContract,
@@ -492,8 +493,11 @@ export function managedPluginCredentials(
       }
       return { endpoint: install.url };
     },
-    choices(sources: readonly CredentialSource[]) {
-      return managedInstalls.flatMap((install) =>
+    choices(
+      sources: readonly CredentialSource[],
+      releases: readonly PluginConnectionRelease[] = [],
+    ) {
+      const bundled = managedInstalls.flatMap((install) =>
         Object.entries(install.credentials).map(([id, slot]) => ({
           pluginId: install.id,
           releaseSha256: install.releaseSha256,
@@ -505,10 +509,28 @@ export function managedPluginCredentials(
             .map(({ id, name }) => ({ id, name })),
         })),
       );
+      const imported = releases.flatMap((release) =>
+        release.mcpServers.map((server) => ({
+          pluginId: `occ-import:${release.digest}`,
+          releaseSha256: release.digest,
+          id: server.name,
+          label: server.name,
+          serverUrl: server.url,
+          toolDiscovery: true as const,
+          // TODO(C6T): offer Sources after Plugin admission can verify their approved Template.
+          sources: [],
+        })),
+      );
+      return [...bundled, ...imported];
     },
-    async validate(selections, sources, modelSourceId) {
+    async validate(selections, sources, modelSourceId, releases = {}) {
       const attached = new Map(sources.map((source) => [source.id, source]));
       for (const [pluginId, selection] of Object.entries(selections)) {
+        const release = releases[pluginId];
+        if (release) {
+          // Imported selections have no credential policy until canonical Plugin delivery is available.
+          continue;
+        }
         const install = managedInstalls.find(({ id }) => id === pluginId);
         const unavailable = () =>
           new ConfigurationHarnessError(

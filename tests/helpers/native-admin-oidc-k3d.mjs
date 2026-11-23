@@ -174,7 +174,6 @@ export async function enableInstalledOidcNativeAdmin({
     tokenAuth: "client_secret_post",
     displayName: "Test SSO",
     // No provider network is needed. Do not widen this test's API Internet access.
-    egressCidrs: ["192.0.2.1/32"],
   });
   expected.agentNativeAdmin.sessionMode = "host-only-exchange";
   const valuesFile = join(directory, "values.json");

@@ -244,21 +244,9 @@ Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
 Installation YAML. A trailing hyphen in the prefix remains valid; a trailing
 dot does not, because the suffix would start a new label with a hyphen.
 
-### 6. Resolve hosted discovery egress
+### 6. Record hosted discovery prerequisites
 
-`scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`
-
-After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
-queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
-IPv4 `/32` answers populate the existing API-only TCP 443 Helm policy; the driver
-mutates no Kubernetes resources.
-
-Supplied lists bypass DNS unchanged; `[]` requires external HTTPS policy for
-both hosts. Other driver selections bypass resolution. DNS failure records a
-preflight error and revokes both YAML files, including after successful renders.
-This snapshot needs operator verification of API Pod DNS/NAT, authenticated
-Console discovery, and rerender/upgrade after address changes; it never
-refreshes live policy.
+The renderer records that API Pods need HTTPS access to the hosted catalog endpoints. It does not resolve temporary destination IP addresses because the chart leaves API egress to the cluster operator.
 
 ### 7. Write outputs and preflight
 

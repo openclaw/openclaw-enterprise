@@ -20,6 +20,7 @@ import type {
   CredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
+  InspectedPluginPackage,
   HarnessExecutionMode,
   Namespace,
   ModelProvider,
@@ -63,6 +64,9 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  readonly loadImportedPluginReleases?: () => Promise<
+    Readonly<Record<string, InspectedPluginPackage>> | undefined
+  >;
   /** Worker configures the exact staged target without exposing source resolution to Compute. */
   readonly configureCredentialDeployment?: (
     expected: CredentialDeploymentConfiguration,

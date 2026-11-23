@@ -78,13 +78,7 @@ is not continuous drift detection; ordinary `up` rejects existing state/clusters
 
 After OCE readiness, the launcher signs in through the verified Console HTTPS
 endpoint with the bootstrap password and reads the administrator's ID. It
-reads the dedicated Envoy Service through the owned kubeconfig and context.
-The Service identity, Gateway ownership labels and selectors, TLS ports and
-ClusterIP addresses must validate before any second-pass change. Startup sets
-`auth.oidc.egressCidrs` to those exact IPv4 `/32` hosts, retaining the
-selector-scoped post-DNAT 10443 rule; an absent or invalid Service fails closed. The existing chart accepts IPv4
-CIDRs only, so an IPv6 Service is rejected before the second pass.
-It replaces `helm-values.json` with complete second-pass values, applies the OIDC
+uses the verified Console endpoint for the second-pass sign-in setup. The chart leaves API egress to the cluster operator. It replaces `helm-values.json` with complete second-pass values, applies the OIDC
 client Secret, and runs Helm again. That pass enables OIDC and recovery-only
 passwords and preserves the configured Agent browser access. Sessions use the
 shared cookie domain derived from the Console and Agent DNS hosts.

@@ -140,10 +140,7 @@ These optional variables reach only the API, never other workloads.
 The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
 two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
-Google and OIDC have API-only HTTPS egress rules. Empty provider `egressCidrs`
-allows every address except link-local `169.254.0.0/16`. An explicit list replaces
-that default, including the exception; keep it narrow. Direct GitHub sign-in
-settings are rejected. See [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
+The chart restricts API ingress but leaves API egress to the cluster operator. If another policy restricts API egress, allow the configured sign-in, model discovery, and hosted MCP endpoints. Direct GitHub sign-in settings are rejected. See [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
 return `403` on API calls (sign-in still works), and the API logs
@@ -186,18 +183,12 @@ guarded profile and `OCC_AUTH_RECOVERY_USER_ID` recovery user; see
 | `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey` | Google OAuth client secret, read from the dedicated `auth.google.secretName` Secret.                                                               |
 | `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`               | Optional comma-separated hosted domains. When set, the ID token's `hd` must match one and `email_verified` must be `true`. Requires the client ID. |
 
-With `auth.google.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-google-login-egress` on TCP 443 for
-`oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
-allows any address except link-local `169.254.0.0/16`; narrow it with an egress proxy.
-Rendering fails on incomplete Google values, a Secret shared with any other
-chart Secret, `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed
-domain that is not a DNS name.
+The API Server must reach `oauth2.googleapis.com` and `www.googleapis.com` over HTTPS. The chart leaves API egress to the cluster operator. Apply any additional API egress restriction through a separate policy.
 
 ### OIDC sign-in
 
 [OIDC controller settings](oidc.md) defines the provider URLs, client credentials,
-API egress and optional private CA trust. These API-only settings require the
+optional private CA trust and API connectivity. These API-only settings require the
 same guarded sign-in profile and recovery user and Google.
 
 ### Production Installation bootstrap environment

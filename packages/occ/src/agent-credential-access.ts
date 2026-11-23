@@ -12,6 +12,7 @@ import {
   type CredentialSourceReference,
   type CredentialSourceSnapshot,
   type HarnessAuthBinding,
+  type InspectedPluginPackage,
   type PluginDriver,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
@@ -207,10 +208,11 @@ export function createAgentCredentialAccess({
     driver: PluginDriver | undefined,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
+    releases?: Readonly<Record<string, InspectedPluginPackage>>,
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
-      await validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
+      await validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth, releases);
       return [];
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -226,7 +228,13 @@ export function createAgentCredentialAccess({
       bindings,
       agent.harnessAuth,
     );
-    await validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
+    await validatePluginCredentialSources(
+      driver,
+      agent.plugins,
+      sources,
+      agent.harnessAuth,
+      releases,
+    );
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
       await authority.authorizeAgentPrincipal(principalId, agent, "operate", {

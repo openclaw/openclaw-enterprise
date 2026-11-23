@@ -2,6 +2,7 @@ import type { CredentialPolicyReductionState } from "../ports/credential-policy-
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
   InitialWorkspaceFiles,
+  InspectedPluginPackage,
   ProtectedEgressSource,
   EgressInstallation,
   AgentDesiredRuntimeState,
@@ -140,6 +141,25 @@ export const namespaces = occSchema.table(
     check(
       "namespaces_tombstone_valid",
       sql`${table.deletedAt} IS NULL OR (${table.status} = 'deleting' AND ${table.deletedAt} >= ${table.createdAt})`,
+    ),
+  ],
+);
+
+export const pluginReleases = occSchema.table(
+  "plugin_releases",
+  {
+    namespaceId: text("namespace_id")
+      .notNull()
+      .references(() => namespaces.id),
+    digest: text("digest").notNull(),
+    actorId: text("actor_id").notNull(),
+    document: jsonb("document").$type<InspectedPluginPackage>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.digest] }),
+    check(
+      "plugin_releases_digest_valid",
+      sql`${table.digest} ~ '^[a-f0-9]{64}$' AND ${table.document} @> jsonb_build_object('digest', ${table.digest})`,
     ),
   ],
 );
@@ -1269,7 +1289,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit', 'publish_plugins')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",

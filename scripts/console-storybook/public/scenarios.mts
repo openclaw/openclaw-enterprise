@@ -28,7 +28,11 @@ import {
   credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
-import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
+import {
+  pluginsScenarios,
+  pluginApproverScenarios,
+  pluginImportScenarios,
+} from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
 import {
   createAgentFormScenarios,
@@ -1122,6 +1126,7 @@ const authoredScenarios = {
     gap: "The saved Agent and deletion response are simulated.",
   } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
+  ...pluginImportScenarios(draft),
   ...agentDetailScenarios.versions,
   agentsLongName: {
     group: "Pages/Agents",

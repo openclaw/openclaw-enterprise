@@ -43,6 +43,7 @@ import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
 import type { PlatformReadView } from "../ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { PresetReadRepository, PresetRepository } from "../ports/presets.ts";
+import type { PluginReleaseRepository } from "../ports/plugin-releases.ts";
 import { cancelledDeviceAuthorization } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
@@ -102,6 +103,7 @@ import type {
   PluginDriverIdentity,
   PluginApprovers,
   Preset,
+  InspectedPluginPackage,
   Secret,
   SecretBindings,
   ServiceAccount,
@@ -112,6 +114,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   normalizeInitialWorkspaceFiles,
+  namespaceRoleMayGrant,
   normalizeWorkspaceDefaultsId,
   normalizePluginDesiredState,
   normalizePluginApprovers,
@@ -648,6 +651,10 @@ interface PlatformSnapshot {
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly presets: Map<string, Readonly<Preset>>;
+  readonly pluginReleases: Map<
+    string,
+    { namespaceId: string; actorId: string; release: Readonly<InspectedPluginPackage> }
+  >;
   readonly authenticationStates: Map<string, AuthenticationState>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
@@ -812,6 +819,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     presets: copyStoredMap(snapshot.presets),
+    pluginReleases: new Map(snapshot.pluginReleases),
     authenticationStates: new Map(snapshot.authenticationStates),
     secrets: copyStoredMap(snapshot.secrets),
     egressRejected: new Set(snapshot.egressRejected),
@@ -854,14 +862,10 @@ function iamPolicyKey(namespaceId: string, id: string): string {
 }
 
 /**
- * Namespace IAM Roles may grant only `read` on the `namespace` kind. Any other
- * action would let a Namespace-targeted binding authorize Namespace lifecycle
- * operations such as deletion.
+ * Keep Namespace creation and deletion outside delegated Namespace Roles.
  */
-export function namespaceRoleGrantsBeyondRead(role: Pick<Role, "permissions">): boolean {
-  return role.permissions.some(
-    (permission) => permission.resourceKind === "namespace" && permission.action !== "read",
-  );
+export function namespaceRoleGrantsLifecycleAccess(role: Pick<Role, "permissions">): boolean {
+  return role.permissions.some((permission) => !namespaceRoleMayGrant(permission));
 }
 
 /**
@@ -1440,6 +1444,43 @@ function repositories(
     const preset = snapshot.presets.get(agentKey(namespaceId, presetId));
     return preset === undefined ? undefined : immutableCopy(preset);
   };
+  const pluginReleases: PluginReleaseRepository = {
+    find: async (namespaceId, digest) =>
+      snapshot.pluginReleases.get(agentKey(namespaceId, digest))?.release,
+    list: async (namespaceId) =>
+      Array.from(snapshot.pluginReleases.values())
+        .filter((item) => item.namespaceId === namespaceId)
+        .map(({ release: { name, digest, description, version, mcpServers } }) => ({
+          mcpServers,
+          name,
+          digest,
+          ...(description === undefined ? {} : { description }),
+          ...(version === undefined ? {} : { version }),
+        })),
+    publish: async (namespaceId, actorId, release) => {
+      const key = agentKey(namespaceId, release.digest);
+      if (!snapshot.pluginReleases.has(key)) {
+        snapshot.pluginReleases.set(key, { namespaceId, actorId, release: immutableCopy(release) });
+      }
+    },
+    purgeNamespace: async (namespaceId) => {
+      const namespace = snapshot.namespaces.get(namespaceId);
+      if (
+        namespace?.status !== "deleting" ||
+        Array.from(snapshot.agents.values()).some((agent) => agent.namespaceId === namespaceId)
+      ) {
+        throw new ScopeViolationError(
+          "Plugin releases can be purged only when deleting an empty Namespace.",
+        );
+      }
+      for (const [key, stored] of snapshot.pluginReleases) {
+        if (stored.namespaceId === namespaceId) {
+          snapshot.pluginReleases.delete(key);
+        }
+      }
+    },
+  };
+
   const versionKey = (templateId: string, version: number) => `${templateId}\u0000${version}`;
   const findConnectionTemplate: ConnectionTemplateReadRepository["findConnectionTemplate"] = async (
     templateId,
@@ -3634,8 +3675,10 @@ function repositories(
       if (role.namespaceId !== namespace.id || role.permissions.length === 0) {
         throw new ScopeViolationError("The IAM Role must be Namespace-scoped and nonempty.");
       }
-      if (namespaceRoleGrantsBeyondRead(role)) {
-        throw new ScopeViolationError("Namespace IAM Roles support only Namespace read.");
+      if (namespaceRoleGrantsLifecycleAccess(role)) {
+        throw new ScopeViolationError(
+          "Namespace IAM Roles can read the Namespace or publish plugins in it.",
+        );
       }
       const saved = immutableCopy(role);
       snapshot.roles.set(key, saved);
@@ -3686,10 +3729,10 @@ function repositories(
           "The IAM AccessBinding Role does not exist in this Namespace.",
         );
       }
-      if (binding.resourceKind === "namespace" && namespaceRoleGrantsBeyondRead(role)) {
+      if (binding.resourceKind === "namespace" && namespaceRoleGrantsLifecycleAccess(role)) {
         throw new IAMPolicyValidationError(
           "/roleId",
-          "Namespace IAM Roles support only Namespace read.",
+          "Namespace IAM Roles can read the Namespace or publish plugins in it.",
         );
       }
       assertBindingSubjectNotEmail(binding.subjectId);
@@ -3889,6 +3932,7 @@ function repositories(
     savedConnections,
     authenticationStates,
     presets,
+    pluginReleases,
     secrets,
     credentialSources,
     serviceAccounts,
@@ -4221,6 +4265,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
     presets: new Map(),
+    pluginReleases: new Map(),
     authenticationStates: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),

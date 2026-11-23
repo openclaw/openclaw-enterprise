@@ -58,10 +58,7 @@ export function registerSignInCases(): void {
       // Google native browser access remains unsupported.
       assert.match(googleDefault.values, /agentNativeAdmin:\n {2}enabled: false\n/);
       assert.match(googleDefault.values, /recoveryUserId: recovery-admin_1/);
-      assert.match(
-        googleDefault.values,
-        /google:\n {4}enabled: true\n {4}egressCidrs:\n {6}- 140\.82\.112\.0\/20/,
-      );
+      assert.match(googleDefault.values, /google:\n {4}enabled: true/);
       assert.match(googleDefault.values, /trustedProxy:\n {4}preset: ingress-nginx/);
       assert.doesNotMatch(googleDefault.preflight.warnings.join("\n"), /trustedProxy is not set/);
       assert.doesNotMatch(googleDefault.preflight.prerequisites.join("\n"), /native admin domain/);
@@ -126,7 +123,6 @@ export function registerSignInCases(): void {
             jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs",
             tokenAuth: "client_secret_basic",
             displayName: "Acme SSO",
-            egressCidrs: ["198.51.100.0/24"],
           },
         }),
       );
@@ -145,7 +141,7 @@ export function registerSignInCases(): void {
         /name: OCC_AUTH_OIDC_TOKEN_AUTH\n\s+value: "client_secret_basic"/,
       );
       assert.match(oidcManifests, /name: OCC_AUTH_OIDC_DISPLAY_NAME\n\s+value: "Acme SSO"/);
-      assert.match(oidcManifests, /name: openclaw-enterprise-api-oidc-login-egress/);
+      assert.doesNotMatch(oidcManifests, /name: openclaw-enterprise-api-oidc-login-egress/);
       for (const requireVerifiedEmail of [undefined, true, false, null, "false"]) {
         const input = externalSignInInput({
           google: undefined,

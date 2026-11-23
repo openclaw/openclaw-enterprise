@@ -50,6 +50,7 @@ import {
   slackValidationConfiguration,
 } from "./occ-api-injected-fixture.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
@@ -1094,6 +1095,344 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     driver: { id: driver.id, implementation: driver.implementation },
     plugins,
   });
+});
+
+test("plugin preview and publication share an upload budget per authenticated principal", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const ns = await createNamespace(controller, "plugin-upload-budget");
+  const path = `/namespaces/${ns.id}/plugin-releases`;
+  // A tiny, incomplete request reaches schema validation without inspecting an archive.
+  const upload = { body: {} };
+  const previews = await Promise.all(
+    Array.from({ length: 21 }, () => controller.request("POST", path + "/preview", upload)),
+  );
+  assert.ok(previews.some((response) => response.status === 400));
+  assert.ok(previews.some((response) => response.status === 429));
+  // An exhausted caller receives the shared limit before Fastify parses the publication body.
+  const publish = await controller.request("POST", path, { rawBody: "{" });
+  assertApiError(publish, 429, "RATE_LIMITED");
+  assert.ok(Number(publish.headers.get("retry-after")) >= 1);
+
+  // The second caller has its own budget, and reaches its own Namespace permission check.
+  const reader = await controller.fixture.createAuthPrincipal("plugin-upload-budget-reader");
+  controller.fixture.state.identities.push(reader.principal);
+  const other = await controller.request("POST", path + "/preview", {
+    ...upload,
+    session: reader.session,
+  });
+  assertApiError(other, 403, "FORBIDDEN");
+  // Denied callers also have a bounded budget before the Namespace grant check.
+  const denied = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      controller.request("POST", path + "/preview", { ...upload, session: reader.session }),
+    ),
+  );
+  assert.ok(denied.some((response) => response.status === 403));
+  assert.ok(denied.some((response) => response.status === 429));
+});
+
+test("a Namespace publisher admits an immutable plugin release only for Agents in that Namespace", async (t) => {
+  const sandbox = {
+    id: "sandbox-imported-skills",
+    capability: "sandbox",
+    implementation: "test-native-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {},
+    async cleanup() {},
+  };
+  const compute = createTestKubernetesComputeDriver("compute-imported-skills", {
+    sandboxDriver: sandbox,
+  });
+  const controller = await configuredController({ computeDriver: compute });
+  await bootstrap(controller);
+  const ns = await createNamespace(controller, "plugin-publisher");
+  const other = await createNamespace(controller, "unrelated-plugin-namespace");
+  // This API fixture exercises revision admission after Compute has provisioned the tenant.
+  await controller.fixture.platformState.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(ns.id, "provisioning", "ready"),
+  );
+  const driver = new OCCPluginDriver();
+  controller.fixture.controller.installPluginDrivers([new CodexPluginDriver(), driver]);
+  controller.fixture.controller.registerDriver(sandbox);
+  controller.fixture.controller.selectDriver("sandbox", sandbox.id);
+  const nsPath = `/namespaces/${ns.id}`;
+  const otherPath = `/namespaces/${other.id}`;
+  const preview = (path, archiveBase64) =>
+    controller.request("POST", `${path}/plugin-releases/preview`, { body: { archiveBase64 } });
+  const publish = (path, archiveBase64, review) =>
+    controller.request("POST", `${path}/plugin-releases`, {
+      body: { archiveBase64, digest: review.digest, archiveSha256: review.archiveSha256 },
+    });
+  const v1 = await importedPluginPackage(t, "marker-before-upgrade", { skillName: "oce-google" });
+  const v2 = await importedPluginPackage(t, "marker-after-upgrade", { skillName: "oce-google" });
+  assert.equal((await preview(otherPath, v1)).status, 200);
+  // A publisher reaches JSON parsing. A reader must be refused before the API reads the upload.
+  const invalidUpload = { rawBody: "{", headers: { "content-type": "application/json" } };
+  for (const route of ["plugin-releases/preview", "plugin-releases"]) {
+    assert.equal(
+      (await controller.request("POST", `${nsPath}/${route}`, invalidUpload)).status,
+      400,
+    );
+  }
+  // Switch this fixture's caller from the Installation-wide grant to an exact Namespace role.
+  const admin = controller.fixture.state.roles[0];
+  admin.permissions = admin.permissions.filter(({ action }) => action !== "publish_plugins");
+  assert.equal((await preview(nsPath, v1)).status, 403);
+  for (const route of ["plugin-releases/preview", "plugin-releases"]) {
+    assert.equal(
+      (await controller.request("POST", `${nsPath}/${route}`, invalidUpload)).status,
+      403,
+    );
+  }
+  const role = await controller.request("POST", `${nsPath}/iam/roles`, {
+    body: {
+      name: "Plugin publisher",
+      permissions: [{ action: "publish_plugins", resourceKind: "namespace" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const binding = await controller.request("POST", `${nsPath}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: controller.fixture.principal.id,
+      roleId: role.data.id,
+      resourceKind: "namespace",
+      resourceId: ns.id,
+    },
+  });
+  assert.equal(binding.status, 201, JSON.stringify(binding.body));
+  // The HTTP fixture's IAM reader takes an in-memory policy. Production loads these saved rows from PostgreSQL.
+  controller.fixture.state.roles.push(role.data);
+  controller.fixture.state.bindings.push(binding.data);
+  // The publisher can inspect omissions, but cannot publish a release with no deployable component.
+  const unfinished = await importedPluginPackage(t, "unfinished", {
+    skillName: "unfinished--skill",
+  });
+  const omitted = await preview(nsPath, unfinished);
+  assert.equal(omitted.status, 200, JSON.stringify(omitted.body));
+  assert.deepEqual(omitted.data.skills, []);
+  assert.deepEqual(omitted.data.mcpServers, []);
+  assert.equal(omitted.data.unsupported.length, 1);
+  const empty = await publish(nsPath, unfinished, omitted.data);
+  assert.equal(empty.status, 422, JSON.stringify(empty.body));
+  assert.match(empty.body.error.message, /no supported skills or hosted MCP servers/u);
+  const reviewed = await preview(nsPath, v1);
+  assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+  assert.deepEqual(reviewed.data.skills, ["oce-google"]);
+  assert.deepEqual(reviewed.data.mcpServers, []);
+  assert.equal((await publish(otherPath, v1, reviewed.data)).status, 403);
+  // A source that changes after inspection cannot publish under the reviewed digest.
+  assert.equal((await publish(nsPath, v2, reviewed.data)).status, 409);
+  // Changing only the gzip header preserves all deployed files but invalidates the reviewed upload.
+  const repacked = Buffer.from(v1, "base64");
+  repacked.writeUInt32LE(repacked.readUInt32LE(4) ^ 1, 4);
+  assert.equal(
+    (await preview(nsPath, repacked.toString("base64"))).data.digest,
+    reviewed.data.digest,
+  );
+  assert.equal((await publish(nsPath, repacked.toString("base64"), reviewed.data)).status, 409);
+  const saved = await publish(nsPath, v1, reviewed.data);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  // Repacking changes the reviewed archive, even when its canonical release content is identical.
+  const repackedReview = await preview(nsPath, repacked.toString("base64"));
+  const republished = await publish(nsPath, repacked.toString("base64"), repackedReview.data);
+  assert.equal(republished.status, 409, JSON.stringify(republished.body));
+  assert.match(republished.body.error.message, /different package archive/);
+  const pluginId = `occ-import:${saved.data.digest}`;
+  const byDigest = await controller.request("POST", `${nsPath}/agents/plugins`, {
+    body: { harnessId: "openclaw", q: saved.data.digest.slice(0, 12) },
+  });
+  assert.equal(
+    byDigest.data.plugins.some((entry) => entry.id === pluginId),
+    true,
+  );
+  const googleId = "occ-plugin:google@1.0.0";
+  const plugins = { [pluginId]: { enabled: true }, [googleId]: { enabled: false } };
+  for (const [path, expected] of [
+    [nsPath, true],
+    [otherPath, false],
+  ]) {
+    // The create form validates the unsaved Configuration against this Namespace's release.
+    const preflight = await controller.request("POST", `${path}/agents/validate`, {
+      body: {
+        configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-5.1") },
+        executionMode: "dedicated",
+        plugins,
+      },
+    });
+    assert.equal(preflight.status, expected ? 204 : 400, JSON.stringify(preflight.body));
+    if (!expected) {
+      assert.match(preflight.body.error.message, /imported plugin release is unavailable/);
+    }
+    const catalog = await controller.request("POST", `${path}/agents/plugins`, {
+      body: { harnessId: "openclaw", q: "import-probe" },
+    });
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    assert.equal(
+      catalog.data.plugins.some((entry) => entry.id === pluginId),
+      expected,
+    );
+    const details = await controller.request("POST", `${path}/agents/plugins/details`, {
+      body: { harnessId: "openclaw", pluginId },
+    });
+    if (expected) {
+      assert.equal(details.status, 200, JSON.stringify(details.body));
+      assert.equal(details.data.id, pluginId);
+    } else {
+      assert.equal(details.status, 400, JSON.stringify(details.body));
+    }
+  }
+  const create = async (namespaceId, harness = "openclaw") => {
+    const config = await createConfiguration(
+      controller,
+      namespaceId,
+      createHarnessConfiguration(harness, "gpt-5.1"),
+    );
+    return controller.request("POST", `/namespaces/${namespaceId}/agents`, {
+      body: { name: "Skill user", executionMode: "dedicated", configurationId: config.id, plugins },
+    });
+  };
+  assert.equal((await create(other.id)).status, 400);
+  // The release exists here, but only the OpenClaw catalog owns imported selections.
+  const wrongHarness = await create(ns.id, "codex");
+  assert.equal(wrongHarness.status, 400, JSON.stringify(wrongHarness.body));
+  assert.match(wrongHarness.body.error.message, /imported plugin release is unavailable/);
+  const agent = await create(ns.id);
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  // A disabled imported selection still belongs to the Namespace catalog. It must not be
+  // interpreted as a native OpenClaw package while saving the Agent draft.
+  const disabled = await controller.request("PATCH", nsPath + "/agents/" + agent.data.id, {
+    body: {
+      configurationId: agent.data.configurationId,
+      plugins: { [pluginId]: { enabled: false } },
+    },
+  });
+  assert.equal(disabled.status, 200, JSON.stringify(disabled.body));
+  assert.equal(
+    (
+      await controller.request("PATCH", nsPath + "/agents/" + agent.data.id, {
+        body: { configurationId: agent.data.configurationId, plugins },
+      })
+    ).status,
+    200,
+  );
+  // The selected import supplies oce-google. Enabling the bundled Google Workspace skill
+  // would make its source ambiguous, so the save must fail before changing deployment state.
+  const conflict = await controller.request("PATCH", nsPath + "/agents/" + agent.data.id, {
+    body: {
+      configurationId: agent.data.configurationId,
+      plugins: { ...plugins, [googleId]: { enabled: true } },
+    },
+  });
+  assertApiError(conflict, 400, "INVALID_REQUEST");
+  assert.match(conflict.body.error.message, /Two enabled plugins provide the skill "oce-google"/);
+  await bindHarnessKey(controller.fixture, ns.id, agent.data);
+  // Refuse before admitting a revision while the pinned Gateway cannot enforce selected skill sources.
+  const deployed = await controller.request("POST", `${nsPath}/agents/${agent.data.id}/deploy`);
+  assert.equal(deployed.status, 409, JSON.stringify(deployed.body));
+  assert.match(deployed.body.error.message, /upstream pinned skill source support/);
+  const history = await controller.fixture.platformState.read((view) =>
+    view.revisions.listRevisions(ns.id, agent.data.id),
+  );
+  assert.deepEqual(history, []);
+  const release = await controller.fixture.platformState.read((view) =>
+    view.pluginReleases.find(ns.id, saved.data.digest),
+  );
+  const files = release.skills[0].files;
+  assert.equal(
+    Buffer.from(
+      files.find((file) => file.path === "references/marker.txt").contentBase64,
+      "base64",
+    ).toString(),
+    "marker-before-upgrade",
+  );
+  // Imported MCP discovery must stop before trying the legacy Secret-based path.
+  const mcpArchive = await importedPluginPackage(t, "mcp-release", {
+    mcpUrl: "https://example.com/mcp",
+    skillName: null,
+  });
+  const mcpReview = await preview(nsPath, mcpArchive);
+  const mcpRelease = await publish(nsPath, mcpArchive, mcpReview.data);
+  assert.equal(mcpRelease.status, 200, JSON.stringify(mcpRelease.body));
+  const blocked = await controller.request(
+    "POST",
+    `${nsPath}/agents/${agent.data.id}/plugins/details`,
+    {
+      body: {
+        pluginId: `occ-import:${mcpRelease.data.digest}`,
+        managedConnection: { slot: "probe", sourceId: `cs_${randomUUID()}` },
+      },
+    },
+  );
+  assert.equal(blocked.status, 409, JSON.stringify(blocked.body));
+  assert.match(blocked.body.error.message, /Plugin credential delivery.*unavailable/);
+  const selectedMcp = await controller.request("PATCH", nsPath + "/agents/" + agent.data.id, {
+    body: {
+      configurationId: agent.data.configurationId,
+      plugins: { [`occ-import:${mcpRelease.data.digest}`]: { enabled: true } },
+    },
+  });
+  assert.equal(selectedMcp.status, 200, JSON.stringify(selectedMcp.body));
+  const blockedDeploy = await controller.request(
+    "POST",
+    `${nsPath}/agents/${agent.data.id}/deploy`,
+  );
+  assert.equal(blockedDeploy.status, 409, JSON.stringify(blockedDeploy.body));
+  assert.match(
+    blockedDeploy.body.error.message,
+    /MCP deployment requires Plugin credential delivery/,
+  );
+});
+
+test("Namespace deletion removes only its plugin releases after Compute teardown", async (t) => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const first = await createNamespace(controller, "plugin-cleanup-first");
+  const second = await createNamespace(controller, "plugin-cleanup-second");
+  controller.fixture.controller.installPluginDrivers([
+    new OCCPluginDriver(),
+    new CodexPluginDriver(),
+  ]);
+  const archiveBase64 = await importedPluginPackage(t, "namespace-cleanup");
+  const preview = await controller.request(
+    "POST",
+    `/namespaces/${first.id}/plugin-releases/preview`,
+    {
+      body: { archiveBase64 },
+    },
+  );
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  for (const namespace of [first, second]) {
+    const published = await controller.request(
+      "POST",
+      `/namespaces/${namespace.id}/plugin-releases`,
+      {
+        body: {
+          archiveBase64,
+          digest: preview.data.digest,
+          archiveSha256: preview.data.archiveSha256,
+        },
+      },
+    );
+    assert.equal(published.status, 200, JSON.stringify(published.body));
+  }
+  const release = (namespaceId) =>
+    controller.fixture.platformState.read((view) =>
+      view.pluginReleases.find(namespaceId, preview.data.digest),
+    );
+  assert.equal((await controller.request("DELETE", `/namespaces/${first.id}`)).status, 202);
+  // The release remains available until Compute confirms teardown. The Namespace tombstone
+  // and audit persist afterward, but code archives belong only to the deleted Namespace.
+  assert.ok(await release(first.id));
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    first.id,
+    "deleted",
+  );
+  assert.equal(await release(first.id), undefined);
+  assert.ok(await release(second.id));
 });
 
 registerOpenClawPluginPolicyCases(configuredController);

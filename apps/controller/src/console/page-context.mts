@@ -54,6 +54,7 @@ export interface ConsolePageContext extends Pick<Navigation, "navigate" | "pageU
   setPageActions(node: HTMLElement): void;
   setLeaveGuard(guard: LeaveGuard): void;
   setWriteInFlight(check: () => boolean): void;
+  publishPluginsAllowed?(): Promise<boolean | undefined>;
   /** The Namespace permission answer's secrets.create; undefined when it is unknown. */
   secretsCreateAllowed?(): Promise<boolean | undefined>;
   /** The Namespace permission answer's agents.create; undefined when it is unknown. */

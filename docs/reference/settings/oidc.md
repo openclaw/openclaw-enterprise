@@ -23,14 +23,7 @@ configured token URL, fetches keys only from the configured JWKS URL, and refuse
 The browser visits the configured authorization URL; the API does not fetch it. The issuer still
 must match the signed ID token exactly.
 
-With `auth.oidc.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except link-local `169.254.0.0/16`. If you set CIDRs, include the
-addresses used by both the token and JWKS hosts. The port is the destination Pod's
-port; an IdP inside the cluster on another target port needs
-[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering rejects invalid endpoint settings,
-a Secret shared with Google or another chart credential Secret, or an HTTP base URL.
-OIDC supports native Agent access.
+The API Server connects to the configured token and JWKS URLs. The chart leaves API egress to the cluster operator. If a separate policy restricts it, allow both destinations at their translated ports. Rendering rejects invalid endpoint settings, a shared credential Secret, or an HTTP base URL. OIDC supports native Agent access.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both

@@ -173,7 +173,10 @@ export interface DeploymentAdmissionDependencies {
     ReturnType<typeof createSandboxPolicyOperations>,
     "admitDeploymentSnapshot"
   >;
-  readonly plugins: Pick<ReturnType<typeof createAgentPluginValidation>, "validatePluginPlacement">;
+  readonly plugins: Pick<
+    ReturnType<typeof createAgentPluginValidation>,
+    "validatePluginPlacement" | "selectedNamespacePluginReleases"
+  >;
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly pluginDriver: (harnessId: string, byConfiguration: boolean) => PluginDriver;
   readonly selection: (
@@ -811,6 +814,35 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
           ? dependencies.pluginDriver(revisionHarness.id, true)
           : undefined;
+      const releases =
+        driver && lockedAgent.plugins
+          ? await dependencies.plugins.selectedNamespacePluginReleases(
+              state,
+              namespace.id,
+              principalId,
+              driver,
+              lockedAgent.plugins,
+            )
+          : undefined;
+      for (const [id, release] of Object.entries(releases ?? {})) {
+        if (!lockedAgent.plugins?.[id]?.enabled) {
+          continue;
+        }
+        // TODO(OpenClaw pinned skill sources): admit skills after the upstream Gateway
+        // and the approved runtime image enforce the revision-selected source.
+        if (release.skills.length > 0) {
+          throw new ResourceStateConflictError(
+            "Imported skill deployment requires upstream pinned skill source support.",
+          );
+        }
+        // TODO(Plugin credential delivery): admit hosted MCP after the canonical Template,
+        // Source and Credential Proxy path can discover and deliver selected MCP tools.
+        if (release.mcpServers.length > 0) {
+          throw new ResourceStateConflictError(
+            "Imported MCP deployment requires Plugin credential delivery, which is unavailable.",
+          );
+        }
+      }
       const pluginState =
         driver && lockedAgent.plugins
           ? immutableCopy({
@@ -826,6 +858,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         driver,
         revisionHarness,
         compute,
+        releases,
       );
       const { secretBindings, secretDriver } = await admitConfigurationSecrets(
         state,
@@ -901,6 +934,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           lockedAgent.pluginApprovers,
           admittedConfiguration,
           "stored",
+          releases,
         );
         dependencies.plugins.validatePluginPlacement(driver, pluginState.plugins, revisionHarness);
       }

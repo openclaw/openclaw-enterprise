@@ -74,6 +74,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/slack-directory.mts",
       "agents/slack-approvers.mts",
       "agents/plugin-fields.mts",
+      "plugin-import.mts",
       "agents/plugins.mts",
       "agents/repositories.mts",
       "agents/repository-profiles.mts",

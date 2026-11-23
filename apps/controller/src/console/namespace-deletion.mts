@@ -16,6 +16,7 @@ import { describeFailure } from "./agents/list.mjs";
 import { NAMESPACE_DELETE_REFUSED, namespaceDeleteDenied } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
+  readPermissions(): Promise<Record<string, unknown>>;
   /** `refocus`: a requested check found it removed while its Refresh held focus. */
   onRemoved(namespace: Namespace, refocus: boolean): void;
   onResume?(handler: () => void): void;
@@ -124,7 +125,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
 
   async function readPermissions() {
     try {
-      const answer = responseFields(await context.request(`${path}/permissions`));
+      const answer = await context.readPermissions();
       if (!current()) {
         return;
       }

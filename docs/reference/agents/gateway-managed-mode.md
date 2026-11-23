@@ -17,7 +17,7 @@ can apply the saved setting. The revision records the requested mode. OCE can
 select the revision before the replacement starts, so verify that deployment
 succeeded on a supporting runtime before relying on the restrictions.
 
-After configuration setup, OCE applies three enforcement controls to the managed Gateway.
+After configuration setup, OCE applies these controls to the managed Gateway.
 
 | Setting                                      | Effect                                                                                     |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -30,7 +30,7 @@ Gateways that support the notice show where to edit the Agent's draft Configurat
 while native configuration is read-only. Save the draft and select **Deploy new version**
 to apply your changes. See [Edit Agent Configuration](../../guides/console/configuration-plugins-and-files.md#configuration-tab).
 
-The [pinned OpenClaw revision](../../../deploy/runtime/openclaw-source.json) includes all three controls.
+The [OCE runtime image](../../../deploy/runtime/README.md) carries the skill installation control for the pinned OpenClaw version. A native operator can inspect skills and use skills available to the Agent. For a plugin that supplies a skill, select it in the [Agent draft’s Plugins tab](../../guides/console/configuration-plugins-and-files.md#plugins-tab) and deploy a new version.
 The Compute Driver must declare support and launch a qualified runtime.
 Kubernetes requires a configured Gateway runtime. SSH does not support managed mode.
 Agent save refuses `gatewayManagedMode=true` without that support, and deployment

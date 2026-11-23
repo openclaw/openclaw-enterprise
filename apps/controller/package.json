@@ -39,9 +39,11 @@
     "ipaddr.js": "2.5.0",
     "pg": "8.23.1",
     "pino": "10.4.0",
+    "tar-stream": "3.2.2",
     "tldts": "7.4.19",
     "ts-pattern": "5.9.2",
     "typebox": "1.4.6",
-    "undici": "8.12.4"
+    "undici": "8.12.4",
+    "yaml": "2.9.1"
   }
 }

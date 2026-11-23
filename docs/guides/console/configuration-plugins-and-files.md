@@ -85,6 +85,8 @@ Configuration JSON. See the [Configuration reference](../../reference/configurat
 
 ## Plugins tab
 
+Imported skill deployment requires upstream Gateway controls for reviewed-source precedence and native installation refusal. See [runtime dependencies](../../reference/namespace-plugin-releases.md#runtime-dependencies).
+
 In **Open draft** → **Plugins**, edit the Agent's existing selections and
 tool policies with **Configure plugins** or **Plugin selections JSON**. With a bound
 Service Accounts token Secret, the tab preloads the first catalog page for the

@@ -2,6 +2,7 @@ import {
   assertExecutionReleaseAllowed,
   credentialSourceMatchesSnapshot,
   isSecretHarnessAuth,
+  importedPluginDigest,
   normalizeSecretBindings,
   type AgentRevision,
   type ComputeDriver,
@@ -10,6 +11,7 @@ import {
   type CredentialSource,
   type CredentialSourceSnapshot,
   type LegacyEgressProxyDriver,
+  type InspectedPluginPackage,
   type ResolvedHarnessAuth,
   type Secret,
   type SecretBindings,
@@ -373,10 +375,30 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     if (workspaceSetup !== undefined && compute.supportsWorkspaceSetup !== true) {
       return refuseRevisionInputs("WORKSPACE_SETUP_UNSUPPORTED");
     }
+    const imported = Object.entries(revision.plugins?.plugins ?? {}).flatMap(([id, selection]) => {
+      const digest = selection.enabled ? importedPluginDigest(id) : undefined;
+      return digest === undefined ? [] : [{ id, digest }];
+    });
+    let importedMaterial:
+      Promise<Readonly<Record<string, InspectedPluginPackage>> | undefined> | undefined;
     return {
       context: {
         ...(revision.egressPlan === undefined ? {} : revisionEgressReceipts(state, revision)),
         secretEnvironment: Object.freeze(resolved),
+        ...(imported.length > 0 && {
+          loadImportedPluginReleases: () =>
+            (importedMaterial ??= state.read(async (view) => {
+              const releases: Record<string, InspectedPluginPackage> = {};
+              for (const { id, digest } of imported) {
+                const release = await view.pluginReleases.find(revision.namespaceId, digest);
+                if (!release || release.digest !== digest) {
+                  return undefined;
+                }
+                releases[id] = release;
+              }
+              return releases;
+            })),
+        }),
         harnessAuth: model.harnessAuth,
         ...(credentialSources.length === 0
           ? {}

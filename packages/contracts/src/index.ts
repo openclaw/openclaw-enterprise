@@ -878,6 +878,7 @@ export interface AgentPluginCredentialSlot {
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
+  readonly serverUrl?: string;
   readonly toolDiscovery?: true;
   readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
@@ -901,6 +902,7 @@ export interface PluginCatalogEntry {
   readonly unavailableReason?: string;
   readonly unavailableHelp?: PluginCatalogLink;
   readonly selectableWithoutTools?: boolean;
+  readonly policyScope?: "enablement_only";
   readonly tools: readonly PluginToolCatalogEntry[] | null;
 }
 
@@ -908,6 +910,10 @@ export interface PluginCatalogPage {
   readonly plugins: readonly PluginCatalogEntry[];
   readonly nextCursor: string | null;
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
+}
+
+export function importedPluginDigest(id: string): string | undefined {
+  return /^occ-import:([a-f0-9]{64})$/u.exec(id)?.[1];
 }
 
 export interface PluginRevisionState {
@@ -1357,6 +1363,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "read_logs",
   "manage_policy",
   "read_audit",
+  "publish_plugins",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1370,7 +1377,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   Record<ResourceKind, readonly PermissionAction[]>
 > = Object.freeze({
   installation: Object.freeze(["read", "administer"] as const),
-  namespace: Object.freeze(["create", "read", "delete"] as const),
+  namespace: Object.freeze(["create", "read", "delete", "publish_plugins"] as const),
   configuration: Object.freeze(["create", "read", "update", "delete"] as const),
   preset: Object.freeze(["create", "read", "update", "delete"] as const),
   service_account: Object.freeze(["create", "read", "update", "delete"] as const),
@@ -1391,6 +1398,15 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
+
+/** Only these operations on a Namespace itself can be delegated by a Namespace Role. */
+export function namespaceRoleMayGrant(permission: Readonly<Permission>): boolean {
+  return (
+    permission.resourceKind !== "namespace" ||
+    permission.action === "read" ||
+    permission.action === "publish_plugins"
+  );
+}
 
 export function isSupportedPermission(permission: Readonly<Permission>): boolean {
   return SUPPORTED_PERMISSION_ACTIONS[permission.resourceKind].includes(permission.action);
@@ -1635,6 +1651,16 @@ export type {
   SandboxHarnessRestart,
   SandboxHarnessObservation,
 } from "./drivers/sandbox/index.ts";
+export {
+  canonicalPluginPackageContent,
+  PluginPackageInspectionError,
+} from "./drivers/plugin/import-package.ts";
+export type {
+  ImportedPluginSkill,
+  ImportedMcpServer,
+  PluginConnectionRelease,
+  InspectedPluginPackage,
+} from "./drivers/plugin/import-package.ts";
 export type {
   PluginDriver,
   PluginDriverContext,

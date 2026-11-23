@@ -66,6 +66,7 @@ import type {
   Identity,
   Installation,
   Namespace,
+  InspectedPluginPackage,
   PluginDesiredState,
   PluginDriverIdentity,
   PluginApprovers,
@@ -125,6 +126,7 @@ import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/c
 import type { InstallationRepository } from "../ports/installations.ts";
 import type { IAMPolicyRepository } from "@openclaw-enterprise/contracts";
 import type { NamespaceRepository, PersistedNamespace } from "../ports/namespaces.ts";
+import type { PluginReleaseRepository } from "../ports/plugin-releases.ts";
 import type { PlatformAuditSink } from "./platform-state.ts";
 import type { PlatformOperation } from "../ports/platform-operations.ts";
 import type { PlatformReadView } from "../ports/platform-read-view.ts";
@@ -160,7 +162,7 @@ import {
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
   validStandaloneCredentialDeployment,
-  namespaceRoleGrantsBeyondRead,
+  namespaceRoleGrantsLifecycleAccess,
   assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
@@ -2575,6 +2577,41 @@ export class PostgresPlatformState implements PlatformStateStore {
       )[0];
       return found === undefined ? undefined : presetFromRow(found);
     };
+    const pluginReleases: PluginReleaseRepository = {
+      find: async (namespaceId, digest) => {
+        const result = await client.query(
+          "SELECT document FROM occ.plugin_releases WHERE namespace_id = $1 AND digest = $2",
+          [namespaceId, digest],
+        );
+        return decodeQueryRows(result)[0]?.document as InspectedPluginPackage | undefined;
+      },
+      list: async (namespaceId) =>
+        decodeQueryRows(
+          await client.query(
+            `SELECT jsonb_strip_nulls(jsonb_build_object('name', document->'name', 'version', document->'version',
+          'description', document->'description', 'digest', digest, 'mcpServers',document->'mcpServers')) AS summary FROM occ.plugin_releases
+          WHERE namespace_id = $1 ORDER BY document->>'name', digest`,
+            [namespaceId],
+          ),
+        ).map(
+          (row) =>
+            row.summary as Pick<
+              InspectedPluginPackage,
+              "name" | "description" | "digest" | "version" | "mcpServers"
+            >,
+        ),
+      publish: async (namespaceId, actorId, release) => {
+        await client.query(
+          `INSERT INTO occ.plugin_releases (namespace_id, digest, actor_id, document) VALUES ($1, $2, $3, $4::jsonb)
+           ON CONFLICT (namespace_id, digest) DO NOTHING`,
+          [namespaceId, release.digest, actorId, JSON.stringify(release)],
+        );
+      },
+      purgeNamespace: async (namespaceId) => {
+        await client.query("SELECT occ.purge_namespace_plugin_releases($1)", [namespaceId]);
+      },
+    };
+
     const presets: PresetRepository = {
       findPreset,
       listPresetSummaries: async (namespaceId) =>
@@ -4455,8 +4492,10 @@ export class PostgresPlatformState implements PlatformStateStore {
         ) {
           throw new ScopeViolationError("The IAM Role must belong to an available Namespace.");
         }
-        if (namespaceRoleGrantsBeyondRead(role)) {
-          throw new ScopeViolationError("Namespace IAM Roles support only Namespace read.");
+        if (namespaceRoleGrantsLifecycleAccess(role)) {
+          throw new ScopeViolationError(
+            "Namespace IAM Roles can read the Namespace or publish plugins in it.",
+          );
         }
         await client.query(
           "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, $2, $3, $4::jsonb)",
@@ -4576,10 +4615,10 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The IAM AccessBinding Role does not exist in this Namespace.",
           );
         }
-        if (binding.resourceKind === "namespace" && namespaceRoleGrantsBeyondRead(role)) {
+        if (binding.resourceKind === "namespace" && namespaceRoleGrantsLifecycleAccess(role)) {
           throw new IAMPolicyValidationError(
             "/roleId",
-            "Namespace IAM Roles support only Namespace read.",
+            "Namespace IAM Roles can read the Namespace or publish plugins in it.",
           );
         }
         if (!(await lockTarget(namespace.id, binding.resourceKind, binding.resourceId))) {
@@ -4822,6 +4861,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         this.requireInitialized(context),
       ),
       presets,
+      pluginReleases,
       authenticationStates: postgresAuthenticationStates(client, () =>
         this.requireInitialized(context),
       ),

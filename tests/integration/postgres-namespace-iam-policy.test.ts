@@ -66,7 +66,7 @@ test(
   consoleShareScope,
 );
 test(
-  "PostgreSQL native IAM grants Namespace Roles only Namespace read",
+  "PostgreSQL native IAM limits Namespace Roles to read and plugin publication",
   requiresPostgres,
   namespaceRolePermissions,
 );

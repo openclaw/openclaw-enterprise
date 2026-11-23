@@ -268,7 +268,7 @@ restore exports.
 Without profiles, this branch refuses overwrites and selects curated discovery;
 Codex profiles use hosted discovery.
 
-Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
+Hosted discovery requires [API connectivity](installation-profiles.md#hosted-discovery-access);
 the startup Secret alone grants none.
 
 ```bash

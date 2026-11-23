@@ -416,12 +416,15 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
               configurationPreparation,
             );
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
-      const driver = await dependencies.validateAgentPlugins(
+      const { driver, releases } = await dependencies.validateAgentPlugins(
+        state,
+        namespace.id,
+        principalId,
         plugins,
         pluginApprovers,
         async () => (await savedConfiguration()).values,
       );
-      await validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
+      await validatePluginCredentialSources(driver, plugins, sources, harnessAuth, releases);
       const { repositoryBindings, repositoryAccess } =
         dependencies.repositoryPolicy.repositorySettings(namespace.id, input);
       await dependencies.validateSavedAgentTopology(
@@ -545,7 +548,10 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await configurationDriver.validateSize?.(values);
       dependencies.validateConfigurationContent(values, secretBindings);
       await configurationDriver.validate(configuration);
-      const driver = await dependencies.validateAgentPlugins(
+      const { driver } = await dependencies.validateAgentPlugins(
+        state,
+        namespace.id,
+        principalId,
         plugins,
         pluginApprovers,
         () => values,
@@ -708,7 +714,10 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
       const selections = plugins ?? agent.plugins;
-      const driver = await dependencies.validateAgentPlugins(
+      const { driver, releases } = await dependencies.validateAgentPlugins(
+        state,
+        namespace.id,
+        principalId,
         selections,
         pluginApprovers === null ? undefined : (pluginApprovers ?? agent.pluginApprovers),
         async () => (await savedConfiguration()).values,
@@ -730,7 +739,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         );
       }
       if (sources !== undefined) {
-        await validatePluginCredentialSources(driver, selections, sources, auth);
+        await validatePluginCredentialSources(driver, selections, sources, auth, releases);
       }
       const backendId = dependencies.backendId(input.backendId, agent.backendId);
       const repositoryChange =

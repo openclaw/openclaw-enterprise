@@ -307,17 +307,6 @@ export function registerInputMatrixCases(): void {
           [["999.999.999.999/32"]],
           /controlPlane\.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
         ],
-        [
-          "codex.managedServiceAccounts",
-          [
-            {
-              workspaceId: "11111111-1111-4111-8111-111111111111",
-              adminSecretName: "occ-chatgpt-admin",
-              providerCidr: "999.999.999.999/32",
-            },
-          ],
-          /codex\.managedServiceAccounts\.providerCidr must be an IPv4 \/32 CIDR/,
-        ],
       ],
     },
     {

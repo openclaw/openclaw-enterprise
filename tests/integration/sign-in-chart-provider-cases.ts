@@ -5,13 +5,7 @@ import {
   humanLoginConfiguration,
   resolveClientAddress,
 } from "../../apps/controller/src/auth/index.ts";
-import {
-  assertSecretMount,
-  deploymentEnv,
-  egressPeers,
-  loginEgress,
-  signInSettings,
-} from "../helpers/sign-in-chart.ts";
+import { assertSecretMount, deploymentEnv, signInSettings } from "../helpers/sign-in-chart.ts";
 import {
   defaultInstallSettings,
   fixtureOidcIssuer,
@@ -55,7 +49,6 @@ export function registerProviderCases() {
               ...(googleEnabled ? googleUpgradeSettings(recoveryUserId) : defaultInstallSettings),
               ...proxy.env,
             },
-            googleEnabled ? ["google"] : [],
           );
           assert.deepEqual(
             humanLoginConfiguration(environment).google,
@@ -143,14 +136,12 @@ export function registerProviderCases() {
           values: googleUpgradeValues(recoveryUserId),
           settings: googleUpgradeSettings(recoveryUserId),
           parsed: { google: googleParsed },
-          egress: ["google"],
         },
         {
           label: "Google only, hosted domains",
           values: googleUpgradeValues(recoveryUserId, domains),
           settings: googleUpgradeSettings(recoveryUserId, domains),
           parsed: { google: { ...googleParsed, allowedDomains: domains } },
-          egress: ["google"],
         },
         {
           // The default is not rendered: the API reads an absent setting as "all".
@@ -158,7 +149,6 @@ export function registerProviderCases() {
           values: { ...googleUpgradeValues(recoveryUserId), "auth.passwordSignIn": "all" },
           settings: googleUpgradeSettings(recoveryUserId),
           parsed: { google: googleParsed },
-          egress: ["google"],
         },
       ]);
     },
@@ -216,23 +206,6 @@ export function registerProviderCases() {
         values: oidcUpgradeValues(recoveryUserId, issuer, extra),
         settings: oidcUpgradeSettings(recoveryUserId, issuer, extra),
         parsed: { oidc: parsed },
-        egress: ["oidc"],
-      });
-      // A listed CIDR replaces the default, link-local included, for each provider.
-      const narrowed = render({
-        ...googleUpgradeValues(recoveryUserId),
-        ...oidcUpgradeValues(recoveryUserId),
-        "auth.google.egressCidrs[0]": "169.254.10.0/24",
-        "auth.oidc.egressCidrs[0]": "198.51.100.0/24",
-      }).then((objects) => {
-        const rules = loginEgress(objects);
-        for (const [provider, cidr] of Object.entries({
-          google: "169.254.10.0/24",
-          oidc: "198.51.100.0/24",
-        })) {
-          const rule = rules.find((policy) => policy.provider === provider)?.rules[0];
-          assert.deepEqual(egressPeers(rule), [{ ipBlock: { cidr } }], provider);
-        }
       });
       // The mounted file path must match the value the selected container reads.
       const placement = render({
@@ -280,7 +253,6 @@ export function registerProviderCases() {
         );
       });
       await settle([
-        narrowed,
         placement,
         acceptsEach([
           oidcOnly("OIDC, URLs padded with whitespace the API trims", oidc, padded),
@@ -325,7 +297,6 @@ export function registerProviderCases() {
               oidc,
               passwordSignIn: "recovery-only",
             },
-            egress: ["google", "oidc"],
           },
         ]),
       ]);

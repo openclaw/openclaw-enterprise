@@ -62,7 +62,7 @@ function input(controlPlane: TestInput = {}) {
         scraperPodLabels: { app: "prometheus" },
       },
       recoveryUserId: "recovery-admin_1",
-      google: { egressCidrs: ["192.0.2.20/32"] },
+      google: {},
       trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
       ...controlPlane,
     },
@@ -81,7 +81,7 @@ function input(controlPlane: TestInput = {}) {
 function codexInput(codex: TestInput = {}) {
   return {
     runtime: { ...input({}).runtime, codexSeccompProfile: "profiles/codex.json" },
-    codex: { modelDiscoveryCidrs: [], ...codex },
+    codex,
   };
 }
 
@@ -879,7 +879,6 @@ test(
     const accounts = {
       workspaceId: "11111111-1111-4111-8111-111111111111",
       adminSecretName: "occ-chatgpt-admin",
-      providerCidr: "192.0.2.21/32",
     };
     for (const enabled of [false, true]) {
       cases.push({
@@ -893,7 +892,6 @@ test(
             chatgpt: {
               enabled,
               secretName: accounts.adminSecretName,
-              providerCidr: accounts.providerCidr,
             },
           },
         },
@@ -1026,7 +1024,7 @@ const resourceNames: Array<
   [
     "controlPlane.google.secretName",
     "auth.google.secretName",
-    (secretName) => ({ google: { egressCidrs: ["192.0.2.20/32"], secretName } }),
+    (secretName) => ({ google: { secretName } }),
     (secretName) => ({ auth: { google: { secretName } } }),
   ],
 ];

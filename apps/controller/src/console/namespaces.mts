@@ -13,6 +13,7 @@ import {
 import type { createNavigation } from "./navigation.mjs";
 import { describeFailure, displayDate, explainedConflict } from "./agents/list.mjs";
 import { createNamespaceDeletion } from "./namespace-deletion.mjs";
+import { pluginImportControl } from "./plugin-import.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
@@ -230,10 +231,37 @@ export function renderNamespaces(
         context.navigate("agents", item.id);
       });
       const row = element("li", { className: "resource-linked namespace-row" });
+      let publishAllowed = false;
+      let currentStatus: Namespace["status"] | undefined = item.status;
+      const importPlugin = button("Import plugin", () => openPluginImport(item, importPlugin), {
+        tone: "link",
+        size: "sm",
+        "data-refocus-key": `${item.id} namespace-plugin-import`,
+        "aria-label": `Import plugin into ${item.name ?? item.id}`,
+      });
+      importPlugin.hidden = true;
+      function updateImportAvailability() {
+        importPlugin.hidden =
+          !publishAllowed || (currentStatus !== "ready" && currentStatus !== "provisioning");
+      }
       const deletion = createNamespaceDeletion(
         {
           ...context,
-          statusChanged: setStatus,
+          async readPermissions() {
+            const answer = responseFields(
+              await context.request(`/namespaces/${encodeURIComponent(item.id)}/permissions`),
+            );
+            if (context.isCurrent()) {
+              publishAllowed = answer.publishPlugins === true;
+              updateImportAvailability();
+            }
+            return answer;
+          },
+          statusChanged(status) {
+            currentStatus = status;
+            setStatus(status);
+            updateImportAvailability();
+          },
           onRemoved(namespace, refocus) {
             // The check Refresh requested disabled it while it read, which dropped focus to the
             // page; focus left there goes to the outcome too.
@@ -260,6 +288,7 @@ export function renderNamespaces(
         },
         item,
       );
+      deletion.actions.prepend(importPlugin);
       row.append(
         element(
           "div",
@@ -288,6 +317,57 @@ export function renderNamespaces(
   }
   if (refused) {
     showRefused();
+  }
+
+  function openPluginImport(namespace: Namespace, opener: HTMLButtonElement) {
+    const titleId = `import-plugin-${namespace.id}`;
+    const dialog = element("dialog", { className: "dialog", "aria-labelledby": titleId });
+    let writing = false;
+    const close = button("Close", () => {
+      if (!writing) {
+        dialog.close();
+      }
+    });
+    const importer = pluginImportControl(
+      {
+        namespaceId: namespace.id,
+        request: context.request,
+        isCurrent: () => context.isCurrent() && dialog.open,
+        onExpired: context.onExpired,
+      },
+      () => {},
+      {
+        expanded: true,
+        onWritingChange(value) {
+          writing = value;
+          close.disabled = value;
+        },
+      },
+    );
+    dialog.append(
+      element("h2", { id: titleId }, `Import plugin into ${namespace.name ?? namespace.id}`),
+      importer,
+      element("div", { className: "dialog-actions" }, close),
+    );
+    dialog.addEventListener("cancel", (event) => {
+      if (writing) {
+        event.preventDefault();
+      }
+    });
+    dialog.addEventListener(
+      "close",
+      () => {
+        dialog.remove();
+        if (context.isCurrent() && opener.isConnected) {
+          opener.focus();
+        }
+      },
+      { once: true },
+    );
+    dismissOnBackdrop(dialog);
+    context.view.append(dialog);
+    dialog.showModal();
+    dialog.querySelector<HTMLInputElement>('input[type="file"]')?.focus();
   }
 
   function openCreate() {

@@ -2,9 +2,11 @@ import { isDeepStrictEqual } from "node:util";
 import {
   normalizePluginApprovers,
   normalizePluginDesiredState,
+  importedPluginDigest,
   pluginRuntimeHarnessRequirement,
   type CredentialSource,
   type HarnessAuthBinding,
+  type InspectedPluginPackage,
   type OpenClawConfigurationDocument,
   type PluginApprovers,
   type PluginDesiredState,
@@ -18,8 +20,11 @@ import {
   PluginPolicyValidationError,
   ResourceStateConflictError,
 } from "./errors.ts";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
 
 interface AgentPluginValidationDependencies {
+  readonly authority: Pick<ControllerAuthority, "authorize">;
   readonly pluginDriver: (harnessId: string, forConfiguration: boolean) => PluginDriver;
   readonly computeImplementation: () => string;
   readonly sandboxImplementation: () => string | undefined;
@@ -66,9 +71,10 @@ export function validatePluginSettings(
   approvers: PluginApprovers | undefined,
   values: Readonly<OpenClawConfigurationDocument>,
   source: "request" | "stored",
+  releases?: Readonly<Record<string, InspectedPluginPackage>>,
 ): void {
   try {
-    driver.validatePolicies(plugins ?? {}, approvers);
+    driver.validatePolicies(plugins ?? {}, approvers, releases);
   } catch (error) {
     if (source === "stored" && error instanceof PluginPolicyValidationError) {
       throw error.withoutRequestPath();
@@ -94,18 +100,56 @@ export async function validatePluginCredentialSources(
   plugins: PluginDesiredState | undefined,
   sources: readonly CredentialSource[],
   harnessAuth?: HarnessAuthBinding | null,
+  releases?: Readonly<Record<string, InspectedPluginPackage>>,
 ): Promise<void> {
   if (plugins && Object.keys(plugins).length) {
     await driver?.credentials?.validate(
       plugins,
       sources,
       harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+      releases,
     );
   }
 }
 
 export function createAgentPluginValidation(dependencies: AgentPluginValidationDependencies) {
+  async function selectedNamespacePluginReleases(
+    state: PlatformReadView,
+    namespaceId: string,
+    principalId: string,
+    driver: PluginDriver,
+    plugins: PluginDesiredState | undefined,
+  ): Promise<Readonly<Record<string, InspectedPluginPackage>>> {
+    const releases: Record<string, InspectedPluginPackage> = {};
+    let authorized = false;
+    for (const id of Object.keys(plugins ?? {})) {
+      const digest = importedPluginDigest(id);
+      if (!digest) {
+        continue;
+      }
+      if (!authorized) {
+        await dependencies.authority.authorize(principalId, "read", {
+          kind: "namespace",
+          id: namespaceId,
+          namespaceId,
+        });
+        authorized = true;
+      }
+      const release = await state.pluginReleases.find(namespaceId, digest);
+      if (!release || !driver.inspectPackage) {
+        throw new ConfigurationHarnessError(
+          "The imported plugin release is unavailable in this Namespace.",
+        );
+      }
+      releases[id] = release;
+    }
+    return releases;
+  }
+
   async function validateAgentPlugins(
+    state: PlatformReadView,
+    namespaceId: string,
+    principalId: string,
     plugins: PluginDesiredState | undefined,
     approvers: PluginApprovers | undefined,
     readValues: () =>
@@ -115,18 +159,28 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
       readonly pluginDriver?: PluginDriverIdentity;
     },
     source: "request" | "stored" = "request",
-  ): Promise<PluginDriver | undefined> {
+  ): Promise<{
+    driver: PluginDriver | undefined;
+    releases: Readonly<Record<string, InspectedPluginPackage>> | undefined;
+  }> {
     const hasSelections = plugins !== undefined && Object.keys(plugins).length > 0;
     if (!hasSelections && !approvers?.length) {
-      return undefined;
+      return { driver: undefined, releases: undefined };
     }
     const values = await readValues();
     const driver = dependencies.pluginDriver(resolveConfiguredHarnessId(values), true);
     if (hasSelections) {
       pluginOwner(driver, previous);
     }
-    validatePluginSettings(driver, plugins, approvers, values, source);
-    return driver;
+    const releases = await selectedNamespacePluginReleases(
+      state,
+      namespaceId,
+      principalId,
+      driver,
+      plugins,
+    );
+    validatePluginSettings(driver, plugins, approvers, values, source, releases);
+    return { driver, releases };
   }
 
   function validatePluginPlacement(
@@ -149,5 +203,5 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
     }
   }
 
-  return { validateAgentPlugins, validatePluginPlacement };
+  return { validateAgentPlugins, validatePluginPlacement, selectedNamespacePluginReleases };
 }

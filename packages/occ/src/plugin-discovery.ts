@@ -3,6 +3,7 @@ import { credentialGatewayOperation } from "./credential-source-drivers.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isSecretHarnessAuth,
+  importedPluginDigest,
   type Agent,
   type Configuration,
   type CredentialGatewayDriver,
@@ -10,6 +11,7 @@ import {
   type CredentialSourceContext,
   type CredentialSourceReference,
   type HarnessExecutionMode,
+  type InspectedPluginPackage,
   type Namespace,
   type PluginCatalogEntry,
   type PluginCatalogPage,
@@ -92,6 +94,21 @@ interface PluginDiscoveryDependencies {
 }
 
 const PLUGIN_ID_SHAPE = /^[A-Za-z0-9._~:@-]{1,253}$/u;
+
+function importedCatalogEntry(
+  release: Pick<InspectedPluginPackage, "name" | "version" | "description" | "digest">,
+): PluginCatalogEntry {
+  return {
+    id: `occ-import:${release.digest}`,
+    policyScope: "enablement_only",
+    name: [release.name, release.version, `(${release.digest.slice(0, 12)})`]
+      .filter(Boolean)
+      .join(" "),
+    ...(release.description === undefined ? {} : { description: release.description }),
+    selectableWithoutTools: true,
+    tools: [],
+  };
+}
 
 /**
  * Discovery's refusal for a plugin ID the selected Driver does not offer. It names the IDs only
@@ -181,6 +198,54 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
   const { read } = dependencies.transactions;
   const { authorize, authorizationDecision, canRead } = dependencies.authority;
 
+  async function namespacePluginCatalog(
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver,
+    input: PluginDiscoveryAuthentication & { readonly cursor?: string; readonly q?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage> {
+    const page = await driver.discoverCatalog!(input, signal);
+    const namespace = { kind: "namespace" as const, id: namespaceId, namespaceId };
+    if (!driver.inspectPackage || input.cursor || !(await canRead(principalId, namespace))) {
+      return page;
+    }
+    const releases = await read((state) => state.pluginReleases.list(namespaceId));
+    const query = input.q?.toLowerCase() ?? "";
+    return {
+      ...page,
+      plugins: [
+        ...page.plugins,
+        ...releases
+          .map(importedCatalogEntry)
+          .filter((entry) =>
+            [entry.id, entry.name, entry.description ?? ""].some((value) =>
+              value.toLowerCase().includes(query),
+            ),
+          ),
+      ],
+    };
+  }
+
+  async function namespacePluginEntry(
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver,
+    input: PluginDiscoveryAuthentication & { readonly pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry> {
+    const digest = importedPluginDigest(input.pluginId);
+    if (!driver.inspectPackage || !digest) {
+      return driver.getCatalogPlugin!(input, signal);
+    }
+    await authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
+    const release = await read((state) => state.pluginReleases.find(namespaceId, digest));
+    if (!release) {
+      throw new PluginPolicyValidationError("unknownPlugin", driver.id, input.pluginId);
+    }
+    return importedCatalogEntry(release);
+  }
+
   async function discoverAgentPlugins(
     principalId: string,
     namespaceId: string,
@@ -202,7 +267,10 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
           throw new PluginDiscoveryError("credentials_rejected");
         }
-        return driver.discoverCatalog!(
+        return namespacePluginCatalog(
+          principalId,
+          namespaceId,
+          driver,
           {
             ...authentication,
             ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
@@ -231,7 +299,13 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
           throw new PluginDiscoveryError("credentials_rejected");
         }
-        return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+        return namespacePluginEntry(
+          principalId,
+          namespaceId,
+          driver,
+          { ...authentication, pluginId: input.pluginId },
+          signal,
+        );
       };
     });
   }
@@ -421,11 +495,18 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             }
           }
         }
+        const releases =
+          driver.inspectPackage &&
+          driver.credentials &&
+          agent.executionMode === "dedicated" &&
+          (await canRead(principalId, { kind: "namespace", id: namespaceId, namespaceId }))
+            ? await state.pluginReleases.list(namespaceId)
+            : [];
         return immutableCopy({
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
           ...(driver.credentials && agent.executionMode === "dedicated"
-            ? { credentialSlots: driver.credentials.choices(sources) }
+            ? { credentialSlots: driver.credentials.choices(sources, releases) }
             : {}),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });
@@ -460,7 +541,10 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           );
         }
         return (authentication) =>
-          driver.discoverCatalog!(
+          namespacePluginCatalog(
+            principalId,
+            namespaceId,
+            driver,
             {
               ...authentication,
               ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
@@ -504,6 +588,30 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     readMcpTools?: ManagedMcpToolReader,
   ): Promise<PluginCatalogEntry> {
     if (input.managedConnection) {
+      const digest = importedPluginDigest(input.pluginId);
+      if (digest) {
+        // TODO(Plugin credential delivery): discover imported MCP tools through the
+        // approved Template, TokenService Source, and Credential Proxy path.
+        return withSavedPluginTarget(
+          principalId,
+          namespaceId,
+          agentId,
+          async ({ state, driver }) => {
+            await authorize(principalId, "read", {
+              kind: "namespace",
+              id: namespaceId,
+              namespaceId,
+            });
+            const release = await state.pluginReleases.find(namespaceId, digest);
+            if (!release || !driver.inspectPackage) {
+              throw new PluginPolicyValidationError("unknownPlugin", driver.id, input.pluginId);
+            }
+            throw new ResourceStateConflictError(
+              "Imported MCP connections require Plugin credential delivery, which is unavailable.",
+            );
+          },
+        );
+      }
       if (!readMcpTools || input.credentialSource) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
@@ -536,7 +644,13 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           );
         }
         return (authentication) =>
-          driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+          namespacePluginEntry(
+            principalId,
+            namespaceId,
+            driver,
+            { ...authentication, pluginId: input.pluginId },
+            signal,
+          );
       },
       input.credentialSource,
       signal,

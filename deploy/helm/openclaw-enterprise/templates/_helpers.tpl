@@ -105,6 +105,9 @@ true
 {{- end -}}
 {{- end -}}
 {{- define "openclaw.validate" -}}
+{{- range $entry := list (dict "owner" .Values.api "key" "modelDiscoveryCidrs" "path" "api.modelDiscoveryCidrs") (dict "owner" .Values.api "key" "pluginDiscoveryCidrs" "path" "api.pluginDiscoveryCidrs") (dict "owner" .Values.auth.google "key" "egressCidrs" "path" "auth.google.egressCidrs") (dict "owner" .Values.auth.oidc "key" "egressCidrs" "path" "auth.oidc.egressCidrs") (dict "owner" .Values.backend.chatgpt "key" "providerCidr" "path" "backend.chatgpt.providerCidr") -}}
+{{- if hasKey (default dict $entry.owner) $entry.key -}}{{- fail (printf "%s is retired. Remove it and apply your own API Pod NetworkPolicy if required." $entry.path) -}}{{- end -}}
+{{- end -}}
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled -}}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
 {{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
@@ -203,10 +206,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google native browser access is not supported" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $google.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
 {{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
@@ -254,10 +253,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
 {{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $oidc.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
 {{- $preset := toString (default "" $proxy.preset) -}}

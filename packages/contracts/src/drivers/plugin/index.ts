@@ -1,5 +1,6 @@
 import type { Driver } from "../index.ts";
 import type { PluginDeploymentContract } from "./deployment.ts";
+import type { InspectedPluginPackage, PluginConnectionRelease } from "./import-package.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
@@ -34,9 +35,13 @@ export interface PluginDriver extends Driver {
   readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
   readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
+  inspectPackage?(archive: Uint8Array, marketplaceEntry?: string): Promise<InspectedPluginPackage>;
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
-    choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    choices(
+      sources: readonly CredentialSource[],
+      releases?: readonly PluginConnectionRelease[],
+    ): readonly AgentPluginCredentialSlot[];
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,
@@ -47,10 +52,15 @@ export interface PluginDriver extends Driver {
       selections: PluginDesiredState,
       sources: readonly CredentialSource[],
       modelSourceId?: string,
+      releases?: Readonly<Record<string, InspectedPluginPackage>>,
     ): void | Promise<void>;
   };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
-  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
+  validatePolicies(
+    selections: PluginDesiredState,
+    defaultApprovers?: PluginApprovers,
+    releases?: Readonly<Record<string, InspectedPluginPackage>>,
+  ): void;
   /**
    * Side-effect-free check of admitted selections against the Agent's Configuration values,
    * at Agent save, provisioning and deployment. Throws ConfigurationHarnessError, naming the setting but

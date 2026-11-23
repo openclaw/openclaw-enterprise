@@ -162,7 +162,9 @@ test(
     });
     record({});
     try {
-      const topology = await arrangeProductionTopology(teardown.context, "dedicated");
+      const topology = await arrangeProductionTopology(teardown.context, "dedicated", undefined, {
+        gatewayManagedMode: false,
+      });
       record({ setupCompleted: true });
       record({ bodyEntered: true });
       await assertDedicatedSkillSources(topology);
@@ -195,6 +197,7 @@ test(
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+      gatewayManagedMode: false,
       gatewayPassword: true,
       nativeAdmin: { enabled: true },
     });

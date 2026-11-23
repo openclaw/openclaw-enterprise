@@ -130,6 +130,7 @@ export function createPluginDiscovery({
   let pageIndex = 0;
   const fields = createPluginFields({
     input,
+    connectionTemplatesHref: `/console/credentials/connection-templates?namespace=${encodeURIComponent(context.namespaceId)}`,
     ...(saveHint !== undefined ? { saveHint } : {}),
     ...(createApproverField ? { createApproverField } : {}),
     onLoadPlugins: (direction, q) => {

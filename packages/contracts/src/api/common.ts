@@ -628,6 +628,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("read_logs"),
   Type.Literal("manage_policy"),
   Type.Literal("read_audit"),
+  Type.Literal("publish_plugins"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -1045,6 +1046,7 @@ export const ERROR_CODES = Object.freeze([
   "NAMESPACE_NOT_EMPTY",
   "PAYLOAD_TOO_LARGE",
   "UNSUPPORTED_MEDIA_TYPE",
+  "RATE_LIMITED",
   "UNKNOWN_OUTCOME",
   "NOT_IMPLEMENTED",
   "INTERNAL_ERROR",
@@ -1126,6 +1128,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("NAMESPACE_NOT_EMPTY"),
           Type.Literal("PAYLOAD_TOO_LARGE"),
           Type.Literal("UNSUPPORTED_MEDIA_TYPE"),
+          Type.Literal("RATE_LIMITED"),
           Type.Literal("UNKNOWN_OUTCOME"),
           Type.Literal("NOT_IMPLEMENTED"),
           Type.Literal("INTERNAL_ERROR"),

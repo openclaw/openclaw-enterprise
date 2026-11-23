@@ -18,17 +18,8 @@ test(
   async (t) => {
     const access = await createProductionNetworkAccess(t, { selection, image });
     const dependencies = ["dns", "database", "cluster"];
-    const discovery = ["authentication", "catalog"];
-    const optional = ["provider", "envoy", ...discovery];
-    const discoveryWrongPorts = ["authenticationWrongPort", "catalogWrongPort"];
-    const unrelated = [
-      "unexpected",
-      "databaseWrongPort",
-      "clusterWrongPort",
-      "exporterWrongPort",
-      ...discoveryWrongPorts,
-    ];
-    const all = [...dependencies, "exporter", ...optional, ...unrelated];
+    const unrelated = ["unexpected", "databaseWrongPort", "clusterWrongPort", "exporterWrongPort"];
+    const all = [...dependencies, "exporter", "envoy", ...unrelated];
 
     // Pre-install hooks run before the ordinary release policies exist.
     await access.install("bootstrap");
@@ -43,15 +34,16 @@ test(
     // Apply every release policy, including the retained bootstrap hook: grants are additive.
     await access.install("installed");
     for (const scenario of [
-      ...["api", "worker", "initialization"].map((source) => ({
+      { source: "api", allow: all },
+      ...["worker", "initialization"].map((source) => ({
         source,
         allow: dependencies,
-        deny: ["exporter", ...optional, ...unrelated, ...(source === "worker" ? ["api"] : [])],
+        deny: ["exporter", "envoy", ...unrelated, ...(source === "worker" ? ["api"] : [])],
       })),
       {
         source: "collector",
         allow: ["dns", "cluster", "exporter"],
-        deny: ["database", ...optional, ...unrelated],
+        deny: ["database", "envoy", ...unrelated],
       },
       ...["unknown", "missing"].map((source) => ({ source, deny: all })),
       // An unrelated release is outside this release's selector, not implicitly default-denied.
@@ -62,26 +54,18 @@ test(
       await t.test(`installed access for ${scenario.source}`, () => access.verify(scenario));
     }
 
-    // Model and hosted catalog discovery reach only the configured hosts on API HTTPS;
-    // the private Envoy route also serves the worker.
-    await access.install("optional");
+    // Enabling private Gateway routing permits the worker to reach Envoy. The
+    // Envoy ingress policy admits the API and worker of this release.
+    await access.install("routing");
     for (const scenario of [
-      {
-        source: "api",
-        allow: [...dependencies, ...optional],
-        deny: ["exporter", "unexpected", "providerWrongPort", ...discoveryWrongPorts],
-      },
-      {
-        source: "worker",
-        allow: ["envoy"],
-        deny: ["provider", "providerWrongPort", ...discovery, ...discoveryWrongPorts],
-      },
+      { source: "api", allow: all },
+      { source: "worker", allow: ["envoy"], deny: unrelated },
       ...["initialization", "collector", "unknown", "missing", "otherRelease"].map((source) => ({
         source,
-        deny: optional,
+        deny: ["envoy"],
       })),
     ]) {
-      await t.test(`optional routes for ${scenario.source}`, () => access.verify(scenario));
+      await t.test(`Envoy routing for ${scenario.source}`, () => access.verify(scenario));
     }
 
     // Exercise the actual Compute-generated revision policy against the CNI.
@@ -101,6 +85,14 @@ test(
         // Real listeners, Services, renderer output and CNI enforce this boundary. These
         // probes do not run OpenShell, an Agent lifecycle, or a model turn.
         await access.installOpenShellManagement(0);
+        await access.verify({
+          source: "managementapi",
+          allow: ["unexpected", "databaseWrongPort"],
+        });
+        await access.verify({
+          source: "managementworker",
+          deny: ["unexpected", "databaseWrongPort"],
+        });
         const ports = {
           allow: ["management"],
           deny: ["managementWrongPort"],

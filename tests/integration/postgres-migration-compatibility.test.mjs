@@ -966,6 +966,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
       ["occ.hold_agent_audit_policy(text)", true],
+      ["occ.purge_namespace_plugin_releases(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1489,6 +1490,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preNamespacePluginReleases"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1944,6 +1946,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preNamespacePluginReleases"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2506,6 +2509,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preNamespacePluginReleases"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2638,6 +2642,7 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preNamespacePluginReleases"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2803,6 +2808,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preNamespacePluginReleases"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2830,6 +2836,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
@@ -2863,6 +2870,9 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 90) {
+          // Abort 0091 after creating the release table and restricted purge function.
+          failAt = "IF to_regclass('occ.plugin_releases') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

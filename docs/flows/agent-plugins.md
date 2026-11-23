@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-22
-last_updated_session: authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768
+updated: 2026-11-23
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Agent Plugin Deployment Flow
@@ -66,6 +66,10 @@ graph TD
 ```
 
 ## Execution Trace
+
+### Import a Namespace release
+
+[Publication](../../packages/occ/src/plugin-releases.ts) requires `publish_plugins`; [admission](../../packages/occ/src/agent-deployment-admission.ts) blocks deployment pending [runtime support](../reference/namespace-plugin-releases.md#runtime-dependencies).
 
 ### Credential-scoped discovery
 

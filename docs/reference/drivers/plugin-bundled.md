@@ -9,7 +9,9 @@ owns the API and policy vocabulary. The
 
 ## Selection and catalogs
 
-List the Plugin Drivers in trusted Installation YAML. Include one entry for each Harness whose catalog you want to offer.
+See [Namespace releases](../namespace-plugin-releases.md) for imported packages and runtime limits.
+
+List one Plugin Driver per Harness in trusted Installation YAML.
 
 ```yaml
 drivers:
@@ -24,9 +26,8 @@ drivers:
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
 using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
 `auth.openai.com` and `chatgpt.com`. The
-[Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-egress)
-renders matching Helm egress; manual YAML needs equivalent policy. The driver
-does not configure Kubernetes networking.
+[Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-access)
+requires that connectivity. The driver does not configure Kubernetes networking.
 
 The `openai-curated` setting above enables browsing without a credential or
 provider request.

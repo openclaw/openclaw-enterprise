@@ -20,7 +20,6 @@ import {
   chartRefusal,
   chartTooling,
   deploymentEnv,
-  loginEgress,
   renderChart,
   repository,
   signInSettings,
@@ -233,32 +232,11 @@ export async function startsUp(environment: NodeJS.ProcessEnv, label?: string) {
   );
 }
 
-// Renders `values` and checks what the chart gives the API: exactly `settings`, a default
-// login egress per listed provider (any address except link-local, on TCP 443 only), and no
-// sign-in or trusted-proxy setting for the worker. Returns the API's env.
-export async function renders(
-  label: string,
-  values: ChartValues,
-  settings: SignInSettings,
-  egress: readonly ("google" | "oidc")[],
-) {
+// Render the exact API sign-in settings and verify the worker receives none.
+export async function renders(label: string, values: ChartValues, settings: SignInSettings) {
   const objects = await render(values);
   const rendered = signInSettings(deploymentEnv(objects, "api"));
   assert.deepEqual(rendered, settings, label);
-  const policies = loginEgress(objects);
-  assert.deepEqual(policies.map(({ provider }) => provider).sort(), egress, label);
-  for (const { provider, rules } of policies) {
-    assert.deepEqual(
-      rules,
-      [
-        {
-          to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
-          ports: [{ protocol: "TCP", port: 443 }],
-        },
-      ],
-      `${label}: ${provider}`,
-    );
-  }
   assert.ok(
     !deploymentEnv(objects, "worker").some(({ name }) =>
       /^OCC_AUTH_(GITHUB_|GOOGLE_|OIDC_|TRUSTED_PROXY_|CLIENT_IP_HEADER)/.test(name),
@@ -284,13 +262,12 @@ export type AcceptedSignInCase = {
     };
     passwordSignIn?: "recovery-only";
   };
-  egress: readonly ("google" | "oidc")[];
 };
 
 export function acceptsEach(cases: readonly AcceptedSignInCase[]) {
   return settle(
-    cases.map(async ({ label, values, settings, parsed, egress }) => {
-      const environment = await renders(label, values, settings, egress);
+    cases.map(async ({ label, values, settings, parsed }) => {
+      const environment = await renders(label, values, settings);
       assert.deepEqual(humanLoginConfiguration(environment), parsed, label);
       await startsUp(environment, label);
     }),

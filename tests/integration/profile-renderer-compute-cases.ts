@@ -359,7 +359,6 @@ export function registerComputeCases(): void {
           authorizationUrl: "https://sso.example.com/authorize",
           tokenUrl: "https://sso.example.com/token",
           jwksUrl: "https://sso.example.com/jwks",
-          egressCidrs: ["198.51.100.0/24"],
         },
         authBaseUrl: "https://console.example.com",
         agentNativeAdminDomain: "agents.example.com",

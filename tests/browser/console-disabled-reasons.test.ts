@@ -253,6 +253,7 @@ test("an appointed administrator without Namespace action grants gets neutral ac
     installation: { administer: true },
     agents: { create: false },
     secrets: { create: false },
+    publishPlugins: false,
     delete: false,
   });
 

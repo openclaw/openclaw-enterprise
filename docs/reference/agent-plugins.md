@@ -9,11 +9,13 @@ for the Agent's Harness. OCC checks policy before saving and performs
 
 ## Current support
 
-Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
+Dedicated OpenClaw on Kubernetes supports both bundled packages together (`plugins[id].enabled`).
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
 [Slack](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) discovers tools through `tools/list`.
 Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 Gateway approval names the selected MCP server and tool, without arguments. Direct scripts bypass approval.
+
+Dedicated OpenClaw drafts can select [Namespace releases](namespace-plugin-releases.md), but deployment is blocked.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -359,9 +361,7 @@ authentication, runtime compatibility, and raw native approver lists that
 conflict with inherited Agent policy are startup checks; their failures leave
 the candidate failed or unready without changing the earlier Agent write.
 
-Namespace plugin configuration, arbitrary catalogs, importing an owner's Codex
-configuration, plugin-specific settings/credential APIs, Code Mode, and new
-plugin permission restrictions are outside this feature. Existing sandbox,
+Importing an owner's Codex configuration and Code Mode are outside this feature. Existing sandbox,
 network, filesystem, managed policy, and authorization controls remain in force.
 An approval setting does not grant filesystem access or isolate plugin code.
 

@@ -1319,7 +1319,7 @@ p {
 }
 /* Namespace rows are list items; each cell names itself for a screen reader. */
 .namespace-table {
-  --namespace-columns: minmax(0, 1fr) 8rem 13rem 10rem;
+  --namespace-columns: minmax(0, 1fr) 8rem 13rem 11rem;
 }
 .namespace-table-head,
 .namespace-row {
@@ -1441,7 +1441,7 @@ p {
     grid-column: 2;
     grid-row: 2 / 4;
     align-self: center;
-    max-width: 10rem;
+    max-width: 11rem;
   }
   .namespace-cell-name .resource-id {
     overflow-wrap: anywhere;

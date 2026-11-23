@@ -266,8 +266,16 @@ export function buildControllerTopologyManifests({
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
     metadata: { name: `${name}-isolation`, namespace: platformNamespace },
+    spec: { podSelector: { matchLabels: labels }, policyTypes: ["Ingress"] },
+  };
+  const workerName = "openclaw-enterprise-worker";
+  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
+  const workerIsolation = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: `${workerName}-isolation`, namespace: platformNamespace },
     spec: {
-      podSelector: { matchLabels: labels },
+      podSelector: { matchLabels: workerLabels },
       policyTypes: ["Ingress", "Egress"],
       ingress: [],
       egress: [
@@ -298,8 +306,6 @@ export function buildControllerTopologyManifests({
   };
   // Use the production worker entrypoint inside the same network as its private
   // Gateway route, with the worker's own identity and only its required mounts.
-  const workerName = "openclaw-enterprise-worker";
-  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
   const workerVolumes = ["installation", "gateway-api-key", "gateway-ca"];
   const workerDeployment = {
     apiVersion: "apps/v1",
@@ -370,9 +376,6 @@ export function buildControllerTopologyManifests({
       },
     },
   };
-  const workerIsolation = structuredClone(apiIsolation);
-  workerIsolation.metadata.name = `${workerName}-isolation`;
-  workerIsolation.spec.podSelector.matchLabels = workerLabels;
 
   return {
     manifests: {

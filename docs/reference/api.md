@@ -65,7 +65,7 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "RATE_LIMITED" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP" or "INVALID_RANGE" or "OUTSIDE_CEILING"` | Yes | — |
 | `error.details[].message` | `string` | No | max length: 512 |
@@ -89,7 +89,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
-| [Namespaces](#namespaces) | 7 operations |
+| [Namespaces](#namespaces) | 9 operations |
 | [Agents](#agents) | 54 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
@@ -3918,6 +3918,8 @@ Example response
 | [`GET /namespaces/{namespaceId}/agent-capabilities`](#get-namespacesnamespaceidagentcapabilities) | Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there |
 | [`GET /namespaces/{namespaceId}/permissions`](#get-namespacesnamespaceidpermissions) | Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/permissions/secrets`](#get-namespacesnamespaceidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation |
+| [`POST /namespaces/{namespaceId}/plugin-releases`](#post-namespacesnamespaceidpluginreleases) | Publish a reviewed plugin release in this Namespace |
+| [`POST /namespaces/{namespaceId}/plugin-releases/preview`](#post-namespacesnamespaceidpluginreleasespreview) | Inspect the components of a plugin package or marketplace entry |
 
 #### `GET /namespaces`
 
@@ -4356,6 +4358,7 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | `data.delete` | `boolean` | Yes | Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion. |
 | `data.installation` | `object` | Yes | — |
 | `data.installation.administer` | `boolean` | Yes | Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation. |
+| `data.publishPlugins` | `boolean` | Yes | Whether the caller may publish plugin releases in this Namespace. |
 | `data.secrets` | `object` | Yes | — |
 | `data.secrets.create` | `boolean` | Yes | Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |
@@ -4372,6 +4375,7 @@ Example response
     "installation": {
       "administer": true
     },
+    "publishPlugins": true,
     "secrets": {
       "create": true
     }
@@ -4428,6 +4432,207 @@ Example response
 {
   "data": {
     "operateDenied": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/plugin-releases`
+
+<span id="post-namespacesnamespaceidpluginreleases"></span>
+
+Publish a reviewed plugin release in this Namespace
+
+**Operation ID:** `publishPluginRelease`
+
+**Permissions:** Requires publish_plugins permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `publish_plugins` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `archiveBase64` | `string` | Yes | min length: 4; max length: 22369624; A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed. |
+| `archiveSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `digest` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `marketplaceEntry` | `string` | No | min length: 1; max length: 128 |
+
+Example request
+```json
+{
+  "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA==",
+  "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+  "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `422` | The uploaded plugin package cannot be inspected. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.archiveSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.description` | `string` | No | — |
+| `data.digest` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.format` | `"agent-plugins" or "claude"` | Yes | — |
+| `data.mcpServers` | `array<object>` | Yes | — |
+| `data.mcpServers[].bearerEnv` | `string` | No | — |
+| `data.mcpServers[].name` | `string` | Yes | — |
+| `data.mcpServers[].url` | `string` | Yes | — |
+| `data.name` | `string` | Yes | — |
+| `data.skills` | `array<string>` | Yes | — |
+| `data.unsupported` | `array<object>` | Yes | — |
+| `data.unsupported[].component` | `string` | Yes | — |
+| `data.unsupported[].reason` | `string` | Yes | — |
+| `data.version` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+    "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+    "format": "agent-plugins",
+    "mcpServers": [],
+    "name": "reporting",
+    "skills": [
+      "report"
+    ],
+    "unsupported": [],
+    "version": "1.0.0"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/plugin-releases/preview`
+
+<span id="post-namespacesnamespaceidpluginreleasespreview"></span>
+
+Inspect the components of a plugin package or marketplace entry
+
+**Operation ID:** `previewPluginRelease`
+
+**Permissions:** Requires publish_plugins permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `publish_plugins` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `archiveBase64` | `string` | Yes | min length: 4; max length: 22369624; A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed. |
+| `marketplaceEntry` | `string` | No | min length: 1; max length: 128 |
+
+Example request
+```json
+{
+  "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA=="
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `422` | The uploaded plugin package cannot be inspected. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.archiveSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.description` | `string` | No | — |
+| `data.digest` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.format` | `"agent-plugins" or "claude"` | Yes | — |
+| `data.mcpServers` | `array<object>` | Yes | — |
+| `data.mcpServers[].bearerEnv` | `string` | No | — |
+| `data.mcpServers[].name` | `string` | Yes | — |
+| `data.mcpServers[].url` | `string` | Yes | — |
+| `data.name` | `string` | Yes | — |
+| `data.skills` | `array<string>` | Yes | — |
+| `data.unsupported` | `array<object>` | Yes | — |
+| `data.unsupported[].component` | `string` | Yes | — |
+| `data.unsupported[].reason` | `string` | Yes | — |
+| `data.version` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+    "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+    "format": "agent-plugins",
+    "mcpServers": [],
+    "name": "reporting",
+    "skills": [
+      "report"
+    ],
+    "unsupported": [],
+    "version": "1.0.0"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -5220,6 +5425,7 @@ Example request
 | `data.plugins[].id` | `string` | Yes | — |
 | `data.plugins[].logoUrl` | `string` | No | — |
 | `data.plugins[].name` | `string` | Yes | — |
+| `data.plugins[].policyScope` | `"enablement_only"` | No | — |
 | `data.plugins[].privacyPolicyUrl` | `string` | No | — |
 | `data.plugins[].remoteId` | `string` | No | — |
 | `data.plugins[].selectableWithoutTools` | `boolean` | No | — |
@@ -5327,6 +5533,7 @@ Example request
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
 | `data.name` | `string` | Yes | — |
+| `data.policyScope` | `"enablement_only"` | No | — |
 | `data.privacyPolicyUrl` | `string` | No | — |
 | `data.remoteId` | `string` | No | — |
 | `data.selectableWithoutTools` | `boolean` | No | — |
@@ -7704,6 +7911,7 @@ Example request
 | `data.plugins[].id` | `string` | Yes | — |
 | `data.plugins[].logoUrl` | `string` | No | — |
 | `data.plugins[].name` | `string` | Yes | — |
+| `data.plugins[].policyScope` | `"enablement_only"` | No | — |
 | `data.plugins[].privacyPolicyUrl` | `string` | No | — |
 | `data.plugins[].remoteId` | `string` | No | — |
 | `data.plugins[].selectableWithoutTools` | `boolean` | No | — |
@@ -7792,6 +8000,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].label` | `string` | Yes | — |
 | `data.credentialSlots[].pluginId` | `string` | Yes | — |
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].serverUrl` | `string` | No | — |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
@@ -7913,6 +8122,7 @@ Example request
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
 | `data.name` | `string` | Yes | — |
+| `data.policyScope` | `"enablement_only"` | No | — |
 | `data.privacyPolicyUrl` | `string` | No | — |
 | `data.remoteId` | `string` | No | — |
 | `data.selectableWithoutTools` | `boolean` | No | — |
@@ -11638,7 +11848,7 @@ List exact Namespace IAM Roles
 | `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "publish_plugins"` | Yes | — |
 | `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11706,7 +11916,7 @@ Create an immutable Namespace IAM Role
 | --- | --- | --- | --- |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "publish_plugins"` | Yes | — |
 | `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
 
 Example request
@@ -11746,7 +11956,7 @@ Example request
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "publish_plugins"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11849,7 +12059,7 @@ Get an exact Namespace IAM Role
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "publish_plugins"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

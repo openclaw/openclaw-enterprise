@@ -16,7 +16,6 @@
       "secretName": "occ-oidc-login",
       "clientIdKey": "client-id",
       "clientSecretKey": "client-secret",
-      "egressCidrs": ["198.51.100.20/32"],
       "enrollment": {
         "admission": { "groupsClaim": "groups", "anyOf": ["/oce-pilot"] },
         "createAccount": { "enabled": false },

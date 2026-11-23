@@ -240,6 +240,14 @@ choose **Load plugins**. Check that both tabs show the deletion message and
 request ID, and that discovery is disabled. Choose **Done** and check that
 **Plugin selections JSON** still contains the unsaved Project tracker selection.
 
+## Publish and select an imported plugin
+
+Open **Pages / Namespaces / Publish a Namespace plugin**. Choose Engineering's **Import plugin** action, select a package archive, and choose **Preview package**. Review the skills, hosted MCP server URL, excluded components, and deployment limitations. Publish the release and check the confirmation. This action requires Namespace publication access and does not require an Agent.
+
+Open **Pages / Agent detail / Select an imported release** to publish through the Agent shortcut and select **weekly-reports** in **Configure plugins**. The selection explains that imported skills cannot deploy until the pinned runtime supports installation. The reports server explains that Plugin credential delivery is unavailable and links to Connection templates in a separate tab.
+
+**Unsupported plugin archive** simulates an inspection error. **Plugin publication permission denied** omits the import control. These stories simulate Console requests and state transitions. They do not verify package inspection, persistence, deployment, or a working MCP call.
+
 ## Update
 
 Compare **New version in progress** (v7 deploying) with **Current version during

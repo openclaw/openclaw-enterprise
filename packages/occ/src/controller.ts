@@ -8,6 +8,7 @@ import {
 } from "./controller-composition.ts";
 import { type NamespaceLifecycleEvidence } from "./namespace-lifecycle.ts";
 import { type CreateNamespaceInput } from "./namespace-operations.ts";
+import type { PluginReleasePublication } from "./plugin-releases.ts";
 import {
   type CreateConnectionTemplateInput,
   type CreateOAuthClientInput,
@@ -1456,6 +1457,24 @@ export class OpenClawController {
       namespaceId,
       input,
       signal,
+    );
+  }
+
+  async authorizePluginPublication(principalId: string, namespaceId: string): Promise<void> {
+    return this.composition.pluginReleases.authorizePluginPublication(principalId, namespaceId);
+  }
+
+  async importPluginRelease(
+    principalId: string,
+    namespaceId: string,
+    input: { readonly archiveBase64: string; readonly marketplaceEntry?: string },
+    publication?: PluginReleasePublication,
+  ) {
+    return this.composition.pluginReleases.importPluginRelease(
+      principalId,
+      namespaceId,
+      input,
+      publication,
     );
   }
 

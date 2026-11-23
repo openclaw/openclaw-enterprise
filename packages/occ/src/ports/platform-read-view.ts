@@ -8,6 +8,7 @@ import type { CredentialSourceReadRepository } from "./credential-sources.ts";
 import type { InstallationReadRepository } from "./installations.ts";
 import type { NamespaceReadRepository } from "./namespaces.ts";
 import type { PlatformOperationReadRepository } from "./platform-operations.ts";
+import type { PluginReleaseReadRepository } from "./plugin-releases.ts";
 import type { PresetReadRepository } from "./presets.ts";
 import type { RepositorySessionReadRepository } from "./repository-sessions.ts";
 import type { SavedConnectionReadRepository } from "./saved-connections.ts";
@@ -26,6 +27,7 @@ export interface PlatformReadView {
   readonly connectionTemplates: ConnectionTemplateReadRepository;
   readonly savedConnections: SavedConnectionReadRepository;
   readonly presets: PresetReadRepository;
+  readonly pluginReleases: PluginReleaseReadRepository;
   readonly authenticationStates: AuthenticationStateReadRepository;
   readonly secrets: SecretReadRepository;
   readonly credentialSources: CredentialSourceReadRepository;
@@ -53,6 +55,7 @@ export const platformReadMethods = deepFreeze({
   namespaces: ["findNamespace", "listNamespaces"],
   configurations: ["findConfiguration"],
   presets: ["findPreset", "listPresets", "listPresetSummaries"],
+  pluginReleases: ["find", "list"],
   connectionTemplates: [
     "findConnectionTemplate",
     "listConnectionTemplates",
@@ -161,6 +164,7 @@ export function createPlatformReadView(
     namespaces: bind(repositories.namespaces, methods.namespaces),
     configurations: bind(repositories.configurations, methods.configurations),
     presets: bind(repositories.presets, methods.presets),
+    pluginReleases: bind(repositories.pluginReleases, methods.pluginReleases),
     connectionTemplates: bind(repositories.connectionTemplates, methods.connectionTemplates),
     savedConnections: bind(repositories.savedConnections, methods.savedConnections),
     authenticationStates: bind(repositories.authenticationStates, methods.authenticationStates),

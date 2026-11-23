@@ -193,7 +193,6 @@ export function registerEgressCases(): void {
       workspaceId: "11111111-1111-4111-8111-111111111111",
       adminSecretName: "occ-chatgpt-admin",
       adminSecretKey: "admin-key",
-      providerCidr: "192.0.2.21/32",
     };
     const accepted = await render(
       "codex",

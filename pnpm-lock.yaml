@@ -125,6 +125,9 @@ importers:
       pino:
         specifier: 10.4.0
         version: 10.4.0
+      tar-stream:
+        specifier: 3.2.2
+        version: 3.2.2(bare-buffer@3.7.1)
       tldts:
         specifier: 7.4.19
         version: 7.4.19
@@ -137,6 +140,9 @@ importers:
       undici:
         specifier: 8.12.4
         version: 8.12.4
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
 
   packages/audit:
     dependencies:

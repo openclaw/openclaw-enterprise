@@ -3423,6 +3423,7 @@ export class ControllerWorker {
             );
           }
         } else if (outcome === "success") {
+          await unit.pluginReleases.purgeNamespace(current.id);
           await unit.namespaces.markNamespaceDeleted(current.id, new Date().toISOString());
           // No grant outlives its Namespace. The lifecycle event records what was removed.
           removedPolicy = await removeNamespacePolicy(unit, current.id);

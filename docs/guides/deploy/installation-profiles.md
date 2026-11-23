@@ -168,8 +168,7 @@ ChatGPT Backend admin credential path:
     "managedServiceAccounts": {
       "workspaceId": "11111111-1111-4111-8111-111111111111",
       "adminSecretName": "occ-chatgpt-admin",
-      "adminSecretKey": "admin-key",
-      "providerCidr": "198.51.100.30/32"
+      "adminSecretKey": "admin-key"
     }
   }
 }
@@ -198,19 +197,9 @@ set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
-### Hosted discovery egress
+### Hosted discovery access
 
-With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
-`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
-`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
-IPv4 `/32` hosts.
-
-Supplied lists stay unchanged without DNS queries; `[]` requires an external
-HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
-
-Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
-Rerender and upgrade Helm after address changes; this initial snapshot does not
-refresh itself.
+The chart leaves API Server egress to the cluster operator. Before using **Load plugins**, verify that the API Pod can reach `auth.openai.com` and `chatgpt.com` over HTTPS. Apply any additional API egress restriction through a separate cluster policy.
 
 ### External sign-in and trusted proxies
 
@@ -250,8 +239,7 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`google` and `oidc` accept `secretName`, `clientIdKey`, `clientSecretKey` and
-`egressCidrs`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
+`google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
@@ -360,8 +348,7 @@ Preflight refuses a prefix that the controller would reject at startup.
 The renderer does not check these prerequisites. Verify them before you treat
 the install as ready:
 
-- Kubernetes 1.35 or later, enforced NetworkPolicies, and exact API/database
-  egress destinations.
+- Kubernetes 1.35 or later, enforced NetworkPolicies, and database connectivity.
 - Envoy Gateway, cert-manager, and, unless external sign-in disables native
   admin, wildcard DNS and TLS for native admin and the shared cookie parent domain.
 - A default ReadWriteOnce storage class for dedicated Codex workspace claims and
@@ -377,7 +364,7 @@ the install as ready:
   Codex execution; customer upstream proxies are not supported.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-egress).
+  See [hosted discovery access](#hosted-discovery-access).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

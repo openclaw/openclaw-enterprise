@@ -3015,18 +3015,33 @@ function configureManagedMcpPolicy(config, installs) {
 }
 
 function installGatewayPlugins(runtime, failures, installs) {
-  if (installs.length === 0) return installOpenClawPlugins(runtime, failures);
-
-  // Only native packages go through OpenClaw's installer. Managed releases are in the image.
   const selections = { ...runtime.manifest.selections };
+  const importedIds = Object.keys(selections).filter((id) => id.startsWith("occ-import:")).sort();
+  if (installs.length === 0 && importedIds.length === 0) return installOpenClawPlugins(runtime, failures);
+
+  // The init container verified these release bytes and mounted the output read-only.
+  const selectedImports = importedIds.filter((id) => selections[id].enabled);
+  if (selectedImports.length) {
+    const material = JSON.parse(pluginReadFileSync("/run/oce/imported-plugins/release.json", "utf8"));
+    if (JSON.stringify(material.ids) !== JSON.stringify(selectedImports)) throw new Error("The imported plugin material does not match this Agent revision.");
+    if (Object.keys(material.pins ?? {}).length > 0) throw new Error("Imported skill deployment requires an upstream pinned skill source capability.");
+  }
+  // Only native packages go through OpenClaw's installer. Managed releases are in the image.
   for (const { id, release, skill } of installs) {
     if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
     if (selections[id]?.enabled !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
-    delete selections[id];
   }
+  for (const { id } of installs) delete selections[id];
+  for (const id of importedIds) delete selections[id];
   const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
   const result = installOpenClawPlugins(native, failures);
   const config = readOpenClawConfig();
+  if (selectedImports.length) {
+    const load = (config.skills ??= {}).load ??= {};
+    load.extraDirs = [...new Set([...(load.extraDirs ?? []), "/run/oce/imported-plugins/skills"])];
+    writeOpenClawConfig(config);
+    result.successfulPluginIds.push(...selectedImports);
+  }
   for (const { id, release, skills: skillsDirectory, skill } of installs) {
     if (skill || (skillsDirectory && config.skills?.load?.extraDirs?.includes(skillsDirectory))) {
       const skills = config.skills ??= {};
@@ -3035,7 +3050,7 @@ function installGatewayPlugins(runtime, failures, installs) {
       load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
       writeOpenClawConfig(config);
     }
-    if (release) result.successfulPluginIds.push(id);
+    if (release && !selectedImports.includes(id)) result.successfulPluginIds.push(id);
   }
   return result;
 }
@@ -6037,9 +6052,9 @@ for (const install of installs) {
   }
   // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
   if (!install.mcp) continue;
+  const { delivery, server, localServer, toolNames } = install.mcp;
   const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
-  const { delivery, server, localServer, toolNames } = install.mcp;
   const endpoint = manifest.mcpServers[server];
   if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
     throw new Error("The managed MCP server declaration is invalid.");

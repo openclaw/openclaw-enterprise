@@ -3,6 +3,7 @@ import {
   CONFIGURED_IAM_ID_PREFIXES,
   isName,
   isSupportedPermission,
+  namespaceRoleMayGrant,
   PERMISSION_ACTIONS,
   RESOURCE_KINDS,
   type AccessBinding,
@@ -217,10 +218,10 @@ function iamRolePermissions(permissions: readonly Permission[]): readonly Permis
         `Namespace IAM Roles cannot grant ${permission.resourceKind} Permissions.`,
       );
     }
-    if (permission.resourceKind === "namespace" && permission.action !== "read") {
+    if (!namespaceRoleMayGrant(permission)) {
       throw new IAMPolicyValidationError(
         `/permissions/${index}/action`,
-        "Namespace IAM Roles support only namespace:read on the Namespace itself.",
+        "Namespace IAM Roles can grant namespace:read or namespace:publish_plugins on the Namespace itself.",
       );
     }
     const key = `${permission.action}\u0000${permission.resourceKind}`;

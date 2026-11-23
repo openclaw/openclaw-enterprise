@@ -63,6 +63,7 @@ import {
 } from "./controller-resource-values.ts";
 import { AgentRuntimeObservations } from "./agent-runtime-observations.ts";
 import { createPluginDiscovery } from "./plugin-discovery.ts";
+import { createPluginReleases } from "./plugin-releases.ts";
 import { deviceAuthorizationCipher } from "./device-authorization.ts";
 import { createDeviceAuthorizationFlow } from "./device-authorization-flow.ts";
 import type {
@@ -891,6 +892,7 @@ export function createControllerComposition(
     requestAuditId: currentRequestAuditId,
   });
   const agentPlugins = createAgentPluginValidation({
+    authority,
     pluginDriver: (harnessId, forConfiguration) =>
       drivers.pluginDriver(harnessId, forConfiguration),
     computeImplementation: () => selectedCompute().implementation,
@@ -907,6 +909,11 @@ export function createControllerComposition(
     modelPolicyAgent,
     pluginDriver: (harnessId) => drivers.pluginDriver(harnessId),
     validatePluginPlacement: agentPlugins.validatePluginPlacement,
+  });
+  const pluginReleases = createPluginReleases({
+    authority,
+    transactions,
+    pluginDriver: () => drivers.pluginDriver("openclaw"),
   });
   const validateSavedAgentTopology = createSavedAgentTopologyValidator({
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
@@ -1182,6 +1189,7 @@ export function createControllerComposition(
     observeNamespaceLifecycle,
     pendingOperations,
     pluginDiscovery,
+    pluginReleases,
     presets,
     provisioningRequests,
     provisioningWorker,

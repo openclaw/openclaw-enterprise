@@ -437,3 +437,67 @@ export function pluginApproverScenarios(draft: string) {
     },
   } satisfies Record<string, PluginScenario>;
 }
+
+export function pluginImportScenarios(draft: string) {
+  const namespacePublisher = {
+    group: "Pages/Namespaces",
+    path: "/console/namespaces",
+    emptyAgents: true,
+    gap: "The fixture simulates package inspection and publication. It does not deploy a worker.",
+  } as const;
+  const editor = {
+    group: "Pages/Agent detail",
+    path: draft + "&tab=plugins",
+    harnessId: "openclaw",
+    pluginDiscoveryCredential: "none",
+    agentPlugins: {},
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    },
+    pluginDiscovery: { pages: { initial: { plugins: [], nextCursor: null } }, details: {} },
+    gap: "The fixture simulates package inspection, publication and catalog refresh. It does not deploy a worker.",
+  };
+  return {
+    pluginImport: {
+      ...namespacePublisher,
+      pluginImport: "admin",
+      name: "Publish a Namespace plugin",
+      description:
+        "A Namespace publisher can preview and publish a package without access to an Agent.",
+      actions: [],
+      steps: [
+        "Choose Engineering's Import plugin action. Choose a .tgz file; for a marketplace archive, enter its entry name.",
+        "Preview the fixture. Review the imported skill, reports server URL, excluded hooks, and the separate skill and MCP deployment warnings.",
+        "Publish to Namespace and check the publication confirmation.",
+      ],
+    },
+    pluginImportDenied: {
+      ...namespacePublisher,
+      pluginImport: "denied",
+      name: "Plugin publication permission denied",
+      description:
+        "The caller can read the Namespace but lacks the Namespace publication grant; the import action is absent.",
+      actions: [],
+    },
+    pluginImportInvalid: {
+      ...namespacePublisher,
+      pluginImport: "invalid",
+      name: "Unsupported plugin archive",
+      description: "The fixture rejects inspection and preserves the upload control for retry.",
+      actions: [],
+    },
+    pluginImportAgent: {
+      ...editor,
+      pluginImport: "admin",
+      name: "Select an imported release",
+      description:
+        "Publish through the Agent shortcut, select the simulated release, and review both deployment limitations.",
+      actions: [],
+      steps: [
+        "Open Import plugin, preview an archive, and publish the simulated release.",
+        "Choose Configure plugins, select weekly-reports, and add it. Check the skill deployment refusal and hosted MCP unavailability messages.",
+      ],
+    },
+  } as const;
+}

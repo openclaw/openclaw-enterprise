@@ -32,6 +32,10 @@ node --test tests/integration/kubernetes-plugin-status-real.test.ts
 
 This checks status transport and restart behavior with controlled producers. It does not prove native plugin compatibility.
 
+## Imported plugins on dedicated OpenClaw
+
+Real imported skill and credentialed hosted MCP qualification remains blocked on the [runtime dependencies](../reference/namespace-plugin-releases.md#runtime-dependencies).
+
 ## Native startup metadata reads
 
 After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.164.0`, and start Docker.

@@ -62,13 +62,16 @@ async function getNamespaceCallerPermissions({
   // Targets match Namespace deletion, operationTarget() for creation, and
   // requireInstallationAdmin. The console reads this answer
   // instead of an Installation-only read, which the API audits when it is refused.
-  const [namespaceDelete, agentCreate, secretCreate, installationAdminister] = await Promise.all([
-    callerMay(actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
-    callerMay(actorId, "create", { kind: "agent", id: namespaceId, namespaceId }),
-    callerMay(actorId, "create", { kind: "secret", id: namespaceId, namespaceId }),
-    callerMay(actorId, "administer", { kind: "installation", id: installationId }),
-  ]);
+  const [namespaceDelete, agentCreate, secretCreate, installationAdminister, publishPlugins] =
+    await Promise.all([
+      callerMay(actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
+      callerMay(actorId, "create", { kind: "agent", id: namespaceId, namespaceId }),
+      callerMay(actorId, "create", { kind: "secret", id: namespaceId, namespaceId }),
+      callerMay(actorId, "administer", { kind: "installation", id: installationId }),
+      callerMay(actorId, "publish_plugins", { kind: "namespace", id: namespaceId, namespaceId }),
+    ]);
   return {
+    publishPlugins,
     delete: namespaceDelete,
     agents: { create: agentCreate },
     secrets: { create: secretCreate },

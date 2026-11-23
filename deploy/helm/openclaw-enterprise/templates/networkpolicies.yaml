@@ -7,6 +7,10 @@ spec:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [api]
   policyTypes: [Ingress, Egress]
 ---
 apiVersion: networking.k8s.io/v1
@@ -46,7 +50,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [api, worker, initialization]
+        values: [worker, initialization]
   policyTypes: [Egress]
   egress:
     {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
@@ -66,113 +70,6 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.cluster.port }}
-{{- range $name, $setting := dict "model-discovery" "modelDiscoveryCidrs" "plugin-discovery" "pluginDiscoveryCidrs" }}
-{{- $cidrs := index $.Values.api $setting }}
-{{- if not (kindIs "slice" $cidrs) }}
-{{- fail (printf "api.%s must be a list of explicit IPv4 /32 hosts" $setting) }}
-{{- end }}
-{{- if $cidrs }}
-{{- range $cidr := $cidrs }}
-{{- if not (regexMatch (include "openclaw.ipv4Host32" .) (toString $cidr)) }}
-{{- fail (printf "api.%s entries must identify exactly one IPv4 host with /32" $setting) }}
-{{- end }}
-{{- end }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-{{ $name }}-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    - to:
-        {{- range $cidrs }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: 443
-{{- end }}
-{{- end }}
-{{- if .Values.backend.chatgpt.enabled }}
-{{- $providerCidr := .Values.backend.chatgpt.providerCidr }}
-{{- if not (regexMatch (include "openclaw.ipv4Host32" .) $providerCidr) }}
-{{- fail "backend.chatgpt.providerCidr must identify one IPv4 /32 destination for api.chatgpt.com:443; it does not configure a forward proxy" }}
-{{- end }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-chatgpt-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - ipBlock:
-            cidr: {{ $providerCidr }}
-      ports:
-        - protocol: TCP
-          port: 443
-{{- end }}
-{{- if and .Values.auth.google .Values.auth.google.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-google-login-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    # The API calls only oauth2.googleapis.com and www.googleapis.com. Google publishes
-    # no small stable range for them. Empty egressCidrs permits HTTPS to any address
-    # except link-local (cloud metadata) 169.254.0.0/16; narrow it with an egress proxy.
-    - to:
-        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.google.egressCidrs | nindent 8 }}
-      ports:
-        - protocol: TCP
-          port: 443
-{{- end }}
-{{- if and .Values.auth.oidc .Values.auth.oidc.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-oidc-login-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    # The API calls only the configured token and JWKS URLs, whose host names were checked
-    # at startup; this bounds the addresses they resolve to. Empty egressCidrs permits HTTPS
-    # to any address except link-local (cloud metadata) 169.254.0.0/16.
-    - to:
-        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.oidc.egressCidrs | nindent 8 }}
-      ports:
-        - protocol: TCP
-          port: 443
-{{- end }}
-
-
 {{- if include "openclaw.repositoryCredentials.gitEnabled" . }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -215,7 +112,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [api, worker]
+        values: [worker]
   policyTypes: [Egress]
   egress:
     - to:
@@ -242,7 +139,7 @@ spec:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
     matchExpressions:
-      - {key: app.kubernetes.io/component, operator: In, values: [api, worker]}
+      - {key: app.kubernetes.io/component, operator: In, values: [worker]}
   policyTypes: [Egress]
   egress:
     - to:

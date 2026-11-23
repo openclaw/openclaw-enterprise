@@ -186,7 +186,7 @@ spec:
         - protocol: TCP
           port: 1
           endPort: 65535
-{{- range $component, $port := dict "api" $egress.occListenerPort "worker" $egress.inspectionPort }}
+{{- range $component, $port := dict "worker" $egress.inspectionPort }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

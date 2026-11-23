@@ -263,15 +263,26 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 func TestKubernetesOnlyOpenShellGatewayAdmitsOnlyItsClients(t *testing.T) {
 	policies := developmentOpenShellNetworkPolicies("oce-system", map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"})
 	items := jsonValue(t, policies).(map[string]any)["items"].([]any)
-	var ingress map[string]any
+	var ingress, egress map[string]any
 	for _, item := range items {
 		policy := item.(map[string]any)
 		if policy["metadata"].(map[string]any)["name"] == "openclaw-development-openshell-ingress" {
 			ingress = policy["spec"].(map[string]any)
+		} else if policy["metadata"].(map[string]any)["name"] == "openclaw-enterprise-openshell-egress" {
+			egress = policy["spec"].(map[string]any)
 		}
 	}
 	if ingress == nil {
 		t.Fatal("missing OpenShell gateway ingress policy")
+	}
+	// The API can reach OpenShell through admitted ingress without an Egress policy
+	// selecting and isolating it; only the worker needs an outbound exception.
+	if egress == nil || !reflect.DeepEqual(egress["podSelector"], jsonValue(t, map[string]any{"matchLabels": map[string]string{
+		"app.kubernetes.io/name":      "openclaw-enterprise",
+		"app.kubernetes.io/instance":  "openclaw-enterprise",
+		"app.kubernetes.io/component": "worker",
+	}})) {
+		t.Fatalf("OpenShell egress must select only the worker: %#v", egress)
 	}
 	// The worker provisions Sandboxes, the API registers credential sources,
 	// supervisors call back, and dedicated Agent Gateways relay to OpenShell-exposed
@@ -802,14 +813,14 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 	component := func(spec map[string]any) any {
 		return spec["podSelector"].(map[string]any)["matchExpressions"].([]any)[0].(map[string]any)["values"]
 	}
-	if !reflect.DeepEqual(component(database), jsonValue(t, []string{"api", "worker", "initialization", "upgrade-preflight"})) ||
+	if !reflect.DeepEqual(component(database), jsonValue(t, []string{"worker", "initialization", "upgrade-preflight"})) ||
 		!reflect.DeepEqual(database["egress"], jsonValue(t, []any{map[string]any{
 			"to":    []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]string{"app": "postgres"}}}},
 			"ports": []any{map[string]any{"protocol": "TCP", "port": 5432}},
 		}})) {
 		t.Fatalf("unexpected PostgreSQL restart egress: %#v", database)
 	}
-	if !reflect.DeepEqual(component(cluster), jsonValue(t, []string{"api", "worker", "initialization", "upgrade-preflight", "collector"})) ||
+	if !reflect.DeepEqual(component(cluster), jsonValue(t, []string{"worker", "initialization", "upgrade-preflight", "collector"})) ||
 		!reflect.DeepEqual(cluster["egress"], jsonValue(t, []any{map[string]any{
 			"to":    []any{map[string]any{"ipBlock": map[string]any{"cidr": "172.30.42.0/24"}}},
 			"ports": []any{map[string]any{"protocol": "TCP", "port": 6443}},

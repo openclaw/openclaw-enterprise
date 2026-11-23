@@ -350,10 +350,6 @@ const chartOnly = (
       assert.match(await refusal(values), chart, `${provider}: ${name}`);
     }),
   );
-const emptyEgress = (provider: string) =>
-  new RegExp(
-    `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
-  );
 
 export function registerProxyAndEgressCases() {
   test(
@@ -492,100 +488,57 @@ export function registerProxyAndEgressCases() {
     },
   );
 
-  test(
-    "the chart refuses Google Secret and egress settings the API cannot observe",
-    tooling,
-    async () => {
-      const google = googleUpgradeValues(recoveryUserId);
-      await chartOnly("google", [
-        [
-          "the Better Auth Secret",
-          { ...google, "auth.google.secretName": "occ-auth" },
-          /auth\.google\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "one key for client ID and secret",
-          { ...google, "auth.google.clientSecretKey": "client-id" },
-          /auth\.google client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "a hostname egress",
-          { ...google, "auth.google.egressCidrs[0]": "accounts.google.com" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an invalid egress address",
-          { ...google, "auth.google.egressCidrs[0]": "142.250.300.0/24" },
-          /auth\.google\.egressCidrs contains an invalid IPv4 address/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...google, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...google, "auth.google.egressCidrs": "" },
-          emptyEgress("google"),
-        ],
-        [
-          "an empty-string domain allowlist",
-          { ...google, "auth.google.allowedDomains": "" },
-          /auth\.google\.allowedDomains must be a list of DNS domain names/,
-        ],
-        [
-          "an HTTP base URL",
-          { ...google, "auth.baseUrl": "http://oce.example.internal" },
-          /auth\.google requires an HTTPS auth\.baseUrl/,
-        ],
-      ]);
-    },
-  );
+  test("the chart refuses Google Secret settings the API cannot observe", tooling, async () => {
+    const google = googleUpgradeValues(recoveryUserId);
+    await chartOnly("google", [
+      [
+        "the Better Auth Secret",
+        { ...google, "auth.google.secretName": "occ-auth" },
+        /auth\.google\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...google, "auth.google.clientSecretKey": "client-id" },
+        /auth\.google client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "an empty-string domain allowlist",
+        { ...google, "auth.google.allowedDomains": "" },
+        /auth\.google\.allowedDomains must be a list of DNS domain names/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...google, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.google requires an HTTPS auth\.baseUrl/,
+      ],
+    ]);
+  });
 
-  test(
-    "the chart refuses OIDC Secret and egress settings the API cannot observe",
-    tooling,
-    async () => {
-      const oidc = oidcUpgradeValues(recoveryUserId);
-      await chartOnly("oidc", [
-        [
-          "the Google sign-in Secret",
-          { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "the Better Auth Secret",
-          { ...oidc, "auth.oidc.secretName": "occ-auth" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "one key for client ID and secret",
-          { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
-          /auth\.oidc client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "a hostname egress",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "tenant.idp.example.test" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...oidc, "auth.oidc.egressCidrs": "" },
-          emptyEgress("oidc"),
-        ],
-        [
-          "an HTTP base URL",
-          { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
-          /auth\.oidc requires an HTTPS auth\.baseUrl/,
-        ],
-      ]);
-    },
-  );
+  test("the chart refuses OIDC Secret settings the API cannot observe", tooling, async () => {
+    const oidc = oidcUpgradeValues(recoveryUserId);
+    await chartOnly("oidc", [
+      [
+        "the Google sign-in Secret",
+        { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
+        /auth\.oidc\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "the Better Auth Secret",
+        { ...oidc, "auth.oidc.secretName": "occ-auth" },
+        /auth\.oidc\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
+        /auth\.oidc client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.oidc requires an HTTPS auth\.baseUrl/,
+      ],
+    ]);
+  });
 
   test(
     "install notes warn when sign-in is exposed without a trusted proxy, and never fail",

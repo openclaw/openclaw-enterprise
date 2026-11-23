@@ -363,14 +363,17 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      const driver = await pluginValidation.validateAgentPlugins(
+      const { driver, releases } = await pluginValidation.validateAgentPlugins(
+        state,
+        namespace.id,
+        principalId,
         plugins,
         pluginApprovers,
         () => configurationInput.values,
       );
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      await validatePluginCredentialSources(driver, plugins, []);
+      await validatePluginCredentialSources(driver, plugins, [], undefined, releases);
       await authorizeProvisioningSources(
         state,
         principalId,
@@ -892,7 +895,10 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     // the stored work, so an Installation Plugin Driver switch does not turn it into a 400.
     if (!statusRead) {
       const plugins = normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined);
-      const driver = await pluginValidation.validateAgentPlugins(
+      const { driver } = await pluginValidation.validateAgentPlugins(
+        state,
+        namespaceId,
+        principalId,
         plugins,
         normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
         () => effectiveConfiguration,
