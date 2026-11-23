@@ -1,5 +1,4 @@
 import { pluginOwner } from "./agent-plugin-validation.ts";
-import { credentialSourceRef, isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import { credentialGatewayOperation } from "./credential-source-drivers.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -64,7 +63,7 @@ type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
 
 interface PluginDiscoveryDependencies {
   readonly transactions: Pick<ControllerTransactions, "read">;
-  readonly authority: Pick<ControllerAuthority, "authorize" | "canRead">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
   readonly authorizedCredentialSource: (
     principalId: string,
     namespaceId: string,
@@ -180,7 +179,7 @@ async function invokePluginDiscovery<T>(
 
 export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies) {
   const { read } = dependencies.transactions;
-  const { authorize, canRead } = dependencies.authority;
+  const { authorize, authorizationDecision, canRead } = dependencies.authority;
 
   async function discoverAgentPlugins(
     principalId: string,
@@ -404,13 +403,21 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       async ({ state, agent, driver }) => {
         const sources: StoredCredentialSource[] = [];
         if (driver.credentials && agent.executionMode === "dedicated") {
-          for (const source of await state.credentialSources.listCredentialSources(namespaceId)) {
+          for (const { sourceId } of agent.credentialSources ?? []) {
+            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
             if (
-              isManagedTokenServiceSource(source) &&
-              source.state === "ready" &&
-              (await canRead(principalId, credentialSourceRef(source)))
+              (await canRead(principalId, ref)) &&
+              (await authorizationDecision(principalId, "operate", ref)).decision.allowed &&
+              (await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+                .allowed
             ) {
-              sources.push(source);
+              const source = await state.credentialSources.findCredentialSource(
+                namespaceId,
+                sourceId,
+              );
+              if (source?.state === "ready") {
+                sources.push(source);
+              }
             }
           }
         }

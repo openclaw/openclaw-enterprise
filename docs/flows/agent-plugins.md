@@ -141,7 +141,7 @@ Unrecognized refusals stay generic. The Console preserves rejected drafts.
 stop. [Available catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab)
 remain browsable.
 
-`GET .../plugins/capabilities` requires Agent `read`/`update`. Slot choices require exact Source `read`.
+`GET .../plugins/capabilities` requires Agent `read`/`update`. [Slot choices](../reference/drivers/plugin.md#selection-and-catalogs) use eligible attached Sources.
 
 ### 2. Admit an immutable plugin deployment
 

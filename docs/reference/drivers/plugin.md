@@ -59,8 +59,9 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
-  For a dedicated Agent, OCC passes ready Namespace Sources the caller may read
-  to `choices(sources)` and returns eligible choices in `credentialSlots`.
+  For a dedicated Agent, OCC passes `choices(sources)` the ready Sources in
+  `Agent.credentialSources` that the caller can read and operate and the Agent
+  service principal can operate. OCC returns matching choices in `credentialSlots`.
   A caller needs exact Source `operate` when saving a selection.
   `selectedBindings({pluginId, selection})` reports Source IDs keyed by requirement
   and connection. The OpenClaw Driver uses the `default` connection for each
