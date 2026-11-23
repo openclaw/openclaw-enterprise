@@ -16,7 +16,9 @@ author: freeqaz-openai
 
 ## Summary
 
-An Admin grants an Agent Read on A, Write on B and no direct access to C. On native delivery, OpenClaw Enterprise (OCE) compiles those grants at deployment and renews the credential. **OpenShell checks each request inside the Sandbox.** It refuses disallowed routes before forwarding and replaces the Agent’s placeholder with the credential on allowed routes. GitHub applies the credential’s permissions. OCE sees no requests.
+OpenClaw Enterprise (OCE) installs per-Agent repository grants at deployment and renews the credential. OpenShell checks each native request. GitHub applies the credential’s permissions.
+
+Native GitHub App v1 supports pull requests (PRs). We propose [new REST Write grants](#planned-rest-write-grants) that also permit issue creation by default. Operators could turn off **Create issues** per repository.
 
 ## Motivation
 
@@ -28,11 +30,11 @@ A host grant cannot distinguish A, B and C. OpenShell combines matching allows, 
 
 - **G1. Enforce Git grants for all admitted clients through native OpenShell rules.** A push to A or a request to C stops before the origin receives HTTP; allowed Git operations work without a per-request OCE authorization callback.
 - **G2. Bind access to the deployed Agent revision.** An Admin can withdraw grants and verify retirement of the old Sandbox without affecting a peer.
-- **G3. Support issue reads, pull request (PR) reads and PR creation through REST.** A bundled skill uses explicitly authorized routes, with no OCE service in the request path. Git-only grants still deny API access after upgrades.
+- **G3. Support issue reads, PR reads and PR creation through REST.** Git-only grants still deny API access after upgrades.
 
 ## Non-goals
 
-Repository grants cover inspected HTTPS. Preserve [existing profiles](../../docs/reference/repository-credentials/access-levels.md), including ref, draft, standing approval and installation restrictions. Grants cannot widen credential authority. [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149) separately proposes Git-only access with a fine-grained personal access token.
+Grants cover inspected HTTPS. Preserve [existing profiles](../../docs/reference/repository-credentials/access-levels.md), including ref, draft, standing approval and installation restrictions.
 
 <a id="design"></a>
 
@@ -112,7 +114,7 @@ sequenceDiagram
 
 ### What can the Agent do on GitHub?
 
-This Agent binds A and B. Their registrations have identical permissions, including issue read and PR write. Only B has a saved Write grant. **C is unbound.**
+**Current GitHub App v1.** A and B are bound with issue read and PR write permissions. C is unbound.
 
 | Agent action                          | A (read) | B (write) | C (no grant) |
 | ------------------------------------- | -------- | --------- | ------------ |
@@ -122,9 +124,9 @@ This Agent binds A and B. Their registrations have identical permissions, includ
 | Push a branch                         | No       | Yes       | No           |
 | Open a PR (draft or ready for review) | No       | Yes       | No           |
 
-**If C is bound without a saved grant, the Agent cannot open a PR anywhere.** The Agent keeps its permitted Git operations and REST reads. To restore creation on B, remove the binding for C and redeploy. Alternatively, grant Read on C and redeploy if the Agent needs that access. After a Worker upgrade, a Sandbox still allowing creation that these rules withhold receives no new credential. Its Git and API access end when the token expires, within an hour. Redeploy to load the current rules.
+**If C is bound without a saved grant, the Agent cannot open a PR anywhere.** Permitted Git operations and REST reads continue. To restore PR creation on B, unbind C or grant it Read if needed, then redeploy. An upgraded Worker refuses renewal for a Sandbox that still allows forbidden PR creation. Its token expires within an hour. Redeploy to restore access.
 
-**Enable REST.** Set `nativeGit: "v1"` and `scopedRest: "v1"` on the participating `github-repository` registrations, rebind and redeploy. An unchanged REST registration with PR permissions gains eligible routes on redeployment without rebinding. Without `scopedRest`, native access stays Git-only.
+**Enable REST.** Set `nativeGit: "v1"` and `scopedRest: "v1"` on the participating `github-repository` registrations, rebind and redeploy. With [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118), unchanged v1 REST registrations with PR permissions gain eligible PR routes on redeployment without rebinding. Without `scopedRest`, native access stays Git-only.
 
 The [registration and GitHub App](../../docs/reference/repository-credentials/access-levels.md#native-git-delivery) must allow `issues` for issue reads and `pull_requests` for PR reads. Creation requires `pull_requests: write` and Write on the target. Under `/repos/{owner}/{repo}`, the [rules](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) allow GET on `/issues`, `/pulls` and their numbered detail paths, plus eligible POSTs to `/pulls`. Issue reads can return PRs. Issue creation, PR updates, merges and GraphQL remain unavailable.
 
@@ -135,6 +137,14 @@ The [registration and GitHub App](../../docs/reference/repository-credentials/ac
 
 The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6658) teaches `gh api` and grants no access. Use `--input` for writes and verify the remote result before retrying.
 
+### Planned REST Write grants
+
+New REST Write grants permit push, PR creation and issue creation within approved permissions (`contents`, `pull_requests` and `issues` write, respectively). Keep [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) unchanged for App PRs. Existing grants gain no writes from this change until the Admin explicitly adopts the policy and redeploys.
+
+[#6861](https://github.com/openclaw/openclaw-enterprise/pull/6861) proposes `scopedRest: "v2"` on B’s Namespace registration. Even with A Read and C ungranted, B permits the [full issue endpoint](https://docs.github.com/en/rest/issues/issues#create-an-issue), including labels, assignees, milestones and parent links where GitHub permits. Turning off **Create issues** (`createIssues: false`) on that registration removes only `POST /repos/{owner}/B/issues`. Reads, push and eligible PRs (including issue conversion) stay available. Rebind and redeploy after registration changes.
+
+**Personal access token (PAT) pilot.** After [Git-only Source delivery](https://github.com/openclaw/openclaw-enterprise/pull/7153) under [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149), pilot REST PRs with a dedicated fine-grained PAT. At enrollment and replacement, the operator must verify in GitHub that it covers only the private test repository. The declared Source ceiling cannot prove token scope. A broader PAT could expose an ungranted private fork through a PR diff. Defer wider PR access with shared App tokens or PATs.
+
 ### Which delivery paths need an OCE hook?
 
 | Delivery path                                       | Startup nonce | OCE check on a request                                    |
@@ -144,7 +154,7 @@ The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6
 | Existing protected `github-repository`              | Required      | Worker checks each permitted request against the binding. |
 | Existing `github-installation` preview              | Required      | Worker hook in the single-Sandbox workspace.              |
 
-Native attachment binds a credential to an endpoint. The [existing protected paths](../../docs/reference/repository-credentials/protected-openshell-git.md) also require proof that a request from the held launcher reaches the authenticated Worker hook before credential release. The launcher sends a one-use nonce on an admitted discovery path. The hook binds it to the Sandbox, workspace, binding, path and generation. The launcher must receive the matching denial before release, with zero upstream requests. Preserve these paths and their limits (1 MiB upload-pack, 4 MiB receive-pack) for existing grants. Token Service retains custody and renewal for its sources. The Agent receives a placeholder.
+On [protected paths](../../docs/reference/repository-credentials/protected-openshell-git.md), the authenticated Worker hook binds a one-use nonce to the Sandbox, workspace, binding, path and generation. Before credential release, the launcher must receive the matching denial with zero origin requests. Preserve the limits (1 MiB upload-pack, 4 MiB receive-pack). Token Service retains custody and renewal for its sources.
 
 ## Interface changes
 
@@ -158,7 +168,7 @@ Under `/namespaces/{namespaceId}/agents/{agentId}`, extend the existing [routes]
 | GET policy                                       | Return saved grants, version, capability, ceiling, save support and available deployment identifiers.                                                                                                    |
 | POST `/deploy`, `/deploy-first`, policy `/apply` | Deploy admits saved grants. Refuse live apply if the saved policy or running revision contains a list.                                                                                                   |
 
-Two proposed changes remain open. POST policy `/validate` previews only ordinary additions. GET does not report the active OpenShell generation or enforcement state.
+Separate proposals extend POST policy `/validate` beyond ordinary additions to preview effective routes and risks before deployment, and GET to report live enforcement and generation.
 
 ### IAM
 
@@ -196,14 +206,21 @@ Use a disposable installed OpenShell environment, an authorized Admin and regula
 
 ## Delivery and verification
 
-Require installed AC-1–AC-5 for Git and AC-6 for REST. Keep legacy Agents on protected delivery.
+Require installed AC-1–AC-5 for Git and AC-6 for App REST v1. Keep legacy Agents on protected delivery.
 
 - [#6588](https://github.com/openclaw/openclaw-enterprise/pull/6588) covered direct Provider attachment. [#6764](https://github.com/openclaw/openclaw-enterprise/pull/6764) added saved-Agent evidence. [#6658](https://github.com/openclaw/openclaw-enterprise/pull/6658) tested the earlier opt-in skill. Automatic discovery needs separate installed proof.
 - [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118) reports 24/24 checks on one private GitHub repository, including reads and both PR types. GitHub returned 422 for a query-only request and an issue conversion. Neither response establishes a policy denial.
 - [#7135 at `707c2bf5`](https://github.com/openclaw/openclaw-enterprise/pull/7135#issuecomment-7105235162) passed the installed suite (5/5) and a companion check (1/1) on stock OpenShell 0.1.9 with a controlled origin. Unbinding C restored creation only after redeployment. Upgrade of an existing Agent and live GitHub on this build remain unverified.
 
+### Planned checks before widening access
+
+- **App issues.** Bind A/B/C, grant A Read and B Write, omit C. Create and read back B’s issue. Deny direct A writes, C access, edits, comments and GraphQL before forwarding. Keep PR creation denied until C is unbound and the Agent redeployed. Turn off **Create issues** on B, rebind and redeploy. Deny issue creation while eligible PRs still work.
+- **Indirect effects.** Try B’s `parent_issue_id` referring to A and C. Test private fork heads and issue conversion. Inspect both repositories, record GitHub permissions and distinguish policy denial, GitHub rejection and indirect effects. If A changes or C is exposed or changed, report evidence and hold wider rollout.
+- **PAT.** Push, open a PR and read it back on the dedicated repository.
+- **Both pilots.** Verify the Agent holds only a placeholder. Require zero OCE authorization callbacks, no new writes on redeployment of unchanged grants, unchanged routes after rotation and denied writes after downgrade and redeployment.
+
 <a id="alternatives-and-open-decisions"></a>
 
 ## Rationale and alternatives
 
-Token permissions alone cannot distinguish Agents with identical coverage. A CLI wrapper leaves other clients unconstrained. Stock OpenShell 0.1.9 [REST rules](https://github.com/ai-openshell/openshell/blob/ce58cf8e9b953281352d98a637e41616295b1318/crates/openshell-supervisor-network/data/sandbox-policy.rego#L516-L526) match methods, paths and queries. An optional [HTTP hook](https://github.com/ai-openshell/openshell/blob/ce58cf8e9b953281352d98a637e41616295b1318/docs/extensibility/supervisor-middleware/operations.mdx#L43-L61) can inspect selected POST bodies before credential injection. Its [host selector](https://github.com/ai-openshell/openshell/blob/ce58cf8e9b953281352d98a637e41616295b1318/proto/sandbox.proto#L88-L96) would also send permitted reads on `api.github.com` to the service for preflight. Native delivery omits that dependency so reads continue while the credential is valid.
+Keep stock OpenShell and `gh api`. Selecting a [hook by hostname](https://github.com/ai-openshell/openshell/blob/ce58cf8e9b953281352d98a637e41616295b1318/proto/sandbox.proto#L88-L96) would also make reads depend on OCE. Enforcing same-repository heads and prohibiting issue conversion require upstream OpenShell checks on query parameters and JSON, including ambiguous inputs ([related proposal closed](https://github.com/ai-openshell/openshell/issues/1848)). Exclude OCE hooks, brokers, custom CLIs, dependency forks and GraphQL from native delivery.
