@@ -2142,6 +2142,7 @@ for (const width of [1440, 390]) {
 
     // Authentication owns its picker even when the model reset refuses the malformed draft.
     const keySecret = page.getByLabel("API key Secret", { exact: true });
+    const directKey = page.getByLabel("API key", { exact: true });
     const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
     const authDraft = await editAllow("codex");
     const authModel = await manual.inputValue();
@@ -2156,7 +2157,8 @@ for (const width of [1440, 390]) {
     assert.equal(await mode.inputValue(), authMode);
     await editAllow([]);
     await authMethod.selectOption("api_key");
-    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await directKey.isVisible(), true);
+    assert.equal(await keySecret.isVisible(), false);
     assert.equal(await tokenSecret.isVisible(), false);
     assert.equal(await choice.inputValue(), "");
     assert.equal(await configuration.getAttribute("aria-invalid"), null);

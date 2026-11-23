@@ -583,16 +583,15 @@ test(
   },
 );
 
-for (const outcome of ["refused", "response lost"]) {
+for (const outcome of ["refused", "response lost", "unconfirmed revocation"]) {
   test(
     "a new protected version gets Git material once its predecessor's " +
       outcome +
-      " issuance has settled",
+      (outcome === "unconfirmed revocation" ? " has settled" : " issuance has settled"),
     { ...requiresPostgres, timeout: 60_000 },
     async (t) => {
-      // Findings 2207/2208: an issue attempt that never settled hid every later session of the
-      // Agent for the same repository, so the runbook recovery (fix the App key, deploy a new
-      // version) waited at REPOSITORY_GIT_MATERIAL_PENDING forever.
+      // An unsettled predecessor must block material for a later session of the same repository,
+      // then release it once no token from that attempt can remain valid.
       const f = await fixture(t);
       await disposeBrokerSession(f);
       const owner = await startProtectedOwner(f);
@@ -600,7 +599,7 @@ for (const outcome of ["refused", "response lost"]) {
       if (outcome === "refused") {
         // A rejected App key: GitHub answers 401 and mints nothing.
         f.gh.setIssueStatus(401);
-      } else {
+      } else if (outcome === "response lost") {
         // GitHub mints the token, then its answer is lost.
         f.gh.disconnectAfterMutation(
           "POST",
@@ -615,35 +614,60 @@ for (const outcome of ["refused", "response lost"]) {
             [familyId],
           )
         ).rows;
+      const unconfirmedRevocation = outcome === "unconfirmed revocation";
       // Only a complete refusal with no token is terminal at once. A lost answer stays uncertain.
       assert.deepEqual(await attempts(first.familyId), [
-        { state: "quarantined", custody: outcome === "refused" ? "not_issued" : "intent" },
+        unconfirmedRevocation
+          ? { state: "committed", custody: "current" }
+          : { state: "quarantined", custody: outcome === "refused" ? "not_issued" : "intent" },
       ]);
       const issued = outcome === "refused" ? 0 : 1;
       assert.equal(f.gh.issuesOfTokens.length, issued);
       f.gh.setIssueStatus(201);
 
-      // The operator restores the key and deploys a new version; the old session ends.
+      // A new version replaces the old repository session.
       const second = await admitProtectedVersion(f, first.revision);
       await disposeProtectedSession(f, first);
       const read = () => owner.protectedGit.online.readMaterial(second.route, t.signal);
+      const age = (minutes) =>
+        f.pool.query(
+          "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1",
+          [first.familyId, minutes],
+        );
       if (outcome === "response lost") {
         // The lost token may be live for GitHub's maximum lifetime: the successor waits.
         await owner.maintain();
         assert.deepEqual(await read(), { absent: "unprepared" });
         assert.equal(f.gh.issuesOfTokens.length, issued);
         // Stand for the elapsed time: just inside the bound, it still waits.
-        const age = (minutes) =>
-          f.pool.query(
-            "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1",
-            [first.familyId, minutes],
-          );
         await age(71);
         await owner.maintain();
         assert.deepEqual(await read(), { absent: "unprepared" });
         // The one-minute dispatch window, ten minutes for GitHub to accept the attempt's JWT, one
         // hour of token life and the one-minute skew have passed: no token from it can be valid.
         await age(73);
+      } else if (unconfirmedRevocation) {
+        f.gh.setRevokeStatus(401);
+        await assert.rejects(owner.maintain(), { message: /revocation is unconfirmed/ });
+        assert.deepEqual(await attempts(first.familyId), [
+          { state: "committed", custody: "unknown" },
+        ]);
+        assert.deepEqual(await read(), { absent: "unprepared" });
+        // The issue bound has passed, but the verified provider expiry still needs its skew allowance.
+        await age(73);
+        const positionExpiry = (seconds) =>
+          f.pool.query(
+            `UPDATE occ.prepared_github_attempts
+             SET provider_expires_at=clock_timestamp()-$2*interval '1 second',
+                 usable_until=clock_timestamp()-($2+60)*interval '1 second'
+             WHERE source_id=$1`,
+            [first.familyId, seconds],
+          );
+        await positionExpiry(5);
+        await owner.maintain();
+        assert.deepEqual(await read(), { absent: "unprepared" });
+        assert.equal(f.gh.issuesOfTokens.length, issued);
+        await positionExpiry(90);
       }
       await owner.maintain();
       assert.equal(f.gh.issuesOfTokens.length, issued + 1);
@@ -652,8 +676,13 @@ for (const outcome of ["refused", "response lost"]) {
       assert.equal(await f.providerStatus(material.value), 200);
       // The predecessor's attempt keeps its recorded outcome; settlement is never a rewrite.
       assert.deepEqual(await attempts(first.familyId), [
-        { state: "quarantined", custody: outcome === "refused" ? "not_issued" : "intent" },
+        unconfirmedRevocation
+          ? { state: "committed", custody: "unknown" }
+          : { state: "quarantined", custody: outcome === "refused" ? "not_issued" : "intent" },
       ]);
+      if (unconfirmedRevocation) {
+        assert.equal(f.gh.trace.filter((entry) => entry.method === "DELETE").length, 1);
+      }
       assert.deepEqual(f.gh.errors, []);
     },
   );

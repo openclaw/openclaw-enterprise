@@ -506,7 +506,7 @@ test("Authentication source save outcomes", async (t) => {
       const { page, save, feedback } = await authenticationSourcePage(t, "auth-oauth", {
         harnessId: "codex",
       });
-      await page.getByLabel("Authentication source").selectOption("credential_source");
+      await page.getByLabel("Authentication source").selectOption("device_login");
       await save.click();
       const refusal = page
         .getByRole("alert")

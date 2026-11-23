@@ -31,14 +31,13 @@ const refusal =
   "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.";
 
 test(
-  "a fresh retired owner preserves admitted state but refuses re-admission and deploy",
+  "a fresh retired owner preserves admitted state but refuses deploy",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     let registrations: readonly DriverConfigurationRegistration[] | undefined;
     let bootstrapJobs: readonly { idempotency_key: string }[] = [];
     let application: Awaited<ReturnType<typeof postgresApp>> | undefined;
     const f = await staticEgressFixture(t, {
-      includeLegacy: true,
       appFactory: async (context, options?: FixtureAppOptions) => {
         assert.ok(options);
         registrations = options.driverConfigurations;
@@ -89,97 +88,6 @@ test(
 
     const installation = await p.state.loadInstallation();
     assert.ok(installation);
-    const consent = { adoption: "live", authorityScope: "execution" };
-    const replacement = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-      body: {
-        name: "readmission-replacement",
-        value: "synthetic-key-replacement",
-      },
-    });
-    assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
-    const secretUpdate = { secrets: { api_key: replacement.data.ref } };
-
-    const created = await f.request("POST", f.path, {
-      body: {
-        name: "fresh-owner-unbound-control",
-        type: "openai",
-        config: { authorized_base_url: f.modelProvider.baseUrl },
-        secrets: { api_key: f.secret.ref },
-      },
-    });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
-    const unboundId: unknown = created.data.id;
-    assert.ok(typeof unboundId === "string");
-    assert.equal(created.data.egress.adoption, "live", "fresh enrollment stays protected");
-    assert.ok(f.legacySource);
-    assert.equal(f.legacySource.egress, undefined);
-    const legacyBefore = await p.state.read((view) =>
-      view.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
-    );
-    assert.ok(legacyBefore && legacyBefore.ownerCapability !== "token_service");
-    assert.equal(legacyBefore?.driverId, p.controller.selectedDriver("credential_gateway").id);
-    assert.equal(legacyBefore?.state, "ready");
-    assert.equal(legacyBefore?.egress, undefined);
-    assert.equal(
-      await p.state.transact((view) =>
-        view.credentialSources.hasReferences(f.namespace.id, f.legacySource.id),
-      ),
-      false,
-    );
-    const gatewayBefore = structuredClone([...f.providers.entries()]);
-    const effectsBefore = [...f.gatewayEffects];
-    assert.equal(gatewayBefore.length, 1, "only the retained ordinary source has a Gateway copy");
-    const adopted = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
-      body: consent,
-    });
-    assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
-    const legacyAfter = await p.state.read((view) =>
-      view.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
-    );
-    assert.ok(legacyAfter && legacyAfter.ownerCapability !== "token_service");
-    assert.equal(legacyAfter?.driverId, legacyBefore?.driverId);
-    assert.deepEqual(legacyAfter?.egress?.key.provider, openAiStaticProviderRef);
-    assert.deepEqual([...f.providers.entries()], gatewayBefore);
-    assert.deepEqual(f.gatewayEffects, effectsBefore);
-    assert.equal(
-      await p.state.transact((view) =>
-        view.credentialSources.hasReferences(f.namespace.id, unboundId),
-      ),
-      false,
-    );
-    const unboundBefore = await p.state.read((view) =>
-      view.credentialSources.findCredentialSource(f.namespace.id, unboundId),
-    );
-    assert.ok(unboundBefore && unboundBefore.ownerCapability !== "token_service");
-    assert.ok(unboundBefore?.egress);
-    assert.equal(unboundBefore.egress.adoption, "live");
-    const accepted = await f.request("PATCH", `${f.path}/${unboundId}`, {
-      body: consent,
-    });
-    assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
-    const unboundAfter = await p.state.read((view) =>
-      view.credentialSources.findCredentialSource(f.namespace.id, unboundId),
-    );
-    assert.ok(unboundAfter && unboundAfter.ownerCapability !== "token_service");
-    assert.ok(unboundAfter?.egress);
-    assert.equal(
-      unboundAfter.egress.key.source.generation,
-      unboundBefore.egress.key.source.generation + 1,
-    );
-    // Both explicit re-admission and a Secret-only PATCH work for the unmarked owner.
-    const updated = await f.request("PATCH", `${f.path}/${unboundId}`, {
-      body: secretUpdate,
-    });
-    assert.equal(updated.status, 200, JSON.stringify(updated.body));
-    const stored = await p.state.read((view) =>
-      view.credentialSources.findCredentialSource(f.namespace.id, unboundId),
-    );
-    assert.ok(stored && stored.ownerCapability !== "token_service");
-    assert.ok(stored?.egress);
-    assert.deepEqual(stored.egress.key.provider, openAiStaticProviderRef);
-    assert.deepEqual(stored.secrets, secretUpdate.secrets);
-    assert.equal(f.providerRequests.length, 0);
-
     // A fresh application owner shares the real capabilities and durable PostgreSQL state.
     const retiredStaticProviderRefs = [openAiStaticProviderRef];
     const selection = {
@@ -392,64 +300,29 @@ test(
     assert.equal(retained.revisions.length, 1);
     assert.ok(retained.installed);
 
-    const cases = [
-      {
-        name: "retained ordinary source refuses re-adoption after retirement",
-        method: "PATCH",
-        url: `${f.path}/${f.legacySource.id}`,
-        body: consent,
-      },
-      {
-        name: "unbound protected source re-admission PATCH",
-        method: "PATCH",
-        url: `${f.path}/${unboundId}`,
-        body: consent,
-      },
-      {
-        name: "stored-provider Secret-only PATCH without adoption consent",
-        method: "PATCH",
-        url: `${f.path}/${unboundId}`,
-        body: { secrets: { api_key: f.secret.ref } },
-      },
-      {
-        name: "deploy with the retained protected source",
-        method: "POST",
-        url: `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
-        body: undefined,
-      },
-    ] as const;
-    for (const request of cases) {
-      await t.test(request.name, async () => {
-        assert.equal(
-          await p.state.transact((view) =>
-            view.credentialSources.hasReferences(f.namespace.id, unboundId),
-          ),
-          false,
-        );
-        const response = await p.inject(request.method, request.url, request.body, app);
-        assert.equal(response.statusCode, 409, response.body);
-        const body: unknown = response.json();
-        assert.ok(typeof body === "object" && body !== null && "error" in body);
-        const error = body.error;
-        assert.deepEqual(error, {
-          code: "RESOURCE_CONFLICT",
-          message: refusal,
-        });
-        assert.deepEqual(
-          await snapshot(),
-          retained,
-          "refusal must preserve sources, revisions and observed effects",
-        );
-        assert.equal(f.providerRequests.length, 0, "no inference request may reach the provider");
-        assert.equal(proxy.sourceControl, originalControl);
-        assert.equal(proxy.sourceControl.assertAvailable, originalAvailability);
-        assert.equal(proxy.sourceControl.backend, originalBackend);
-        assert.equal(
-          proxy.sourceControl.providers.find((entry) => entry.sourceType.type === "openai"),
-          openAi,
-        );
-      });
-    }
+    await t.test("deploy with the retained protected source", async () => {
+      const response = await p.inject(
+        "POST",
+        `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
+        undefined,
+        app,
+      );
+      assert.equal(response.statusCode, 409, response.body);
+      assert.deepEqual(response.json().error, { code: "RESOURCE_CONFLICT", message: refusal });
+      assert.deepEqual(
+        await snapshot(),
+        retained,
+        "refusal must preserve admitted state and effects",
+      );
+      assert.equal(f.providerRequests.length, 0, "no inference request may reach the provider");
+      assert.equal(proxy.sourceControl, originalControl);
+      assert.equal(proxy.sourceControl.assertAvailable, originalAvailability);
+      assert.equal(proxy.sourceControl.backend, originalBackend);
+      assert.equal(
+        proxy.sourceControl.providers.find((entry) => entry.sourceType.type === "openai"),
+        openAi,
+      );
+    });
     await t.test("missing middleware cannot hide permanent deployment retirement", async () => {
       // If discovery runs, the wire peer reports no middleware registration.
       // Permanent retirement must refuse the deploy without querying that peer.

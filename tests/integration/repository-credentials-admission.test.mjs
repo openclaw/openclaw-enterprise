@@ -1653,18 +1653,20 @@ test("first repository policy save requires affirmative admission of the exact d
     value: "synthetic-save-eligibility-key",
   });
   assert.equal(secret.status, 201);
-  const source = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+  // Current policy admission still serves a previously registered Gateway Source; canonical
+  // TokenService Sources can be saved on drafts but are not admitted for this deployment path.
+  const source = await f.controller.createCredentialSource(f.actorId, {
+    namespaceId: f.namespace.id,
     name: "model",
     type: "openai",
     secrets: { api_key: secret.data.ref },
   });
-  assert.equal(source.status, 201);
   async function editableAgent() {
     const agent = await f.createAgent({
       executionMode: "dedicated",
       repositoryBindings: bindings,
-      harnessAuth: { method: "credential_source", sourceId: source.data.id },
-      credentialSources: [{ sourceId: source.data.id }],
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+      credentialSources: [{ sourceId: source.id }],
     });
     const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
     assert.equal(
@@ -1886,7 +1888,7 @@ test("first repository policy save requires affirmative admission of the exact d
   await t.test(
     "an update-only editor cannot distinguish a first empty list from withdrawal",
     async () => {
-      await verifyRepositoryPolicyWriteProjection(f, editableAgent, source.data.id, grant);
+      await verifyRepositoryPolicyWriteProjection(f, editableAgent, source.id, grant);
     },
   );
 
@@ -2034,13 +2036,13 @@ test("Deploy names the Proxy's limit when a protected source sits beside reposit
   await f.state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
   );
-  const created = await f.request(
-    "POST",
-    `/namespaces/${f.namespace.id}/credential-sources`,
-    protectedSourceInputs["credential-free-repository-metadata"](agent.id),
-  );
-  assert.equal(created.status, 201, JSON.stringify(created));
-  const sourceId = created.data.id;
+  // Establish a Source admitted by the former Proxy enrollment owner. The deploy refusal is
+  // still a supported Agent operation; public Source POST no longer enrolls this legacy type.
+  const created = await f.controller.createCredentialSource(f.actorId, {
+    namespaceId: f.namespace.id,
+    ...protectedSourceInputs["credential-free-repository-metadata"](agent.id),
+  });
+  const sourceId = created.id;
   // The Agent's own principal may use the source, so only the Proxy's limit refuses the deploy.
   const internal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
   grantRole(f.iamState, internal.servicePrincipalId, {
@@ -2186,7 +2188,7 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   assert.equal(f.gatewayReads(), 0);
 });
 
-test("Git Proxy selection preserves Gateway model registration and independent Git admission", async (t) => {
+test("Git Proxy selection preserves historical Gateway model serving and independent Git admission", async (t) => {
   const addition = {
     id: "docs",
     binary: "/usr/bin/curl",
@@ -2252,26 +2254,28 @@ test("Git Proxy selection preserves Gateway model registration and independent G
       value: "synthetic-admission-model-key",
     });
     assert.equal(secret.status, 201, JSON.stringify(secret));
-    const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-      name: "fresh-model",
+    // Use the former owner to arrange an already registered Gateway model. Public Source
+    // enrollment now creates TokenService Sources, which cannot reach this serving branch.
+    const created = await f.controller.createCredentialSource(f.actorId, {
+      namespaceId,
+      name: "historical-model",
       type: "openai",
       config: {},
       secrets: { api_key: secret.data.ref },
     });
-    assert.equal(created.status, 201, `${label}: ${JSON.stringify(created)}`);
-    assert.equal(created.data.state, "ready");
-    assert.equal(created.data.egress, undefined);
-    assert.equal(f.providers.size, 1, "registration writes the model provider through the Gateway");
-    const sourceId = created.data.id;
+    assert.equal(created.state, "ready");
+    assert.equal(created.egress, undefined);
+    assert.equal(f.providers.size, 1, "historical state includes the Gateway model provider");
+    const sourceId = created.id;
     const bindings = [{ sourceId }];
     if (options.extraOrdinary) {
-      const extra = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+      const extra = await f.controller.createCredentialSource(f.actorId, {
+        namespaceId,
         name: "unrelated-model",
         type: "openai",
         secrets: { api_key: secret.data.ref },
       });
-      assert.equal(extra.status, 201, JSON.stringify(extra));
-      bindings.push({ sourceId: extra.data.id });
+      bindings.push({ sourceId: extra.id });
     }
     const agent = await f.createAgent({
       ...(git && {
@@ -2469,7 +2473,7 @@ test("Git Proxy selection preserves Gateway model registration and independent G
   }
 });
 
-test("Git-only compatibility does not enroll plugin or OAuth refresh credentials", async (t) => {
+test("Git-only Proxy hides unsupported plugin and OAuth credentials from Agent capabilities", async (t) => {
   const f = await protectedOpenShellComposition(t, {
     installedProfile: "repository",
     credentialGateway: true,
@@ -2492,31 +2496,6 @@ test("Git-only compatibility does not enroll plugin or OAuth refresh credentials
     visible.data.capabilities.credentialSources.types.some(({ type }) => type === oauth.type),
     false,
   );
-  await f.state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-  );
-  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-    name: "plugin-token",
-    value: "synthetic-plugin-token",
-  });
-  assert.equal(secret.status, 201);
-  const path = `/namespaces/${f.namespace.id}/credential-sources`;
-  const refused = await f.request("POST", path, {
-    name: "plugin",
-    type: "bearer-token",
-    config: { host: "plugin.example.test", env_var: "PLUGIN_TOKEN" },
-    secrets: { token: secret.data.ref },
-  });
-  assert.equal(refused.status, 409, JSON.stringify(refused));
-  assert.match(refused.error.message, /cannot protect bearer-token sources/);
-  const refreshRefused = await f.request("POST", path, {
-    name: "oauth",
-    type: oauth.type,
-    config: {},
-    secrets: {},
-  });
-  assert.equal(refreshRefused.status, 409, JSON.stringify(refreshRefused));
-  assert.match(refreshRefused.error.message, /cannot preserve.*lifecycle/);
   t.mock.method(f.controller.selectedDriver("credential_gateway"), "listSourceTypes", async () =>
     catalog.map((type) =>
       type.type === "openai" ? { ...type, deviceAuthorization: { harnessId: "codex" } } : type,
@@ -2528,55 +2507,7 @@ test("Git-only compatibility does not enroll plugin or OAuth refresh credentials
     deviceCatalog.data.capabilities.credentialSources.types.some((type) => type.type === "openai"),
     false,
   );
-  const deviceRefused = await f.request("POST", path, {
-    name: "model-device-login",
-    type: "openai",
-    secrets: { api_key: secret.data.ref },
-  });
-  assert.equal(deviceRefused.status, 409, JSON.stringify(deviceRefused));
-  assert.match(deviceRefused.error.message, /cannot preserve.*lifecycle/);
   assert.equal(f.providers.size, 0);
-  assert.deepEqual((await f.request("GET", path)).data, []);
-});
-
-test("full and unknown Proxy profiles never enroll ordinary sources through Gateway fallback", async (t) => {
-  for (const [options, status] of [
-    [{ installedProfile: "execution", advertised: true }, 409],
-    [{ installedProfile: "execution", registered: false }, 409],
-    [{}, 409],
-    [{ registered: false }, 503],
-    [{ advertised: true }, 503],
-  ]) {
-    const f = await protectedOpenShellComposition(t, { ...options, credentialGateway: true });
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-    );
-    const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-      name: "model-key",
-      value: "synthetic-model-key",
-    });
-    assert.equal(secret.status, 201);
-    const path = `/namespaces/${f.namespace.id}/credential-sources`;
-    const result = await f.request("POST", path, {
-      name: "ordinary-model",
-      type: "openai",
-      secrets: { api_key: secret.data.ref },
-    });
-    // The installed bundled provider is retired. Unknown compositions must still pass
-    // protected admission (this fixture deliberately has no versioned Secret reader).
-    assert.equal(result.status, status, JSON.stringify(result));
-    assert.equal(f.providers.size, 0);
-    assert.deepEqual((await f.request("GET", path)).data, []);
-    if (options.installedProfile) {
-      assert.match(result.error.message, /retired new uses/);
-      const listed = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
-      assert.equal(listed.status, 200);
-      assert.equal(
-        listed.data.capabilities.credentialSources.types.some(({ type }) => type === "openai"),
-        false,
-      );
-    }
-  }
 });
 
 registerProtectedRepositoryPolicyDeploymentCase({
@@ -2666,51 +2597,6 @@ test("runtime-authenticated Dedicated Codex requires a qualified Proxy without s
       assert.equal(enrollment.inference, false);
       compute.validateExecutionAdmission(revision, "stored");
     });
-  }
-});
-
-test("explicit live adoption still requires a qualified Proxy", async (t) => {
-  for (const [label, options, status, message] of [
-    ["Git-only", {}, 409, CredentialProxyRepositoryOnlyError.description],
-    ["missing registration", { registered: false }, 503, PROXY_REGISTRATION_UNAVAILABLE],
-    ["wrong protocol", { extension: { protocol_major: 2 } }, 503, PROXY_REGISTRATION_UNAVAILABLE],
-    [
-      "partial capabilities",
-      { extension: { required_capabilities: [...openShellExchangeCapabilities] } },
-      503,
-      PROXY_REGISTRATION_UNAVAILABLE,
-    ],
-  ]) {
-    const f = await protectedOpenShellComposition(t, {
-      ...options,
-      credentialGateway: true,
-      credentialProxy: false,
-    });
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-    );
-    const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-      name: "model-key",
-      value: "synthetic-model-key",
-    });
-    assert.equal(secret.status, 201, JSON.stringify(secret));
-    const path = `/namespaces/${f.namespace.id}/credential-sources`;
-    const source = await f.request("POST", path, {
-      name: "model",
-      type: "openai",
-      secrets: { api_key: secret.data.ref },
-    });
-    assert.equal(source.status, 201, JSON.stringify(source));
-    f.controller.selectDriver("credential_proxy", f.protectedDriver.require("credential_proxy").id);
-    const adoption = await f.request("PATCH", `${path}/${source.data.id}`, {
-      adoption: "live",
-      authorityScope: "execution",
-    });
-    assert.equal(adoption.status, status, `${label}: ${JSON.stringify(adoption)}`);
-    assert.equal(adoption.error.message, message, label);
-    const unchanged = await f.request("GET", `${path}/${source.data.id}`);
-    assert.equal(unchanged.data.egress, undefined);
-    assert.equal(unchanged.data.status.state, "ready");
   }
 });
 

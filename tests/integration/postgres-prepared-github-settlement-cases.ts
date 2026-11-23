@@ -3,14 +3,11 @@ import test from "node:test";
 import pg from "pg";
 import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.ts";
-import { fixtureInstallationId } from "../fixtures/repository-credentials/github.ts";
 import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
 import {
   captureMetadata,
   dispatchMetadata,
   readPreparedEvidence,
-  record,
 } from "./postgres-prepared-github-wire.ts";
 import {
   preparedLifecycleFixture,
@@ -25,126 +22,16 @@ import {
 
 export function registerSettlementCases() {
   test(
-    "PostgreSQL prepared custody: deleting a source waits only while a token from it may be valid",
-    requiresPostgres,
-    async (t) => {
-      // Finding 2208: deletion failed with a plain 500 forever once any attempt was not revoked.
-      // A refused issue is terminal at once; a lost issue or revocation settles after GitHub's
-      // maximum token lifetime. Until then deletion answers a coded 409 naming the retry time.
-      let elapsed = 0;
-      const { gh, f, lifecycle, source, registerSource } = await preparedLifecycleFixture(
-        t,
-        {},
-        () => new Date(Date.now() + elapsed),
-      );
-      const signal = new AbortController().signal;
-      // The Agent's bound source is not part of this proof: keep the worker on the new sources.
-      await f.pool.query<Record<string, unknown>>(
-        "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
-        [source.key.source.id],
-      );
-      const attempts = async (sourceId: string) =>
-        (
-          await f.pool.query<{ state: string; custody: string }>(
-            "SELECT state, custody FROM occ.prepared_github_attempts WHERE source_id=$1",
-            [sourceId],
-          )
-        ).rows;
-      // A typo'd installation: GitHub answers 404 and mints nothing.
-      gh.setIssueStatus(404);
-      const refused = await registerSource("prepared-refused");
-      assert.equal(await lifecycle.maintain(signal), "quarantined");
-      gh.setIssueStatus(201);
-      assert.deepEqual(await attempts(refused), [{ state: "quarantined", custody: "not_issued" }]);
-      // GitHub mints a token, then its answer is lost.
-      gh.disconnectAfterMutation(
-        "POST",
-        `/app/installations/${fixtureInstallationId}/access_tokens`,
-      );
-      const lost = await registerSource("prepared-lost-issue");
-      assert.equal(await lifecycle.maintain(signal), "quarantined");
-      assert.deepEqual(await attempts(lost), [{ state: "quarantined", custody: "intent" }]);
-      // A committed token whose revocation GitHub refuses, as once it expired while the worker was down.
-      const expired = await registerSource("prepared-unconfirmed-revocation");
-      assert.equal(await lifecycle.maintain(signal), "committed");
-      gh.setRevokeStatus(401);
-      assert.equal(gh.issuesOfTokens.length, 2);
-
-      // Past the registration fence, which is independent of provider custody.
-      elapsed = 120_000;
-      const remove = (id: string) =>
-        f.request("DELETE", `/namespaces/${f.namespace.id}/credential-sources/${id}`);
-      const exists = async (id: string) =>
-        (await f.request("GET", `/namespaces/${f.namespace.id}/credential-sources/${id}`)).status;
-      // The deadline is the attempt start plus a minute to dispatch, ten minutes of App JWT
-      // acceptance, an hour of token life and a minute of skew, or a verified expiry plus skew.
-      const unsettled = async (id: string) => {
-        const {
-          rows: [attempt],
-        } = await f.pool.query<{ at: Date }>(
-          `SELECT greatest(started_at + interval '72 minutes', provider_expires_at + interval '1 minute') AS at
-         FROM occ.prepared_github_attempts WHERE source_id=$1`,
-          [id],
-        );
-        assert.ok(attempt);
-        const result = await remove(id);
-        assert.equal(result.status, 409);
-        assert.ok(record(result.body));
-        assert.deepEqual(result.body.error, {
-          code: "CREDENTIAL_TOKEN_UNSETTLED",
-          message:
-            "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. " +
-            `Retry the deletion after ${attempt.at.toISOString()}, when GitHub's maximum token lifetime has passed.`,
-        });
-        assert.equal(await exists(id), 200, "the source stays until its custody settles");
-      };
-      const age = (id: string, column: "started_at", minutes: number) =>
-        f.pool.query<Record<string, unknown>>(
-          `UPDATE occ.prepared_github_attempts SET ${column}=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1`,
-          [id, minutes],
-        );
-
-      assert.equal((await remove(refused)).status, 204, "a refusal with no token is settled");
-      assert.equal(await exists(refused), 404);
-
-      await unsettled(lost);
-      await age(lost, "started_at", 73);
-      assert.equal((await remove(lost)).status, 204);
-      assert.equal(await exists(lost), 404);
-
-      const deletes = () => gh.trace.filter((entry) => entry.method === "DELETE").length;
-      await unsettled(expired);
-      assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
-      assert.equal(deletes(), 1);
-      // The attempt bound alone is not enough while the verified expiry is still ahead.
-      await age(expired, "started_at", 73);
-      await unsettled(expired);
-      await f.pool.query<Record<string, unknown>>(
-        `UPDATE occ.prepared_github_attempts SET provider_expires_at=clock_timestamp()-interval '2 minutes',
-       usable_until=clock_timestamp()-interval '3 minutes' WHERE source_id=$1`,
-        [expired],
-      );
-      assert.equal((await remove(expired)).status, 204);
-      assert.equal(deletes(), 1, "an unconfirmed revocation is never replayed");
-      // Settlement never rewrites the recorded outcome.
-      assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
-      assert.deepEqual(gh.errors, []);
-    },
-  );
-
-  test(
     "PostgreSQL prepared custody: deleting the bound Agent stops renewal and revokes its tokens",
     requiresPostgres,
     async (t) => {
       // Finding 2215: the worker renewed an Agent-bound source forever after its Agent was deleted.
       // A nine-minute provider lifetime keeps renewal due on every pass of a live family.
       let onIssue: (() => Promise<void>) | undefined;
-      let onRevoke: (() => Promise<void>) | undefined;
       const { gh, f, lifecycle, source } = await preparedLifecycleFixture(t, {
         tokenLifetimeMs: 9 * 60_000,
-        // GitHub has minted or revoked the token; its answer is still on the way.
+        // GitHub has minted the token; its answer is still on the way.
         issueResponseGate: () => onIssue?.(),
-        revokeResponseGate: () => onRevoke?.(),
       });
       const signal = new AbortController().signal;
       const readWindow = () => ({
@@ -219,24 +106,7 @@ export function registerSettlementCases() {
       // The next passes withdraw the family and revoke both tokens; nothing is issued again.
       await due();
       assert.equal(await lifecycle.maintain(signal), "retired");
-      // Deleting the source while the worker's revocation is in flight waits for its answer,
-      // instead of reporting a token that may stay valid for an hour.
-      const answered = Promise.withResolvers<void>();
-      const revoking = Promise.withResolvers<void>();
-      onRevoke = () => {
-        onRevoke = undefined;
-        revoking.resolve();
-        return answered.promise;
-      };
-      const pass = lifecycle.maintain(signal);
-      await revoking.promise;
-      const settlement = t.mock.method(connectedRepository(lifecycle), "withdrawalSettlement");
-      const withdrawn = lifecycle.withdraw(source, AbortSignal.timeout(30_000));
-      // Answer only once the deletion has found the revocation unsettled and checked again.
-      await waitUntil("the deletion to recheck settlement", () => settlement.mock.callCount() >= 2);
-      answered.resolve();
-      assert.equal(await pass, "retired");
-      await withdrawn;
+      assert.equal(await lifecycle.maintain(signal), "retired");
       await due();
       assert.equal((await lifecycle.maintain(signal)) ?? "idle", "idle");
       assert.equal(gh.issuesOfTokens.length, 2, "a deleted Agent's source was renewed");

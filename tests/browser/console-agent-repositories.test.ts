@@ -32,6 +32,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  selectSecret,
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -1448,8 +1449,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.ok(modelSecret);
-  await page.locator("#provider-credential-secret").fill(modelSecret.name);
-  await page.getByRole("option", { name: modelSecret.name, exact: true }).click();
+  await selectSecret(page, "API key Secret", modelSecret);
   await page.getByRole("button", { name: "Enter model ID manually" }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Agent name").fill("Fresh collaborators");

@@ -32,38 +32,36 @@ const admitMetadata = async ({
   app,
   agent,
   namespace,
-  path,
   origin,
 }: {
   app: Awaited<ReturnType<typeof createConsoleAppFixture>>;
   agent: Agent;
   namespace: Namespace;
-  path: string;
   origin: string;
 }) => {
-  const created = await app.request("POST", path, {
-    body: {
-      name: "metadata-transaction",
-      type: "credential-free-repository-metadata",
-      config: {
-        origin,
-        repository_id: "7311",
-        repository: "fixture/credential-free",
-        agent_id: agent.id,
-        authority: "execution",
-      },
+  // Establish the historical Proxy-owned Source through its former controller owner; this
+  // proof exercises current Agent binding, policy authorization, and grant withdrawal.
+  const created = await app.controller.createCredentialSource(app.principal.id, {
+    namespaceId: namespace.id,
+    name: "metadata-transaction",
+    type: "credential-free-repository-metadata",
+    config: {
+      origin,
+      repository_id: "7311",
+      repository: "fixture/credential-free",
+      agent_id: agent.id,
+      authority: "execution",
     },
   });
-  assert.equal(created.status, 201);
   const bound = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
     body: {
       configurationId: agent.configurationId,
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: created.data.id }],
+      credentialSources: [{ sourceId: created.id }],
     },
   });
   assert.equal(bound.status, 200);
-  return { agent: bound.data, source: created.data };
+  return { agent: bound.data, source: created };
 };
 
 function policyApp(

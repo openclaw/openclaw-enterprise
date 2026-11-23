@@ -5,7 +5,6 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/conformance/strands-box-transport.test.ts",
-    "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controller-endpoint-observation.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
@@ -187,14 +186,6 @@
         "a loopback readiness probe retains capacity when all session channels are busy",
         "a terminal frame flushes queued TCP output",
         "the policy proxy delivers the complete response to a slow reader at EOF"
-      ]
-    },
-    {
-      "path": "tests/integration/prepared-refresh-enrollment.test.ts",
-      "expectedTests": [
-        "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
-        "prepared refresh enrollment refuses before effects (legacy Refresh missing)",
-        "non-refresh prepared enrollment uses only its issuer with legacy Refresh installed"
       ]
     },
     {

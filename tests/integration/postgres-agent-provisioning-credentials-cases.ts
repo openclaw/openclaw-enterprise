@@ -5,8 +5,6 @@ import {
   AgentProvisioningResponse,
   AgentProvisioningStatusResponse,
   AgentReadResponse,
-  CredentialSourceListResponse,
-  CredentialSourceResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type {
   CredentialGatewayDriver,
@@ -361,16 +359,13 @@ export function registerCredentialCases() {
 
   async function createProvisioningModelSource(fixture: Fixture, namespaceId: string) {
     const secret = await createNamespaceSecret(fixture, namespaceId, "gateway-model-key");
-    const registered = await fixture.requestChecked(
-      CredentialSourceResponse,
-      "POST",
-      `/namespaces/${namespaceId}/credential-sources`,
-      {
-        body: { name: "provisioning-model", type: "openai", secrets: { api_key: secret.ref } },
-      },
-    );
-    assert.equal(registered.status, 201, JSON.stringify(registered.body));
-    return { secret, source: registered.data };
+    const source = await fixture.createHistoricalGatewaySource({
+      namespaceId,
+      name: "provisioning-model",
+      type: "openai",
+      secrets: { api_key: secret.ref },
+    });
+    return { secret, source };
   }
 
   function sourceProvisioningBody(
@@ -509,11 +504,12 @@ export function registerCredentialCases() {
         const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
         assert.equal(queued.agent_id, null);
         // The accepted model reference holds the source before an Agent exists.
-        const deleted = await fixture.request(
-          "DELETE",
-          `/namespaces/${namespace.id}/credential-sources/${source.id}`,
+        assert.equal(
+          await fixture.state.transact((unit) =>
+            unit.credentialSources.hasReferences(namespace.id, source.id),
+          ),
+          true,
         );
-        assert.equal(deleted.status, 409, JSON.stringify(deleted.body));
         const replay = await fixture.requestChecked(
           AgentProvisioningResponse,
           "POST",
@@ -613,49 +609,6 @@ export function registerCredentialCases() {
         [namespace.id],
       );
       assert.deepEqual(resources.rows[0], { jobs: 0, agents: 0, configurations: 0 });
-    },
-  );
-
-  test(
-    "guided source provisioning cannot bind an uncertain registration",
-    { ...requiresPostgres, timeout: 60_000 },
-    async (context) => {
-      const drivers = sourceProvisioningDrivers();
-      drivers.credentialGatewayDriver.registerSource = async () => {
-        throw new Error("synthetic uncertain credential registration");
-      };
-      const fixture = await createFixture(context, drivers);
-      const namespace = await fixture.bootstrapNamespace();
-      const secret = await createNamespaceSecret(fixture, namespace.id, "model-key");
-      const registration = await fixture.request(
-        "POST",
-        `/namespaces/${namespace.id}/credential-sources`,
-        {
-          body: { name: "uncertain model", type: "openai", secrets: { api_key: secret.ref } },
-        },
-      );
-      assert.equal(registration.status, 503, JSON.stringify(registration.body));
-      const sources = await fixture.requestChecked(
-        CredentialSourceListResponse,
-        "GET",
-        `/namespaces/${namespace.id}/credential-sources`,
-      );
-      assert.equal(sources.status, 200, JSON.stringify(sources.body));
-      assert.equal(sources.data.length, 1);
-      assert.equal(required(sources.data[0]).state, "deleting");
-      const refused = await fixture.request(
-        "POST",
-        `/namespaces/${namespace.id}/agents/provision`,
-        {
-          body: sourceProvisioningBody(required(sources.data[0]).id, "openclaw"),
-        },
-      );
-      assert.equal(refused.status, 404, JSON.stringify(refused.body));
-      const jobs = await fixture.pool.query<Record<string, unknown>>(
-        "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id = $1",
-        [namespace.id],
-      );
-      assert.equal(jobs.rowCount, 0);
     },
   );
 

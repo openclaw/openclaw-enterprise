@@ -514,13 +514,13 @@ func (app *application) presetCommand() *cobra.Command {
 func (app *application) credentialSourceCommand() *cobra.Command {
 	command := commandGroup(
 		"credential-source",
-		"Manage credential sources held by the selected Credential Gateway",
+		"Manage credential sources maintained by TokenService",
 	)
 
 	var createFile string
 	create := &cobra.Command{
 		Use:     "create",
-		Short:   "Register a credential source from a JSON document",
+		Short:   "Register a static credential source from a JSON document",
 		Example: credentialSourceCreateExample,
 		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -540,7 +540,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List credential sources without live gateway status",
+		Short: "List readable credential sources",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -557,7 +557,8 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	get := &cobra.Command{
 		Use:   "get ID",
-		Short: "Show a credential source and its live gateway status",
+		Short: "Show a credential source and its available status",
+		Long:  "Show a credential source and its available status. Use -o json or -o yaml to inspect nonsecret OAuth consent details.",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -574,7 +575,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	deleteCommand := &cobra.Command{
 		Use:   "delete ID",
-		Short: "Delete an unreferenced credential source and its gateway copy",
+		Short: "Delete a credential source and retire its credential",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -590,24 +591,12 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Push current or replacement Secret values to the gateway copy",
-		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(command *cobra.Command, args []string) error {
-			// An explicit empty --file was refused by refuseEmptyFlags.
-			fileSet := command.Flags().Changed("file")
-			namespace, err := app.requiredNamespace()
-			if err != nil {
-				return err
-			}
-			body := jsontext.Value("{}")
-			if fileSet {
-				body, err = readJSON(updateFile)
-				if err != nil {
-					return err
-				}
-			}
-			client, err := app.client()
+		Use:     "update ID",
+		Short:   "Update a static credential source from a JSON document",
+		Example: credentialSourceUpdateExample,
+		Args:    idArgs(credentialSourceIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
 				return err
 			}
@@ -622,12 +611,13 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values (refused for oauth2-refresh-token: put a new sign-in's refresh token in a new Secret)",
+		"JSON document with secret, config, or both",
 	)
+	_ = update.MarkFlagRequired("file")
 
 	rotate := &cobra.Command{
 		Use:   "rotate ID",
-		Short: "Force a refresh-type source to mint a new token",
+		Short: "Force an OAuth credential source to refresh its token",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
