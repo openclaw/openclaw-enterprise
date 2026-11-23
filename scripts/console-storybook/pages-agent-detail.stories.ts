@@ -9,6 +9,38 @@ export const Layout = story("agentDetailLayout");
 export const EmptyDeployment = story("deploymentEmpty");
 export const DeploymentSnapshotUnavailable = story("deploymentSnapshotUnavailable");
 export const NewVersion = story("newVersion");
+export const NetworkProxyEmpty = {
+  ...story("networkProxyEmpty"),
+  name: "Gateway Channel Proxy Empty",
+};
+export const NetworkProxySaved = {
+  ...story("networkProxySaved"),
+  name: "Gateway Channel Proxy Saved",
+};
+export const NetworkProxyValidation = {
+  ...story("networkProxyValidation"),
+  name: "Gateway Channel Proxy Validation",
+};
+export const NetworkProxySaveError = {
+  ...story("networkProxySaveError"),
+  name: "Gateway Channel Proxy Save Error",
+};
+export const NetworkProxyEnforcementUnavailable = {
+  ...story("networkProxyEnforcementUnavailable"),
+  name: "Gateway Channel Proxy Enforcement Unavailable",
+};
+export const NetworkProxyPermission = {
+  ...story("networkProxyPermission"),
+  name: "Gateway Channel Proxy Permission",
+};
+export const NetworkProxySecretLoading = {
+  ...story("networkProxySecretLoading"),
+  name: "Gateway Channel Proxy Secrets Loading",
+};
+export const NetworkProxySecretError = {
+  ...story("networkProxySecretError"),
+  name: "Gateway Channel Proxy Secrets Error",
+};
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");
 export const CurrentConfigurationReader = story("currentConfigurationReader");
