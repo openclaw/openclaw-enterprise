@@ -2149,8 +2149,13 @@ if (savedAgentAcl === "source") {
         for (const value of values) {
           assert.ok(!logs.includes(value), "SOURCE_VALUE_NOT_LOGGED");
         }
+        // Only this Agent borrows a Source, so match the events by name; whether the line also
+        // names the Source is recorded, not required.
         return logs.split("\n").flatMap((line): Record<string, unknown>[] => {
-          if (!line.includes(source.id)) {
+          if (
+            !line.includes("worker.openshell-git-delivery-confirmed") &&
+            !line.includes("REPOSITORY_SOURCE_LOAN_REFUSED")
+          ) {
             return [];
           }
           try {
@@ -2168,11 +2173,20 @@ if (savedAgentAcl === "source") {
       const confirmations = async () =>
         (await workerEvents())
           .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
-          .map((event) => ({ version: event.credentialSourceVersion, at: eventTime(event) }));
+          .map((event) => ({
+            version: event.credentialSourceVersion,
+            sourceNamed: event.credentialSourceId === source.id,
+            at: eventTime(event),
+          }));
       const refusals = async () =>
         (await workerEvents())
           .filter(({ code }) => code === "REPOSITORY_SOURCE_LOAN_REFUSED")
-          .map((event) => ({ reason: event.reason, at: eventTime(event) }));
+          .map((event) => ({
+            reason: event.reason,
+            sourceNamed: event.credentialSourceId === source.id || event.sourceId === source.id,
+            versionLogged: event.credentialSourceVersion !== undefined,
+            at: eventTime(event),
+          }));
 
       const callbackBaseline = await callbacks.disable();
       assert.equal(callbackBaseline, 0);
@@ -2381,7 +2395,8 @@ if (savedAgentAcl === "source") {
         originFirstSeenAt: new Date(delivered.at).toISOString(),
         originDelaySeconds: (delivered.at - committedAt) / 1000,
         probes,
-        confirmations: confirmed.map(({ version, at }) => ({
+        confirmations: confirmed.map(({ version, sourceNamed, at }) => ({
+          sourceNamed,
           version: typeof version === "string" ? savedGitAclIdentity(version) : version,
           at: Number.isNaN(at) ? "untimed" : new Date(at).toISOString(),
           delaySeconds: Number.isNaN(at) ? undefined : (at - committedAt) / 1000,
@@ -2557,6 +2572,8 @@ if (savedAgentAcl === "source") {
       evidence("operate-revoked", {
         revokedAt: new Date(revokedAt).toISOString(),
         refusalAt: Number.isNaN(refusal.at) ? "untimed" : new Date(refusal.at).toISOString(),
+        refusalSourceNamed: refusal.sourceNamed,
+        refusalVersionLogged: refusal.versionLogged,
         lastDeliveryAt:
           lastDelivery && !Number.isNaN(lastDelivery.at)
             ? new Date(lastDelivery.at).toISOString()
