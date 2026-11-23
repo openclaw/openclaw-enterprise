@@ -445,19 +445,27 @@ test(
                         await import("../helpers/qa-agent-automation-mcp.ts");
                       // Dedicated admission must be proved on a fresh Agent before any session exists.
                       const mcp = () =>
-                        step("approved MCP ordinary and scheduled authority parity", () =>
-                          verifyQaAgentAutomationMcp(f, agent),
-                        );
+                        step("approved MCP ordinary and scheduled authority parity", async () => {
+                          await verifyQaAgentAutomationMcp(f, agent);
+                          return true;
+                        });
                       // Broader no-tools qualification combines this runtime evidence
                       // with forced-dispatch proof and the pinned source family map.
-                      const modelOnly = () =>
+                      const modelOnly = (dedicatedMcpReady) =>
                         step(
                           "OCC model-only scheduling, observed no-tool behavior, history and replacement",
-                          () => verifyQaAgentAutomations(f, agent),
+                          async () => {
+                            // A failed MCP stage can leave this Agent's deployment state unknown.
+                            assert.ok(
+                              preset !== "Codex" || dedicatedMcpReady === true,
+                              "blocked by dedicated MCP stage failure or unknown outcome",
+                            );
+                            await verifyQaAgentAutomations(f, agent);
+                          },
                         );
-                      if (agent.preset === "Codex") {
-                        await mcp();
-                        await modelOnly();
+                      if (preset === "Codex") {
+                        const dedicatedMcpReady = await mcp();
+                        await modelOnly(dedicatedMcpReady);
                       } else {
                         await modelOnly();
                         await mcp();

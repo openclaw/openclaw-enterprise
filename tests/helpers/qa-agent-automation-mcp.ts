@@ -219,10 +219,12 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         close: () => Promise<void>;
       }
     | undefined;
-  let native: { client: GatewayClient; close: () => Promise<void> } | undefined;
+  let native:
+    | { client: GatewayClient; mainSessionKey: string | undefined; close: () => Promise<void> }
+    | undefined;
   async function observer() {
     const gateway = await f.gatewayUrl(agent);
-    const connected = Promise.withResolvers<void>();
+    const connected = Promise.withResolvers<string | undefined>();
     const client = new GatewayClient({
       url: gateway.url.replace(/^http/u, "ws"),
       password: gateway.gatewayPassword,
@@ -232,13 +234,14 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       scopes: ["operator.admin"],
       deviceIdentity: null,
       hostDeps: { logError: () => {}, logDebug: () => {} },
-      onHelloOk: () => connected.resolve(),
+      onHelloOk: (hello) => connected.resolve(hello.snapshot.sessionDefaults?.mainSessionKey),
       onConnectError: () => connected.reject(new Error("MCP observer could not connect")),
     });
     const timer = setTimeout(() => connected.reject(new Error("MCP observer timed out")), 15_000);
+    let mainSessionKey: string | undefined;
     try {
       client.start();
-      await connected.promise;
+      mainSessionKey = await connected.promise;
     } catch (error) {
       client.stop();
       await gateway.close();
@@ -248,6 +251,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     }
     return {
       client,
+      mainSessionKey,
       async close() {
         client.stop();
         await client.stopAndWait({ timeoutMs: 1000 });
@@ -276,12 +280,39 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     await f.saveInstallation(configuration);
     changedInstallation = true;
   }
+  async function waitAutomationReady() {
+    await f.waitFor(
+      "configured automation runtime readiness",
+      async () => {
+        const result = await request("GET", "?limit=1").catch(() => {
+          throw new Error("Automation readiness request failed");
+        });
+        if (result.status === 200) {
+          return true;
+        }
+        assert.equal(result.status, 503, "Automation readiness returned an unexpected status");
+        assert.equal(
+          result.errorCode,
+          "DEPENDENCY_UNAVAILABLE",
+          "Automation readiness returned an unexpected error code",
+        );
+        return false;
+      },
+      120_000,
+    );
+  }
   async function create(prompt: string, overrides: Record<string, unknown> = {}) {
-    const response = await request("POST", "", { ...input(prompt), ...overrides });
+    const started = performance.now();
+    const response = await request("POST", "", { ...input(prompt), ...overrides }).catch(() => {
+      throw new Error(
+        `Automation POST unknown outcome; elapsedMs=${Math.round(performance.now() - started)}`,
+      );
+    });
+    const elapsedMs = Math.round(performance.now() - started);
     assert.equal(
       response.status,
       201,
-      `OCC must admit a discovered, approved MCP grant; HTTP ${response.status}${response.errorCode ? `; code ${response.errorCode}` : ""}`,
+      `OCC must admit a discovered, approved MCP grant; HTTP ${response.status}${response.errorCode ? `; code ${response.errorCode}` : ""}; elapsedMs ${elapsedMs}`,
     );
     assert.ok(Check(AgentAutomationSchema, response.data));
     const job = response.data as AgentAutomationData;
@@ -716,6 +747,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       }
       native = await observer();
       try {
+        await waitAutomationReady();
         const sessions = asRecord(
           await native.client.request("sessions.list", {
             agentId: "main",
@@ -811,9 +843,8 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         values.mcp.servers.McP = structuredClone(values.mcp.servers.approved);
       });
     }
-    async function createOrdinarySession(key: string) {
+    async function ordinarySessions() {
       assert.ok(native);
-      await native.client.request("sessions.create", { key, agentId: "main" });
       const page = asRecord(
         await native.client.request("sessions.list", {
           agentId: "main",
@@ -828,19 +859,56 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         }),
       );
       assert.ok(Array.isArray(page?.sessions));
-      const row = page.sessions.map(asRecord).find((value) => value?.key === key);
-      assert.equal(row?.kind, "direct");
-      assert.equal(row?.classification, "custom");
-      assert.equal(row?.agentId, "main");
-      assert.equal(row?.createdVia, "operator");
-      assert.equal(row?.isDock, false);
-      assert.equal(row?.isBackground, false);
+      return page.sessions.map(asRecord);
+    }
+    function assertOrdinarySession(
+      rows: ReturnType<typeof asRecord>[],
+      key: string,
+      classification: "main" | "direct",
+      parent?: string | null,
+    ) {
+      const row = rows.find((value) => value?.key === key);
+      assert.ok(row, "the exact operator-created session must be listed");
+      assert.equal(row.kind, "direct");
+      assert.equal(row.classification, classification);
+      assert.equal(row.agentId, "main");
+      assert.equal(row.createdVia, "operator");
+      assert.equal(row.createdSurface, undefined);
+      assert.equal(row.spawnedBy, undefined);
+      assert.equal(row.isDock, false);
+      assert.equal(row.isBackground, false);
+      if (parent === null) {
+        assert.equal(row.parentSessionKey, undefined, "canonical main must have no parent");
+      } else if (parent !== undefined) {
+        assert.ok(row.parentSessionKey === parent, "the grouped session must belong to main");
+      }
+      return row;
+    }
+    async function createOrdinarySession(
+      key: string,
+      classification: "main" | "direct" = "direct",
+      parent?: string | null,
+    ) {
+      assert.ok(native);
+      await native.client.request("sessions.create", { key, agentId: "main" });
+      return assertOrdinarySession(await ordinarySessions(), key, classification, parent);
     }
     // The operator creates a normal session before the genuine model turn. This preserves
     // explicit ordinary provenance instead of relying on an ambiguous run-created session.
-    const staleSession = `agent:main:automation-mcp-stale-${token}`;
     native = await observer();
-    await createOrdinarySession(staleSession);
+    const canonicalMain = agent.preset === "OpenClaw" ? native.mainSessionKey : undefined;
+    if (agent.preset === "OpenClaw") {
+      assert.ok(
+        canonicalMain === "agent:main:main",
+        "the fixture must use its trusted default main",
+      );
+    }
+    const staleSession = canonicalMain ?? `agent:main:automation-mcp-stale-${token}`;
+    await createOrdinarySession(
+      staleSession,
+      canonicalMain === undefined ? "direct" : "main",
+      canonicalMain === undefined ? undefined : null,
+    );
     await native.close();
     native = undefined;
     // A genuine ordinary call proves this revision is otherwise eligible before the operator
@@ -922,9 +990,45 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     }
     await roleFiles("precheck");
     native = await observer();
+    const groupedSessions: string[] = [];
+    if (canonicalMain !== undefined) {
+      assert.ok(
+        native.mainSessionKey === canonicalMain,
+        "the replacement must retain trusted main",
+      );
+      assertOrdinarySession(await ordinarySessions(), canonicalMain, "main", null);
+      // Prove the replacement's eligible main can really use the approved tool before
+      // newer grouped sessions make it older than the broker's preview window.
+      const replacementControl = `replacement-main-${randomUUID()}`;
+      const callsBeforeMain = (await networkPeer.read()).length;
+      assert.equal(
+        callsBeforeMain,
+        priorControlCalls,
+        "unexpected MCP peer effect before replacement main control",
+      );
+      await agent.native.normalGatewayTurn({
+        agent,
+        sessionKey: canonicalMain,
+        prompt: `Call approved__parity_probe exactly once with nonce ${replacementControl}. Return MCP_EFFECT_${replacementControl}. Do not call any other tool.`,
+        expectedPatterns: [`MCP_EFFECT_${replacementControl}`],
+      });
+      const mainCalls = (await networkPeer.read()).slice(callsBeforeMain);
+      assert.equal(mainCalls.length, 1, "replacement main must issue exactly one peer call");
+      assert.deepEqual(
+        { server: mainCalls[0]!.server, tool: mainCalls[0]!.tool, nonce: mainCalls[0]!.nonce },
+        { server: "approved", tool: "parity_probe", nonce: replacementControl },
+      );
+      priorControlCalls = callsBeforeMain + mainCalls.length;
+      await f.record(`automations-${agent.id}-replacement-main-control`, {
+        revisionId: agent.revision.id,
+        trustedMainVerified: true,
+        peerCallCount: mainCalls.length,
+        nonceHash: createHash("sha256").update(replacementControl).digest("hex"),
+      });
+    }
     const ordinary = `ordinary-${randomUUID()}`;
     const ordinarySession = `agent:main:automation-mcp-${token}`;
-    await createOrdinarySession(ordinarySession);
+    await createOrdinarySession(ordinarySession, "direct", canonicalMain);
     await agent.native.normalGatewayTurn({
       agent,
       sessionKey: ordinarySession,
@@ -942,6 +1046,23 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       { server: before[0]!.server, tool: before[0]!.tool, nonce: before[0]!.nonce },
       { server: "approved", tool: "parity_probe", nonce: ordinary },
     );
+    if (canonicalMain !== undefined) {
+      // Create recent grouped chats after the genuine parity turn so a legitimate
+      // main update cannot invalidate the broker's 20-row starvation scenario.
+      for (let index = 0; index < 21; index++) {
+        const key = `agent:main:automation-mcp-group-${index}-${token}`;
+        await native.client.request("sessions.create", { key, agentId: "main" });
+        groupedSessions.push(key);
+      }
+      const rows = await ordinarySessions();
+      for (const key of groupedSessions) {
+        assertOrdinarySession(rows, key, "direct", canonicalMain);
+      }
+      assert.ok(
+        rows.findIndex((row) => row?.key === canonicalMain) > 20,
+        "canonical main must be older than more than 20 grouped chats",
+      );
+    }
     if (networkPeer) {
       await native.close();
       native = undefined;
@@ -1084,15 +1205,53 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         "revoked human session",
       );
       const fresh = await operatorSession();
+      await waitAutomationReady();
+      const peerCallsBeforeAdmission = (await collect()).length;
+      if (canonicalMain !== undefined) {
+        assert.ok(native?.mainSessionKey === canonicalMain, "the trusted main hint must survive");
+        const rows = await ordinarySessions();
+        assertOrdinarySession(rows, canonicalMain, "main", null);
+        assertOrdinarySession(rows, ordinarySession, "direct", canonicalMain);
+        for (const key of groupedSessions) {
+          assertOrdinarySession(rows, key, "direct", canonicalMain);
+        }
+        const parentless = rows.filter(
+          (row) =>
+            row?.parentSessionKey === undefined &&
+            row?.isDock === false &&
+            row?.isBackground === false,
+        );
+        assert.equal(
+          parentless.length,
+          1,
+          "canonical main must be the sole parentless ordinary row",
+        );
+        assert.ok(parentless[0]?.key === canonicalMain, "the surviving eligible row must be main");
+        assert.ok(
+          rows.findIndex((row) => row?.key === canonicalMain) > 20,
+          "recent grouped chats must remain newer than canonical main",
+        );
+      }
       const admitted = await request("POST", "", pausedInput("Restored operator control"), fresh);
       assert.equal(admitted.status, 201, "a fresh session and restored exact grant must admit");
       assert.ok(Check(AgentAutomationSchema, admitted.data));
       const operatorJob = admitted.data as AgentAutomationData;
       pending.set(operatorJob.id, operatorJob.configRevision);
-      assert.ok(
-        (await nativeJobs()).some(
-          (job) => job.declarationKey === `occ-automation:${operatorJob.id}`,
-        ),
+      const admittedPage = await native!.client.request<{ jobs: unknown[] }>("cron.list", {
+        includeDisabled: true,
+        includeDeliveryPreviews: false,
+        limit: 200,
+        offset: 0,
+      });
+      const admittedJobs = admittedPage.jobs
+        .map(asRecord)
+        .filter((job) => job?.declarationKey === `occ-automation:${operatorJob.id}`);
+      assert.equal(admittedJobs.length, 1, "paused admission must create one exact native job");
+      assert.deepEqual(asRecord(admittedJobs[0]?.payload)?.toolsAllow, ["approved__parity_probe"]);
+      assert.equal(
+        (await collect()).length,
+        peerCallsBeforeAdmission,
+        "paused admission must not call MCP",
       );
       await deletePaused(operatorJob, fresh);
     } finally {
@@ -1131,11 +1290,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     } finally {
       await patchSelector(originalSelector);
     }
-    await f.waitFor(
-      "restored automation revision route",
-      async () => (await request("GET")).status === 200 || undefined,
-      60_000,
-    );
+    await waitAutomationReady();
     const restored = await create("Restored revision Service control", {
       enabled: false,
       schedule: { kind: "every", everyMs: 86_400_000 },

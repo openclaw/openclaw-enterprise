@@ -8,14 +8,14 @@ scheduling and history. See the [guide](../guides/agent-automations.md) and
 
 ## Execution qualification
 
-The selected runtime owner must qualify the deployed Agent's standing authority.
-A raw native filter is not an authorization grant. Eligible operations must have:
+The runtime owner must qualify deployed Agent standing authority; a raw native
+filter is not a grant. Eligible operations require:
 
-- An enabled static MCP server with a nonempty, finite list of exact raw operations.
-- Unambiguous canonical runtime aliases allowed by the Agent's Gateway tool policy
-  and confirmed by effective native tool evidence.
+- An enabled static MCP server with a finite nonempty list of exact raw operations.
+- Unambiguous canonical aliases allowed by Gateway policy and confirmed by
+  effective native evidence.
 - The same endpoint, workload credential identity, permitted provider actions and
-  standing approval as ordinary unattended Agent execution.
+  standing approval as ordinary unattended execution.
 
 Kubernetes Compute qualifies operator-attested anonymous HTTPS MCP for embedded
 OpenClaw and ordinary deployment-backed dedicated Codex. Nonempty grants refuse provider-owned Sandbox, protected/credential deployments,
@@ -101,21 +101,23 @@ verify the reviewed package/source and persisted discovery/index; existing `comp
 fails closed. Doctor and missing-plugin repair still run, but configured-plugin
 release bookkeeping/restamp is suppressed. Requalify pin changes.
 
-The version-bound controller guard and endpoint network/trust assets are required.
-Verify a read-only root filesystem without `/app` replacement mounts. Before each
-native Gateway spawn, including respawn and container startup, the guard compares
-entries/MCP to immutable embedded source or the dedicated rendered ConfigMap;
-rechecks Code Mode, tool search, node plugin/skill controls and Agent/model
-overrides; and checks writable discovery roots and installed-plugin state. Unsafe
-or unknown origins block startup. `plugins.inspect` and `tools.catalog` check
+Require the version-bound controller guard, endpoint network/trust assets, read-only
+root filesystem and no `/app` replacement mounts. Before every Gateway spawn,
+including respawn/container startup, the guard compares entries/MCP with immutable
+embedded source or dedicated rendered ConfigMap and checks Code Mode/tool search,
+node plugin/skill controls, Agent/model overrides, writable discovery roots and
+installed-plugin state. Unsafe or unknown origins block startup. `plugins.inspect` and `tools.catalog` check
 bundled provenance and core/plugin collisions. Include filters precede alias
 allocation. Dedicated checks the complete source namespace before Gateway, Agent
 or caller subsets, refusing collisions, suffix ambiguity and reserved `mcp__`
-prefixes (case-insensitive). Embedded uses `sessions.list` and `tools.effective`
-from an ordinary same-Agent session; cron, subagent, system, dock, foreign,
-unknown and session-denied scopes/tools are ineligible. Dedicated reads no
-session/effective/history and inherits no chat denials. Packaged parity proof
-replaces creation-time discovery. Both Harnesses reject raw includes beginning
+prefixes (case-insensitive). Embedded reads at most 100 `sessions.list` rows and probes at most 20
+`tools.effective` sessions. Trusted hello `mainSessionKey` prioritizes an exact
+eligible canonical browser `main` in inventory; otherwise inspect the first 20
+rows in native order. Main outside inventory may be unavailable. Require
+unparented ordinary same-Agent scope; grouped New Chat roots with parent lineage
+cannot be distinguished from explicit children and are ineligible. Exclude cron,
+subagent, system, dock, foreign, unknown and session-denied scopes/tools. Dedicated skips session/effective/history reads and chat denials;
+packaged parity replaces discovery. Both Harnesses reject raw includes beginning
 with their normalized server prefix plus `__`, and utility names
 `resources_list`, `resources_read`, `prompts_list`, `prompts_get`
 (case-insensitive), before subsets without probe or fallback; unrelated raw
@@ -269,17 +271,15 @@ provenance for each main Gateway/Harness container. Source eligibility pins `cf0
 requires management-protocol proof; the pin alone does not qualify scheduled
 execution. Refuse missing provenance or unsupported source before cron dispatch.
 
-Compute binds transport to the selected running Gateway through a revision Service
-and operator HTTPRoute with Envoy authentication and filters. Verify the sole live
-Pod, container/image identity and EndpointSlices. For nonempty grants, also verify
-the Gateway ServiceAccount, embedded ServicePrincipal and configured projected
-identity, and the immutable revision-owned mounted ConfigMap containing exact
-rendered `openclaw.json`, even without a CA. The broker checks `system.info`
-hostname against the Pod name. Boot and process-instance IDs are 1–128 characters
-and PID is positive; neither ID has a prior expected value. Mutations require
-captured identity and unchanged boot ID; each request rechecks Pod/container.
-Never reconnect or replay a closed connection or use the Agent-wide route.
-Cleanup removes the route and Service.
+Compute binds selected running Gateway transport through revision Service/operator
+HTTPRoute with Envoy authentication/filters. Verify the sole
+live Pod, container/image and EndpointSlices; nonempty grants also verify Gateway
+ServiceAccount, embedded ServicePrincipal/projected identity and immutable
+revision-owned mounted ConfigMap with exact rendered `openclaw.json`, even without
+a CA. Match `system.info` hostname to the Pod. Boot/process-instance IDs are 1–128
+characters, PID positive; no prior values are expected. Mutations need
+captured identity and unchanged boot ID; recheck Pod/container per request. Never
+reconnect/replay or use the Agent-wide route; cleanup removes route and Service.
 
 Without policy qualification, allow only inventory, inspection, history,
 disable-only updates and deletion under existing authorization and native-shape

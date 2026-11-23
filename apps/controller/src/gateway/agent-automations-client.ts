@@ -693,11 +693,40 @@ export function createNativeAgentAutomationsAccess(
           if (!Array.isArray(rows?.sessions)) {
             throw new AutomationGatewayError("unavailable");
           }
-          for (const value of rows.sessions.slice(0, 20)) {
+          const listedRows = rows.sessions.slice(0, 100);
+          const mainSessionKey = hello.snapshot.sessionDefaults?.mainSessionKey;
+          const mainRow =
+            typeof mainSessionKey === "string" &&
+            mainSessionKey.length > 0 &&
+            mainSessionKey.trim() === mainSessionKey
+              ? listedRows
+                  .map(asRecord)
+                  .find(
+                    (row) =>
+                      row?.key === mainSessionKey &&
+                      row.classification === "main" &&
+                      isOrdinaryAgentSession(row, nativeAgentId),
+                  )
+              : undefined;
+          // Prefer the trusted main session when newer grouped sessions fill the preview window.
+          const orderedRows = mainRow ? [mainRow, ...listedRows] : listedRows.slice(0, 20);
+          const seenSessionKeys = new Set<string>();
+          let effectiveRequests = 0;
+          for (const value of orderedRows) {
             const row = asRecord(value);
-            if (!row || !isOrdinaryAgentSession(row, nativeAgentId)) {
+            if (
+              !row ||
+              !isOrdinaryAgentSession(row, nativeAgentId) ||
+              typeof row.key !== "string" ||
+              seenSessionKeys.has(row.key)
+            ) {
               continue;
             }
+            if (effectiveRequests >= 20) {
+              break;
+            }
+            seenSessionKeys.add(row.key);
+            effectiveRequests += 1;
             let inventory: Record<string, unknown> | undefined;
             try {
               inventory = asRecord(

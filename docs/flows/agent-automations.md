@@ -205,10 +205,10 @@ case-insensitively; tool-only authority cannot approve synthesized utilities. Th
 policy also rejects raw include entries beginning with their own normalized safe
 server prefix plus `__`, ignoring case, before policy subsets. Native interprets
 them as alias selectors; unrelated raw `foo__bar` remains valid. No probe or
-fallback occurs. Embedded uses `sessions.list` and
-`tools.effective` to match MCP source, server, raw operation and alias. The
-existing session must prove ordinary same-Agent scope; cron, subagent, system,
-dock, foreign, unknown and session-denied entries are refused. Dedicated uses the
+fallback occurs. Embedded reads up to 100 compact `sessions.list` rows, prioritizes the trusted hello's
+exact eligible `mainSessionKey`, and makes at most 20 `tools.effective` requests
+to match source, server, raw operation and alias. See
+[ordinary-session eligibility](../reference/agent-automations.md#execution-qualification). Dedicated uses the
 standing immutable Agent grant and performs no `sessions.list`, `tools.effective`,
 `sessions.get` or history read. It does not inherit chat-session-specific denials.
 Real ordinary and scheduled identity, source and cap parity is a packaged-runtime
