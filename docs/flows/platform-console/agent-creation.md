@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-22
-last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
+updated: 2026-11-23
+last_updated_session: authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036
 ---
 
 # Console Agent creation
@@ -30,9 +30,18 @@ graph TD
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
   B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
-  B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
-  E --> F["Grant Agent use of selected Secrets"]
-  F -->|failed| G["Retry credential access"]
+  B -->|ordinary draft| E["Save Configuration"]
+  E -->|Confirmed| Y["Agent POST"]
+  E -->|Unknown| X["Check Configuration"]
+  Y -->|Refused| M["Review refusal"]
+  Y -->|Saved| I["Saved Agent"]
+  Y -->|Unknown| N["Check for saved Agent"]
+  I -->|No check needed<br/>or known non-admin| J["Open draft"]
+  I -->|Otherwise| F["Check saved Agent<br/>Grant if eligible"]
+  F -->|Success| J
+  F -->|Failure| G["Keep draft"]
+  G --> K["Retry credential access<br/>if offered"]
+  G --> L["Deploy if directed"]
 ```
 
 ## Execution Trace
@@ -175,10 +184,10 @@ provisioning, only under the Configuration JSON;
 the Slack drawer requires both token Secrets while Slack is enabled. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
-Console checks the returned Secret name and Namespace, the Configuration values and bindings
-it sent, and the Agent name, Namespace and Configuration. Before granting credential access it
-reads that Agent and confirms its service principal matches the create response. A mismatch
-stops the grant; **Retry credential access** reads the saved Agent again without recreating it.
+Console checks the returned Secret name and Namespace, Configuration values and bindings,
+and Agent name, Namespace and Configuration. Before granting access, it rereads the saved Agent
+and checks its service principal against the create response. A mismatch stops the grant.
+If offered, **Retry credential access** checks the saved Agent again.
 An unrecognized success leaves the outcome unknown and blocks another create.
 On an ordinary Agent POST `403`, `create.mts:agentSaveAccessReason` compares
 the complete API denial with the request. It checks Agent create in this Namespace,
@@ -204,11 +213,17 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 ### 5. Grant Secret access and edit authentication
 
-`create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
-same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. A session known not to administer the Installation sends
-no IAM request and opens the saved draft: the member's
-[deploy writes these grants](../namespace-iam-policy.md#6-default-users-owners-and-deploy-time-grants).
+Known Installation non-administrators skip grants. Otherwise, for a model
+Secret or Credential Source, Console verifies the Agent and ensures its
+ServicePrincipal has `operate` on that resource. Configuration Secret bindings
+also trigger verification.
+`create.mts:grantConfigurationSecretAccess` covers only staged channel Secrets
+matching final same-Namespace `env` bindings.
+[Transactional native IAM can grant at deployment](../namespace-iam-policy.md#6-default-users-owners-and-deploy-time-grants)
+if the caller has `operate`.
+Failure retains the draft. Retry if offered. With unreadable capabilities,
+`403` on verification or grant hides retry and directs deployment from the Agent page.
+
 After a refused Installation read, **Your access** shows whether Agent `create`
 is allowed, refused, or unchecked. When allowed,
 `create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
@@ -256,6 +271,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-23 13:25: Clarify grants and recovery. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

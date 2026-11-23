@@ -49,9 +49,10 @@ Earlier shipped versions of the bundled defaults are archived in
 a same-name copy that still equals an earlier version (normalized JSON) with the
 current template, keeping its ID and AccessBindings, and audits
 `openclaw.presets.update` with `source: installation-defaults-refresh`. Copies
-matching no shipped version are operator edits and stay; so do `presets.files`
-copies and retired names such as `standard-codex`. To keep an earlier version,
-rename the copy or change any field. A refused refresh (say, a deny Restriction
+matching no shipped version and retired names such as `standard-codex` stay.
+With `includeDefaults` enabled, a `presets.files` entry matching the current bundled
+name and template also permits refreshing a superseded copy. To keep an earlier version, rename the
+copy or change any field. A refused refresh (say, a deny Restriction
 on `preset:update`) keeps the copy and logs `presets.default-refresh-skipped`.
 
 Namespace deletion removes copies that equal, by name and template, a configured
@@ -294,13 +295,14 @@ or **Use existing Secret**. Existing mode lists readable Namespace Secret metada
 and uses the selected reference without fetching its value. Switching modes clears
 the entered token; the saved Preset remains unchanged.
 
-In new mode, **Use Preset** carries the value into the masked credential input, and
-**Create Agent** creates a Namespace Secret. Both modes then grant the Agent exact
-access through the ordinary creation flow. The value never belongs in Preset
-storage, Agent JSON, or Configuration JSON. API clients must create a Secret and
-replace `secret` with `source: <SecretRef>` before submitting an ordinary Agent
-request; rendering alone creates no resources. Partial saves follow normal
-recovery; retrying credential access does not recreate the Agent.
+In new mode, **Use Preset** fills the masked credential input, and **Create Agent**
+creates a Namespace Secret. Both modes follow
+[conditional credential grants](../flows/platform-console/agent-creation.md#5-grant-secret-access-and-edit-authentication).
+The value never enters Preset storage, Agent JSON, or Configuration JSON. API
+clients must create a Secret and replace `secret` with `source: <SecretRef>`
+before submitting an ordinary Agent request. Rendering creates no resources.
+Partial saves follow normal recovery. Retrying credential access does not recreate
+the Agent.
 
 String variables can still supply existing credential reference IDs.
 [SecretRefs](configuration/secrets.md) remain structured, unresolved references;
@@ -361,9 +363,10 @@ variable values.
 
 Invalid inputs return `400`; denied access returns `403`; a missing exact target
 returns `404`; duplicate names or lifecycle conflicts return `409`; unavailable
-IAM, persistence, or required Driver capability returns `503`. Delete Presets
-before deleting their Namespace. Deleting one removes its resource-scoped IAM
-bindings, but keeps copied Agents, Configurations, and credential sources.
+IAM, persistence, or required Driver capability returns `503`.
+[Delete blocking Presets](#bundled-default-upgrades) before Namespace deletion.
+Deleting one removes its resource-scoped IAM bindings, but keeps copied Agents,
+Configurations, and credential sources.
 
 ## Limits and recovery
 

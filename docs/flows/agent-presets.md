@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-22
-last_updated_session: authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d
+updated: 2026-11-23
+last_updated_session: authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036
 ---
 
 # Agent Presets flow
@@ -35,7 +35,7 @@ through existing APIs. Deployment follows
 ```mermaid
 graph TD
   S0["API startup with defaults enabled"] --> S1["Authorize and lock eligible Namespaces"]
-  S1 --> S2["Create missing names; preserve existing copies"]
+  S1 --> S2["Create missing Presets<br/>Refresh eligible bundled copies"]
   S2 --> C
   N["Authorized Namespace creation"] --> S2
   A["Operator creates or updates a Preset"] --> B["OCC checks the grant"]
@@ -52,13 +52,17 @@ graph TD
   G --> S["Password input: create Secret in current Namespace"]
   S --> H["Configuration API admits and saves"]
   G -->|Existing credential binding| H
-  H --> I["Agent API admits and saves"]
-  I -->|Model Secret selected| O["Grant Agent access to the selected model Secret"]
-  I -->|No model Secret| J
-  O --> J["Independent Agent draft"]
-  O -->|Grant fails| R["Retain Agent and retry credential access"]
+  H --> I["Agent POST"]
+  I -->|Saved| A0["Saved Agent"]
+  I -->|Confirmed<br/>rejection| K["Retry Create Agent<br/>in this draft"]
+  I -->|Outcome<br/>unknown| Q["Creation locked<br/>Check for saved Agent"]
+  A0 -->|No check needed<br/>or known non-admin| J["Open draft"]
+  A0 -->|Otherwise| O["Check saved Agent<br/>Grant if eligible"]
+  O -->|Success| J
+  O -->|Failure| R["Keep draft"]
+  R --> R1["Retry credential access<br/>if offered"]
+  R --> R2["Deploy from Agent page<br/>if directed"]
   F -->|Invalid variable| E
-  I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
   J --> L["Credential preparation and version admission"]
 ```
 
@@ -153,8 +157,9 @@ removes the caller's update permission.
 The [repository](../../packages/occ/src/state/postgres-state.ts) stores the whole
 template in `occ.presets`. PATCH then locks the Preset and replaces an included
 template atomically. Preset DELETE removes its exact IAM bindings in the transaction.
-Presets prevent Namespace deletion while present. The controller's normal audit
-path records mutations and denials without template or variable contents.
+See [Namespace deletion rules](../reference/presets.md#bundled-default-upgrades).
+The controller's normal audit path records mutations and denials without template
+or variable contents.
 
 ### 3. Read and render the selected copy
 
@@ -252,17 +257,17 @@ variables remain confined to the credential field. User-edited workspace bytes
 follow the existing private workspace setup path in both regular and provisioning
 creation. The form keeps Secret bindings internally and exposes channel-specific
 Secret controls rather than a raw bindings editor.
-Model Secret references survive draft navigation; passwords do not. Provider or
-authentication-method changes clear the selection. Existing or Preset-bound
-references are reused. Ordinary creation grants the Agent service principal
-exact Secret `operate` access; Agent-conflict and grant retries retain the
-reference. The caller needs grant-management permission. A failed grant keeps
-the saved Agent and offers retry. Provisioning derives it from `harnessAuth.source`.
-Password inputs first create a same-Namespace Secret, clear the input, and
-retain the reference. Save then creates Configuration and Agent resources and
-grants access; dedicated provisioning follows its existing flow. Password bytes
-reach only Secret creation. Each API request performs schema, native credential
-and authorization admission before persistence.
+Model Secret references survive navigation, Agent conflicts and grant retries.
+Passwords do not. Changing provider or authentication method clears the selection.
+Console reuses existing and Preset-bound references. Granting the Agent `operate`
+on the exact Secret requires grant-management permission. See [Agent creation, step 5](platform-console/agent-creation.md#5-grant-secret-access-and-edit-authentication)
+for the saved-Agent check and conditional grants. A copied Configuration Secret
+binding alone triggers no grant. Dedicated provisioning uses `harnessAuth.source`.
+
+Password inputs create a same-Namespace Secret, clear the input and retain the
+reference. Save then creates the Configuration and Agent. Of these save requests,
+only Secret creation receives the password. Each request checks schema, credentials
+and authorization before persistence.
 
 A confirmed duplicate-name Secret response offers the permission-aware picker or an
 independent new name in the same form. Selection clears the entered key; neither option
@@ -275,10 +280,10 @@ and belong to the attempted name. Changing that name or submitting a new attempt
 feedback but preserves an edited alternate name. Submit trims and validates alternate
 names before writing. Selecting an existing Secret restores the optional service-account
 plugin discovery token field. Later save failures reuse the saved Secret reference.
-If Configuration creation succeeds but Agent creation fails, the form retains
-the Configuration ID and locks Configuration-affecting controls. A safe retry
-reuses the saved Configuration. An uncertain response requires inspection before
-another creation attempt. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
+Confirmed Agent POST rejection locks Configuration controls. Retrying
+**Create Agent** in this draft reuses the saved Configuration ID. Refresh
+repository choices first when required. An uncertain Agent POST locks creation.
+Check for the saved Agent. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
 
 ### 5. Hand off to deployment
 
@@ -294,9 +299,10 @@ or an immutable saved version.
 
 - A missing selector entry can mean missing exact Preset `read` permission;
   compare the Namespace and the authenticated list response.
-- Chooser errors identify variable or form-field problems before any save. Save errors
-  come from existing Configuration or Agent admission; retain request and saved
-  Configuration IDs when investigating partial or uncertain outcomes.
+- Chooser errors identify variable or form-field problems before any save.
+  Identify which request failed and which resources were saved. Keep the request
+  ID if available and any saved resource IDs. See [step 4](#4-save-an-independent-draft)
+  for recovery.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.ts) exercises
@@ -321,6 +327,7 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-23 13:25: Clarify draft outcomes and refresh. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)
 - 2026-11-22 12:08: Explain how Preset PATCH rechecks the update grant under the Namespace lock. (authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d - ec37f064957a64fb8b8f4185ae17de6ca86f0b7a)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
