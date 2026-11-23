@@ -673,7 +673,9 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
                 evidence = runpy.run_path("scripts/upgrade-evidence.py")
                 evidence["validate_compatibility_preview"](content, controller)
             except (OSError, AttributeError, TypeError, ValueError, RecursionError):
-                parser.error("controller compatibility receipt verification failed")
+                parser.error(
+                    "Supply a passing PostgreSQL compatibility report for the selected controller and retry."
+                )
     before_values = mappings["baseline Helm values"]
     values = mappings.get("candidate Helm values", before_values)
     before_installation = mappings["baseline Installation"]

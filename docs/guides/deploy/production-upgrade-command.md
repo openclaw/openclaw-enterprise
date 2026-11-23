@@ -107,6 +107,8 @@ migration history remain unknown until the upgrade checks the cluster.
 
 With `--controller-compatibility-results FILE`, `plan` and a new `apply` check
 the PostgreSQL report and the selected controller digest before approval.
+If the check fails, rerun [controller qualification](../../testing/postgresql.md#released-controller-compatibility)
+for the installed and selected images. Retry with the passing report.
 Live preflight must still match the report to the installed controller.
 Qualify [recovery](production-upgrade-recovery.md) separately.
 

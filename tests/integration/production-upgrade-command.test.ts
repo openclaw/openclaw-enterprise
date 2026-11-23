@@ -832,7 +832,11 @@ test("the same local candidate is explained by plan and apply without printing i
       const result = run(action, f, options, { automaticEvidence: true });
       assert.equal(result.status, 2);
       assert.ok(result.stdout === "");
-      assert.ok(result.stderr.includes("controller compatibility receipt verification failed"));
+      assert.ok(
+        result.stderr.includes(
+          "Supply a passing PostgreSQL compatibility report for the selected controller and retry.",
+        ),
+      );
       assert.ok(!result.stderr.includes(receiptCanary) && !result.stderr.includes(receipt));
       assert.deepEqual((await readdir(f.directory)).sort(), [
         "kubeconfig",
