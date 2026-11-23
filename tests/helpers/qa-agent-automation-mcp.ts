@@ -990,7 +990,6 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     }
     await roleFiles("precheck");
     native = await observer();
-    const groupedSessions: string[] = [];
     if (canonicalMain !== undefined) {
       assert.ok(
         native.mainSessionKey === canonicalMain,
@@ -1046,23 +1045,6 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       { server: before[0]!.server, tool: before[0]!.tool, nonce: before[0]!.nonce },
       { server: "approved", tool: "parity_probe", nonce: ordinary },
     );
-    if (canonicalMain !== undefined) {
-      // Create recent grouped chats after the genuine parity turn so a legitimate
-      // main update cannot invalidate the broker's 20-row starvation scenario.
-      for (let index = 0; index < 21; index++) {
-        const key = `agent:main:automation-mcp-group-${index}-${token}`;
-        await native.client.request("sessions.create", { key, agentId: "main" });
-        groupedSessions.push(key);
-      }
-      const rows = await ordinarySessions();
-      for (const key of groupedSessions) {
-        assertOrdinarySession(rows, key, "direct", canonicalMain);
-      }
-      assert.ok(
-        rows.findIndex((row) => row?.key === canonicalMain) > 20,
-        "canonical main must be older than more than 20 grouped chats",
-      );
-    }
     if (networkPeer) {
       await native.close();
       native = undefined;
@@ -1209,6 +1191,13 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       const peerCallsBeforeAdmission = (await collect()).length;
       if (canonicalMain !== undefined) {
         assert.ok(native?.mainSessionKey === canonicalMain, "the trusted main hint must survive");
+        // Challenge main-session selection at admission with 21 genuinely newer grouped chats.
+        const groupedSessions: string[] = [];
+        for (let index = 0; index < 21; index++) {
+          const key = `agent:main:automation-mcp-group-${index}-${token}`;
+          await native!.client.request("sessions.create", { key, agentId: "main" });
+          groupedSessions.push(key);
+        }
         const rows = await ordinarySessions();
         assertOrdinarySession(rows, canonicalMain, "main", null);
         assertOrdinarySession(rows, ordinarySession, "direct", canonicalMain);
@@ -1229,7 +1218,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         assert.ok(parentless[0]?.key === canonicalMain, "the surviving eligible row must be main");
         assert.ok(
           rows.findIndex((row) => row?.key === canonicalMain) > 20,
-          "recent grouped chats must remain newer than canonical main",
+          "recent grouped chats must be newer than canonical main at admission",
         );
       }
       const admitted = await request("POST", "", pausedInput("Restored operator control"), fresh);
