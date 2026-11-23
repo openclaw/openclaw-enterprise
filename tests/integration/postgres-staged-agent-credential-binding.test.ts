@@ -21,6 +21,7 @@ import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-s
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import type {
+  AgentRevision,
   CredentialProxyDriver,
   CredentialSourceReference,
   CredentialUpdateNotification,
@@ -59,6 +60,14 @@ async function controlledRetirementTransport(
   const copies = new Map<string, { provider?: Wire; profile?: Wire }>();
   let refused = false;
   let reads = 0;
+  let effectivePolicyPermissive = false;
+  let receiptRevoked = true;
+  const sandboxes = new Map<
+    string,
+    { sandbox: Wire; policyVersion: number; protectedRoute: { host: string; port: number } }
+  >();
+  const receipts = new Map<string, Wire>();
+  const actions: string[] = [];
   const methods: Record<string, (request: Wire) => Wire | undefined> = {
     GetWorkspace: (request) => {
       reads++;
@@ -76,7 +85,118 @@ async function controlledRetirementTransport(
         },
       };
     },
-    GetSandbox: () => undefined,
+    GetSandbox: (request) => {
+      const entry = sandboxes.get(String(request.name));
+      return entry && { sandbox: entry.sandbox };
+    },
+    DeleteSandbox: (request) => {
+      sandboxes.delete(String(request.name));
+      return { outcome: "DELETION_OUTCOME_COMPLETED" };
+    },
+    GetSandboxPolicyStatus: (request) => {
+      const entry = sandboxes.get(String(request.sandbox));
+      if (entry && entry.policyVersion > 1) {
+        actions.push("policy-loaded");
+      }
+      return (
+        entry && {
+          revision: {
+            version: entry.policyVersion,
+            status: "POLICY_STATUS_LOADED",
+            policy: (entry.sandbox.spec as Wire).policy,
+          },
+          active_version: entry.policyVersion,
+        }
+      );
+    },
+    GetSandboxConfig: (request) => {
+      const entry = sandboxes.get(String(request.name));
+      if (!entry) {
+        return undefined;
+      }
+      const policy = structuredClone((entry.sandbox.spec as Wire).policy as Wire);
+      for (const rule of Object.values(policy.network_policies as Record<string, Wire>)) {
+        for (const endpoint of (rule.endpoints ?? []) as Wire[]) {
+          if (endpoint.credential_binding) {
+            endpoint.provider_credentialed = true;
+          }
+        }
+      }
+      if (effectivePolicyPermissive) {
+        (policy.network_policies as Record<string, Wire>)["controlled-permissive"] = {
+          name: "controlled-permissive",
+          endpoints: [{ host: entry.protectedRoute.host, ports: [entry.protectedRoute.port] }],
+        };
+      }
+      return {
+        policy,
+        version: entry.policyVersion,
+        workspace,
+        configuration_admitted: true,
+      };
+    },
+    UpdateConfig: (request) => {
+      const entry = sandboxes.get(String(request.sandbox));
+      assert.ok(entry);
+      const sandbox = entry.sandbox;
+      assert.equal(
+        String(request.expected_resource_version),
+        (sandbox.metadata as Wire).resource_version,
+      );
+      (sandbox.spec as Wire).policy = request.policy;
+      (sandbox.metadata as Wire).resource_version = String(
+        BigInt(String((sandbox.metadata as Wire).resource_version)) + 1n,
+      );
+      entry.policyVersion += 1;
+      actions.push("policy-reduced");
+      return { version: entry.policyVersion, policy_hash: "a".repeat(64) };
+    },
+    DetachSandboxProvider: (request) => {
+      const entry = sandboxes.get(String(request.sandbox));
+      assert.ok(entry);
+      const sandbox = entry.sandbox;
+      const spec = sandbox.spec as Wire;
+      const policy = spec.policy as Wire;
+      const networks = policy.network_policies as Record<string, Wire>;
+      assert.equal(
+        Object.values(networks).some((rule) =>
+          (rule.endpoints as Wire[]).some(
+            (endpoint) =>
+              (endpoint.credential_binding as Wire | undefined)?.provider === request.provider,
+          ),
+        ),
+        false,
+        "the loaded Sandbox policy must remove the credential route before detach",
+      );
+      assert.equal(request.sandbox, (sandbox.metadata as Wire).name);
+      spec.providers = (spec.providers as string[]).filter((name) => name !== request.provider);
+      const receipt = {
+        receipt_id: randomUUID(),
+        mutation_id: randomUUID(),
+        kind: "PROVIDER_MUTATION_KIND_DETACH",
+        workspace,
+        provider: request.provider,
+        desired: { sandbox_id: (sandbox.metadata as Wire).id, sandbox: request.sandbox },
+        persisted_time: { seconds: String(Math.floor(Date.now() / 1000)), nanos: 0 },
+      };
+      receipts.set(receipt.receipt_id, receipt);
+      actions.push("provider-detached");
+      return { detached: true, receipt };
+    },
+    GetSandboxProviderStatus: (request) => {
+      const receipt = receipts.get(String(request.receipt_id));
+      assert.ok(receipt);
+      assert.equal(request.receipt_id, receipt.receipt_id);
+      actions.push(receiptRevoked ? "revoked-observed" : "receipt-pending-observed");
+      return {
+        status: {
+          state: receiptRevoked
+            ? "PROVIDER_READINESS_STATE_REVOKED"
+            : "PROVIDER_READINESS_STATE_PENDING",
+          receipt,
+        },
+      };
+    },
     GetProvider: (request) => {
       const copy = copies.get(String(request.name));
       return copy?.provider && { provider: copy.provider };
@@ -89,6 +209,15 @@ async function controlledRetirementTransport(
       if (refused) {
         throw Object.assign(new Error("Controlled native retirement refusal"), {
           code: grpc.status.FAILED_PRECONDITION,
+        });
+      }
+      const attached = [...sandboxes].filter(([, { sandbox }]) =>
+        ((sandbox.spec as Wire).providers as string[]).includes(String(request.name)),
+      );
+      if (attached.length > 0) {
+        throw Object.assign(new Error("Provider remains attached"), {
+          code: grpc.status.FAILED_PRECONDITION,
+          details: `provider '${request.name}' is attached to sandbox(es): ${attached.map(([name]) => name).join(", ")}`,
         });
       }
       const copy = copies.get(String(request.name));
@@ -165,17 +294,89 @@ async function controlledRetirementTransport(
         profile: { id: name, resource_version: "1", annotations: ownership },
       });
     },
+    seedSandbox(sourceId: string, revision: Readonly<AgentRevision>, name: string, id: string) {
+      const binding = revision.credentialDeployment!.bindings[0]!;
+      const request = revision.credentialDeployment!.injectionPolicies[0]!.allowedRequests[0]!;
+      const grant = revision.sandboxPolicy!.additions.find((entry) => entry.host === request.host)!;
+      const rule = `oce-agent-${grant.id}`;
+      const sandbox = {
+        metadata: {
+          id,
+          name,
+          workspace,
+          resource_version: "1",
+          labels: {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/namespace": namespaceId,
+            "openclaw.dev/agent": revision.agentId,
+            "openclaw.dev/revision": revision.id,
+          },
+          annotations: {
+            "openclaw.dev/namespace-id": namespaceId,
+            "openclaw.dev/agent-id": revision.agentId,
+            "openclaw.dev/revision-id": revision.id,
+            "openclaw.dev/configuration-id": revision.configurationId,
+          },
+        },
+        spec: {
+          providers: [openShellProviderName(sourceId)],
+          provider_attachment_epoch: randomUUID(),
+          policy: {
+            version: 1,
+            network_policies: {
+              ...revision.sandboxPolicy!.defaults,
+              [rule]: {
+                name: rule,
+                binaries: [{ path: request.binary }],
+                endpoints: [
+                  {
+                    host: request.host,
+                    ports: request.ports.map(({ from }) => from),
+                    protocol: "rest",
+                    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+                    rules: [
+                      {
+                        allow: {
+                          method: request.requestPolicy!.method,
+                          path: request.requestPolicy!.path,
+                        },
+                      },
+                    ],
+                    credential_binding: { provider: openShellProviderName(binding.sourceRef.id) },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      };
+      sandboxes.set(name, {
+        sandbox,
+        policyVersion: 1,
+        protectedRoute: { host: request.host, port: request.ports[0]!.from },
+      });
+    },
+    sandbox(name: string) {
+      return sandboxes.get(name)?.sandbox;
+    },
+    actions,
     get reads() {
       return reads;
     },
     set refused(value: boolean) {
       refused = value;
     },
+    set effectivePolicyPermissive(value: boolean) {
+      effectivePolicyPermissive = value;
+    },
+    set receiptRevoked(value: boolean) {
+      receiptRevoked = value;
+    },
   };
 }
 
 test(
-  "public managed Source enrollment preserves custody and admits an authorized staged Agent",
+  "public managed Source enrollment and active staged Agent withdrawal preserve custody",
   {
     skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to a migrated PostgreSQL fixture.",
   },
@@ -1572,10 +1773,54 @@ test(
     ]);
 
     assert.ok(revision);
+    // A second admitted Agent uses the same Source and native Provider. The following setup
+    // controls only deployment transport state; both drafts and immutable revisions are real.
+    const siblingResponse = await inject(
+      "POST",
+      `${base}/agents`,
+      {
+        name: `Native sibling ${randomUUID()}`,
+        configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+        credentialSources: [{ sourceId: nativeSource.id }],
+      },
+      nativeApp,
+    );
+    assert.equal(siblingResponse.statusCode, 201, siblingResponse.body);
+    const siblingId: string = siblingResponse.json().data.id;
+    const siblingNetworking = `${base}/agents/${siblingId}/sandbox-policy/networking`;
+    assert.equal(
+      (await inject("PATCH", `${siblingNetworking}/editing`, { enabled: true }, nativeApp))
+        .statusCode,
+      200,
+    );
+    const siblingGrant = await inject(
+      "PUT",
+      siblingNetworking,
+      { expectedVersion: 1, additions: [grant] },
+      nativeApp,
+    );
+    assert.equal(siblingGrant.statusCode, 200, siblingGrant.body);
+    const siblingAdmitted = await inject(
+      "POST",
+      `${base}/agents/${siblingId}/deploy`,
+      {},
+      nativeApp,
+    );
+    assert.equal(siblingAdmitted.statusCode, 202, siblingAdmitted.body);
+    const siblingRevision = await nativeController.transact((unit) =>
+      unit.revisions.findRevision(namespaceId, siblingId, siblingAdmitted.json().data.id),
+    );
+    assert.ok(siblingRevision);
+
     // Simulate an admitted deployment that reached staged delivery. The retained ConfigMap and
-    // native Provider are transport state, not substitutes for the Stop or Proxy decisions.
+    // native Provider are transport state, not substitutes for withdrawal or Proxy decisions.
     const compute = runtime.computeDriver as unknown as FixtureDriver;
     const targetName = `credential-target-${digest(dedicatedId)}-rev-${digest(revision.id)}`;
+    const siblingTargetName = `credential-target-${digest(siblingId)}-rev-${digest(siblingRevision.id)}`;
+    const sandboxId = "controlled-sandbox";
+    const siblingSandboxId = "controlled-sibling-sandbox";
     const stopTransport = createDedicatedDeployKubernetesFixture(
       {
         namespace: kubernetesNamespace,
@@ -1592,24 +1837,29 @@ test(
           metadata: namespaceObject.metadata,
           status: namespaceObject.status,
         });
-        const target = compute.manifest(
-          "v1",
-          "ConfigMap",
-          targetName,
-          {
-            namespaceId,
-            agentId: dedicatedId,
-            servicePrincipalId: revision.servicePrincipalId,
-            revisionId: revision.id,
-          },
-          { name: kubernetesNamespace, plane: "control" },
-        );
-        save({
-          ...target,
-          metadata: { ...target.metadata, uid: "controlled-target-uid", resourceVersion: "1" },
-          immutable: true,
-          data: { sandboxId: "controlled-sandbox" },
-        });
+        for (const [candidate, name, id] of [
+          [revision, targetName, sandboxId],
+          [siblingRevision, siblingTargetName, siblingSandboxId],
+        ] as const) {
+          const target = compute.manifest(
+            "v1",
+            "ConfigMap",
+            name,
+            {
+              namespaceId,
+              agentId: candidate.agentId,
+              servicePrincipalId: candidate.servicePrincipalId,
+              revisionId: candidate.id,
+            },
+            { name: kubernetesNamespace, plane: "control" },
+          );
+          save({
+            ...target,
+            metadata: { ...target.metadata, uid: `controlled-${id}-uid`, resourceVersion: "1" },
+            immutable: true,
+            data: { sandboxId: id },
+          });
+        }
       },
     );
     const { KubernetesObjectApi } = createRequire(
@@ -1645,26 +1895,237 @@ test(
       ),
     );
     nativeTransport.seed(nativeSource.id);
+    const placedNamespace = {
+      id: namespaceId,
+      name: kubernetesNamespace,
+      status: "ready" as const,
+      createdAt: revision.createdAt,
+    };
+    const sandboxName = sandbox.harnessResource!({
+      namespace: placedNamespace,
+      revision,
+    }).resourceName;
+    const siblingSandboxName = sandbox.harnessResource!({
+      namespace: placedNamespace,
+      revision: siblingRevision,
+    }).resourceName;
+    nativeTransport.seedSandbox(nativeSource.id, revision, sandboxName, sandboxId);
+    nativeTransport.seedSandbox(
+      nativeSource.id,
+      siblingRevision,
+      siblingSandboxName,
+      siblingSandboxId,
+    );
+    // Activation is a controlled prerequisite here. Use the same PostgreSQL state transition
+    // as the deployment worker, and defer its simulated deployment work before starting the
+    // real withdrawal worker. This test does not claim to qualify deployment itself.
+    for (const candidate of [revision, siblingRevision]) {
+      const deferred = await pool.query(
+        "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
+        [namespaceId, candidate.agentId, candidate.id, `agent_revision:${candidate.id}:reconcile`],
+      );
+      assert.equal(deferred.rowCount, 1);
+      const active = await state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          namespaceId,
+          candidate.agentId,
+          undefined,
+          candidate.id,
+        ),
+      );
+      assert.equal(active?.activeRevisionId, candidate.id);
+    }
+    // The original test selected this TokenService owner directly. Give worker composition the
+    // same private-store identity that production startup reads before selecting that owner.
+    await privateStore.create(
+      {
+        installationId: controller.installation.id,
+        id: `token-service-store-identity:${driver.id}`,
+      },
+      storeIdentity,
+    );
     const custodyBeforeStop = structuredClone([...core.secrets]);
-    // The admitted deployment can have materialized a copy before its next queued retry.
-    // Defer that test-owned retry so the Stop work is the caller that cleans the revision.
-    const deferred = await pool.query(
-      "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
-      [namespaceId, dedicatedId, revision.id, `agent_revision:${revision.id}:reconcile`],
+    const withdrawalPath = (id: string) =>
+      `${base}/agents/${id}/credential-sources/${nativeSource.id}`;
+    const deniedWithdrawal = await memberRequest(
+      "POST",
+      `${withdrawalPath(dedicatedId)}/withdraw`,
+      undefined,
+      nativeApp,
     );
-    assert.equal(deferred.rowCount, 1);
-    const stopped = remember(
-      await inject("POST", `${base}/agents/${dedicatedId}/stop`, undefined, nativeApp),
+    assert.equal(deniedWithdrawal.statusCode, 403, deniedWithdrawal.body);
+    assert.equal(nativeTransport.actions.length, 0);
+    const requested = remember(
+      await inject("POST", `${withdrawalPath(dedicatedId)}/withdraw`, undefined, nativeApp),
     );
-    assert.equal(stopped.statusCode, 202, stopped.body);
+    assert.equal(requested.statusCode, 202, requested.body);
+    assert.equal(requested.json().data.state, "pending");
+    nativeTransport.effectivePolicyPermissive = true;
     const worker = createControllerWorker({
       pool: new pg.Pool({ connectionString: databaseUrl }),
-      computeDriver: compute,
+      drivers: {
+        ...runtime,
+        installation: {
+          ...runtime.installation,
+          drivers: {
+            ...runtime.installation.drivers,
+            secret: { ...runtime.installation.drivers.secret, id: driver.id },
+            token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+          },
+        },
+        secretDriver: driver,
+      },
       pollIntervalMs: 15,
+      maxAttempts: 1,
       emit() {},
     });
     try {
       await worker.start();
+      // The effective configuration can report admission while another rule still permits the
+      // protected destination. OCC must leave withdrawal pending without detaching either Agent.
+      const pending = await waitFor("a permissive effective policy attempt", async () => {
+        const response = await inject(
+          "GET",
+          `${withdrawalPath(dedicatedId)}/withdrawal`,
+          undefined,
+          nativeApp,
+        );
+        assert.equal(response.statusCode, 200, response.body);
+        const status = response.json().data;
+        return status.state === "pending" && status.reason === "DEPENDENCY_UNAVAILABLE"
+          ? status
+          : undefined;
+      });
+      assert.equal(pending.completedAt, undefined);
+      assert.equal(nativeTransport.actions.includes("provider-detached"), false);
+      const nativeProvider = openShellProviderName(nativeSource.id);
+      assert.deepEqual((nativeTransport.sandbox(sandboxName)!.spec as Wire).providers, [
+        nativeProvider,
+      ]);
+      assert.deepEqual((nativeTransport.sandbox(siblingSandboxName)!.spec as Wire).providers, [
+        nativeProvider,
+      ]);
+      assert.ok(
+        await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
+      );
+      nativeTransport.effectivePolicyPermissive = false;
+      nativeTransport.receiptRevoked = false;
+      const replayed = await inject(
+        "POST",
+        `${withdrawalPath(dedicatedId)}/withdraw`,
+        undefined,
+        nativeApp,
+      );
+      assert.equal(replayed.statusCode, 202, replayed.body);
+      // Detach can persist before the supervisor confirms revocation. A pending receipt must
+      // not complete withdrawal or retire the shared Provider; replay finishes when it is revoked.
+      await waitFor("the pending detach receipt attempt to settle", async () => {
+        if (!nativeTransport.actions.includes("receipt-pending-observed")) {
+          return undefined;
+        }
+        const status = await inject(
+          "GET",
+          `${withdrawalPath(dedicatedId)}/withdrawal`,
+          undefined,
+          nativeApp,
+        );
+        const attempts = await pool.query(
+          `SELECT state,reason_code FROM occ.controller_work
+           WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3
+             AND agent_target='credentials_withdrawn' AND state='failed_permanent'
+             AND reason_code='DEPENDENCY_UNAVAILABLE'`,
+          [namespaceId, dedicatedId, revision.id],
+        );
+        return status.statusCode === 200 &&
+          status.json().data.state === "pending" &&
+          status.json().data.reason === "DEPENDENCY_UNAVAILABLE" &&
+          attempts.rowCount === 2
+          ? status.json().data
+          : undefined;
+      });
+      assert.deepEqual((nativeTransport.sandbox(sandboxName)!.spec as Wire).providers, []);
+      assert.deepEqual((nativeTransport.sandbox(siblingSandboxName)!.spec as Wire).providers, [
+        nativeProvider,
+      ]);
+      assert.ok(
+        await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
+      );
+      nativeTransport.receiptRevoked = true;
+      const confirmedReplay = await inject(
+        "POST",
+        `${withdrawalPath(dedicatedId)}/withdraw`,
+        undefined,
+        nativeApp,
+      );
+      assert.equal(confirmedReplay.statusCode, 202, confirmedReplay.body);
+      const revoked = await waitFor("the first Agent credential withdrawal", async () => {
+        const response = await inject(
+          "GET",
+          `${withdrawalPath(dedicatedId)}/withdrawal`,
+          undefined,
+          nativeApp,
+        );
+        assert.equal(response.statusCode, 200, response.body);
+        return response.json().data.state === "revoked" ? response.json().data : undefined;
+      });
+      assert.equal(revoked.revisionId, revision.id);
+      const sequence = ["policy-reduced", "policy-loaded", "provider-detached", "revoked-observed"];
+      let previous = -1;
+      for (const action of sequence) {
+        const index = nativeTransport.actions.indexOf(action, previous + 1);
+        assert.ok(index > previous, `${action} must follow the previous withdrawal action`);
+        previous = index;
+      }
+      assert.ok(
+        await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
+      );
+      assert.deepEqual((nativeTransport.sandbox(siblingSandboxName)!.spec as Wire).providers, [
+        nativeProvider,
+      ]);
+      assert.equal(
+        (await inject("GET", boundSourcePath, undefined, nativeApp)).json().data.state,
+        "ready",
+      );
+      assert.equal(
+        (await inject("GET", `${base}/agents/${dedicatedId}`, undefined, nativeApp)).json().data
+          .activeRevisionId,
+        revision.id,
+      );
+      assert.equal(
+        (await inject("GET", `${base}/agents/${siblingId}`, undefined, nativeApp)).json().data
+          .activeRevisionId,
+        siblingRevision.id,
+      );
+      assert.deepEqual([...core.secrets], custodyBeforeStop);
+
+      // The final binding retires the Proxy-owned delivery copy while canonical Source custody remains.
+      const siblingRequested = await inject(
+        "POST",
+        `${withdrawalPath(siblingId)}/withdraw`,
+        undefined,
+        nativeApp,
+      );
+      assert.equal(siblingRequested.statusCode, 202, siblingRequested.body);
+      await waitFor("the final Agent credential withdrawal", async () => {
+        const response = await inject(
+          "GET",
+          `${withdrawalPath(siblingId)}/withdrawal`,
+          undefined,
+          nativeApp,
+        );
+        return response.statusCode === 200 && response.json().data.state === "revoked"
+          ? true
+          : undefined;
+      });
+      assert.equal(
+        await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
+        undefined,
+      );
+      assert.deepEqual([...core.secrets], custodyBeforeStop);
+      const stopped = remember(
+        await inject("POST", `${base}/agents/${dedicatedId}/stop`, undefined, nativeApp),
+      );
+      assert.equal(stopped.statusCode, 202, stopped.body);
       const result = await waitFor("the Agent Stop work to complete", async () => {
         const rows = await pool.query(
           "SELECT state, reason_code FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='stopped' ORDER BY created_at DESC LIMIT 1",

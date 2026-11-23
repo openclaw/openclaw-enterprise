@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 13 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 54 operations |
+| [Agents](#agents) | 55 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4318,6 +4318,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/credentials/push`](#post-namespacesnamespaceidagentsagentidcredentialspush) | Retry delivery for selected deployed Agent credential sources |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Save an Agent revision from the Agent's saved settings |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-first`](#post-namespacesnamespaceidagentsagentiddeployfirst) | Admit the first deployment of an exact reviewed Configuration; requires Configuration read |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}`](#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration) | Read an exact first-deployment receipt; null does not prove failure; requires Configuration read |
@@ -6376,6 +6377,90 @@ Example response
     "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
     "state": "pending",
     "withdrawalInProgress": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/credentials/push`
+
+<span id="post-namespacesnamespaceidagentsagentidcredentialspush"></span>
+
+Retry delivery for selected deployed Agent credential sources
+
+**Operation ID:** `pushAgentCredentials`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires update permission on each selected CredentialSource with an unwithdrawn Credential Proxy binding in the deployed Agent revision. OCC authorizes every selected Source before it begins delivery. The Agent service principal must still have operate permission on every selected CredentialSource.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `update` | `credential_source` | `requested` (when bound) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `sources` | `"all" or array<string>` | Yes | Select 'all' or 1–64 distinct Source IDs to retry. Eligible Sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on each Source. |
+
+Example request
+```json
+{
+  "sources": [
+    "cs_123e4567-e89b-42d3-a456-426614174000"
+  ]
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again. |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.results` | `array<object>` | Yes | — |
+| `data.results[].outcome` | `"succeeded" or "resolution_failed" or "delivery_failed"` | Yes | — |
+| `data.results[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "results": [
+      {
+        "outcome": "succeeded",
+        "sourceId": "cs_123e4567-e89b-42d3-a456-426614174000"
+      }
+    ]
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

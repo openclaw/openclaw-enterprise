@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-23
-last_updated_session: authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e
+last_updated_session: authoring-run/b7ff67de-4bf2-49de-9896-f5a97e79e49b
 ---
 
 # Credential source lifecycle flow
@@ -12,10 +12,10 @@ An operator registers a credential with TokenService and selects its Source for 
 
 ## Entry Points
 
-- Trigger: register, bind, deploy, update, or retire a managed credential Source.
+- Trigger: register, bind, deploy, withdraw, update, retry delivery for, or retire a managed credential Source.
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
-- Source: `apps/controller/src/worker.ts:configureCredentialDeployment`
+- Source: `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`
 - Context: a ready Namespace, selected TokenService, Sandbox and Credential Proxy, and the caller's and Agent's required Source permissions.
 
 ## Flow
@@ -32,6 +32,22 @@ graph TD
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
   Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
   Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
+  Traffic --> Update["<b>TokenService</b><br/>Commit replacement credential"]
+  Update --> Notify["<b>Proxy</b><br/>Update Provider and verify targets"]
+  Notify -->|delivery failed| Retry["<b>Operator</b><br/>Request manual retry"]
+  Retry --> Preflight["<b>OCC</b><br/>Authorize all selected Sources"]
+  Preflight -->|authorized| Notify
+  Preflight -->|ineligible or denied| Reject["<b>OCC</b><br/>Reject before delivery"]
+  Traffic --> Deny["<b>OCC</b><br/>Record withdrawal and deny use"]
+  Deny --> WithdrawalTarget{"Sandbox exists?"}
+  WithdrawalTarget -->|Present| Policy["<b>Sandbox Driver</b><br/>Apply and verify reduced policy"]
+  WithdrawalTarget -->|Confirmed absent| Complete
+  WithdrawalTarget -->|Unconfirmed| Pending
+  Policy --> Detach["<b>Credential Proxy</b><br/>Detach exact binding"]
+  Detach --> Receipt{"Detach receipt REVOKED?"}
+  Receipt -->|No| Pending["<b>Worker</b><br/>Keep pending and retry"]
+  Pending --> WithdrawalTarget
+  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revoked; retire last copy"]
 ```
 
 The arrows show implemented control flow. Readiness checks do not by themselves prove a successful model request or all enforcement guarantees.
@@ -73,10 +89,18 @@ Worker selects the Agent revision and checks Source authorization again before e
 
 On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absence of the revision's binding. It retains the saved target until cleanup succeeds. If a cleanup operation instead keeps the Sandbox, Sandbox must remove the policy's reference to the Provider before Proxy detaches it. Proxy attempts to delete its owned Provider and profile after cleanup; an attached-Provider refusal means it retains the shared copy until the last detach. The TokenService Source remains available for another deployment.
 
+### 5. Withdraw an Agent binding
+
+`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
+
+OCC checks `agent:operate` on the exact Agent, saves a pending withdrawal for each affected Agent revision, and queues Worker reconciliation in the same transaction. That record denies further admitted or routed use of the Source before native reconciliation begins. Worker checks each withdrawal requester’s current authority. Compute asks the selected native Credential Proxy to remove the admitted binding from the recorded target. The paired Sandbox Driver derives the reduced policy from the Agent revision, applies it, and checks that the loaded and effective policies no longer permit the credential destination. Proxy then detaches the Provider and checks the corresponding receipt. For a present Sandbox, `REVOKED` confirms native revocation. Proxy can also complete removal when it independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves the withdrawal pending with `DEPENDENCY_UNAVAILABLE` for retry or operator replay.
+
+After confirmed detachment, Proxy attempts to retire its owned delivery Provider and profile. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
+
 <a id="2-update-a-source"></a>
 <a id="5-retire-a-source"></a>
 
-### 5. Update or retire a Source
+### 6. Update or retire a Source
 
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
@@ -88,7 +112,17 @@ OCC checks permission on the exact Source and dispatches credential changes to i
 
 API composition connects the selected native Proxy to TokenService and binds a trusted Source Namespace placement resolver. After committing replacement material, TokenService sends the exact Source reference and version, with a lazy resolver bound to that Source and TokenService instance. The Proxy returns without resolution or creation if no Provider exists. Otherwise it updates the owned Provider through conditional `UpdateProvider`. It validates the returned target receipts, waits on the same receipt while status is pending or persisted, and checks fresh admission and serving evidence before acknowledging an activated target. A never-activated target needs no serving observation. The wait does not repeat the update.
 
-If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`. Manual retry and live rotation qualification remain pending.
+If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`.
+
+#### Retry delivery
+
+`apps/controller/src/http/credential-sources.ts:pushAgentCredentials`, `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
+
+An operator sends an Agent credential push request. OCC reads the deployed Agent revision, selects its unwithdrawn Credential Proxy bindings, and checks `agent:operate` on the exact Agent, caller `credential_source:update` on every selected Source, and Agent service-principal `credential_source:operate` on each Source. It completes all checks before any notification or resolution. An ineligible or unauthorized selection rejects the whole request.
+
+For a denied Agent service-principal grant, the response tells the operator to restore Source access and retry delivery. The response names the Source if the caller explicitly selected its ID or can read the bound Source and Agent.
+
+For each authorized Source, OCC sends Proxy the exact Source reference and a lazy resolver bound to its TokenService instance. It does not update the Source credential or version. Proxy either completes delivery or returns an error; OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. The native Proxy reissues the conditional Provider update and verifies fresh target receipts, including when the Provider already records the Source version but a serving target is stale. A shared Provider can affect other Agents. Live rotation in the same running Harness remains unqualified.
 
 #### Retire the Source
 
@@ -96,7 +130,9 @@ Static Source DELETE refuses blocking references and records retirement intent. 
 
 ## Debugging and Verification
 
-Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the [managed Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) and [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts). The first exercises Source DELETE and Agent Stop through Worker, Compute, and the concrete Proxy; Stop starts from simulated delivery state with an absent Sandbox. The second sends an authenticated active-Source PATCH through the selected native Proxy and verifies its update receipt. Controlled Kubernetes and gRPC transports do not establish live delivery or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for details.
+Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the [managed Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) and [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts). The first exercises Source DELETE, Agent Stop, and active withdrawal through the Fastify API, PostgreSQL Worker, Compute, Sandbox, and Proxy. It simulates prior activation and controls the Kubernetes and OpenShell transports; live withdrawal requires separate qualification. The second sends authenticated active-Source PATCH and manual delivery retry requests through the selected native Proxy and checks authorization preflight and target receipts. Worker-side credential configuration is controlled, Provider attachment is modeled, and resolver failures and stale Gateway observations are simulated. These transports do not establish live delivery, a supervisor, rotation within a running Harness, or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for details.
+
+For a failed retry result, check `credential.resolution_failed` or `credential.delivery_failed` logs and the mutation audit. Logs identify the Namespace, Source, request, and fixed error code without exposing credential material or backend errors.
 
 ## Related docs
 
@@ -110,8 +146,13 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 
 ## Changelog
 
-- 2026-11-23 08:04: Distinguish Template consent from the fixed built-in Codex OAuth preset. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
+- 2026-11-23 15:50: Describe staged Agent withdrawal, policy reduction, revocation receipts, and shared Provider retirement. (authoring-run/b7ff67de-4bf2-49de-9896-f5a97e79e49b - 82ab46ced89791f2283c64847c68c68bc54b1c02)
+
 - 2026-11-23 13:30: Trace canonical static and OAuth Source creation through the selected TokenService and remove the separate association and saved connection. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
+
+- 2026-11-23 08:04: Distinguish Template consent from the fixed built-in Codex OAuth preset. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
+
+- 2026-11-23 05:38: Trace manual Agent credential delivery retry, authorization preflight, and per-Source outcomes. (authoring-run/7ccae64a-f7c3-40b7-8cc2-d7825d7b0eb4 - 44e86dc26)
 
 - 2026-11-23 01:53: Change Source associations and metadata to use a Template ID while preserving the OAuth consent version. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - cd806684a)
 
