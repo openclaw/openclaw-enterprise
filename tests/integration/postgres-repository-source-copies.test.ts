@@ -11,7 +11,11 @@ import type {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
-import { RepositorySourceCopiesUnretiredError } from "../../packages/occ/src/index.ts";
+import {
+  RepositorySourceCopiesUnretiredError,
+  ResourceConflictError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -200,7 +204,7 @@ test(
     // One copy per revision.
     await assert.rejects(
       state.transact((unit) => unit.credentialSources.recordRepositorySourceCopy(copy(first))),
-      { code: "23505" },
+      ResourceConflictError,
     );
     await assert.rejects(retire(), RepositorySourceCopiesUnretiredError);
     await assert.rejects(retire(), /2 native Git copies .*unretired_repository_source_copy/);
@@ -366,7 +370,7 @@ test(
           revisionId: `rev-${randomUUID()}`,
         }),
       ),
-      { code: "23503" },
+      ScopeViolationError,
     );
     // The application role cannot move a copy to another Source, Namespace or revision.
     await assert.rejects(
@@ -409,6 +413,25 @@ test(
         unit.credentialSources.findUnretiredRepositorySourceCopies(namespaceId, source.id),
       ),
       [],
+    );
+    // With its only copy retired, the Source can be deleted (and the next case's TokenService
+    // instance can replace this one).
+    await controller.deleteCredentialSource(
+      principal.id,
+      namespaceId,
+      source.id,
+      (_removed, phase) => ({
+        ...auditEvent(
+          controller.installation.id,
+          namespaceId,
+          principal.id,
+          phase
+            ? "openclaw.credential_sources.delete.started"
+            : "openclaw.credential_sources.delete",
+          { kind: "credential_source", namespaceId, id: source.id },
+        ),
+        ...(phase ? { details: { phase } } : {}),
+      }),
     );
   },
 );
