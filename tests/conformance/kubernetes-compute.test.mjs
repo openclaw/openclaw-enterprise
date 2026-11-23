@@ -5940,13 +5940,22 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     await assert.rejects(driver.prepareRevision(invalid), /Configuration/i);
   }
 
+  const { id, version, mode } = revision.harness;
+  await assert.rejects(driver.prepareRevision({ ...revision, harness: { id, version, mode } }), {
+    message: "Saved Harness settings are missing, malformed, or unsupported.",
+  });
+
+  const harnessWithoutMode = { ...revision.harness };
+  delete harnessWithoutMode.mode;
   for (const harness of [
-    { id: "codex", version: "1.0.0", mode: "embedded" },
-    { id: "codex", version: "1.0.0" },
-    { id: "codex", version: "1.0.0", mode: "remote" },
+    { ...revision.harness, mode: "embedded" },
+    harnessWithoutMode,
+    { ...revision.harness, mode: "remote" },
   ]) {
     // Invalid explicit topology must fail before a missing kubeconfig can touch cluster resources.
-    await assert.rejects(driver.prepareRevision({ ...revision, harness }), /Harness|topology/i);
+    await assert.rejects(driver.prepareRevision({ ...revision, harness }), {
+      message: "AgentRevision Harness execution topology is unsupported.",
+    });
   }
 
   const production = new KubernetesComputeDriver(
