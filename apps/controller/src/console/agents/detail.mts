@@ -2142,16 +2142,29 @@ export async function renderAgentDetail(
                 : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
-  // The newest version while its deployment is queued or running and it is not yet current. Right
-  // after Deploy new version it was called "Historical" beside "Selected version v1" (finding 2065).
+  // The newest version whose deployment is queued or running, including while it is selected
+  // for service and activation is still in progress.
   function deployingRevision() {
     const latest = visibleRevisions[0];
-    return latest &&
-      latest.id !== currentRevisionId &&
-      activityRevisionId === latest.id &&
-      deploymentPending(latestRecordedStatus)
+    return latest && activityRevisionId === latest.id && deploymentPending(latestRecordedStatus)
       ? latest
       : null;
+  }
+
+  function draftPendingDeploymentHint() {
+    const pending = deployingRevision();
+    // The picker retains earlier pages, but the newest page must still list this version.
+    if (
+      !pending ||
+      latestRevisionResult?.status !== "fulfilled" ||
+      latestRevisionResult.value.revisions[0]?.id !== pending.id ||
+      unlisted(currentRevisionId) ||
+      acceptedHiddenVersion(pending.revision)
+    ) {
+      return null;
+    }
+    const state = latestRecordedStatus === "queued" ? "queued" : "in progress";
+    return `v${pending.revision} was ${state} at the last check.`;
   }
 
   // The newest version once its deployment completed, while the Agent reread that would make it
@@ -3189,6 +3202,7 @@ export async function renderAgentDetail(
       versionRecord?.render();
     }
     renderLatestDeployment();
+    refreshDeployControls();
     return revisions;
   }
 
@@ -4011,6 +4025,7 @@ export async function renderAgentDetail(
         setText(deployFeedback, secretReason);
         deployFeedbackIsSecretRefusal = Boolean(secretReason);
       }
+      let pendingDeploymentHint: string | null = null;
       if (!deployPending) {
         let deployMessage: string | undefined;
         if (callerPermissions?.deploy === false) {
@@ -4107,7 +4122,10 @@ export async function renderAgentDetail(
           }
         }
         if (deployMessage !== undefined) {
-          setText(deployStatus, deployMessage);
+          if (deployMessage === "Ready to deploy." && !deployUnavailable) {
+            pendingDeploymentHint = draftPendingDeploymentHint();
+          }
+          setText(deployStatus, pendingDeploymentHint ?? deployMessage);
         }
       }
       // An unavailable Deploy is described by the line that says why, or by a refused
@@ -4115,6 +4133,9 @@ export async function renderAgentDetail(
       // while one of them shows (finding 2878).
       const deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
       setUnavailable(deploy, deployUnavailable, deployReason);
+      if (deploy.ariaDescription !== pendingDeploymentHint) {
+        deploy.ariaDescription = pendingDeploymentHint;
+      }
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -4326,6 +4347,7 @@ export async function renderAgentDetail(
         deployFeedbackIsSecretRefusal = false;
         deployFeedback.textContent = "";
         deploy.disabled = true;
+        deploy.removeAttribute("aria-description");
         deployPending = true;
         deployInFlight = true;
         content.toggleAttribute("inert", true);

@@ -1830,6 +1830,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
       deploymentRunning: {
@@ -1842,7 +1843,7 @@ export function createAgentDetailScenarios({
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
           'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
-          "Open draft and select the text “Ready to deploy.” beside Deploy new version. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
+          "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {
