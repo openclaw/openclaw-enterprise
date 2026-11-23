@@ -291,13 +291,12 @@ interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
 
-Privately copy older `dev-up` values, removing only the rejected
-`agentNativeAdmin.sharedCookieDomain`. Keep the original values file and the
-converted copy for recovery.
+Privately copy older `dev-up` values, removing only
+`agentNativeAdmin.sharedCookieDomain`. Keep the original and copy for recovery.
 
 ```bash
 CANDIDATE_ARGS=()
-candidate_failed() { echo "$1 failed" >&2; exit 1; }
+candidate_failed() { echo "$1 failed. Check readability of $VALUES and yq v4." >&2; exit 1; }
 cookie=$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES" 2>/dev/null) || candidate_failed Detection
 case "$cookie" in
   true)
@@ -396,9 +395,9 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 
 Helm must be deployed, initialization successful, both rollouts complete, and
 both displayed images equal the selected controller image (or the previous one
-for runtime-only). For runtime changes, assign `VALUES` and `INSTALLATION`
-distinct unused private paths in the saved-input retrieval subshell. After
-retrieving the live inputs, use `yq` there to confirm `INSTALLATION`'s
+for runtime-only). For runtime changes, set `VALUES` and `INSTALLATION` to
+distinct unused private paths inside the retrieval subshell. After recovery
+succeeds, confirm there with `yq` that the new Installation's
 `.drivers.compute.configuration.images.gateway` and
 `.drivers.compute.configuration.images.agent` equal `RUNTIME_IMAGE`.
 Compare the before and after Installation ID, Namespace and
