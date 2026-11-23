@@ -18,6 +18,7 @@ import { assertAllPassed } from "../helpers/node-test-summary.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  gatewayRuntimeEntrypoint,
   NATIVE_WORKER_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -40,6 +41,8 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { selfSigned } from "../helpers/certificates.ts";
+import { AUTOMATION_MCP_PROXY_SOURCE } from "../../apps/controller/src/drivers/compute/kubernetes/automation-mcp-proxy.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 
 function slackInstall() {
@@ -173,6 +176,127 @@ async function workerPackageDirectory(t: TestContext, prefix: string) {
 
 // Each case uses a private container and run-owned fixtures. Two run at a time.
 describe("runtime image native worker", { concurrency: 2 }, () => {
+  test(
+    "Gateway automation MCP proxy pins approved sockets and refuses redirect replay",
+    imageTestOptions,
+    async (t) => {
+      const directory = await temporaryDirectory(t, "oce-runtime-automation-proxy-");
+      const { cert, key } = await selfSigned(directory);
+      const fixture = await readFile(
+        new URL("../fixtures/runtime-automation-mcp-proxy-proof.mjs", import.meta.url),
+        "utf8",
+      );
+      const launch = fixture.replace(
+        "/* AUTOMATION_MCP_PROXY_SOURCE */",
+        () => AUTOMATION_MCP_PROXY_SOURCE,
+      );
+      // The selected runtime runs the production proxy source against real TLS
+      // peers. Both redirect sinks must stay untouched, including on an unsafe POST.
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "-i",
+          "--rm",
+          "--user",
+          "1000:1000",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--network",
+          "none",
+          "--tmpfs",
+          "/tmp:size=16m,mode=1777",
+          "--tmpfs",
+          "/etc/openclaw-automation-trust:size=1m,mode=1777",
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          launch,
+        ],
+        { timeout: 30_000 },
+        JSON.stringify({ cert, key }),
+      );
+      const result = decodedRecord(stdout);
+      assert.equal(result.sameOriginSink, 0);
+      assert.equal(result.otherOriginSink, 0);
+      assert.equal(result.deniedAddressPeerCalls, 0);
+      assert.equal(result.untrustedCaCode, "DEPTH_ZERO_SELF_SIGNED_CERT");
+      assert.equal(result.nativeServer, "fixture");
+      assert.equal(result.preFixReplayCalls, 1);
+      assert.equal(result.preFixReplayBody, true);
+      assert.deepEqual(result.streamedBeforeClose, [true, true]);
+      assert.equal(result.overflowPeerCalls, 0);
+      assert.ok(typeof result.approvedCalls === "number" && result.approvedCalls >= 5);
+    },
+  );
+
+  test(
+    "Gateway automation MCP supervisor holds before Doctor and recovers after native restart",
+    imageTestOptions,
+    async (t) => {
+      const containerName = "oce-runtime-automation-supervisor-" + randomBytes(6).toString("hex");
+      t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
+      const path = "/mcp/" + "c".repeat(64);
+      const proxy = {
+        port: 47731,
+        routes: [
+          { server: "approved", path, url: "https://192.0.2.5/mcp", egressCidrs: ["192.0.2.5/32"] },
+        ],
+      };
+      const wrapper = gatewayRuntimeEntrypoint(false, "a".repeat(64), true, proxy);
+      const launch = await readFile(
+        new URL("../fixtures/runtime-automation-mcp-supervisor-proof.mjs", import.meta.url),
+        "utf8",
+      );
+      // A pending native maintenance marker makes Doctor observable after the
+      // blocked listener is released. The same stock runtime then restarts its native Gateway.
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "-i",
+          "--rm",
+          "--user",
+          "1000:1000",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--network",
+          "none",
+          "--tmpfs",
+          "/home/node:size=256m,uid=1000,gid=1000,mode=700",
+          "--tmpfs",
+          "/etc/openclaw:size=1m,uid=1000,gid=1000,mode=700",
+          "--tmpfs",
+          "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+          "--name",
+          containerName,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          launch,
+        ],
+        { timeout: 120_000 * imageSmokeTimeoutMultiplier },
+        JSON.stringify({ wrapper, path }),
+      );
+      const result = decodedRecord(stdout);
+      assert.deepEqual(result.held, {
+        ready: 503,
+        doctor: false,
+        native: false,
+        marker: true,
+        proxyRefused: true,
+      });
+      assert.deepEqual(result.recovered, { doctor: true, native: true, marker: false });
+      assert.deepEqual(result.restarted, { native: true, marker: false, proxyStatus: 502 });
+    },
+  );
+
   test(
     "the dedicated worker launches the pinned gog on PATH only for the selected release",
     imageTestOptions,
@@ -638,7 +762,10 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
         "tests/helpers/available-port.ts",
         "tests/helpers/reuse-port-preload.ts",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/src/drivers/compute/kubernetes/automation-mcp-proxy.ts",
         "apps/controller/src/drivers/compute/agent-automation-guard.ts",
+        "apps/controller/src/drivers/compute/agent-automation-limits.ts",
+        "apps/controller/src/gateway/agent-automations-runtime.ts",
         "apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts",
         "apps/controller/plugins/marketplace.json",
         ...managedInstalls.map(

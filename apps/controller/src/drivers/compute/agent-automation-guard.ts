@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../gateway/agent-automations-runtime.ts";
 
 // Checkout CI and the in-image supervisor proof load this renderer before workspace
 // packages are installed. Compiled callers use the contracts build output.
@@ -29,6 +30,68 @@ export const AUTOMATION_NO_MCP_PLUGIN_IDS = Object.freeze([
 ] as const);
 
 export const AGENT_AUTOMATION_GUARD_VERSION = "oce-automation-origin-v1";
+export const AGENT_AUTOMATION_OPENCLAW_VERSION = "2026.11.5";
+
+/** Read-only checks used before Doctor and before each native spawn. */
+export const AGENT_AUTOMATION_PRE_DOCTOR_GUARD = String.raw`
+const AUTOMATION_OPENCLAW_SOURCE = ${JSON.stringify(AGENT_AUTOMATIONS_OPENCLAW_SOURCE)};
+const AUTOMATION_OPENCLAW_VERSION = ${JSON.stringify(AGENT_AUTOMATION_OPENCLAW_VERSION)};
+function assertReviewedEmbeddedAutomationImage(meta) {
+  const fs = require("node:fs");
+  const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const fail = () => { throw new Error("Automation reviewed image check refused Gateway startup."); };
+  if (!record(meta) || Object.keys(meta).length !== 1 || meta.lastTouchedVersion !== AUTOMATION_OPENCLAW_VERSION) fail();
+  let provenance;
+  let packaged;
+  try {
+    provenance = JSON.parse(fs.readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+    packaged = JSON.parse(fs.readFileSync("/app/node_modules/openclaw/package.json", "utf8"));
+  } catch { fail(); }
+  if (!record(provenance) || provenance.source !== "https://github.com/openclaw/openclaw" || provenance.commit !== AUTOMATION_OPENCLAW_SOURCE || !record(packaged) || packaged.version !== AUTOMATION_OPENCLAW_VERSION) fail();
+}
+function assertAutomationPersistedDiscovery(env) {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const fail = () => { throw new Error("Automation persisted discovery check refused Gateway startup."); };
+  const stateDir = env.OPENCLAW_STATE_DIR;
+  if (stateDir !== "/home/node/.openclaw" || env.HOME !== "/home/node") fail();
+  const statPath = (target) => {
+    if (!path.isAbsolute(target) || path.normalize(target) !== target) fail();
+    let current = path.parse(target).root;
+    for (const part of target.slice(current.length).split(path.sep).filter(Boolean)) {
+      current = path.join(current, part);
+      let stat;
+      try { stat = fs.lstatSync(current); } catch (error) {
+        if (error?.code === "ENOENT") return undefined;
+        fail();
+      }
+      if (stat.isSymbolicLink() || (current !== target && !stat.isDirectory())) fail();
+    }
+    try { return fs.lstatSync(target); } catch { fail(); }
+  };
+  const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
+  const databaseStat = statPath(databasePath);
+  const sidecars = ["-wal", "-shm"].map((suffix) => statPath(databasePath + suffix));
+  if (sidecars.some((sidecar) => sidecar !== undefined && (!sidecar.isFile() || databaseStat === undefined)) || (sidecars[0] === undefined) !== (sidecars[1] === undefined)) fail();
+  if (databaseStat === undefined) return;
+  if (!databaseStat.isFile()) fail();
+  let database;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    database = new DatabaseSync(databasePath, { readOnly: true });
+    const discovery = database.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("plugins.bundledDiscovery");
+    if (discovery !== undefined && (typeof discovery.value_json !== "string" || JSON.parse(discovery.value_json) !== "allowlist")) fail();
+    const row = database.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("plugins.installedIndex");
+    if (row !== undefined) {
+      if (typeof row.value_json !== "string" || row.value_json.length > 1024 * 1024) fail();
+      const value = JSON.parse(row.value_json);
+      const index = value?.index;
+      if (!record(value) || !record(index) || index.version !== 1 || index.migrationVersion !== 1 || !record(index.installRecords) || Object.keys(index.installRecords).length !== 0 || !Array.isArray(index.plugins) || index.plugins.some((plugin) => !record(plugin) || plugin.origin !== "bundled")) fail();
+    }
+  } catch { fail(); } finally { try { database?.close(); } catch { fail(); } }
+}
+`;
 
 /** Runs in the Gateway wrapper before every native spawn, including respawns. */
 export const AGENT_AUTOMATION_ORIGIN_GUARD = String.raw`
@@ -37,7 +100,7 @@ const AUTOMATION_NAME_MAX_CHARACTERS = ${NAME_MAX_CHARACTERS};
 const AUTOMATION_NAME_PATTERN = new RegExp(${JSON.stringify(PLAIN_TEXT_PATTERN)}, "u");
 const AUTOMATION_BUNDLED_PLUGIN_ROOT = "/app/node_modules/openclaw/dist/extensions";
 const AUTOMATION_BUNDLED_PLUGIN_IDS = ${JSON.stringify(AUTOMATION_NO_MCP_PLUGIN_IDS)};
-function assertCleanAutomationOrigins(env) {
+function assertCleanAutomationOrigins(env, gatewayToolPolicyInput, initialConfigPath) {
   const fs = require("node:fs");
   const path = require("node:path");
   const fail = () => { throw new Error("Automation plugin origin guard refused Gateway startup."); };
@@ -74,12 +137,15 @@ function assertCleanAutomationOrigins(env) {
   if (typeof configPath !== "string" || !path.isAbsolute(configPath)) fail();
   let config;
   try { config = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch { fail(); }
+  if (!AUTOMATION_MCP_PROXY) fail();
+  assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, config);
   if (!record(config) || !record(config.plugins) || config.plugins.load !== undefined || config.plugins.installs !== undefined || config.plugins.bundledDiscovery !== undefined) fail();
   if (config.tools?.codeMode !== false || config.tools?.toolSearch !== false || config.gateway?.nodes?.pluginTools?.enabled !== false || config.gateway?.nodes?.allowSkills !== false) fail();
   const overridesOff = (models) => models === undefined || (record(models) && Object.values(models).every((model) => record(model) && (model.codeMode === undefined || model.codeMode === false) && (model.toolSearch === undefined || model.toolSearch === false)));
   const agents = config.agents;
   if ((agents !== undefined && !record(agents)) || agents?.list !== undefined || (agents?.defaults !== undefined && !record(agents.defaults)) || !overridesOff(agents?.defaults?.models)) fail();
   const dedicated = gatewayToolPolicyInput !== undefined;
+  if (!dedicated) assertReviewedEmbeddedAutomationImage(config.meta);
   if (dedicated && (!env.APP_SERVER_URL || env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined || (env.OPENCLAW_REMOTE_WORKSPACE_ROOT !== undefined && env.OPENCLAW_REMOTE_WORKSPACE_ROOT !== "/home/node/workspace"))) fail();
   const mcp = config.mcp;
   if (!record(mcp) || !record(mcp.servers) || Object.keys(mcp).some((key) => key !== "servers" && !(dedicated && key === "apps"))) fail();
@@ -101,7 +167,7 @@ function assertCleanAutomationOrigins(env) {
     if (admittedPath !== "/etc/openclaw/openclaw.json" && admittedPath !== "/etc/openclaw-managed/openclaw.json") fail();
     try { admitted = JSON.parse(fs.readFileSync(admittedPath, "utf8")); } catch { fail(); }
   }
-  if (!record(admitted) || !deepEqual(entries, admitted.agents?.entries) || !deepEqual(mcp, admitted.mcp)) fail();
+  if (!record(admitted) || !deepEqual(entries, admitted.agents?.entries) || !deepEqual(mcp, admitted.mcp) || (!dedicated && !deepEqual(config.meta, admitted.meta))) fail();
   if (dedicated) {
     const expected = structuredClone(admitted);
     if (env.OPENCLAW_WORKSPACE_NODE_ID === undefined && workspaceNodeBindingPath === undefined) fail();
@@ -122,29 +188,7 @@ function assertCleanAutomationOrigins(env) {
     if (typeof workspace !== "string" || !path.isAbsolute(workspace) || path.normalize(workspace) !== workspace) fail();
     emptyRoot(path.join(workspace, ".openclaw", "extensions"));
   }
-  const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
-  const databaseStat = statPath(databasePath);
-  for (const suffix of ["-wal", "-shm"]) {
-    const sidecar = statPath(databasePath + suffix);
-    if (sidecar !== undefined && (!sidecar.isFile() || databaseStat === undefined)) fail();
-  }
-  if (databaseStat !== undefined) {
-    if (!databaseStat.isFile()) fail();
-    let database;
-    try {
-      const { DatabaseSync } = require("node:sqlite");
-      database = new DatabaseSync(databasePath, { readOnly: true });
-      const discovery = database.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("plugins.bundledDiscovery");
-      if (discovery !== undefined && (typeof discovery.value_json !== "string" || JSON.parse(discovery.value_json) !== "allowlist")) fail();
-      const row = database.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("plugins.installedIndex");
-      if (row !== undefined) {
-        if (typeof row.value_json !== "string" || row.value_json.length > 1024 * 1024) fail();
-        const value = JSON.parse(row.value_json);
-        const index = value?.index;
-        if (!record(value) || !record(index) || index.version !== 1 || index.migrationVersion !== 1 || !record(index.installRecords) || Object.keys(index.installRecords).length !== 0 || !Array.isArray(index.plugins) || index.plugins.some((plugin) => !record(plugin) || plugin.origin !== "bundled")) fail();
-      }
-    } catch { fail(); } finally { try { database?.close(); } catch { fail(); } }
-  }
+  assertAutomationPersistedDiscovery(env);
   const allow = config.plugins.allow;
   if (!Array.isArray(allow) || allow.some((id) => !AUTOMATION_BUNDLED_PLUGIN_IDS.includes(id))) fail();
   const bundledIds = new Set(allow);

@@ -218,10 +218,11 @@ See [authentication](kubernetes-compute/configuration.md#authentication) and
 
 ### Automation MCP endpoints
 
+For [MCP automations](../agent-automations.md),
 `drivers.compute.configuration.automations.trustedAnonymousMcpEndpoints` attests
-anonymous Agent-shared HTTPS authority for [MCP automations](../agent-automations.md)
-on qualified embedded OpenClaw and ordinary deployment-backed dedicated Codex. Stdio, credentialed MCP and unattested
-endpoints are unqualified.
+anonymous Agent-shared HTTPS `streamable-http` endpoints for qualified embedded
+OpenClaw and ordinary dedicated Codex. SSE, stdio, credentials and unattested
+endpoints fail qualification.
 
 ```yaml
 automations:
@@ -230,24 +231,22 @@ automations:
       egressCidrs: [192.0.2.10/32]
 ```
 
-Supply at most 64 records with unique normalized HTTPS `url` values and no
-credentials, query, fragment, or wildcard. `egressCidrs` must contain 1–64 unique
-translated IPv4 `/32` or IPv6 `/128` destinations; subnets are not permitted.
-Compute permits Gateway TCP and, for dedicated Codex, Agent TCP to those
-destinations on the URL port (default 443).
-Replace the example IP.
+Supply at most 64 unique normalized HTTPS `url` records without credentials,
+query, fragment or wildcard. Each `egressCidrs` has 1–64 unique translated IPv4
+`/32` or IPv6 `/128` destinations; subnets are refused.
+Compute permits only Gateway TCP to those destinations on the URL port (default
+443). Replace the example IP.
 
-Optional `caBundle` supplies public PEM CA trust; all bundles together must fit
-65,536 bytes. Never include private keys. Compute projects trust and verifies deployed endpoint
-assets before admission. Bindings capture endpoint, egress and CA identity.
+Optional public PEM `caBundle` values total at most 65,536 bytes; never include private keys. Compute verifies Gateway route-local CA files; automation CA never expands
+process-wide Gateway/model or Agent trust. Agents receive no automation rule/trust;
+independent routes and Codex trust remain. Bindings capture endpoint, egress and CA identity.
 
-Revision-owned Services/operator HTTPRoutes retain Envoy authentication and require
-[tenant-local observation grants](../../guides/deploy/production-agents.md#grant-automation-observation). Before
-cron requests, Compute and the broker verify Pod/container,
-EndpointSlice targets and same-socket Gateway identity; no Agent-wide fallback.
-Revision cleanup removes them. [Qualification and retirement](../agent-automations.md#execution-qualification)
-remain required. Attestation removal does not stop running cron; disable/delete
-jobs or deny service-side calls. MCP qualification remains pending.
+Revision Services/operator HTTPRoutes retain Envoy authentication and require
+[tenant-local observation grants](../../guides/deploy/production-agents.md#grant-automation-observation).
+Before cron, verify Pod/container, EndpointSlice targets and same-socket Gateway
+identity; no Agent-wide fallback. Cleanup removes routes and Services. [Qualification and retirement](../agent-automations.md#execution-qualification)
+remain required. Attestation removal cannot stop running cron; disable/delete jobs
+or deny calls service-side. Qualification remains pending.
 
 ## Limits
 

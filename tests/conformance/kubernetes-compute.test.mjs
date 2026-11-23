@@ -339,10 +339,20 @@ test(
 test("automation qualification narrows Gateway tools to the main Agent and accepts only admitted exec defaults", async () => {
   const image = `example.test/runtime@sha256:${"a".repeat(64)}`;
   const endpoint = { url: "https://mcp.example.test/approved", egressCidrs: ["192.0.2.10/32"] };
+  const siblingEndpoint = {
+    url: "https://sibling.example.test/approved",
+    egressCidrs: ["192.0.2.11/32"],
+  };
+  const changedSiblingEndpoint = {
+    url: "https://other.example.test/approved",
+    egressCidrs: ["192.0.2.12/32"],
+  };
   const driver = new KubernetesComputeDriver(
     options({
       images: { gateway: image, agent: image, requireImmutableDigest: true },
-      automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+      automations: {
+        trustedAnonymousMcpEndpoints: [endpoint, siblingEndpoint, changedSiblingEndpoint],
+      },
     }),
   );
   const draft = {
@@ -389,6 +399,168 @@ test("automation qualification narrows Gateway tools to the main Agent and accep
     ["qa__probe"],
   );
   assert.match(qualified.grant.tools[0].binding, /^[a-f0-9]{64}$/u);
+
+  // The fixed loopback bridge cannot share the native Gateway or its adjacent
+  // sandbox listener. Refuse only the nonempty automation capability.
+  for (const gatewayPort of [47731, 47730]) {
+    const collisionDriver = new KubernetesComputeDriver(
+      options({
+        network: { ...options().network, gatewayPort },
+        images: { gateway: image, agent: image, requireImmutableDigest: true },
+        automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+      }),
+    );
+    const collisionRevision = routedRevision(collisionDriver, {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration,
+    });
+    assert.equal(
+      await collisionDriver.evaluateAgentAutomationPolicy(collisionRevision),
+      undefined,
+      `Gateway port ${gatewayPort} must not qualify a colliding MCP bridge`,
+    );
+    const modelOnly = structuredClone(configuration);
+    modelOnly.mcp.servers.qa.enabled = false;
+    assert.deepEqual(
+      (
+        await collisionDriver.evaluateAgentAutomationPolicy({
+          ...collisionRevision,
+          configuration: modelOnly,
+        })
+      )?.grant.tools,
+      [],
+      "an empty capability must not reserve the bridge port",
+    );
+  }
+
+  // The generated bridge has a finite route table even when a source selects
+  // only one operation. Qualification must reject an impossible 65th route
+  // before it can hold the normal Gateway at startup.
+  const fullRouteSet = structuredClone(configuration);
+  for (let index = 0; index < 63; index++) {
+    fullRouteSet.mcp.servers[`route${index}`] = {
+      transport: "streamable-http",
+      url: endpoint.url,
+      toolFilter: { include: ["probe"] },
+    };
+  }
+  assert.ok(
+    await driver.evaluateAgentAutomationPolicy({ ...revision, configuration: fullRouteSet }),
+  );
+  fullRouteSet.mcp.servers.overflow = {
+    transport: "streamable-http",
+    url: endpoint.url,
+    toolFilter: { include: ["probe"] },
+  };
+  assert.equal(
+    await driver.evaluateAgentAutomationPolicy({ ...revision, configuration: fullRouteSet }),
+    undefined,
+    "65 enabled routes must not qualify a 64-route bridge",
+  );
+
+  // Equivalent IPv6 spellings identify the same egress address. The Installation
+  // must reject them before the bridge runtime sees a duplicate canonical IP.
+  assert.throws(
+    () =>
+      new KubernetesComputeDriver(
+        options({
+          images: { gateway: image, agent: image, requireImmutableDigest: true },
+          automations: {
+            trustedAnonymousMcpEndpoints: [
+              {
+                url: endpoint.url,
+                egressCidrs: ["2001:db8::1/128", "2001:0db8:0:0:0:0:0:1/128"],
+              },
+            ],
+          },
+        }),
+      ),
+    (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.equal(error.error.details[0].path, "/automations/trustedAnonymousMcpEndpoints/0");
+      assert.match(error.error.details[0].message, /unique IPv4 \/32 or IPv6 \/128/u);
+      return true;
+    },
+  );
+
+  // Empty query/fragment delimiters still change the exact resource URL even
+  // though WHATWG URL.search and URL.hash report empty strings.
+  for (const delimiter of ["?", "#"]) {
+    const invalidUrl = endpoint.url + delimiter;
+    assert.throws(
+      () =>
+        new KubernetesComputeDriver(
+          options({
+            images: { gateway: image, agent: image, requireImmutableDigest: true },
+            automations: {
+              trustedAnonymousMcpEndpoints: [{ ...endpoint, url: invalidUrl }],
+            },
+          }),
+        ),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.equal(error.error.details[0].path, "/automations/trustedAnonymousMcpEndpoints/0");
+        assert.match(error.error.details[0].message, /query, fragment/u);
+        return true;
+      },
+    );
+    const invalidSource = structuredClone(configuration);
+    invalidSource.mcp.servers.qa.url = invalidUrl;
+    assert.equal(
+      await driver.evaluateAgentAutomationPolicy({ ...revision, configuration: invalidSource }),
+      undefined,
+    );
+  }
+  const encodedEndpoint = { ...endpoint, url: endpoint.url + "%3F%23" };
+  const encodedDriver = new KubernetesComputeDriver(
+    options({
+      images: { gateway: image, agent: image, requireImmutableDigest: true },
+      automations: { trustedAnonymousMcpEndpoints: [encodedEndpoint] },
+    }),
+  );
+  const encodedSource = structuredClone(configuration);
+  encodedSource.mcp.servers.qa.url = encodedEndpoint.url;
+  assert.ok(
+    await encodedDriver.evaluateAgentAutomationPolicy({
+      ...revision,
+      configuration: encodedSource,
+    }),
+    "encoded query/fragment characters remain part of the approved path",
+  );
+
+  // Native initializes every enabled MCP server before filtering callable tools.
+  // A successor that adds or changes an enabled sibling route must invalidate the
+  // captured binding even when that sibling has no selected automation tool.
+  const withSibling = structuredClone(configuration);
+  withSibling.mcp.servers.sibling = {
+    transport: "streamable-http",
+    url: siblingEndpoint.url,
+    toolFilter: { include: ["probe"] },
+  };
+  const siblingQualified = await driver.evaluateAgentAutomationPolicy({
+    ...revision,
+    configuration: withSibling,
+  });
+  assert.deepEqual(
+    siblingQualified?.grant.tools.map(({ name }) => name),
+    ["qa__probe"],
+  );
+  assert.notEqual(siblingQualified.grant.tools[0].binding, qualified.grant.tools[0].binding);
+  withSibling.mcp.servers.sibling.url = changedSiblingEndpoint.url;
+  const changedSibling = await driver.evaluateAgentAutomationPolicy({
+    ...revision,
+    configuration: withSibling,
+  });
+  assert.notEqual(changedSibling.grant.tools[0].binding, siblingQualified.grant.tools[0].binding);
+
+  // Legacy SSE can advertise a second POST endpoint after the initial response.
+  // A scheduled grant must not accept a transport the fixed-target bridge cannot contain.
+  const legacySse = structuredClone(configuration);
+  legacySse.mcp.servers.qa.transport = "sse";
+  assert.equal(
+    await driver.evaluateAgentAutomationPolicy({ ...revision, configuration: legacySse }),
+    undefined,
+  );
 
   // A double underscore in an unrelated raw tool name is still a tool name,
   // and its captured binding belongs to the selected server-qualified alias.
@@ -505,6 +677,131 @@ test("automation qualification narrows Gateway tools to the main Agent and accep
       }),
       undefined,
     );
+  }
+});
+
+test("automation qualification binds Standard Codex reviewer and limited proxy posture", async () => {
+  const image = `example.test/runtime@sha256:${"a".repeat(64)}`;
+  const endpoint = { url: "https://mcp.example.test/approved", egressCidrs: ["192.0.2.10/32"] };
+  const driver = dedicatedFirstDeployFixture({
+    computeOptions: {
+      images: { gateway: image, agent: image, requireImmutableDigest: true },
+      automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+    },
+  }).driver;
+  // Use the public Standard preset so this contract cannot pass by silently
+  // dropping the reviewer's choice or the native proxy's actual restrictions.
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const appServer = structuredClone(
+    preset.template.configuration.values.plugins.entries.codex.config.appServer,
+  );
+  const draft = createHarnessConfiguration("codex", "gpt-5");
+  draft.agents.entries = {
+    main: { identity: { name: "Automation Agent" }, tools: { allow: ["qa__probe"] } },
+  };
+  draft.gateway.nodes = { pluginTools: { enabled: false }, allowSkills: false };
+  draft.mcp = {
+    servers: {
+      qa: {
+        transport: "streamable-http",
+        url: endpoint.url,
+        toolFilter: { include: ["probe"] },
+        codex: { defaultToolsApprovalMode: "approve" },
+      },
+    },
+  };
+  draft.plugins.entries.codex.config.appServer = appServer;
+  draft.tools = {
+    profile: "full",
+    gatewayPolicy: { allow: ["qa__probe"] },
+    codeMode: false,
+    toolSearch: false,
+  };
+  const configuration = admitGatewaySecurityDefaults(draft);
+  const revision = routedRevision(driver, {
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    configuration,
+  });
+  const evaluate = (change) => {
+    const next = structuredClone(configuration);
+    change(next.plugins.entries.codex.config.appServer);
+    return driver.evaluateAgentAutomationPolicy({ ...revision, configuration: next });
+  };
+  const qualified = await driver.evaluateAgentAutomationPolicy(revision);
+  assert.deepEqual(
+    qualified?.grant.tools.map(({ name }) => name),
+    ["qa__probe"],
+  );
+  assert.equal(appServer.approvalsReviewer, "user");
+  assert.equal(appServer.networkProxy.enabled, true);
+
+  const changedDomain = await evaluate((value) => {
+    value.networkProxy.domains["github.com"] = "deny";
+  });
+  assert.ok(changedDomain, "a valid narrower domain decision must still qualify");
+  assert.notEqual(changedDomain.grant.tools[0].binding, qualified.grant.tools[0].binding);
+
+  for (const change of [
+    (value) => delete value.approvalsReviewer,
+    (value) => {
+      value.approvalsReviewer = "auto_review";
+    },
+    (value) => {
+      value.approvalPolicy = "never";
+    },
+    (value) => {
+      value.sandbox = "read-only";
+    },
+    (value) => delete value.networkProxy,
+    (value) => {
+      value.networkProxy.mode = "full";
+    },
+    (value) => {
+      value.networkProxy.baseProfile = "read-only";
+    },
+    (value) => {
+      value.networkProxy.profileName = "custom";
+    },
+    (value) => {
+      value.networkProxy.unixSockets["/tmp/socket"] = "allow";
+    },
+    (value) => {
+      value.networkProxy.domains["*.example.test"] = "allow";
+    },
+    (value) => {
+      value.networkProxy.domains["github.com "] = "allow";
+    },
+    (value) => {
+      value.networkProxy.domains["GitHub.com"] = "deny";
+    },
+    (value) => {
+      value.networkProxy.domains["127.0.0.1"] = "allow";
+    },
+    (value) => {
+      value.networkProxy.domains["localhost"] = "allow";
+    },
+    (value) => {
+      value.networkProxy.domains["github.com"] = "none";
+    },
+    (value) => {
+      value.networkProxy.domains = Object.fromEntries(
+        Array.from({ length: 65 }, (_, index) => [`host${index}.example.test`, "allow"]),
+      );
+    },
+    ...[
+      "enableSocks5",
+      "enableSocks5Udp",
+      "allowUpstreamProxy",
+      "allowLocalBinding",
+      "dangerouslyAllowNonLoopbackProxy",
+      "dangerouslyAllowAllUnixSockets",
+    ].map((flag) => (value) => {
+      value.networkProxy[flag] = true;
+    }),
+  ]) {
+    assert.equal(await evaluate(change), undefined);
   }
 });
 
@@ -833,9 +1130,195 @@ function dedicatedFirstDeployFixture({
   };
 }
 
-test("automation transport refuses a Gateway with changed identity or configuration origin", async () => {
+test("dedicated automation MCP grants endpoint egress and private CA trust only to the Gateway", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const endpoint = {
+    url: "https://mcp.example.test:8443/approved",
+    egressCidrs: ["192.0.2.10/32"],
+    caBundle: tls.caBundle,
+  };
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const draft = createHarnessConfiguration("codex", "gpt-5");
+  draft.agents.entries = {
+    main: { identity: { name: "Automation Agent" }, tools: { allow: ["qa__probe"] } },
+  };
+  const nodes = { pluginTools: { enabled: false }, allowSkills: false };
+  draft.gateway.nodes = nodes;
+  draft.mcp = {
+    servers: {
+      qa: {
+        transport: "streamable-http",
+        url: endpoint.url,
+        toolFilter: { include: ["probe"] },
+        codex: { defaultToolsApprovalMode: "approve" },
+      },
+    },
+  };
+  draft.plugins.entries.codex.config.appServer = structuredClone(
+    preset.template.configuration.values.plugins.entries.codex.config.appServer,
+  );
+  draft.tools = {
+    profile: "full",
+    gatewayPolicy: { allow: ["qa__probe"] },
+    codeMode: false,
+    toolSearch: false,
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    statusProxy: false,
+    computeOptions: {
+      network: {
+        providerHarness: {
+          namespace: "provider",
+          podLabels: { app: "provider" },
+          address: "10.43.0.50",
+          port: 8443,
+        },
+      },
+      images: {
+        gateway: `example.test/runtime@sha256:${"a".repeat(64)}`,
+        agent: `example.test/runtime@sha256:${"a".repeat(64)}`,
+        requireImmutableDigest: true,
+      },
+      automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+    },
+    gatewayNodes: nodes,
+    revision: {
+      harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+      configuration: admitGatewaySecurityDefaults(draft),
+      plugins: undefined,
+    },
+  });
+  const staleTrustName = `automation-trust-agent-${digest(fixture.revision.agentId)}-rev-${digest(fixture.revision.id)}`;
+  const stalePolicyName = `allow-automation-mcp-agent-rev-${digest(fixture.revision.id)}-${digest(fixture.revision.agentId)}`;
+  const address = { name: fixture.namespace, plane: "execution" };
+  for (const [apiVersion, kind, name, owner] of [
+    ["v1", "ConfigMap", staleTrustName, fixture.driver.pluginRuntimeOwnership(fixture.revision)],
+    [
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      stalePolicyName,
+      {
+        namespaceId: fixture.revision.namespaceId,
+        agentId: fixture.revision.agentId,
+      },
+    ],
+  ]) {
+    const asset = fixture.driver.manifest(apiVersion, kind, name, owner, address);
+    fixture.save({
+      ...asset,
+      metadata: { ...asset.metadata, uid: `${kind}-stale-uid`, resourceVersion: "1" },
+    });
+  }
+  await fixture.prepare();
+  const policies = fixture.driver.agentNetworkPolicies(fixture.revision, {
+    name: fixture.namespace,
+    plane: "execution",
+  });
+  const endpointPolicies = policies.filter(({ resource }) =>
+    resource.metadata.name.startsWith("allow-automation-mcp-"),
+  );
+  assert.equal(endpointPolicies.length, 1, "the endpoint must have one Gateway egress policy");
+  assert.equal(
+    endpointPolicies[0].resource.spec.podSelector.matchLabels["openclaw.dev/workload-role"],
+    "gateway",
+  );
+  assert.deepEqual(endpointPolicies[0].resource.spec.egress, [
+    {
+      to: [{ ipBlock: { cidr: "192.0.2.10/32" } }],
+      ports: [{ protocol: "TCP", port: 8443 }],
+    },
+  ]);
+  const modelPolicy = policies.find(({ resource }) =>
+    resource.metadata.name.startsWith("allow-agent-runtime-"),
+  );
+  assert.ok(
+    modelPolicy?.resource.spec.egress.some(({ ports }) => ports?.some(({ port }) => port === 443)),
+    "the independent model route must remain available",
+  );
+
+  const agent = fixture.read("Deployment", fixture.agentName).spec.template;
+  const container = agent.spec.containers.find(({ name }) => name === "agent");
+  assert.equal(agent.metadata.annotations?.["openclaw.dev/automation-trust-sha256"], undefined);
+  assert.ok(!agent.spec.volumes.some(({ name }) => name === "automation-trust"));
+  assert.ok(!container.volumeMounts.some(({ name }) => name === "automation-trust"));
+  assert.ok(
+    !container.env.some(
+      ({ name, value }) =>
+        name === "CODEX_CA_CERTIFICATE" && value?.includes("openclaw-automation-trust"),
+    ),
+  );
+  assert.throws(() => fixture.read("ConfigMap", staleTrustName), { statusCode: 404 });
+  assert.throws(() => fixture.read("NetworkPolicy", stalePolicyName), { statusCode: 404 });
+  const gatewayConfiguration = fixture.read(
+    "ConfigMap",
+    `gateway-${digest(fixture.revision.agentId)}-rev-${digest(fixture.revision.id)}`,
+  );
+  const caFingerprint = createHash("sha256").update(tls.caBundle).digest("hex");
+  const caFile = `automation-ca-${caFingerprint}.pem`;
+  assert.equal(gatewayConfiguration.data[caFile], tls.caBundle);
+  assert.equal(gatewayConfiguration.data["automation-ca.pem"], undefined);
+  const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template;
+  const gatewayContainer = gateway.spec.containers.find(({ name }) => name === "gateway");
+  const trustVolume = gateway.spec.volumes.find(({ name }) => name === "automation-trust");
+  assert.deepEqual(trustVolume.configMap.items, [{ key: caFile, path: caFile }]);
+  assert.deepEqual(
+    gatewayContainer.volumeMounts.find(({ name }) => name === "automation-trust"),
+    {
+      name: "automation-trust",
+      mountPath: "/etc/openclaw-automation-trust",
+      readOnly: true,
+    },
+  );
+  assert.ok(
+    !gatewayContainer.env.some(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
+    "the endpoint CA must not change process-wide Node trust",
+  );
+  assert.equal(
+    gateway.metadata.annotations["openclaw.dev/automation-trust-sha256"],
+    createHash("sha256")
+      .update(JSON.stringify({ [caFile]: tls.caBundle }))
+      .digest("hex"),
+  );
+  const providerGateway = fixture.driver.deployment({
+    name: fixture.gatewayName,
+    ownership: { namespaceId: fixture.revision.namespaceId, agentId: fixture.revision.agentId },
+    namespace: { name: fixture.gatewayNamespace, plane: "control" },
+    images: {
+      runtime: fixture.driver.options.images.gateway,
+      workspaceSetup: fixture.driver.options.images.gateway,
+    },
+    serviceAccountName: "gateway-account",
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: fixture.driver.gatewayConfiguration(fixture.revision),
+    providerEndpoint: { url: "wss://harness.example.test:8443/", tls: { caBundle: tls.caBundle } },
+  }).spec.template.spec;
+  assert.deepEqual(
+    providerGateway.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
+    [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw-harness-trust/ca-bundle.pem" }],
+    "the endpoint CA must preserve unrelated provider trust",
+  );
+  const revoked = structuredClone(fixture.revision);
+  revoked.configuration.agents.entries.main.tools.allow = [];
+  const revokedConfiguration = fixture.driver.gatewayConfiguration(revoked);
+  assert.equal(
+    revokedConfiguration.automationTrustData,
+    undefined,
+    "removing the approved grant must remove endpoint CA data from the next projection",
+  );
+});
+
+test("automation transport refuses a Gateway with changed identity or configuration origin", async (t) => {
   const image = `example.test/runtime@sha256:${"a".repeat(64)}`;
-  const endpoint = { url: "https://mcp.example.test/approved", egressCidrs: ["192.0.2.10/32"] };
+  const tls = await harnessTlsFixture(t);
+  const endpoint = {
+    url: "https://mcp.example.test/approved",
+    egressCidrs: ["192.0.2.10/32"],
+    caBundle: tls.caBundle,
+  };
   const nodes = { pluginTools: { enabled: false }, allowSkills: false };
   const configuration = admitGatewaySecurityDefaults({
     agents: {
@@ -858,23 +1341,25 @@ test("automation transport refuses a Gateway with changed identity or configurat
       toolSearch: false,
     },
   });
-  const fixture = dedicatedFirstDeployFixture({
-    computeOptions: {
-      images: { gateway: image, agent: image, requireImmutableDigest: true },
-      automations: { trustedAnonymousMcpEndpoints: [endpoint] },
-      servicePrincipalCredentials: {
-        mode: "projectedServiceAccountToken",
-        audience: "openclaw-controller",
-        expirationSeconds: 900,
+  const createFixture = (nativeConfiguration) =>
+    dedicatedFirstDeployFixture({
+      computeOptions: {
+        images: { gateway: image, agent: image, requireImmutableDigest: true },
+        automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+        servicePrincipalCredentials: {
+          mode: "projectedServiceAccountToken",
+          audience: "openclaw-controller",
+          expirationSeconds: 900,
+        },
       },
-    },
-    gatewayNodes: nodes,
-    revision: {
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-      configuration,
-      plugins: undefined,
-    },
-  });
+      gatewayNodes: nodes,
+      revision: {
+        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        configuration: nativeConfiguration,
+        plugins: undefined,
+      },
+    });
+  const fixture = createFixture(configuration);
   await fixture.prepare();
   const deployment = fixture.read("Deployment", fixture.gatewayName);
   const template = deployment.spec.template;
@@ -939,6 +1424,37 @@ test("automation transport refuses a Gateway with changed identity or configurat
   assert.ok(available, "the generated workload and immutable configuration must qualify");
   await available.close();
 
+  // An unexpected Agent-side automation permission or trust asset must close
+  // the otherwise valid Gateway transport until the asset is removed.
+  const staleAddress = { name: fixture.namespace, plane: "execution" };
+  for (const [apiVersion, kind, name, owner, remove] of [
+    [
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      `allow-automation-mcp-agent-rev-${digest(fixture.revision.id)}-${digest(fixture.revision.agentId)}`,
+      { namespaceId: fixture.revision.namespaceId, agentId: fixture.revision.agentId },
+      (request) => fixture.clients.networking.deleteNamespacedNetworkPolicy(request),
+    ],
+    [
+      "v1",
+      "ConfigMap",
+      `automation-trust-agent-${digest(fixture.revision.agentId)}-rev-${digest(fixture.revision.id)}`,
+      fixture.driver.pluginRuntimeOwnership(fixture.revision),
+      (request) => fixture.clients.core.deleteNamespacedConfigMap(request),
+    ],
+  ]) {
+    const asset = fixture.driver.manifest(apiVersion, kind, name, owner, staleAddress);
+    fixture.save({
+      ...asset,
+      metadata: { ...asset.metadata, uid: `${kind}-unexpected-uid`, resourceVersion: "1" },
+    });
+    assert.equal(await open(), undefined, `unexpected Agent ${kind} must refuse transport`);
+    await remove({ name, namespace: fixture.namespace });
+    const recovered = await open();
+    assert.ok(recovered, `removing the Agent ${kind} must restore transport`);
+    await recovered.close();
+  }
+
   const originalPod = structuredClone(pod);
   async function refusePodChange(reason, change) {
     change(pod);
@@ -947,6 +1463,33 @@ test("automation transport refuses a Gateway with changed identity or configurat
   }
   await refusePodChange("a different Gateway service account must refuse transport", (value) => {
     value.spec.serviceAccountName = "other-service-account";
+  });
+  await refusePodChange("a missing endpoint CA mount must refuse transport", (value) => {
+    const gateway = value.spec.containers.find(({ name }) => name === "gateway");
+    gateway.volumeMounts = gateway.volumeMounts.filter(({ name }) => name !== "automation-trust");
+  });
+  await refusePodChange("a changed endpoint CA projection must refuse transport", (value) => {
+    value.spec.volumes.find(({ name }) => name === "automation-trust").configMap.items[0].path =
+      "other.pem";
+  });
+  await refusePodChange("process-wide endpoint CA trust must refuse transport", (value) => {
+    value.spec.containers
+      .find(({ name }) => name === "gateway")
+      .env.push({
+        name: "NODE_EXTRA_CA_CERTS",
+        value: "/etc/openclaw-automation-trust/other.pem",
+      });
+  });
+  await refusePodChange("a changed endpoint CA fingerprint must refuse transport", (value) => {
+    value.metadata.annotations["openclaw.dev/automation-trust-sha256"] = "0".repeat(64);
+  });
+  await refusePodChange("a changed proxy upstream must refuse transport", (value) => {
+    const gateway = value.spec.containers.find(({ name }) => name === "gateway");
+    const program = containerProgram(gateway);
+    assert.ok(program.includes(endpoint.url), "the generated proxy program must bind the upstream");
+    gateway.args = nodeProgramArguments(
+      program.replace(endpoint.url, "https://mcp.example.test/other"),
+    );
   });
   await refusePodChange("a different embedded service principal must refuse transport", (value) => {
     value.metadata.labels["openclaw.dev/service-principal"] = "other-principal";
@@ -974,6 +1517,17 @@ test("automation transport refuses a Gateway with changed identity or configurat
   const configVolume = pod.spec.volumes.find(({ name }) => name === "openclaw-configuration");
   const configName = configVolume.configMap.name;
   const originalConfig = fixture.read("ConfigMap", configName);
+  // Native Doctor treats a missing version as legacy and can alter plugin discovery state.
+  const projectedDocument = JSON.parse(originalConfig.data["openclaw.json"]);
+  assert.deepEqual(projectedDocument.meta, {
+    lastTouchedVersion: "2026.11.5",
+  });
+  assert.match(
+    projectedDocument.mcp.servers.qa.url,
+    /^http:\/\/127\.0\.0\.1:47731\/mcp\/[a-f0-9]{64}$/u,
+  );
+  assert.equal(fixture.revision.configuration.mcp.servers.qa.url, endpoint.url);
+  assert.equal(fixture.revision.configuration.meta, undefined);
   const alternate = structuredClone(originalConfig);
   alternate.metadata.name = `${configName}-other`;
   alternate.metadata.uid = "alternate-config-uid";
@@ -982,6 +1536,20 @@ test("automation transport refuses a Gateway with changed identity or configurat
     value.spec.volumes.find(({ name }) => name === "openclaw-configuration").configMap.name =
       alternate.metadata.name;
   });
+
+  const caFile = `automation-ca-${createHash("sha256").update(tls.caBundle).digest("hex")}.pem`;
+  const changedCa = structuredClone(originalConfig);
+  changedCa.metadata.uid = "changed-ca-uid";
+  changedCa.metadata.resourceVersion = "1";
+  changedCa.data[caFile] = "changed CA data";
+  pod.metadata.annotations["openclaw.dev/automation-configuration-uid"] = changedCa.metadata.uid;
+  pod.metadata.annotations["openclaw.dev/automation-trust-sha256"] = createHash("sha256")
+    .update(JSON.stringify({ [caFile]: changedCa.data[caFile] }))
+    .digest("hex");
+  fixture.save(changedCa);
+  assert.equal(await open(), undefined, "changed endpoint CA data must refuse transport");
+  fixture.save(originalConfig);
+  Object.assign(pod, structuredClone(originalPod));
 
   // Immutable ConfigMaps can only change by deletion and recreation. A same-name
   // replacement has a new UID; changing the Pod annotation cannot make altered
@@ -1000,11 +1568,87 @@ test("automation transport refuses a Gateway with changed identity or configurat
   altered.data["openclaw.json"] = JSON.stringify(document);
   fixture.save(altered);
   assert.equal(await open(), undefined, "changed endpoint content must refuse transport");
+
+  // A recreated ConfigMap must not qualify through a matching Pod annotation
+  // when the server-owned version marker is absent, changed, or extended.
+  for (const [label, meta] of [
+    ["missing", undefined],
+    ["changed", { lastTouchedVersion: "2026.11.4" }],
+    ["extended", { lastTouchedVersion: "2026.11.5", caller: true }],
+  ]) {
+    const changedMarker = structuredClone(originalConfig);
+    changedMarker.metadata.uid = `marker-${label}-uid`;
+    changedMarker.metadata.resourceVersion = "1";
+    const changedDocument = JSON.parse(changedMarker.data["openclaw.json"]);
+    if (meta === undefined) {
+      delete changedDocument.meta;
+    } else {
+      changedDocument.meta = meta;
+    }
+    changedMarker.data["openclaw.json"] = JSON.stringify(changedDocument);
+    pod.metadata.annotations["openclaw.dev/automation-configuration-uid"] =
+      changedMarker.metadata.uid;
+    fixture.save(changedMarker);
+    assert.equal(await open(), undefined, `${label} version marker must refuse transport`);
+  }
   fixture.save(originalConfig);
   Object.assign(pod, structuredClone(originalPod));
   const restored = await open();
   assert.ok(restored);
   await restored.close();
+
+  // Invalid automation revisions still start through the same native Doctor.
+  // Project the marker before Doctor so they cannot contaminate plugin state.
+  const unsafeConfiguration = structuredClone(configuration);
+  unsafeConfiguration.tools.codeMode = true;
+  const unsafe = createFixture(unsafeConfiguration);
+  assert.equal(await unsafe.driver.evaluateAgentAutomationPolicy(unsafe.revision), undefined);
+  await unsafe.prepare();
+  const unsafeDeployment = unsafe.read("Deployment", unsafe.gatewayName);
+  const unsafeName = unsafeDeployment.spec.template.spec.volumes.find(
+    ({ name }) => name === "openclaw-configuration",
+  ).configMap.name;
+  assert.deepEqual(JSON.parse(unsafe.read("ConfigMap", unsafeName).data["openclaw.json"]).meta, {
+    lastTouchedVersion: "2026.11.5",
+  });
+
+  // Disabled-only MCP sources and an empty plugin allowlist cannot trigger
+  // the reviewed-image hold on an ordinary model-only revision.
+  for (const [label, mutate] of [
+    [
+      "disabled-only MCP",
+      (value) => {
+        value.mcp.servers.qa.enabled = false;
+      },
+    ],
+    [
+      "empty plugin allowlist",
+      (value) => {
+        value.plugins.allow = [];
+      },
+    ],
+  ]) {
+    const ordinaryConfiguration = structuredClone(configuration);
+    mutate(ordinaryConfiguration);
+    const ordinary = createFixture(ordinaryConfiguration);
+    await ordinary.prepare();
+    const ordinaryDeployment = ordinary.read("Deployment", ordinary.gatewayName);
+    const ordinaryName = ordinaryDeployment.spec.template.spec.volumes.find(
+      ({ name }) => name === "openclaw-configuration",
+    ).configMap.name;
+    assert.equal(
+      JSON.parse(ordinary.read("ConfigMap", ordinaryName).data["openclaw.json"]).meta,
+      undefined,
+      `${label} must not receive the automation marker`,
+    );
+  }
+
+  // Matching caller metadata cannot impersonate the server projection.
+  const callerConfiguration = structuredClone(configuration);
+  callerConfiguration.meta = { lastTouchedVersion: "2026.11.5" };
+  const caller = createFixture(callerConfiguration);
+  assert.equal(await caller.driver.evaluateAgentAutomationPolicy(caller.revision), undefined);
+  await assert.rejects(caller.prepare(), /metadata is server-owned/);
 });
 
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {

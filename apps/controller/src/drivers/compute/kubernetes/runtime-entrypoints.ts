@@ -5,8 +5,21 @@ import {
   managedCredentialEnvironment,
 } from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
+import {
+  AUTOMATION_MCP_PROXY_SOURCE,
+  type AutomationMcpProxyConfiguration,
+} from "./automation-mcp-proxy.ts";
+
+export {
+  AUTOMATION_MCP_PROXY_PORT,
+  type AutomationMcpProxyConfiguration,
+  type AutomationMcpProxyRoute,
+} from "./automation-mcp-proxy.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
-import { AGENT_AUTOMATION_ORIGIN_GUARD } from "../agent-automation-guard.ts";
+import {
+  AGENT_AUTOMATION_ORIGIN_GUARD,
+  AGENT_AUTOMATION_PRE_DOCTOR_GUARD,
+} from "../agent-automation-guard.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import {
   EXITED_OPENCLAW_STATE_RELEASE,
@@ -2621,11 +2634,21 @@ export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
 export function gatewayRuntimeEntrypoint(
   managedMode: boolean,
   automationGuardBinding?: string,
+  embeddedAutomationMarker = false,
+  automationMcpProxy?: AutomationMcpProxyConfiguration,
 ): string {
+  if (automationMcpProxy && !automationGuardBinding) {
+    throw new Error("Automation MCP proxy requires a qualified policy binding.");
+  }
   return String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawn } = require("node:child_process");
+const AUTOMATION_MCP_PROXY = ${JSON.stringify(automationMcpProxy ?? null)};
+${automationMcpProxy ? AUTOMATION_MCP_PROXY_SOURCE : ""}
+let automationMcpProxy;
+let automationMcpProxyFailed = false;
+${automationGuardBinding || embeddedAutomationMarker ? AGENT_AUTOMATION_PRE_DOCTOR_GUARD : ""}
 ${automationGuardBinding ? `const AUTOMATION_POLICY_BINDING = ${JSON.stringify(automationGuardBinding)};\n${AGENT_AUTOMATION_ORIGIN_GUARD}` : ""}
 
 // OCE upgrades this runtime by rolling out a selected image.
@@ -2730,6 +2753,7 @@ let gatewayServed = false;
 // every agent's inspection settles; /readyz adds channel, state database,
 // failed agent database and plugin reload health.
 async function gatewayRuntimeReady() {
+  if (AUTOMATION_MCP_PROXY && (!automationMcpProxy?.listening() || automationMcpProxyFailed)) return false;
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
@@ -2798,6 +2822,7 @@ function forwardTermination(currentChild) {
   const forward = (signal) => {
     if (gatewayTerminating) return;
     gatewayTerminating = true;
+    automationMcpProxy?.close();
     const target = currentChild();
     if (target === undefined) {
       process.exit(0);
@@ -3539,8 +3564,11 @@ function holdGatewayStartupFailure(error) {
 }
 
 function startGatewayProcess() {
+  if (AUTOMATION_MCP_PROXY) {
+    if (!automationMcpProxy?.listening() || automationMcpProxyFailed) throw new Error("Automation MCP proxy is unavailable.");
+  }
   const childEnvironment = { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()}${automationGuardBinding ? ', OPENCLAW_DISABLE_BUNDLED_SOURCE_OVERLAYS: "1"' : ""} };
-  ${automationGuardBinding ? "assertCleanAutomationOrigins(childEnvironment);" : ""}
+  ${automationGuardBinding ? "assertCleanAutomationOrigins(childEnvironment, gatewayToolPolicyInput, initialConfigPath);" : ""}
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
@@ -3558,6 +3586,7 @@ function startGatewayProcess() {
         exitedGatewayStateKept = code !== 0 && !releaseExitedOpenClawState(gatewayEnvironment());
       }
       resolve();
+      if (automationMcpProxyFailed && gatewayStartupHeld) return;
       if (stoppingContainer) {
         process.exit(DELIBERATE_RESTART_EXIT_STATUS);
         return;
@@ -3600,6 +3629,16 @@ function stopContainer(reason) {
   setTimeout(() => process.exit(DELIBERATE_RESTART_EXIT_STATUS), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
+function holdAutomationMcpProxyFailure() {
+  if (automationMcpProxyFailed) return;
+  automationMcpProxyFailed = true;
+  gatewayStartupHeld = true;
+  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
+  console.error("Automation MCP proxy refused Gateway startup or stopped unexpectedly.");
+  if (childRunning) stopNativeGateway(child, "SIGTERM");
+  setInterval(() => {}, 3600000);
+}
+
 let pluginResult;
 let peerStatus;
 let resetWorkspaceNodeTracking = () => {};
@@ -3611,7 +3650,39 @@ if (codexBridgeRecordProblem !== undefined) {
 peerStatus = followsPeerStatus
   ? await timeStartupPhase("peer-plugin-status", waitForPeerPluginRuntimeStatus)
   : undefined;
+ ${
+   embeddedAutomationMarker
+     ? `try {
+  const initial = JSON.parse(pluginReadFileSync(initialConfigPath, "utf8"));
+  assertReviewedEmbeddedAutomationImage(initial.meta);
+  assertAutomationPersistedDiscovery(process.env);
+} catch {
+  gatewayStartupHeld = true;
+  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
+  console.error("Automation reviewed image or persisted discovery check refused Gateway startup.");
+  setInterval(() => {}, 3600000);
+  return;
+}`
+     : ""
+ }
+if (AUTOMATION_MCP_PROXY) {
+  try {
+    assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, JSON.parse(pluginReadFileSync(initialConfigPath, "utf8")));
+  } catch {
+    holdAutomationMcpProxyFailure();
+    return;
+  }
+}
 const started = configureGateway(peerStatus);
+if (AUTOMATION_MCP_PROXY) {
+  try {
+    assertAutomationMcpProxyProjection(AUTOMATION_MCP_PROXY, readOpenClawConfig());
+    automationMcpProxy = await startAutomationMcpProxy(AUTOMATION_MCP_PROXY, holdAutomationMcpProxyFailure);
+  } catch {
+    holdAutomationMcpProxyFailure();
+    return;
+  }
+}
 // Doctor reads the configuration the Gateway starts with. Current state adds
 // no await before the spawn.
 // A failure holds the Gateway unready with the step named, rather than

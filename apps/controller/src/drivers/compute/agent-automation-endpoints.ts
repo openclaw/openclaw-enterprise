@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
 import { publicCaBundle } from "@openclaw-enterprise/utils";
+import { AUTOMATION_MCP_MAX_EGRESS_ADDRESSES } from "./agent-automation-limits.ts";
 
 export interface TrustedAnonymousMcpEndpoint {
   readonly url: string;
@@ -40,6 +41,8 @@ export function validateTrustedAnonymousMcpEndpoint(value: unknown): TrustedAnon
     url.password ||
     url.search ||
     url.hash ||
+    record.url.includes("?") ||
+    record.url.includes("#") ||
     record.url.includes("*") ||
     !url.hostname
   ) {
@@ -48,7 +51,11 @@ export function validateTrustedAnonymousMcpEndpoint(value: unknown): TrustedAnon
     );
   }
   const cidrs = record.egressCidrs;
-  if (!Array.isArray(cidrs) || cidrs.length === 0 || cidrs.length > 64) {
+  if (
+    !Array.isArray(cidrs) ||
+    cidrs.length === 0 ||
+    cidrs.length > AUTOMATION_MCP_MAX_EGRESS_ADDRESSES
+  ) {
     throw new Error("Automation MCP endpoint needs one to 64 exact egress addresses.");
   }
   const seen = new Set<string>();
@@ -58,17 +65,28 @@ export function validateTrustedAnonymousMcpEndpoint(value: unknown): TrustedAnon
     }
     const [address, prefix, extra] = cidr.split("/");
     const family = isIP(address ?? "");
+    let canonical = address;
+    if (family === 6) {
+      try {
+        canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase();
+      } catch {
+        throw new Error(
+          "Automation MCP egress addresses must be unique IPv4 /32 or IPv6 /128 CIDRs.",
+        );
+      }
+    }
     if (
       extra !== undefined ||
       (family !== 4 && family !== 6) ||
       prefix !== (family === 4 ? "32" : "128") ||
-      seen.has(cidr.toLowerCase())
+      canonical === undefined ||
+      seen.has(canonical)
     ) {
       throw new Error(
         "Automation MCP egress addresses must be unique IPv4 /32 or IPv6 /128 CIDRs.",
       );
     }
-    seen.add(cidr.toLowerCase());
+    seen.add(canonical);
   }
   let caBundle: string | undefined;
   if (record.caBundle !== undefined) {

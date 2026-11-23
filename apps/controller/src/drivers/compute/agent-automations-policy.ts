@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import {
   isName,
   type AgentAutomationPolicyBinding,
@@ -7,6 +8,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { AUTOMATION_NO_MCP_PLUGIN_IDS } from "./agent-automation-guard.ts";
+import { AUTOMATION_MCP_MAX_ROUTES } from "./agent-automation-limits.ts";
 import {
   trustedAnonymousMcpEndpointDescriptor,
   type TrustedAnonymousMcpEndpoint,
@@ -149,9 +151,117 @@ function publicToolPolicy(
   };
 }
 
+const codexProxyFlags = [
+  "enableSocks5",
+  "enableSocks5Udp",
+  "allowUpstreamProxy",
+  "allowLocalBinding",
+  "dangerouslyAllowNonLoopbackProxy",
+  "dangerouslyAllowAllUnixSockets",
+] as const;
+const codexProxyKeys = new Set([
+  "enabled",
+  "baseProfile",
+  "mode",
+  "domains",
+  "unixSockets",
+  ...codexProxyFlags,
+]);
+
+function plainOwnRecord(value: unknown): Record<string, unknown> | undefined {
+  const record = asRecord(value);
+  if (!record || ![Object.prototype, null].includes(Object.getPrototypeOf(record))) {
+    return undefined;
+  }
+  for (const key of Reflect.ownKeys(record)) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (typeof key !== "string" || !descriptor?.enumerable || !("value" in descriptor)) {
+      return undefined;
+    }
+  }
+  return record;
+}
+
+function canonicalProxyDomain(value: string): boolean {
+  if (
+    value.length > 253 ||
+    value !== value.toLowerCase() ||
+    isIP(value) !== 0 ||
+    value === "localhost" ||
+    value.endsWith(".localhost")
+  ) {
+    return false;
+  }
+  const labels = value.split(".");
+  if (
+    labels.length < 2 ||
+    !labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label))
+  ) {
+    return false;
+  }
+  try {
+    return new URL(`https://${value}`).hostname === value;
+  } catch {
+    return false;
+  }
+}
+
+function qualifiedCodexNetworkProxy(value: unknown): Record<string, unknown> | undefined {
+  const proxy = plainOwnRecord(value);
+  const domains = plainOwnRecord(proxy?.domains);
+  const unixSockets = plainOwnRecord(proxy?.unixSockets);
+  if (
+    !proxy ||
+    Object.keys(proxy).length !== codexProxyKeys.size ||
+    Object.keys(proxy).some((key) => !codexProxyKeys.has(key)) ||
+    proxy.enabled !== true ||
+    proxy.baseProfile !== "workspace" ||
+    proxy.mode !== "limited" ||
+    !domains ||
+    Object.keys(domains).length === 0 ||
+    Object.keys(domains).length > 64 ||
+    !unixSockets ||
+    Object.keys(unixSockets).length !== 0 ||
+    codexProxyFlags.some((flag) => proxy[flag] !== false)
+  ) {
+    return undefined;
+  }
+  const entries = Object.entries(domains);
+  const normalized = new Set<string>();
+  for (const [domain, decision] of entries) {
+    const name = domain.toLowerCase();
+    if (
+      !canonicalProxyDomain(domain) ||
+      normalized.has(name) ||
+      (decision !== "allow" && decision !== "deny")
+    ) {
+      return undefined;
+    }
+    normalized.add(name);
+  }
+  const sortedDomains = Object.fromEntries(
+    entries.sort(([left], [right]) => {
+      if (left === right) {
+        return 0;
+      }
+      return left < right ? -1 : 1;
+    }),
+  );
+  return {
+    enabled: true,
+    baseProfile: "workspace",
+    filesystem: { ":minimal": "read", ":project_roots": { ".": "write" } },
+    mode: "limited",
+    domains: sortedDomains,
+    unixSockets: {},
+    ...Object.fromEntries(codexProxyFlags.map((flag) => [flag, false])),
+  };
+}
+
 export function qualifiedCodexPluginConfig(value: unknown): Record<string, unknown> | undefined {
-  const config = asRecord(value);
-  const appServer = asRecord(config?.appServer);
+  const config = plainOwnRecord(value);
+  const appServer = plainOwnRecord(config?.appServer);
+  const networkProxy = qualifiedCodexNetworkProxy(appServer?.networkProxy);
   if (
     !config ||
     Object.keys(config).some((key) => key !== "appServer" && key !== "codexDynamicToolsExclude") ||
@@ -166,14 +276,18 @@ export function qualifiedCodexPluginConfig(value: unknown): Record<string, unkno
           "approvalPolicy",
           "sandbox",
           "remoteWorkspaceRoot",
+          "approvalsReviewer",
+          "networkProxy",
         ].includes(key),
     ) ||
     appServer.mode !== "guardian" ||
     appServer.transport !== "websocket" ||
     appServer.url !== "${APP_SERVER_URL}" ||
     appServer.authToken !== "${APP_SERVER_TOKEN}" ||
-    !["on-request", "never"].includes(String(appServer.approvalPolicy)) ||
-    !["read-only", "workspace-write"].includes(String(appServer.sandbox)) ||
+    appServer.approvalPolicy !== "on-request" ||
+    appServer.approvalsReviewer !== "user" ||
+    appServer.sandbox !== "workspace-write" ||
+    !networkProxy ||
     (appServer.remoteWorkspaceRoot !== undefined &&
       appServer.remoteWorkspaceRoot !== "/home/node/workspace")
   ) {
@@ -197,7 +311,9 @@ export function qualifiedCodexPluginConfig(value: unknown): Record<string, unkno
       endpoint: "agent-harness-environment",
       authentication: "agent-owned-environment",
       approvalPolicy: appServer.approvalPolicy,
+      approvalsReviewer: "user",
       sandbox: appServer.sandbox,
+      networkProxy,
       remoteWorkspaceRoot: appServer.remoteWorkspaceRoot,
     },
     codexDynamicToolsExclude: [...((excluded as string[] | undefined) ?? [])].sort(),
@@ -441,6 +557,29 @@ export function nativeAutomationPolicy(
   const names = new Set<string>();
   const aliases = new Set<string>();
   const bindings: AgentAutomationPolicyBinding[] = [];
+  const enabledRoutes = [];
+  for (const [serverName, value] of Object.entries(servers)) {
+    const server = asRecord(value);
+    if (!server) {
+      return undefined;
+    }
+    if (server.enabled === false) {
+      continue;
+    }
+    const endpoint = trustedAnonymousMcpEndpoints.find((entry) => entry.url === server.url);
+    if (server.transport !== "streamable-http" || endpoint === undefined) {
+      return undefined;
+    }
+    enabledRoutes.push({
+      server: serverName,
+      transport: server.transport,
+      endpoint: trustedAnonymousMcpEndpointDescriptor(endpoint),
+    });
+    if (enabledRoutes.length > AUTOMATION_MCP_MAX_ROUTES) {
+      return undefined;
+    }
+  }
+  enabledRoutes.sort((left, right) => (left.server < right.server ? -1 : 1));
   for (const [serverName, value] of Object.entries(servers)) {
     const server = asRecord(value);
     if (!server) {
@@ -478,9 +617,8 @@ export function nativeAutomationPolicy(
       return undefined;
     }
     const transport = server.transport;
-    if (transport !== "streamable-http" && transport !== "sse") {
-      // A local peer inherits process credentials and mounts that the revision
-      // cannot qualify as an MCP workload identity.
+    if (transport !== "streamable-http") {
+      // Legacy SSE can advertise a second endpoint outside the fixed-target proxy.
       return undefined;
     }
     if (
@@ -504,6 +642,8 @@ export function nativeAutomationPolicy(
       url.password ||
       url.search ||
       url.hash ||
+      server.url.includes("?") ||
+      server.url.includes("#") ||
       url.href !== server.url ||
       !trustedAnonymousMcpEndpoints.some((endpoint) => endpoint.url === url.href)
     ) {
@@ -589,6 +729,9 @@ export function nativeAutomationPolicy(
             standingApproval: {
               kind: "trusted-anonymous-endpoint-v1",
               endpoint: endpointDescriptor,
+              // Native initializes each enabled server before callable-tool filtering.
+              // Bind the full fixed-target route set to every selected operation.
+              enabledRoutes,
             },
             nodeControls: {
               pluginToolsEnabled: nodePluginTools?.enabled,

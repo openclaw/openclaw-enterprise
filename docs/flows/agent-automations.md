@@ -135,7 +135,23 @@ selects another Gateway. The Agent-wide route is excluded.
 `apps/controller/src/drivers/compute/agent-automations-policy.ts:nativeAutomationPolicy`
 qualifies the static provisioning and policy. The Kubernetes implementation owns
 the exact anonymous HTTPS endpoint attestation, translated host CIDRs and optional
-public CA bundle. Stdio is ineligible. Literal raw operations map to canonical
+public CA bundle. For nonempty grants, `nativeAutomationPolicy` prevalidates every enabled server as
+attested `streamable-http` and binds the full canonical server/transport/attestation
+map into each selected tool binding. Policy refuses more than 64 enabled routes;
+endpoint configuration rejects equivalent duplicate IPv6 host CIDRs, and Compute
+refuses nonempty qualification when Gateway port 47730/47731 conflicts with the
+reserved listener. Model-only capability remains unaffected. Adding or changing an enabled sibling or its
+URL/CIDR/CA invalidates that grant even if the sibling has no selected tool. Native
+catalog setup may initialize/list siblings before scheduled cap filtering; this
+does not permit forbidden tool calls. Compute renders one revision-selected Gateway
+endpoint policy. A separate Gateway-only `automation-trust` volume mounts exact
+fingerprint-named CA files read-only. Verification checks immutable CA data,
+key/path items, mount, annotation hash and absence after revocation; it rejects
+automation-derived `NODE_EXTRA_CA_CERTS` while preserving unrelated provider trust.
+Preparation removes owned stale Agent automation policy/CA assets; verification
+rejects Agent automation-specific policy, CA map, Pod volume/mount, environment or
+annotation. Independent Agent model/workload routes and Codex trust remain separate.
+Stdio is ineligible. Literal raw operations map to canonical
 aliases; unsupported credentials, approval controls, transports or ambiguous names
 refuse qualification. For dedicated execution, only ordinary Kubernetes
 deployment-backed Codex can qualify; provider-owned Sandbox, protected-egress and credential variants
@@ -144,16 +160,36 @@ fail closed. OCC revision admission inserts the sole main entry
 OpenClaw admits an identity-only main entry. Dedicated Codex also requires the
 exact main tool allow list and intersects each alias with the literal
 MCP filter, Gateway allow list and canonical `agents.entries.main.tools.allow`. It
-requires server approval and the qualified guardian WebSocket plugin configuration.
-The binding covers effective workspace, transport/authentication provenance,
-guardian posture, dynamic exclusions and immutable Gateway/Agent images; it stores
-no raw app-server token or URL. Unsupported qualification refuses without fallback; qualified model-only paths
+requires server approval and the qualified Standard guardian WebSocket configuration.
+`qualifiedCodexPluginConfig` preserves reviewer `user`, on-request approval,
+workspace-write sandbox and the limited workspace proxy. It rejects unsafe proxy
+flags, noncanonical domains, sockets and unknown keys. The canonical grant binds
+the full reviewer, sorted domain decisions, proxy flags and native filesystem
+permissions alongside workspace, transport/authentication provenance, exclusions
+and immutable images; it stores no raw app-server token or URL. Proxy domains do
+not authorize the independent Gateway MCP callback. Unsupported qualification refuses without fallback; qualified model-only paths
 remain available. Genuine HTTPS execution proof is a separate qualification gate.
 Code Mode and tool search must already be disabled. This does not modify ordinary chat.
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:requireAutomationRenderedEquivalence`
-compares Compute-owned runtime projections with their expected values, removes
-those projections from a copy, and rechecks the original qualification. The final
+`apps/controller/src/drivers/compute/kubernetes/index.ts:projectEmbeddedAutomationMarker`
+projects server-owned `meta.lastTouchedVersion: "2026.11.5"` only for the embedded
+candidate selected by `hasEmbeddedAutomationMarker`: endpoint support, immutable
+Gateway image, nonempty plugin allowlist and an MCP server not explicitly disabled.
+Caller `meta` refuses preparation. Candidate detection does not qualify malformed
+servers. `requireAutomationRenderedEquivalence` verifies and reverses only exact
+server-owned projections before rechecking original qualification. Compute derives
+opaque paths from revision, server, original HTTPS target, capability hash and
+endpoint descriptor, then projects native URLs to
+`http://127.0.0.1:47731/mcp/<64hex>`; public source stays unchanged. The origin
+guard checks the exact mapping before every spawn.
+`apps/controller/src/drivers/compute/kubernetes/automation-mcp-proxy.ts:AUTOMATION_MCP_PROXY_SOURCE` accepts only
+exact loopback routes, GET/POST/DELETE and protocol headers. Its HTTPS lookup
+filters DNS results to admitted addresses used by the actual socket; each request
+supplies automation CA only per route and rejects all 3xx without Location or replay. It limits
+active exchanges to 32, requests to 4 MiB, responses to 32 MiB, idle time to 60
+seconds and total time to 300 seconds. `gatewayRuntimeEntrypoint` checks projection
+before configuration, starts the proxy before Doctor, and requires it listening
+for readiness and every native spawn; failure holds the Gateway unready. The final
 dedicated workspace must match the Harness workspace. A mismatch refuses
 preparation; this does not qualify app tools or authenticated connectors.
 
@@ -180,7 +216,12 @@ qualification gate, not an admission-time discovery step.
 
 `apps/controller/src/drivers/compute/agent-automation-program.ts:verifyAgentAutomationProgram`
 matches the complete deployed wrapper against the rendered program and grant.
-`apps/controller/src/drivers/compute/agent-automation-guard.ts:AGENT_AUTOMATION_ORIGIN_GUARD`
+`apps/controller/src/drivers/compute/agent-automation-guard.ts:AGENT_AUTOMATION_PRE_DOCTOR_GUARD`
+checks the reviewed packaged source/version and read-only persisted plugin
+discovery/index before configuration or Doctor; refusal holds `gateway-config`
+unavailable. Existing `compat` is never repaired or adopted. Doctor and
+missing-plugin repair still run, while configured-plugin release bookkeeping/restamp
+is suppressed. `AGENT_AUTOMATION_ORIGIN_GUARD` repeats the check before each spawn and
 compares canonical entries and MCP against the immutable mounted source for
 embedded OpenClaw, or the immutable rendered ConfigMap for dedicated Codex. It
 checks writable discovery roots, installed-plugin state and bundled manifests. It

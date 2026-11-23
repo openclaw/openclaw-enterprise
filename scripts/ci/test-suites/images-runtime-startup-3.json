@@ -24,6 +24,8 @@
     {
       "path": "tests/integration/runtime-image-native-worker.test.ts",
       "expectedTests": [
+        "Gateway automation MCP proxy pins approved sockets and refuses redirect replay",
+        "Gateway automation MCP supervisor holds before Doctor and recovers after native restart",
         "the dedicated worker launches the pinned gog on PATH only for the selected release",
         "the dedicated worker loads a different CLI package with its declared credential slot",
         "the native Gateway discovers the Google instructions with Slack selected alongside it",
