@@ -1,4 +1,3 @@
-import { nativeRestMode, type NativeRestMode } from "../egress-proxy/openshell-git-middleware.ts";
 import { admitsFrozenWorkspace } from "./inspected-workspace-release.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
 import { compileOpenShellBoundGitRule } from "./openshell-git-network-policy.ts";
@@ -4074,7 +4073,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     if (git) {
-      let nativeRest: NativeRestMode | undefined;
+      let issueReads = false;
       if (nativeGit) {
         if (!repositoryPolicy || !git.nativePolicy) {
           throw new OpenShellSandboxConfigurationFailure(
@@ -4087,7 +4086,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           git.nativePolicy.binaries,
           git.nativePolicy.scopedRest,
         );
-        nativeRest = nativeRestMode(rule);
+        issueReads = rule.endpoints.some(({ host }) => host === "api.github.com");
         if (Object.hasOwn(composedPolicies, rule.name)) {
           throw new OpenShellSandboxConfigurationFailure(
             "Repository network policy rule already exists.",
@@ -4101,9 +4100,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         Object.fromEntries(git.environment.map(({ name, value }) => [name, value])),
       );
       if (plan?.repositoryGit) {
-        // Select the middleware from the verified, credential-bound REST routes.
-        const middleware = nativeRest
-          ? openShellEgressConfiguration(plan, this.options.egress!, context.revision, nativeRest)
+        // The protected base was verified before preparing a Provider. Issue-read endpoints
+        // require a native selector that leaves those paths to the stock policy and credential.
+        const middleware = issueReads
+          ? openShellEgressConfiguration(plan, this.options.egress!, context.revision, true)
               .network_middlewares
           : create.spec.policy.network_middlewares;
         const policy = asRecord(middleware);
@@ -4112,7 +4112,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             "Git middleware differs from its protected admission.",
           );
         }
-        if (nativeRest) {
+        if (issueReads) {
           Object.assign(create.spec.policy, { network_middlewares: middleware });
         }
       } else {

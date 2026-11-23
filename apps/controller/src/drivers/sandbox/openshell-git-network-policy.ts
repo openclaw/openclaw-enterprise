@@ -159,11 +159,23 @@ function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGran
 
 export type OpenShellScopedRestGrant = RepositoryGitRestAuthority[number];
 
+// GitHub's create fields. OpenShell matches method, path and query, never a request body.
+const pullRequestCreateFields = Object.freeze([
+  "title",
+  "head",
+  "head_repo",
+  "base",
+  "body",
+  "draft",
+  "maintainer_can_modify",
+  "issue",
+]);
+
 function scopedApiEndpoints(
   policy: readonly RepositoryNetworkGrant[],
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
-): readonly OpenShellProviderProfileEndpoint[] {
-  const endpoints: OpenShellProviderProfileEndpoint[] = [];
+) {
+  const endpoints = [];
   for (const {
     repository,
     createPullRequests,
@@ -171,8 +183,15 @@ function scopedApiEndpoints(
     readPullRequests,
   } of repositoryGitRestOperations(policy, permissions)) {
     const rules = [];
+    const denyRules = [];
     if (createPullRequests) {
-      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+      const path = `/repos/${repository}/pulls`;
+      rules.push({ allow: { method: "POST", path } });
+      // An allow rule admits extra query keys. A deny rule fires when its key is present, so
+      // one rule for each field keeps the create fields out of the query string.
+      for (const field of pullRequestCreateFields) {
+        denyRules.push({ method: "POST", path, query: { [field]: { glob: "**" } } });
+      }
     }
     for (const [resource, enabled] of [
       ["issues", readIssues],
@@ -191,11 +210,14 @@ function scopedApiEndpoints(
     }
     if (rules.length) {
       endpoints.push({
-        host: "api.github.com",
-        port: 443,
-        protocol: "rest",
-        path: `/repos/${repository}/**`,
-        rules,
+        ...openShellProfileEndpoint({
+          host: "api.github.com",
+          port: 443,
+          protocol: "rest",
+          path: `/repos/${repository}/**`,
+          rules,
+        }),
+        ...(denyRules.length > 0 && { deny_rules: denyRules }),
       });
     }
   }
@@ -230,7 +252,7 @@ export function compileOpenShellBoundGitRule(
   const policy = canonicalGrants(grants);
   const endpoints = [
     ...policy.map(repositoryNetworkEndpoint),
-    ...scopedApiEndpoints(policy, scopedRest).map((endpoint) => openShellProfileEndpoint(endpoint)),
+    ...scopedApiEndpoints(policy, scopedRest),
   ];
   return {
     name: "repository-git-network",

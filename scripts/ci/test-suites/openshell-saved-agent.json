@@ -8,10 +8,7 @@
     "OPENAI_API_KEY": "fixture-only-no-model-call",
     "OCC_TEST_OPENAI_MODEL": "fixture-only-no-model-call"
   },
-  "optionalEnv": [
-    "OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER",
-    "OCC_TEST_OPENSHELL_SAVED_AGENT_PULL_REQUESTS"
-  ],
+  "optionalEnv": ["OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER"],
   "prepare": {},
   "files": [
     {
@@ -19,6 +16,7 @@
       "expectedTests": [
         "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
         "Saved native Git grants admit read-only gh API on A and B",
+        "Saved Agent reads and creates pull requests while the Worker hook is unavailable",
         "Downgraded native Git grants retain read-only gh API"
       ]
     }

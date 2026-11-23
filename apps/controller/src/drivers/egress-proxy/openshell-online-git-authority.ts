@@ -32,7 +32,6 @@ export interface OpenShellOnlineGitIdentity {
 
 /** The shared request binding, attributed to one authenticated sandbox binding. */
 export type OpenShellOnlineGitBinding = GitHubRequestBinding & {
-  readonly nativeGit?: true;
   readonly sandboxId: string;
   readonly bindingId: string;
   readonly workspace: string;
@@ -64,7 +63,6 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
     request: Use,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
-    nativeGit?: true,
   ) => Promise<RepositoryGitOnlineDecision>;
 };
 
@@ -172,14 +170,7 @@ export function createOpenShellOnlineGitAuthority(
       if (signal.aborted) {
         return deny("aborted");
       }
-      if (
-        !validBinding(binding, request) ||
-        (binding.nativeGit &&
-          (request.target.host !== "api.github.com" ||
-            !["GET", "HEAD", "POST"].includes(request.target.method) ||
-            binding.scope !== "github-repository" ||
-            !binding.scopedRestWrites?.pullRequestRepositories.length))
-      ) {
+      if (!validBinding(binding, request)) {
         return deny("binding_mismatch");
       }
       const outcome = await decideGitHubRequest({
@@ -211,8 +202,7 @@ export function createOpenShellOnlineGitAuthority(
             .update(Buffer.from([0]))
             .update(request.body)
             .digest("hex"),
-        authorize: (q, installed, signal) =>
-          options.authorizeOnlineRequest(q, installed, signal, binding.nativeGit),
+        authorize: (q, installed, signal) => options.authorizeOnlineRequest(q, installed, signal),
       });
       if (outcome.kind === "allowed") {
         // The RPC owner checks this exact authority deadline at its final allow callback.

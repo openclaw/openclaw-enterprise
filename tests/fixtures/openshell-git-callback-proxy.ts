@@ -28,7 +28,7 @@ export function assertGitCallbackEndpoint(services: unknown, endpoint: string) {
   );
 }
 
-type Action = "read" | "disable" | "resume";
+type Action = "read" | "disable";
 type Counter = { generation: string; attempts: number; disabled: boolean };
 
 export async function inspectObserver(action: Action, port = 8447): Promise<Counter> {
@@ -86,24 +86,15 @@ export function gitCallbackObserver(options: {
 }) {
   const { key, cert, ca, upstreamName, upstreamPort = 8445 } = options;
   const state: Counter = { generation: randomUUID(), attempts: 0, disabled: false };
-  let calibrated = false;
   // Inspection reads the live counter in the same event loop as the HTTP/2 listener.
   const control = createServer((request, response) => {
-    if (
-      request.method !== "POST" ||
-      !["/read", "/disable", "/resume"].includes(request.url ?? "")
-    ) {
+    if (request.method !== "POST" || !["/read", "/disable"].includes(request.url ?? "")) {
       response.writeHead(404).end();
       return;
     }
-    if (request.url === "/disable") {
+    if (request.url === "/disable" && !state.disabled) {
       state.disabled = true;
-      if (!calibrated) {
-        state.attempts = 0;
-        calibrated = true;
-      }
-    } else if (request.url === "/resume") {
-      state.disabled = false;
+      state.attempts = 0;
     }
     response.writeHead(200, {
       "content-type": "application/json",

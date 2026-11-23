@@ -756,7 +756,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           ),
       } satisfies RepositoryGitAuthority<Allow>);
     };
-    const native = delivery("network-policy", onlineAllow).githubRepository;
     return Object.freeze({
       recipients: this.recipients,
       ...delivery(null, sendPermit),
@@ -764,12 +763,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       ...(this.proxy.policy?.observedHook && {
         observedHook: delivery("request-hook-observed", onlineAllow).githubInstallation!,
         networkPolicy: {
-          readMaterial: native!.readMaterial,
-          authorizeRest: (q, installed, signal) =>
-            q.operation === "github-rest"
-              ? native!.authorize(q, installed, signal)
-              : Promise.resolve({ kind: "denied", reason: "unavailable" }),
-        } satisfies NonNullable<ProtectedRepositoryGitAuthority["networkPolicy"]>,
+          readMaterial: delivery("network-policy", onlineAllow).githubRepository!.readMaterial,
+        },
       }),
     });
   }

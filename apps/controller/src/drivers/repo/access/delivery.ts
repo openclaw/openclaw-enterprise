@@ -11,11 +11,10 @@ export type RepositoryGitRestAuthority = readonly Readonly<{
   createPullRequests?: true;
 }>[];
 
-export type ScopedRepositoryRestWrites = Readonly<{
-  pullRequestRepositories: readonly string[];
-}>;
-
-/** Intersect the frozen Git grants with the repository owner's scoped REST authority. */
+/**
+ * Intersect the frozen Git grants with the repository owner's scoped REST authority.
+ * Creating a pull request also requires the saved Write grant.
+ */
 export function repositoryGitRestOperations(
   grants: readonly RepositoryNetworkGrant[],
   authority: RepositoryGitRestAuthority | undefined,

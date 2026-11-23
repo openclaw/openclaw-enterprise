@@ -250,7 +250,7 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, issueReads?: boolean, nativePullRequests?: "read" | "write" }} [options]
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, issueReads?: boolean }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -261,7 +261,6 @@ export function createOpenShellGitInstallation(
     nativeGit = false,
     networkAcl = false,
     issueReads = false,
-    nativePullRequests,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -272,29 +271,19 @@ export function createOpenShellGitInstallation(
       nativeGit,
       networkAcl,
       issueReads,
-      nativePullRequests,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  {
-    onSetupStep,
-    witnessIssuedGit,
-    allowStandingApprovals,
-    nativeGit,
-    networkAcl,
-    issueReads,
-    nativePullRequests,
-  },
+  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, networkAcl, issueReads },
 ) {
   assert.ok(!(nativeGit && networkAcl), "Select one Git ACL credential fixture");
   assert.ok(
     !nativeGit || !allowStandingApprovals,
     "Native Git requires the finite selected-repository fixture",
   );
-  assert.ok(!nativePullRequests || issueReads);
   assert.ok(!issueReads || nativeGit, "Issue reads require the native selected-repository fixture");
   if (nativeGit) {
     assert.equal(process.env.OPENAI_API_KEY, "fixture-only-no-model-call");
@@ -336,9 +325,6 @@ async function installOpenShellGit(
     /^ghcr\.io\/nvidia\/openshell\/supervisor:(\d+\.\d+\.\d+)@sha256:[a-f0-9]{64}$/,
   )?.[1];
   assert.ok(stockVersion, "expected a digest-pinned stock OpenShell supervisor image");
-  if (nativePullRequests) {
-    assert.equal(stockVersion, "0.1.9", "Pull request proof requires stock OpenShell 0.1.9");
-  }
   const expectedChart = `helm-chart-${stockVersion}.tgz`;
   const cleanup = [];
   const stackCleanup = [];
@@ -664,7 +650,6 @@ async function installOpenShellGit(
             : { metadata: "read", contents: "write" },
           ...(nativeGit && { nativeGit: "v1" }),
           ...(optedIn && { scopedRest: "v1" }),
-          ...(optedIn && nativePullRequests && { nativePullRequests }),
           ...(allowStandingApprovals && { allowStandingApproval: true }),
         };
       }),
@@ -1950,8 +1935,8 @@ process.stdout.write(JSON.stringify(await inspectObserver(process.argv[1])));`,
   assert.equal(initial.disabled, false);
   let disabled = false;
   const observedAttempts = async (action) => {
-    if (action !== "read") {
-      disabled = action === "disable";
+    if (action === "disable") {
+      disabled = true;
     }
     const receipt = await inspect(action);
     assert.equal(receipt.generation, initial.generation, "Git callback observer restarted");
@@ -1961,7 +1946,6 @@ process.stdout.write(JSON.stringify(await inspectObserver(process.argv[1])));`,
   return {
     read: () => observedAttempts("read"),
     disable: () => observedAttempts("disable"),
-    resume: () => observedAttempts("resume"),
     endpoint: `https://${name}.${platform}.svc.cluster.local:${port}`,
   };
 }
