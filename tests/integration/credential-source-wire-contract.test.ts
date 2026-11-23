@@ -3,7 +3,6 @@ import test, { type TestContext } from "node:test";
 
 import {
   occApiRoutes,
-  PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
   type UpdateTokenServiceSourceBody,
 } from "../../packages/contracts/src/index.ts";
@@ -180,7 +179,7 @@ test("published manual delivery retry schemas require an explicit selection and 
       authorizationTarget: "agent",
     },
   );
-  assert.equal(declared.schema.body, PushAgentCredentialsBody);
+  assert.equal(declared.schema.body.$ref, "PushAgentCredentialsBody");
   assert.equal(declared.schema.response[200], PushAgentCredentialsResponse);
 
   // The public operation must publish the same selection limits and outcomes as the
@@ -194,7 +193,9 @@ test("published manual delivery retry schemas require an explicit selection and 
     operationId: "pushAgentCredentials",
     requestBody: {
       required: true,
-      content: { "application/json": { schema: operationSchema("PushAgentCredentialsBody") } },
+      content: {
+        "application/json": { schema: { $ref: "#/components/schemas/PushAgentCredentialsBody" } },
+      },
     },
     responses: {
       200: {

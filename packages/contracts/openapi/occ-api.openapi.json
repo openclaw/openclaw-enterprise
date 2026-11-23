@@ -23427,33 +23427,9 @@
                   "value": { "sources": ["cs_123e4567-e89b-42d3-a456-426614174000"] }
                 }
               },
-              "schema": {
-                "additionalProperties": false,
-                "description": "Manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
-                "properties": {
-                  "sources": {
-                    "anyOf": [
-                      { "const": "all", "type": "string" },
-                      {
-                        "items": {
-                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "maxItems": 64,
-                        "minItems": 1,
-                        "type": "array",
-                        "uniqueItems": true
-                      }
-                    ],
-                    "description": "Select 'all' or 1–64 distinct Source IDs to retry. Eligible Sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on each Source."
-                  }
-                },
-                "required": ["sources"],
-                "type": "object"
-              }
+              "schema": { "$ref": "#/components/schemas/PushAgentCredentialsBody" }
             }
           },
-          "description": "Manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
           "required": true
         },
         "responses": {
@@ -23583,6 +23559,26 @@
               }
             },
             "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
           },
           "500": {
             "content": {

@@ -22,7 +22,7 @@ import {
 } from "./model-providers.ts";
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
-import { PushAgentCredentialsBody, PushAgentCredentialsResponse } from "./agent-credential-push.ts";
+import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -1402,8 +1402,8 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
-      body: PushAgentCredentialsBody,
-      response: { 200: PushAgentCredentialsResponse, ...mutationErrors },
+      body: Type.Ref("PushAgentCredentialsBody"),
+      response: { 200: PushAgentCredentialsResponse, ...createErrors },
     },
   },
   {
