@@ -24,8 +24,13 @@ process.env.OCC_DOCKER_BIN = fakeDocker;
 process.env.OCC_TEST_RUNTIME_IMAGE = "localhost/oce/runtime:failure-output-test";
 const { failureTail, runDocker, waitForDockerLog } =
   await import("../helpers/runtime-image-docker.ts");
-const { containerLogTail, gatewayReadinessReport, listGatewayPlugins, waitForGatewayReady } =
-  await import("../helpers/runtime-image-gateway-observations.ts");
+const {
+  containerLogTail,
+  gatewayLogsThroughReady,
+  gatewayReadinessReport,
+  listGatewayPlugins,
+  waitForGatewayReady,
+} = await import("../helpers/runtime-image-gateway-observations.ts");
 const { runGatewaySmoke } = await import("../helpers/runtime-image-startup.ts");
 const { followContainer } = await import("../helpers/docker-follow.ts");
 
@@ -157,6 +162,20 @@ test("a log wait fails at once when the container stops first, keeping the end o
     error.message.length < reporterMessageLimit,
     `message is ${error.message.length} chars`,
   );
+});
+
+test("Gateway startup log entries include a gateway ready line logged after the readiness answer", async (t) => {
+  setEnvironment(t, { FAKE_DOCKER_MODE: "gateway-ready-late" });
+  // What a `docker logs` read right after the readiness wait returned in the failing run.
+  const snapshot = await runDocker(["logs", "fake-container"]);
+  assert.doesNotMatch(snapshot.stdout, /"gateway ready"/);
+  const { logs, entries } = await gatewayLogsThroughReady("fake-container");
+  assert.match(logs, /gateway startup outcomes/);
+  assert.deepEqual(entries.at(-1), {
+    subsystem: "gateway",
+    level: "info",
+    message: "gateway ready",
+  });
 });
 
 test("a follower whose docker wait never returns takes the exit, and its time, from inspect", async (t) => {

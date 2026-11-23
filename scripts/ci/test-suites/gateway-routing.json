@@ -30,6 +30,12 @@
   },
   "files": [
     {
+      "path": "tests/integration/agent-network-proxy-kubernetes-real.test.ts",
+      "expectedTests": [
+        "an Agent without channels saves and deploys a proxy selection without granting channel egress"
+      ]
+    },
+    {
       "path": "tests/integration/native-profile-upgrade-k3d-real.test.ts",
       "expectedTests": [
         "pre-feature OCE installation upgrades the same retained Agent from shared to delegated native profiles"
