@@ -248,7 +248,15 @@ test(
     await assert.rejects(executionApiKubectl("get", "networkpolicies"), forbidden);
     await assert.rejects(
       executionApiKubectl("create", "configmap", "automation-write-denied", "--dry-run=server"),
-      forbidden,
+      (error) => {
+        const stderr = String(error.stderr);
+
+        return (
+          /\bis forbidden\b/i.test(stderr) &&
+          stderr.includes("cannot create") &&
+          stderr.includes("configmaps")
+        );
+      },
     );
     await assert.rejects(
       executionApiKubectl("auth", "can-i", "get", "secrets"),
