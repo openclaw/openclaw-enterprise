@@ -2571,16 +2571,55 @@ if (savedAgentAcl === "source") {
           ["rollout", "status", `deployment/${api}`, "-n", fixture.platform, "--timeout=180s"],
           { timeout: 190_000 },
         );
+        const reachable = await statusOf(request("GET", source.path));
+        const patchStarted = Date.now();
         const lowered = await statusOf(
-          request("PATCH", source.path, {
-            config: {
-              provider_preset: "github",
-              repositories: "fixture/a:write,fixture/b:read,fixture/c:write",
+          request(
+            "PATCH",
+            source.path,
+            {
+              config: {
+                provider_preset: "github",
+                repositories: "fixture/a:write,fixture/b:read,fixture/c:write",
+              },
             },
-          }),
+            undefined,
+            150_000,
+          ),
         );
         const loweredAt = Date.now();
-        evidence("ceiling-lowered", { status: lowered });
+        // The API's own record of the requests on this Source: method, status and duration only.
+        const apiLog: string = await fixture.kube(
+          ["logs", "-n", fixture.platform, `deploy/${api}`, "--all-containers=true", "--tail=-1"],
+          { timeout: 60_000 },
+        );
+        const apiRequests = apiLog.split("\n").flatMap((line) => {
+          if (!line.includes("http.completed") || !line.includes(source.id)) {
+            return [];
+          }
+          try {
+            const event = asRecord(JSON.parse(line.slice(line.indexOf("{"))));
+            return event
+              ? [
+                  ["time", "method", "statusCode", "status", "durationMs"]
+                    .flatMap((key) =>
+                      typeof event[key] === "string" || typeof event[key] === "number"
+                        ? [`${key}=${String(event[key]).slice(0, 40)}`]
+                        : [],
+                    )
+                    .join(" "),
+                ]
+              : [];
+          } catch {
+            return [];
+          }
+        });
+        evidence("ceiling-lowered", {
+          getAfterRollout: reachable,
+          status: lowered,
+          seconds: (loweredAt - patchStarted) / 1000,
+          apiRequests,
+        });
         assert.equal(lowered, 200, "SOURCE_CEILING_LOWERED");
         const exceeded = await observeUntil(
           "Source loan refusal after the ceiling is lowered",
