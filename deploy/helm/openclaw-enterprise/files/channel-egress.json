@@ -712,6 +712,100 @@
                           "string_match": {
                             "exact": "GET"
                           }
+                        },
+                        {
+                          "name": ":path",
+                          "string_match": {
+                            "exact": "/config_dump?resource=dynamic_listeners"
+                          }
+                        }
+                      ]
+                    },
+                    "route": {
+                      "cluster": "channel-egress-inspection"
+                    }
+                  },
+                  {
+                    "match": {
+                      "path": "/config_dump",
+                      "headers": [
+                        {
+                          "name": ":method",
+                          "string_match": {
+                            "exact": "GET"
+                          }
+                        },
+                        {
+                          "name": ":path",
+                          "string_match": {
+                            "exact": "/config_dump?resource=static_listeners"
+                          }
+                        }
+                      ]
+                    },
+                    "route": {
+                      "cluster": "channel-egress-inspection"
+                    }
+                  },
+                  {
+                    "match": {
+                      "path": "/config_dump",
+                      "headers": [
+                        {
+                          "name": ":method",
+                          "string_match": {
+                            "exact": "GET"
+                          }
+                        },
+                        {
+                          "name": ":path",
+                          "string_match": {
+                            "exact": "/config_dump?resource=dynamic_active_clusters"
+                          }
+                        }
+                      ]
+                    },
+                    "route": {
+                      "cluster": "channel-egress-inspection"
+                    }
+                  },
+                  {
+                    "match": {
+                      "path": "/config_dump",
+                      "headers": [
+                        {
+                          "name": ":method",
+                          "string_match": {
+                            "exact": "GET"
+                          }
+                        },
+                        {
+                          "name": ":path",
+                          "string_match": {
+                            "exact": "/config_dump?resource=static_clusters"
+                          }
+                        }
+                      ]
+                    },
+                    "route": {
+                      "cluster": "channel-egress-inspection"
+                    }
+                  },
+                  {
+                    "match": {
+                      "path": "/config_dump",
+                      "headers": [
+                        {
+                          "name": ":method",
+                          "string_match": {
+                            "exact": "GET"
+                          }
+                        },
+                        {
+                          "name": ":path",
+                          "string_match": {
+                            "exact": "/config_dump?resource=dynamic_active_secrets&mask=name"
+                          }
                         }
                       ]
                     },
