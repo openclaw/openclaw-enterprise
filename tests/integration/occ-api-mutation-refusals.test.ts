@@ -159,22 +159,23 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
   );
 });
 
-test("credential source registration names the missing Credential Gateway", async () => {
+test("credential source registration checks Namespace readiness before TokenService availability", async () => {
   const controller = await configuredController();
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "no-credential-gateway");
-  // This Installation selects no Credential Gateway, like the Kubernetes production profile;
-  // the missing gateway is reported before Namespace readiness or the source catalog.
-  const rejected = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/credential-sources`,
-    { body: { name: "openai-key", type: "openai" } },
-  );
-  assertApiError(rejected, 409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED");
-  assert.match(
-    rejected.body.error.message,
-    /no Credential Gateway.*docs-enterprise\.openclaw\.org\/reference\/credential-sources\//,
-  );
+  const namespace = await createNamespace(controller, "source-readiness");
+  const material = randomUUID();
+  const path = `/namespaces/${namespace.id}/credential-sources`;
+  const body = { name: "openai-key", type: "static", secret: { opaque: material } };
+
+  // Source enrollment must check the Namespace before trying its unavailable credential owner.
+  const notReady = await controller.request("POST", path, { body });
+  assertApiError(notReady, 409, "NAMESPACE_NOT_READY");
+  await controller.fixture.markNamespaceReady(namespace.id);
+
+  const rejected = await controller.request("POST", path, { body });
+  assertApiError(rejected, 503, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(rejected.body.error.message, "A required platform dependency is unavailable.");
+  assert.equal(JSON.stringify(rejected.body).includes(material), false);
 });
 
 test("a duplicate Secret name answers 409 naming the taken Secret name", async () => {

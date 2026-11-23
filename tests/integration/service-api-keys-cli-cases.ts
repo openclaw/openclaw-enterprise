@@ -583,26 +583,31 @@ export async function runServiceApiKeysCliScenario(
       },
     );
 
-    // This Installation selects no Credential Gateway: the CLI names it and the reference
-    // instead of an opaque dependency failure.
+    // A valid static registration reports the unavailable selected TokenService through the CLI.
     grantRole(policy, principal.id, {
       id: "cli-credential-source-creator",
       resource: undefined,
       namespaceId,
       permissions: { credential_source: ["create"] },
     });
+    const material = "synthetic-material";
     const sourceFile = join(directory, "credential-source.json");
-    await writeFile(sourceFile, JSON.stringify({ name: "openai-key", type: "openai" }), {
-      mode: 0o600,
-    });
+    await writeFile(
+      sourceFile,
+      JSON.stringify({
+        name: "openai-key",
+        type: "static",
+        secret: { opaque: material },
+      }),
+      { mode: 0o600 },
+    );
     await assert.rejects(
       run(occCli, ["credential-source", "create", "--file", sourceFile], { env }),
       (error: unknown) => {
         commandError(error);
-        assert.match(
-          error.stderr,
-          /HTTP 409\): CREDENTIAL_GATEWAY_NOT_CONFIGURED: This Installation has no Credential Gateway.*docs-enterprise\.openclaw\.org\/reference\/credential-sources\//,
-        );
+        assert.match(error.stderr, /HTTP 503\): DEPENDENCY_UNAVAILABLE:/);
+        assert.equal(error.stdout, "");
+        assert.equal(error.stderr.includes(material), false);
         return true;
       },
     );
