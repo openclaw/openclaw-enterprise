@@ -58,19 +58,3 @@ assert_contains "auth-maintain prints usage" \
     "$(run_controller scripts/auth-maintain.ts)" 'OCC_MIGRATION_DATABASE_URL'
 assert_contains "worker healthcheck requires a readiness marker" \
     "$(run_controller scripts/production-healthcheck.ts worker)" 'readiness marker must be an explicit absolute path'
-
-# Start the proxy and connect to it inside one container, so the check needs
-# neither container logs nor host networking.
-PROXY_OUTPUT=$(podman run --rm --read-only --user 1000:1000 --entrypoint bash "$IMAGE" -c '
-    node apps/controller/src/slack-proxy.mjs &
-    for _ in $(seq 1 30); do
-        if node -e "require(\"node:net\").connect(3128, \"127.0.0.1\").on(\"connect\", () => process.exit(0)).on(\"error\", () => process.exit(1))"; then
-            echo "connected to 3128"
-            exit 0
-        fi
-        sleep 1
-    done
-    exit 1' 2>&1 || true)
-assert_contains "Slack proxy starts listening" "$PROXY_OUTPUT" "Slack proxy listening on 3128"
-assert_contains "Slack proxy accepts connections" "$PROXY_OUTPUT" "connected to 3128"
-[[ "$PROXY_OUTPUT" == *"connected to 3128"* ]] || printf 'Slack proxy output:\n%s\n' "$PROXY_OUTPUT"

@@ -5,9 +5,9 @@ ARG BUILDER_IMAGE=registry.access.redhat.com/hi/nodejs:24-builder@sha256:c61a52c
 #
 # Konflux port of the root Dockerfile. Non-hermetic: it follows its runtime
 # target, swapping Debian node:24 for the Hummingbird Node.js 24 runtime and
-# builder streams. One image serves the API, console, worker, Slack proxy and
-# the migration and bootstrap jobs; the Helm chart selects each through the
-# node arguments. Dependencies install with lifecycle scripts disabled, as upstream
+# builder streams. One image serves the API, console, worker and the migration
+# and bootstrap jobs; the Helm chart selects each through the node arguments.
+# Dependencies install with lifecycle scripts disabled, as upstream
 # does, and the controller ships no native addons.
 
 FROM ${BUILDER_IMAGE} AS builder
