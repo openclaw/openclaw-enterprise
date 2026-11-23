@@ -35,6 +35,7 @@ import {
 } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import type { GitHubRepositorySourceGrant } from "./repository-grant.ts";
+import type { SourceLoanCaller } from "./source-loan.ts";
 import type { TokenMaterialReader } from "../../../../backends/token-service/material.ts";
 import { withWriteHold, writeHoldOf } from "../../access/material-hold.ts";
 import {
@@ -377,7 +378,7 @@ const appSource = (source: PreparedRepositoryGitSource): source is AppSource =>
   !("credentialSource" in source.grant);
 /** The rowless reader of TokenService Source loans (source-loan.ts). */
 export type PreparedRepositorySourceMaterial = TokenMaterialReader<
-  PostgresClient,
+  SourceLoanCaller,
   PreparedRepositoryGitSource & { readonly grant: GitHubRepositorySourceGrant }
 >;
 
@@ -453,12 +454,14 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   }
 
   /** The caller's transaction holds the live session lock. App material is also locked in its
-   * family row; a Source's catalog row is held by the reader until the Provider write returns. */
-  private readWarm(c: PostgresClient, source: PreparedRepositoryGitSource) {
+   * family row; a Source's catalog row is held by the reader until the Provider write returns.
+   * The reader limits the caller's transaction too: it holds the Namespace row that replacement
+   * and retirement lock first. */
+  private readWarm(c: PostgresClient, source: PreparedRepositoryGitSource, loan: SourceLoanCaller) {
     return appSource(source)
       ? this.tokens.readWarm(c, source)
       : this.lent?.readWarm(
-          c,
+          loan,
           source as Parameters<PreparedRepositorySourceMaterial["readWarm"]>[1],
         );
   }
@@ -467,11 +470,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     c: PostgresClient,
     source: PreparedRepositoryGitSource,
     installed: Parameters<PreparedRepositorySourceMaterial["current"]>[2],
+    loan: SourceLoanCaller,
   ) {
     return appSource(source)
       ? this.tokens.current(c, source, installed)
       : this.lent?.current(
-          c,
+          loan,
           source as Parameters<PreparedRepositorySourceMaterial["current"]>[1],
           installed,
         );
@@ -865,12 +869,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!this.proxy?.policy?.controllerWitness) {
         return;
       }
-      return this.transaction(async (c) => {
+      return this.transaction(async (c, limitIdle) => {
         const { revisionId, observed } = route;
         const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
         const source = current && this.policy(current.session);
         const version = { preparationAttemptId, materialVersion };
-        if (!source || !(await this.currentMaterial(c, source, version))) {
+        if (!source || !(await this.currentMaterial(c, source, version, { limitIdle }))) {
           return;
         }
         const key = await this.deliveryKey(c, revisionId, observed);
@@ -959,7 +963,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     try {
       signal.throwIfAborted();
       const { revisionId } = route;
-      const result = await this.transaction(async (c) => {
+      const result = await this.transaction(async (c, limitIdle) => {
         const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
         if (!current) {
           return current === null ? withdrawn : unprepared;
@@ -998,7 +1002,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ) {
           return unprepared;
         }
-        const material = await this.readWarm(c, source);
+        const material = await this.readWarm(c, source, { limitIdle });
         if (!material) {
           return unprepared;
         }

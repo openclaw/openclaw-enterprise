@@ -29,13 +29,26 @@ export interface LockedRepositorySource {
   readonly custody?: Readonly<{ installationId: string; tokenServiceInstanceId: string }>;
 }
 
+/**
+ * The transaction a loan is read in. It holds rows that replacement and retirement lock before
+ * the Source row (the Namespace), so the custody gives it the hold's database-side limit.
+ */
+export interface SourceLoanCaller {
+  /** PostgreSQL ends the transaction once it has been idle this long. */
+  limitIdle(ms: number): Promise<void>;
+}
+
 export interface RepositorySourceCustody {
   /**
    * Takes a shared lock on the Source's catalog row with a bounded wait and reads it. Replacement
    * and retirement take the row exclusively, so they wait until the hold is released.
+   * The caller's transaction is limited first, as the hold is.
    * Undefined when the lock could not be taken in time; any other failure throws.
    */
-  lock(ref: RepositorySourceRef): Promise<
+  lock(
+    ref: RepositorySourceRef,
+    caller?: SourceLoanCaller,
+  ): Promise<
     | {
         readonly source: LockedRepositorySource | undefined;
         readonly hold: MaterialWriteHold;
@@ -121,7 +134,10 @@ type LentSource = {
  * and the custody version, so a replaced value is new material and the runtime rotates it in.
  * `readWarm` returns its material with the row hold, which the Provider write releases.
  */
-export function createRepositorySourceMaterialReader<Transaction, Source extends LentSource>(
+export function createRepositorySourceMaterialReader<
+  Transaction extends SourceLoanCaller | undefined,
+  Source extends LentSource,
+>(
   custody: RepositorySourceCustody,
   options: {
     readonly clock?: { now(): number };
@@ -159,12 +175,12 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
     }
   };
   /** Every loan-time check; holds the row until the caller releases the returned hold. */
-  async function check(source: Source) {
+  async function check(tx: Transaction, source: Source) {
     const ref = source.grant.credentialSource;
     const { sourceId } = ref;
     let locked: Awaited<ReturnType<RepositorySourceCustody["lock"]>>;
     try {
-      locked = await custody.lock(ref);
+      locked = await custody.lock(ref, tx);
     } catch {
       throw new RepositorySourceLoanRefusal(sourceId, "source_lock_failed");
     }
@@ -240,10 +256,10 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
     }
   }
   return Object.freeze({
-    async readWarm(_tx: Transaction, source: Source) {
+    async readWarm(tx: Transaction, source: Source) {
       let checked: Awaited<ReturnType<typeof check>>;
       try {
-        checked = await check(source);
+        checked = await check(tx, source);
       } catch (error) {
         refuse(error, source);
         return undefined;
@@ -268,7 +284,7 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
       );
     },
     async current(
-      _tx: Transaction,
+      tx: Transaction,
       source: Source,
       installed: InstalledTokenVersion,
     ): Promise<(CurrentTokenVersion & { readonly open?: never }) | undefined> {
@@ -277,7 +293,7 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
       }
       let checked: Awaited<ReturnType<typeof check>>;
       try {
-        checked = await check(source);
+        checked = await check(tx, source);
       } catch (error) {
         refuse(error, source);
         return undefined;

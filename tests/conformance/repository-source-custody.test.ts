@@ -61,7 +61,7 @@ function custody(holdLimitMs?: number) {
     assert.ok(locked, "the row is locked");
     return locked;
   };
-  return { clients, lock };
+  return { clients, lock, source, ref };
 }
 
 const settings = (client: FakeClient) => {
@@ -88,6 +88,24 @@ test("a Source hold bounds its lock wait, its statements and its idle time on th
   assert.equal(hold.held(), false);
   assert.equal(client.queries.at(-1)?.text, "COMMIT");
   assert.equal(client.released, false, "a committed hold returns its connection");
+});
+
+test("a Source lock gives the caller's transaction the hold limit before it takes the row", async () => {
+  // The native store reads the loan inside its own transaction, which holds the Namespace row
+  // that replacement and retirement lock first: a frozen Worker must not keep it past the hold.
+  for (const holdLimitMs of [undefined, 1500]) {
+    const { clients, source, ref } = custody(holdLimitMs);
+    const steps: string[] = [];
+    const locked = await source.lock(ref, {
+      async limitIdle(ms) {
+        steps.push(`limit ${ms}`);
+        assert.equal(clients.length, 0, "the caller is limited before the hold is taken");
+      },
+    });
+    assert.ok(locked?.source);
+    assert.deepEqual(steps, [`limit ${holdLimitMs ?? 60_000}`]);
+    await locked.hold.release();
+  }
 });
 
 test("a Source hold ends when its session is lost, and confirms only on a live session", async () => {

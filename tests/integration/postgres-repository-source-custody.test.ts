@@ -4,12 +4,14 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type pg from "pg";
 import { createRepositorySourceCustody } from "../../apps/controller/src/backends/repository-credentials/source-custody.ts";
+import type { MaterialWriteHold } from "../../apps/controller/src/drivers/repo/access/material-hold.ts";
+import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type {
   InstallationSecretRef,
   InstallationSecretStore,
 } from "../../packages/contracts/src/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState, type PostgresClient } from "../../packages/occ/src/index.ts";
 import { seedSessionRevision } from "../conformance/repository-sessions.contract.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
@@ -110,6 +112,7 @@ async function fixture(t: TestContext) {
     pool,
     state,
     other,
+    quiet,
     tokenService,
     ref,
     instanceRef,
@@ -257,6 +260,81 @@ test(
     assert.ok(next?.source);
     assert.equal(await next.hold.confirm(), true);
     await next.hold.release();
+  },
+);
+
+/** The native store's transaction, in which the Worker reads a loan. */
+class StoreTransactions extends PreparedGitHubPostgres {
+  run<T>(work: (c: PostgresClient, limitIdle: (ms: number) => Promise<void>) => Promise<T>) {
+    return this.transaction(work);
+  }
+}
+
+test(
+  "a frozen Worker's store transaction around a loan frees the Namespace for retirement at the hold limit",
+  { ...requiresPostgres, timeout: caseTimeoutMs },
+  async (t) => {
+    const f = await fixture(t);
+    const holdLimitMs = 1000;
+    const custody = f.custody({ holdLimitMs });
+    const store = new StoreTransactions(
+      f.quiet(testPool(t, { connectionString: databaseUrl, max: 2 })),
+      Buffer.alloc(32),
+      "fixture-authority",
+    );
+    const writer: pg.PoolClient = await f.other.connect();
+    try {
+      // Without the limit the writer would wait for the frozen transaction; end it here instead.
+      await writer.query("SET statement_timeout = '8s'");
+      const serverNow = async () =>
+        Date.parse(
+          (
+            (await writer.query("SELECT clock_timestamp() AS at")).rows[0] as { at: Date }
+          ).at.toISOString(),
+        );
+      const taken = await serverNow();
+      let hold: MaterialWriteHold | undefined;
+      let retiring: Promise<pg.QueryResult> | undefined;
+      const reading = store.run(async (c, limitIdle) => {
+        // As lockLiveSession does: the session's Namespace row is held FOR SHARE.
+        await c.query("SELECT 1 FROM occ.namespaces WHERE id = $1 FOR SHARE", [f.ref.namespaceId]);
+        const locked = await custody.lock(f.ref, { limitIdle });
+        assert.ok(locked?.source);
+        hold = locked.hold;
+        // Retirement locks the Namespace, then the Source row; its time is read after both.
+        retiring = writer.query(
+          `WITH namespace AS MATERIALIZED (
+             SELECT 1 FROM occ.namespaces WHERE id = $1 FOR UPDATE
+           ), source AS MATERIALIZED (
+             SELECT 1 FROM occ.credential_sources, namespace
+             WHERE namespace_id = $1 AND id = $2 FOR UPDATE OF credential_sources
+           )
+           SELECT clock_timestamp() AS at FROM source`,
+          [f.ref.namespaceId, f.ref.sourceId],
+        );
+        // The Worker freezes inside the store transaction: nothing of its own runs.
+        const frozenUntil = performance.now() + 3 * holdLimitMs;
+        while (performance.now() < frozenUntil) {
+          // Spin without yielding to the event loop.
+        }
+      });
+      // The resumed transaction learns that PostgreSQL ended it; the process carries on.
+      await assert.rejects(reading, /did not complete/);
+      assert.ok(retiring);
+      const granted = Date.parse(((await retiring).rows[0] as { at: Date }).at.toISOString());
+      const waited = granted - taken;
+      assert.ok(
+        waited >= holdLimitMs - 100 && waited < 2.5 * holdLimitMs,
+        `retirement had the Namespace and the Source ${waited} ms after the loan began, while the Worker was frozen`,
+      );
+      assert.ok(hold);
+      assert.equal(await hold.confirm(), false, "the resumed Worker writes nothing");
+      await hold.release();
+    } finally {
+      writer.release(true);
+    }
+    // The store's pool lost nothing: the next transaction runs.
+    assert.equal(await store.run(async (c) => (await c.query("SELECT 1 AS one")).rows.length), 1);
   },
 );
 
