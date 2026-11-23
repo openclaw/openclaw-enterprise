@@ -19,7 +19,9 @@ import {
   verifyChannelPolicyHandoff,
   verifyDeploymentAuthorityAfterWait,
 } from "./postgres-state-repository-network-policy-case.ts";
+import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
@@ -575,22 +577,7 @@ test(
               "refusal must not write any revision",
             );
             assert.deepEqual(afterJobs, beforeJobs, "refusal must not queue work");
-            assert.equal(response.statusCode, 409, response.body);
-            assert.equal(
-              response.json().error.message,
-              "The Sandbox Driver cannot enforce the complete requested policy.",
-            );
-            assert.deepEqual(response.json().error.details, [
-              {
-                path: "",
-                code: "INVALID_VALUE",
-                message: "The selected Driver could not validate the configuration.",
-              },
-            ]);
-            assert.ok(
-              !response.body.includes(grant.host),
-              "diagnostics must not echo Driver grants",
-            );
+            assertSandboxSnapshotRefused(response, grant.host);
           }
           assert.equal(admissions, scenario.noAdmission ? 0 : 1);
           assert.equal(missingRowReads > 0, scenario.absent === true);
@@ -944,6 +931,134 @@ test(
         assert.deepEqual((await work()).rows, [{ state: "queued", actor_id: principal.id }]);
       });
     }
+  },
+);
+
+function assertSandboxSnapshotRefused(response, canary) {
+  assert.equal(response.statusCode, 409);
+  assert.equal(
+    response.json().error.message,
+    "The Sandbox Driver cannot enforce the complete requested policy.",
+  );
+  assert.deepEqual(response.json().error.details, [
+    {
+      path: "",
+      code: "INVALID_VALUE",
+      message: "The selected Driver could not validate the configuration.",
+    },
+  ]);
+  assert.ok(!response.body.includes(canary), "diagnostics must not echo Driver grants");
+}
+
+// Preserve the real Sandbox result except for the injected field. A capable Compute makes the
+// test distinguish OCC's admission refusal from a later refusal by an incapable Driver.
+async function observeRepositoryRefusal(t, fixture, agent) {
+  const { computeDriver, pool, sandboxDriver, state } = fixture;
+  const scope = [agent.namespaceId, agent.id];
+  const validate = t.mock.fn(async () => {});
+  computeDriver.validateProtectedRepositoryNetworkPolicy = validate;
+  const prepare = t.mock.method(computeDriver, "prepareRevision");
+  const observe = async () => ({
+    ...(await state.read(async (view) => ({
+      agent: await view.agents.findAgent(...scope),
+      policy: await view.sandboxPolicies.find(...scope),
+      revisions: await view.revisions.listRevisions(...scope),
+    }))),
+    queued: (
+      await pool.query(
+        `SELECT ARRAY(SELECT ROW(idempotency_key, state)::text FROM occ.controller_work WHERE namespace_id=$1 ORDER BY idempotency_key) AS jobs,
+              ARRAY(SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id=$1 ORDER BY work_id) AS provisioning,
+              ARRAY(SELECT id FROM occ.audit_events WHERE namespace_id=$1 AND outcome='success' ORDER BY id) AS successes`,
+        [agent.namespaceId],
+      )
+    ).rows[0],
+    compute: [validate.mock.callCount(), prepare.mock.callCount(), computeDriver.calls.length],
+  });
+  const before = await observe();
+  assert.ok(before.policy && !Object.hasOwn(before.policy, "repositoryNetworkPolicy"));
+  const grant = { repository: "fixture/unsolicited-repository", access: "write" };
+  const policy = admitRepositoryNetworkPolicy([grant], [grant]);
+  assert.ok(policy);
+  const admit = sandboxDriver.admitNetworkPolicy.bind(sandboxDriver);
+  const admission = t.mock.method(sandboxDriver, "admitNetworkPolicy");
+  async function refuse(request, repositoryNetworkPolicy) {
+    const calls = admission.mock.callCount();
+    admission.mock.mockImplementationOnce((...args) => ({
+      ...admit(...args),
+      repositoryNetworkPolicy,
+    }));
+    assertSandboxSnapshotRefused(await request(), grant.repository);
+    assert.equal(admission.mock.callCount(), calls + 1);
+    assert.deepEqual(await observe(), before);
+  }
+  return { before, policy, refuse, observe };
+}
+
+test(
+  "deployment refuses repository policy returned by base Sandbox admission",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t, true);
+    const { deployAgent, inject, pool } = fixture;
+    const { namespace, agent: starter, secretRef } = await deployAgent("Repository policy fixture");
+    // First deployment: incompatible revision history cannot explain a refusal.
+    const agents = `/namespaces/${namespace.id}/agents`;
+    const created = await inject("POST", agents, {
+      name: "First deploy",
+      executionMode: "dedicated",
+      configurationId: starter.configurationId,
+      harnessAuth: { method: "api_key", source: secretRef },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const agent = created.json().data;
+    await grantAgentSecretOperate(pool, agent, secretRef.id);
+    const { before, policy, refuse, observe } = await observeRepositoryRefusal(t, fixture, agent);
+    assert.deepEqual(before.revisions, []);
+    const deploy = () => inject("POST", `${agents}/${agent.id}/deploy`);
+    await t.test("unsolicited repository grant", () => refuse(deploy, policy));
+    await t.test("own repository policy field set to undefined", () => refuse(deploy, undefined));
+    await t.test("ordinary deployment", async () => {
+      const response = await deploy();
+      assert.equal(response.statusCode, 202, response.body);
+      const { revisions } = await observe();
+      const deployed = revisions.find(({ id }) => id === response.json().data.id);
+      assert.equal(Object.hasOwn(deployed.sandboxPolicy, "repositoryNetworkPolicy"), false);
+    });
+  },
+);
+
+test(
+  "live apply refuses repository policy returned by base Sandbox admission",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t, true);
+    const { deployAgent, inject, state } = fixture;
+    const { namespace, agent, revision } = await deployAgent("Live application repository policy");
+    assert.equal(revision.executionAdmission.mode, "unprotected");
+    // Live apply targets the active revision. Make the ordinary fixture revision active first.
+    await state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(namespace.id);
+      const active = await unit.agents.compareAndSetActiveRevision(
+        namespace.id,
+        agent.id,
+        undefined,
+        revision.id,
+      );
+      assert.equal(active?.activeRevisionId, revision.id);
+    });
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+    const enabled = await inject("PATCH", `${path}/editing`, { enabled: true });
+    assert.equal(enabled.statusCode, 200, enabled.body);
+    const { before, policy, refuse, observe } = await observeRepositoryRefusal(t, fixture, agent);
+    const body = { expectedVersion: before.policy.version, revisionId: revision.id };
+    const apply = () => inject("POST", `${path}/apply`, body);
+    await refuse(apply, policy);
+    const accepted = await apply();
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    const { application } = (await observe()).policy;
+    assert.equal(application.id, accepted.json().data.application.id);
+    assert.equal(application.state, "pending");
+    assert.equal(Object.hasOwn(application.snapshot, "repositoryNetworkPolicy"), false);
   },
 );
 
