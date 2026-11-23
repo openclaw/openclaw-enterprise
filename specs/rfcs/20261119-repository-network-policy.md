@@ -18,7 +18,7 @@ author: freeqaz-openai
 
 OpenClaw Enterprise (OCE) installs per-Agent repository grants at deployment and renews the credential. OpenShell checks each native request. GitHub applies the credential’s permissions.
 
-Native GitHub App v1 supports pull requests (PRs). We propose [new REST Write grants](#planned-rest-write-grants) that also permit issue creation by default. Operators could turn off **Create issues** per repository.
+Native GitHub App v1 supports pull requests (PRs). [Proposed REST Write grants](#planned-rest-write-grants) add issue creation by default.
 
 ## Motivation
 
@@ -114,7 +114,7 @@ sequenceDiagram
 
 ### What can the Agent do on GitHub?
 
-**Current GitHub App v1.** A and B are bound with issue read and PR write permissions. C is unbound.
+**Current GitHub App v1.** Repositories sharing an App token [require identical permission maps](../../apps/controller/src/drivers/repo/github/access/registry.ts). Here A and B have Contents write, Issues read and Pull requests write. C is unbound.
 
 | Agent action                          | A (read) | B (write) | C (no grant) |
 | ------------------------------------- | -------- | --------- | ------------ |
@@ -126,24 +126,24 @@ sequenceDiagram
 
 **If C is bound without a saved grant, the Agent cannot open a PR anywhere.** Permitted Git operations and REST reads continue. To restore PR creation on B, unbind C or grant it Read if needed, then redeploy. An upgraded Worker refuses renewal for a Sandbox that still allows forbidden PR creation. Its token expires within an hour. Redeploy to restore access.
 
-**Enable REST.** Set `nativeGit: "v1"` and `scopedRest: "v1"` on the participating `github-repository` registrations, rebind and redeploy. With [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118), unchanged v1 REST registrations with PR permissions gain eligible PR routes on redeployment without rebinding. Without `scopedRest`, native access stays Git-only.
+**Enable REST.** Set `nativeGit: "v1"` and `scopedRest: "v1"`, rebind and redeploy. [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118) gave unchanged v1 registrations with PR permissions eligible PR routes on redeployment without rebinding. Omitting `scopedRest` keeps access Git-only.
 
 The [registration and GitHub App](../../docs/reference/repository-credentials/access-levels.md#native-git-delivery) must allow `issues` for issue reads and `pull_requests` for PR reads. Creation requires `pull_requests: write` and Write on the target. Under `/repos/{owner}/{repo}`, the [rules](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) allow GET on `/issues`, `/pulls` and their numbered detail paths, plus eligible POSTs to `/pulls`. Issue reads can return PRs. Issue creation, PR updates, merges and GraphQL remain unavailable.
 
-**What creation permits.** In `POST /repos/owner/B/pulls`, the path names the destination. The rule puts no conditions on query parameters or JSON fields. GitHub’s [create endpoint](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) allows two further actions.
+**What creation permits.** The rule checks the destination of [PR creation](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request). It leaves query parameters and JSON fields unrestricted.
 
-- Use a readable fork as the source (`head` or `head_repo`). Its commits become visible through B’s PR ref and diff. The token covers all bindings, so the [resolver](../../apps/controller/src/drivers/repo/github/access/registry.ts) requires a grant on each before allowing creation, regardless of fork relationships.
-- Convert an existing issue in B to a PR (`issue`). To prevent this, keep `pull_requests` at `read`.
+- A readable fork (`head` or `head_repo`) can expose commits through B’s PR ref and diff. PR creation therefore requires grants on all bound repositories.
+- A PR can convert an issue in B (`issue`). Keep `pull_requests` at `read` to prevent this.
 
 The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6658) teaches `gh api` and grants no access. Use `--input` for writes and verify the remote result before retrying.
 
 ### Planned REST Write grants
 
-New REST Write grants permit push, PR creation and issue creation within approved permissions (`contents`, `pull_requests` and `issues` write, respectively). Keep [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) unchanged for App PRs. Existing grants gain no writes from this change until the Admin explicitly adopts the policy and redeploys.
+**Agent approval.** An Admin must explicitly approve newly enabled writes for each Agent. A registration edit followed by deployment is insufficient. [#6864 at `fc2ffba3`](https://github.com/openclaw/openclaw-enterprise/blob/fc2ffba3083d5ee0087bd300e61ffde4bf47659e/packages/occ/src/repository-policy.ts#L634-L664) resolves saved repository references and profiles anew on deploy. Enforcing approval across deployments remains open.
 
-[#6861](https://github.com/openclaw/openclaw-enterprise/pull/6861) proposes `scopedRest: "v2"` on B’s Namespace registration. Even with A Read and C ungranted, B permits the [full issue endpoint](https://docs.github.com/en/rest/issues/issues#create-an-issue), including labels, assignees, milestones and parent links where GitHub permits. Turning off **Create issues** (`createIssues: false`) on that registration removes only `POST /repos/{owner}/B/issues`. Reads, push and eligible PRs (including issue conversion) stay available. Rebind and redeploy after registration changes.
+**App v2.** Under [#6861](https://github.com/openclaw/openclaw-enterprise/pull/6861), new REST Write grants allow push, PR and issue creation within GitHub permissions. [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) still withholds only PR creation when C is bound but ungranted. With Issues write on every binding, B permits the [full issue endpoint](https://docs.github.com/en/rest/issues/issues#create-an-issue), including parent links that can affect read-only A or ungranted C if GitHub permits. Turning off **Create issues** (`createIssues: false`) on B’s Namespace registration removes only `POST /repos/{owner}/B/issues`. Eligible PRs can still convert issues.
 
-**Personal access token (PAT) pilot.** After [Git-only Source delivery](https://github.com/openclaw/openclaw-enterprise/pull/7153) under [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149), pilot REST PRs with a dedicated fine-grained PAT. At enrollment and replacement, the operator must verify in GitHub that it covers only the private test repository. The declared Source ceiling cannot prove token scope. A broader PAT could expose an ungranted private fork through a PR diff. Defer wider PR access with shared App tokens or PATs.
+**Outside this proposal.** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149) proposes Git-only personal access tokens. PRs backed by personal or shared installation tokens need a separate decision because those credentials can cover repositories beyond the Agent’s bindings.
 
 ### Which delivery paths need an OCE hook?
 
@@ -214,13 +214,12 @@ Require installed AC-1–AC-5 for Git and AC-6 for App REST v1. Keep legacy Agen
 
 ### Planned checks before widening access
 
-- **App issues.** Bind A/B/C, grant A Read and B Write, omit C. Create and read back B’s issue. Deny direct A writes, C access, edits, comments and GraphQL before forwarding. Keep PR creation denied until C is unbound and the Agent redeployed. Turn off **Create issues** on B, rebind and redeploy. Deny issue creation while eligible PRs still work.
-- **Indirect effects.** Try B’s `parent_issue_id` referring to A and C. Test private fork heads and issue conversion. Inspect both repositories, record GitHub permissions and distinguish policy denial, GitHub rejection and indirect effects. If A changes or C is exposed or changed, report evidence and hold wider rollout.
-- **PAT.** Push, open a PR and read it back on the dedicated repository.
-- **Both pilots.** Verify the Agent holds only a placeholder. Require zero OCE authorization callbacks, no new writes on redeployment of unchanged grants, unchanged routes after rotation and denied writes after downgrade and redeployment.
+- **App issues.** Bind A/B/C with identical Contents, Issues and Pull requests write permissions. Enable `scopedRest: "v2"` on B and v1 on A. Save A Read, B Write and no C grant. Create and read back B’s issue. Deny direct A writes, C access, edits, comments, GraphQL and all PR creation before forwarding. Unbind C and redeploy. Verify both POSTs work in B. Disable **Create issues** on B, rebind and redeploy. Deny B’s issue POST and verify PR creation works.
+- **Indirect effects.** The [installed v2 trial](https://github.com/openclaw/openclaw-enterprise/pull/6864) recorded parent links in A and C at a controlled origin. Live GitHub effects remain unverified. Inspect both sides with authorized test repositories. Hold wider rollout if A changes or C is exposed or changed.
+- **Adoption.** Enable issue writes on a registration. Deploy an old draft and redeploy an existing Agent, including after unrelated saves. Approve one Agent and verify only that Agent gains the issue POST. Require placeholder-only access, zero OCE callbacks, unchanged routes after rotation and denied writes after downgrade.
 
 <a id="alternatives-and-open-decisions"></a>
 
 ## Rationale and alternatives
 
-Keep stock OpenShell and `gh api`. Selecting a [hook by hostname](https://github.com/ai-openshell/openshell/blob/ce58cf8e9b953281352d98a637e41616295b1318/proto/sandbox.proto#L88-L96) would also make reads depend on OCE. Enforcing same-repository heads and prohibiting issue conversion require upstream OpenShell checks on query parameters and JSON, including ambiguous inputs ([related proposal closed](https://github.com/ai-openshell/openshell/issues/1848)). Exclude OCE hooks, brokers, custom CLIs, dependency forks and GraphQL from native delivery.
+Keep stock OpenShell and `gh api`. Selecting a [hook by hostname](https://github.com/ai-openshell/openshell/blob/ce58cf8e9b953281352d98a637e41616295b1318/proto/sandbox.proto#L88-L96) would also make reads depend on OCE. Blanket fork and branch restrictions are outside v1. Finer restrictions on source repositories or issue conversion would require upstream OpenShell checks on query parameters and JSON, including ambiguous inputs ([related proposal closed](https://github.com/ai-openshell/openshell/issues/1848)). Exclude OCE hooks, brokers, custom CLIs, dependency forks and GraphQL from native delivery.
