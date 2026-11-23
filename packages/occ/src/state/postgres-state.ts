@@ -334,11 +334,11 @@ function decodeQueryRows(result: { readonly rows: unknown[] }): PostgresRow[] {
   return decodeRows(result.rows);
 }
 
-// Finished deployment work for a revision under its own reconcile key. Its timestamps must be
-// finite because the work decoder refuses infinite ones; every other column is bound by table
-// constraints. A deployment inventory learns nothing from such a row, so it can skip it.
+// Finished deployment work for a revision under its own reconcile key. Its actor must be
+// nonempty and its timestamps finite because the work decoder refuses both; every other column
+// is bound by table constraints. A deployment inventory learns nothing from such a row, so it can skip it.
 const SETTLED_REVISION_WORK_SQL = `(
-  revision_id IS NOT NULL AND agent_id IS NOT NULL
+  revision_id IS NOT NULL AND agent_id IS NOT NULL AND actor_id <> ''
   AND namespace_target IS NULL AND agent_target IS NULL
   AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
   AND state NOT IN ('queued', 'claimed')
