@@ -22,6 +22,7 @@ import {
 } from "./model-providers.ts";
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
+import { PushAgentCredentialsBody, PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -1386,6 +1387,23 @@ export const occApiRoutes = [
           },
         },
       },
+    },
+  },
+  {
+    operationId: "pushAgentCredentials",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/credentials/push",
+    action: "openclaw.agents.credentials.push",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Retry delivery for selected deployed Agent credential sources",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: PushAgentCredentialsBody,
+      response: { 200: PushAgentCredentialsResponse, ...mutationErrors },
     },
   },
   {

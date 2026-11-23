@@ -15,7 +15,7 @@ override grants, and one action never implies another. See
 | `update`     | Change a resource or its credential.                                                                                                                                                                   |
 | `delete`     | Request deletion of the exact resource.                                                                                                                                                                |
 | `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                                                |
-| `operate`    | Submit an Agent HTTP turn or chat in its browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
+| `operate`    | Submit an Agent HTTP turn or browser chat, stop an Agent, retry credential delivery, provision runtime credentials, write workspace files, read its runtime status, or use a bound Secret or a Source. |
 | `administer` | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                                         |
 | `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                                             |
 | `read_audit` | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                                          |
@@ -144,6 +144,9 @@ operation was not authorized.`
   also requires `secret:operate` on each Secret it reads.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
+- [Retrying credential delivery](../credential-sources.md#retry-credential-delivery)
+  requires exact `agent:operate` and `credential_source:update` on every selected
+  deployed Source. The Agent service principal also needs `credential_source:operate`.
 - [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)
   requires current exact Agent `deploy` and reviewed Configuration `read`.
   It does not grant Agent revision `read`; deployment-status access needs that
