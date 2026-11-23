@@ -4442,7 +4442,6 @@ test("native channel settings require readable Secret bindings", async () => {
     }),
     { nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
   );
-  const namespace = kubernetesNamespaceName(tenant.id);
   const agentId = "agent-a";
   const revision = {
     id: "revision-a-1",
@@ -4461,45 +4460,21 @@ test("native channel settings require readable Secret bindings", async () => {
   };
   revision.configuration = createHarnessConfiguration("codex", "gpt-5");
   admitRevisionHarness(driver, revision);
-  const secretEnvironment = [
-    {
-      name: "SLACK_APP_TOKEN",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000001",
-      backendRef: { namespaceName: namespace, name: "occ-slack-app", key: "value", uid: "app-uid" },
-    },
-    {
-      name: "SLACK_BOT_TOKEN",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000002",
-      backendRef: { namespaceName: namespace, name: "occ-slack-bot", key: "value", uid: "bot-uid" },
-    },
-    {
-      name: "MSTEAMS_APP_PASSWORD",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000003",
-      backendRef: {
-        namespaceName: namespace,
-        name: "occ-teams-password",
-        key: "value",
-        uid: "teams-uid",
-      },
-    },
-  ];
   const secretBindings = Object.freeze({
     SLACK_APP_TOKEN: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[0].secretId },
+      source: {
+        kind: "secret",
+        namespaceId: tenant.id,
+        id: "sec_00000000-0000-4000-8000-000000000001",
+      },
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[1].secretId },
-      delivery: { type: "env" },
-    },
-    MSTEAMS_APP_PASSWORD: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[2].secretId },
+      source: {
+        kind: "secret",
+        namespaceId: tenant.id,
+        id: "sec_00000000-0000-4000-8000-000000000002",
+      },
       delivery: { type: "env" },
     },
   });
@@ -4522,21 +4497,25 @@ test("native channel settings require readable Secret bindings", async () => {
     }),
     { message: unsupportedChannelRefusal("channels.discord") },
   );
+
+  const slackToken = (botToken) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: {
+      slack: {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken,
+      },
+    },
+  });
+  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+
   assert.throws(
     () =>
       driver.validateHarnessAuth(
         revision.harness,
         revision.harnessAuth,
-        {
-          agents: { defaults: { model: "codex/gpt-5" } },
-          channels: {
-            slack: {
-              appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            },
-          },
-        },
-        { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN },
+        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
+        { ...appBinding },
       ),
     // A row stored before Configuration save checked it: admission names the setting and the
     // missing binding, as save does.
@@ -4549,15 +4528,7 @@ test("native channel settings require readable Secret bindings", async () => {
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
-    {
-      agents: { defaults: { model: "codex/gpt-5" } },
-      channels: {
-        slack: {
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-        },
-      },
-    },
+    slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
     null,
   );
   // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
@@ -4597,16 +4568,6 @@ test("native channel settings require readable Secret bindings", async () => {
   // Admission reads a string as the runtime substitutes it (finding 2475): a reference anywhere
   // in the text, or with a `:-fallback`, still needs a binding, since the fallback would replace
   // the unset name. The `$${NAME}` escape is literal text.
-  const slackToken = (botToken) => ({
-    agents: { defaults: { model: "codex/gpt-5" } },
-    channels: {
-      slack: {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken,
-      },
-    },
-  });
-  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
   // In a secret-input field such as botToken, a whole `$NAME` is an environment SecretRef too
   // (finding 2476).
   for (const botToken of [

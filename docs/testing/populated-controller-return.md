@@ -74,20 +74,23 @@ OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
 ```
 
 Require a pass without skips. For ordinary upgrade timing, set
-`OCC_TEST_PRODUCTION_TUI_REHEARSAL=ordinary`. After preflight, this mode requires
-one new deployed Helm revision and verifies the Installation. Compare modes on
-fresh clusters with the same image digests.
+`OCC_TEST_PRODUCTION_TUI_REHEARSAL=ordinary`. After preflight, the test requires
+one new deployed Helm revision and verifies the Installation.
 
-With `OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`, the test suspends the exact Helm
-client after observing its attempt-bound initializer Job. Kubernetes finishes
-the real initialization while Helm remains pending.
-The test terminates and reaps that client, checks the committed PostgreSQL
-history with the candidate's migrator, and runs the supported
-`--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
-Recovery must advance exactly one revision without replacing the completed
-initializer Job or Pod or changing the committed migration history. The test
-does not edit Helm storage or disable hooks. If Helm finishes before the
-interruption, the rehearsal fails rather than claiming recovery coverage.
+With `OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`, the test suspends the Helm client
+after observing its attempt's initializer Job. Kubernetes finishes initialization
+while Helm remains pending. The test terminates and reaps that client, checks
+committed PostgreSQL history with the candidate migrator, and runs
+`--resume --recover-helm --migration-history-checked --recovery-reviewed`.
+Recovery must advance exactly one revision and preserve the completed initializer
+Job, Pod, and committed migration history. The test leaves Helm storage and hooks
+intact. It fails if Helm finishes before interruption.
+
+Both return modes use chart resource defaults. Compare timings on fresh clusters
+with matching image digests and resource limits. Earlier fixture limits were
+1 CPU and 1 GiB. `proof.json` records CPU and memory limits from Kubernetes for
+the previous, candidate, and returned API and worker containers, with `null`
+for absent limits.
 
 After the candidate acknowledges the new Agent, the previous image’s migrator
 must report completed history on the candidate database. If this check fails,
