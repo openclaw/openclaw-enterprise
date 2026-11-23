@@ -258,7 +258,7 @@ default-deny. Pre-install initialization has only its hook DNS/database grants.
 Destinations must be explicit IPv4 `/32` hosts; refresh them when managed
 endpoint addresses change. Chart ports take no leading zeros: `0443` fails.
 
-The chart restricts API Server ingress to configured clients. API egress follows cluster policy, so [MCP discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) needs no provider Helm entry.
+The chart restricts API Server ingress to configured clients. API egress follows cluster policy, so [MCP discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) needs no provider Helm entry. [Local Setup restart and OpenShell policies](../../internal/occdev/openshell_k3d.go) also exclude the API Pod from egress isolation.
 
 Managed channel egress uses one installation configuration for the reserved
 OCC provider listener and per-Agent listener allocation. Helm grants the API
