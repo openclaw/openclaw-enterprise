@@ -10,6 +10,7 @@ import type {
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
   SecretMetadata,
+  RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
@@ -583,10 +584,26 @@ const deployedVersions = new Map<string, Map<string, number>>();
 let linkedVersionView: {
   key: string;
   load: number;
+  initialGrants?: readonly RepositoryNetworkGrant[];
   deploy?: boolean;
   edit?: boolean;
 } | null = null;
 let consoleLoads = 0;
+
+export function reviewRepositoryDraft(
+  namespaceId: string,
+  agentId: string,
+  initialGrants: readonly RepositoryNetworkGrant[],
+) {
+  const target = `agents/${encodeURIComponent(agentId)}?revision=draft&tab=configuration`;
+  linkedVersionView = {
+    initialGrants,
+    key: JSON.stringify([namespaceId, target]),
+    load: consoleLoads + 1,
+    deploy: true,
+  };
+  return target;
+}
 
 /** The console starts a page load (navigation, Back, refocus): earlier link requests lapse. */
 export function noteConsoleLoad() {
@@ -4150,6 +4167,20 @@ export async function renderAgentDetail(
       { className: "checklist", role: "list" },
       ...checklistSteps.map((step) => step.item),
     );
+    const confirmation =
+      linkedOnLoad?.initialGrants && selectedTab === "configuration"
+        ? element(
+            "p",
+            { className: "hint", role: "status" },
+            "GitHub access saved at creation: ",
+            linkedOnLoad.initialGrants
+              .map(
+                ({ repository, access }) =>
+                  `${repository} (${access === "read" ? "Read" : "Write"})`,
+              )
+              .join(", "),
+          )
+        : null;
     const draftActionsHeading = element("h2", {}, "Prepare this version");
     function setStep(
       step: (typeof checklistSteps)[number] | undefined,
@@ -4176,6 +4207,9 @@ export async function renderAgentDetail(
       // (finding 2421); Deploy says why it is disabled.
       const reader = draftReadOnly() && callerPermissions?.deploy === false;
       checklist.hidden = reader;
+      if (confirmation) {
+        confirmation.hidden = callerPermissions?.sandboxPolicyRead !== true;
+      }
       setText(draftActionsHeading, reader ? "Version draft" : "Prepare this version");
       const retainedConfiguration = retainedConfigurationState();
       const saving = draftEditorState.saving || pluginEditorState.saving;
@@ -4581,6 +4615,7 @@ export async function renderAgentDetail(
       { className: "card agent-draft-actions" },
       draftActionsHeading,
       checklist,
+      confirmation,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,

@@ -144,3 +144,18 @@ JSON by default. Use `-o yaml` for YAML. Policy reads show saved Agent rules
 and admitted or Driver defaults. Generated model and Git rules can still apply
 when the arrays are empty. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
 for defaults and operator ceiling inputs.
+
+## Set GitHub access before the first deployment
+
+In **Create Agent → Repository access**, choose **Set GitHub access per repository**.
+This option appears for administrators when the Namespace offers finite native GitHub
+repositories. Select the repositories, check each owner/name and keep **Read** for
+fetching or choose **Write** to allow pushes. GitHub API access also depends on
+Namespace permissions. The Installation and Namespace limits still apply.
+
+Choose **Save Agent draft**. The Agent and its grants are saved together, with
+policy editing off. This requires Installation and Agent administration, permission
+to manage, read and update policy, and a supported Dedicated runtime and model
+Credential Source. If saving is refused, the Configuration and model credentials
+can remain saved. If the Console cannot confirm the grants, do not deploy.
+Review the saved policy, then choose **Deploy new version** on the draft.

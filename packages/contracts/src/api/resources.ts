@@ -5,6 +5,7 @@ import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.
 import {
   AgentId,
   AgentProvisioningWorkId,
+  RepositoryNetworkGrantSchema,
   PresetId,
   PresetTemplateSchema,
   ConfigurationGeneration,
@@ -1090,6 +1091,7 @@ export const BackendSummarySchema = Type.Object(
 
 export const RepositoryOptionSchema = Type.Object(
   {
+    githubRepository: Type.Optional(RepositoryNetworkGrantSchema.properties.repository),
     repositoryRef: RepositoryBindingSelectionSchema.properties.repositoryRef,
     displayName: Name,
     description: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
