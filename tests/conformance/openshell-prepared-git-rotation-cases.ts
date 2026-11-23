@@ -4,6 +4,7 @@ import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitReadFailure,
+  type OpenShellPreparedGitScope,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import { scope, signal, token, wire, type RecordedRequest } from "./openshell-prepared-git-wire.ts";
 
@@ -256,6 +257,103 @@ export function registerPreparedGitRotationCases(): void {
     assert.ok(state.provider);
     assert.equal(state.provider.metadata.resource_version, "1");
     assert.equal(state.requests.filter(isUpdate).length, 1);
+  });
+
+  test("prepared Git settles a lent value's hold after its write, and a write whose hold ended sends nothing", async (t) => {
+    // A lent Source's row stays held from the loan's checks until the write returns, so its
+    // replacement or retirement waits; a Worker paused past the hold's end sends nothing.
+    const held = async (end?: "before-write" | "invalid") => {
+      const { state, binding } = await wire(t);
+      const receipt = await binding.prepare(token(), signal());
+      let open = true;
+      const settled: number[] = [];
+      const next = token(end ?? "held");
+      const rotated = binding.rotate(
+        receipt,
+        async () => {
+          if (end === "before-write") {
+            open = false;
+          }
+          return {
+            ...next,
+            ...(end === "invalid" && { expiresAt: new Date(Date.now() + 7_200_000).toISOString() }),
+            isCurrent: () => open,
+            settle: async () => {
+              open = false;
+              settled.push(state.requests.filter(isUpdate).length);
+            },
+          };
+        },
+        signal(),
+      );
+      return { state, rotated, settled };
+    };
+    const written = await held();
+    assert.ok(await written.rotated);
+    assert.deepEqual(written.settled, [1], "settled once, after the write was sent");
+
+    const stale = await held("before-write");
+    assert.equal(await stale.rotated, undefined);
+    assert.equal(stale.state.requests.some(isUpdate), false, "the stale write sends nothing");
+    assert.deepEqual(stale.settled, [0]);
+
+    const refused = await held("invalid");
+    await assert.rejects(refused.rotated, refusedAs(undefined));
+    assert.equal(refused.state.requests.some(isUpdate), false);
+    assert.deepEqual(refused.settled, [0], "a refused write still ends the hold");
+  });
+
+  test("a Source Provider has its own name, and lends for at most 15 minutes where the App lends for an hour", async (t) => {
+    const { state, client } = await wire(t);
+    const { repository: _repository, ...base } = scope;
+    const source = { ...base, credentialSource: "cs_fixture_token", nativeGit: "v1" } as const;
+    const binding = new OpenShellPreparedGitProvider(client, source);
+    const installation = { ...base, installationId: "42", nativeGit: "v1" } as const;
+    assert.match(binding["provider"], /^oce-github-token-[a-f0-9]{32}$/);
+    assert.match(
+      new OpenShellPreparedGitProvider(client, installation)["provider"],
+      /^oce-github-installation-[a-f0-9]{32}$/,
+    );
+    for (const widened of [
+      { nativeGit: undefined },
+      { installationId: "42" },
+      { repository: "example/project" },
+      { credentialSource: "sec_fixture_token" },
+      { credentialSource: "cs_" },
+      { apiOrigin: "https://github.example.test" },
+    ]) {
+      assert.throws(
+        () =>
+          new OpenShellPreparedGitProvider(client, {
+            ...source,
+            ...widened,
+          } as unknown as OpenShellPreparedGitScope),
+        OpenShellPreparedGitProviderError,
+      );
+    }
+    const minutes = (count: number) => ({
+      ...token(`minutes_${count}`),
+      expiresAt: new Date(Date.now() + count * 60_000).toISOString(),
+    });
+    // The bound is checked before any request; a value within it goes on to the gateway.
+    const reaches = async (provider: OpenShellPreparedGitProvider, count: number) => {
+      const before = state.requests.length;
+      const refused = await provider.prepare(minutes(count), signal()).then(
+        () => false,
+        (error: unknown) => refusedAs(undefined)(error) && state.requests.length === before,
+      );
+      return !refused;
+    };
+    assert.equal(await reaches(binding, 16), false, "a Source is not lent past 15 minutes");
+    assert.equal(await reaches(binding, 15), true);
+    assert.equal(
+      await reaches(
+        new OpenShellPreparedGitProvider(client, { ...installation, executionId: "app" }),
+        50,
+      ),
+      true,
+      "the App's installation token keeps its hour",
+    );
   });
 
   test("prepared Git rejects credential and scope widening before provisioning", async (t) => {

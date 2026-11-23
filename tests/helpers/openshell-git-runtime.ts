@@ -190,7 +190,7 @@ export function openShellGitRuntimeFixture({
   const faults: Faults = world?.faults ?? {};
   // Bootstrap writes prepared Git profiles and providers under these prefixes.
   // Any other name belongs to the Agent's model provider.
-  const prepared = /^oce-(?:git|github-installation)-[0-9a-f]{32}$/;
+  const prepared = /^oce-(?:git|github-installation|github-token)-[0-9a-f]{32}$/;
   const profiles = new Map<string, Record<string, unknown>>();
   const providers = new Map<string, FixtureProvider>();
   const answer = (method: string, name?: string) => {

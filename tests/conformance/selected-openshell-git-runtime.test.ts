@@ -106,6 +106,8 @@ async function selectedV5(
   native = false,
   deadlineWallMs?: number,
   rest?: ScopedRest,
+  /** A repository token Source the registration names in place of the App. */
+  source?: string,
 ) {
   const repository = registry.repositories[0]!;
   const repositories = [
@@ -137,6 +139,7 @@ async function selectedV5(
               namespaceId: "namespace-a",
               profiles: ["github-repository"],
               ...(native && { nativeGit: "v1" }),
+              ...(source && { credentialSource: source }),
               permissions: {
                 metadata: "read",
                 contents: "write",
@@ -237,6 +240,7 @@ async function selectedV5(
     { repository: repositories[1]!.repository, access: "write" },
     ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
+  const lentVersion = { value: "version-1" };
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
       assert.equal(scope, native ? "network-policy" : "github-repository");
@@ -245,7 +249,9 @@ async function selectedV5(
         ...f.owner.material,
         grantId: bindings[0]!.grant.grantId,
         scope: "github-repository",
-        installationId: selectedRegistry.githubInstallationId,
+        ...(source
+          ? { credentialSource: source, credentialSourceVersion: lentVersion.value }
+          : { installationId: selectedRegistry.githubInstallationId }),
         repositories: repositories.map(({ repository, repositoryId }) => ({
           repository,
           repositoryId,
@@ -327,13 +333,20 @@ async function selectedV5(
     prepare,
     replacement,
     noCredentials,
+    lentVersion,
   };
 }
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, rest?: ScopedRest) {
-  const selected = await selectedV5(t, native, deadlineWallMs, rest);
+async function heldGit(
+  t: TestContext,
+  native = false,
+  deadlineWallMs?: number,
+  rest?: ScopedRest,
+  source?: string,
+) {
+  const selected = await selectedV5(t, native, deadlineWallMs, rest, source);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const prepared = await prepare();
@@ -4516,6 +4529,64 @@ test("native Git cannot opt a ref or draft limited registration into repository-
   ]) {
     assert.throws(() => validate(restriction), /invalid-repository-registry/);
   }
+});
+
+test("native Git rotates a lent Source in place, confirms each version's delivery, and lends nothing after Stop", async (t) => {
+  const { f, revision, reconcile, activity, prepared, entry, lentVersion } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  assert.match(prepared.provider, /^oce-github-token-[a-f0-9]{32}$/);
+  const confirmed = () =>
+    f.events
+      .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
+      .map(({ credentialSourceId, credentialSourceVersion, revisionId }) => [
+        credentialSourceId,
+        credentialSourceVersion,
+        revisionId,
+      ]);
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(confirmed(), [["cs_fixture_token", "version-1", revision.id]]);
+  await reconcile();
+  assert.equal(confirmed().length, 1, "confirmed once per version, not per pass");
+
+  // Replacement: the next loan is new material, rotated into the same Provider, no redeploy.
+  const { providerId } = entry.binding;
+  lentVersion.value = "version-2";
+  f.owner.material = {
+    ...f.owner.material,
+    value: ["github", "pat", "fixture_replacement"].join("_"),
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.equal(activity.updates, 2);
+  assert.equal(entry.binding.provider, prepared.provider);
+  assert.equal(entry.binding.providerId, providerId);
+  assert.deepEqual(confirmed(), [
+    ["cs_fixture_token", "version-1", revision.id],
+    ["cs_fixture_token", "version-2", revision.id],
+  ]);
+  assert.equal(JSON.stringify(f.events).includes(f.owner.material.value), false);
+
+  // Stop withdraws the route: nothing is read or renewed for it again.
+  f.runtime.withdraw(revision.id);
+  const reads = f.calls.material;
+  lentVersion.value = "version-3";
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.equal(f.calls.material, reads);
+  assert.equal(activity.updates, 2);
+  assert.equal(confirmed().length, 2);
 });
 
 test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {

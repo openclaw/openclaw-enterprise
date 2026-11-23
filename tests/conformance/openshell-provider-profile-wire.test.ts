@@ -580,6 +580,21 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
     );
     assert.equal(world.providerCreates.length, providerCreates);
   }
+  addedProfileField = undefined;
+
+  // A Source's Provider is endpointless too and carries the same placeholder credential.
+  const { installationId: _installationId, ...unbound } = scope;
+  const lent = await new OpenShellPreparedGitProvider(client, {
+    ...unbound,
+    executionId: "revision-source",
+    credentialSource: "cs_fixture_token",
+    nativeGit: "v1",
+  }).bootstrap(signal);
+  assert.match(lent.provider, /^oce-github-token-[a-f0-9]{32}$/);
+  const lentProfile = await client.getProviderProfile(scope.workspace, lent.profile, signal);
+  assert.deepEqual(lentProfile?.definition?.endpoints, []);
+  assert.deepEqual(lentProfile?.definition?.binaries ?? [], []);
+  assert.deepEqual(lentProfile?.definition?.credentials, profile.definition.credentials);
 });
 
 test("the Git rule compiler rejects nonconcrete grants and transport paths", () => {
@@ -617,8 +632,26 @@ test("the Git rule compiler rejects nonconcrete grants and transport paths", () 
   assert.throws(
     () =>
       compileOpenShellBoundGitRule([{ ...read, access: "read" }], "ordinary-provider", binaries),
-    /installation Git Provider/,
+    /installation or Source Git Provider/,
   );
+  // A Source's Provider is bound the same way; any other name in that space is refused.
+  const source = "oce-github-token-0123456789abcdef0123456789abcdef";
+  assert.deepEqual(
+    compileOpenShellBoundGitRule([{ ...read, access: "read" }], source, binaries).endpoints.map(
+      ({ credential_binding }) => credential_binding,
+    ),
+    [{ provider: source }],
+  );
+  for (const name of [
+    "oce-github-token-0123456789ABCDEF0123456789abcdef",
+    "oce-github-token-0123456789abcdef",
+    "oce-github-source-0123456789abcdef0123456789abcdef",
+  ]) {
+    assert.throws(
+      () => compileOpenShellBoundGitRule([{ ...read, access: "read" }], name, binaries),
+      /installation or Source Git Provider/,
+    );
+  }
   for (const paths of [
     [],
     ["git"],
