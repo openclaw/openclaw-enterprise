@@ -2539,6 +2539,70 @@ if (savedAgentAcl === "source") {
         assert.equal(refusal.newWorker.ready, false, "SOURCE_APP_REGISTRY_WITHOUT_KEY_REFUSED");
         return;
       }
+      if (process.env.OCC_TEST_SOURCE_CEILING === "lowered") {
+        // The Source ceiling is lowered below a saved grant (B write) after deploy. The API refuses
+        // that change while its registry names the Source, so only the API is pointed at the
+        // registry without the Source; the Worker keeps lending, and its next loan is refused.
+        const api = "openclaw-enterprise-api";
+        const deployment = JSON.parse(
+          await fixture.kube(["get", "deployment", api, "-n", fixture.platform, "-o", "json"]),
+        );
+        const volumes: { name: string; configMap?: { name: string } }[] =
+          deployment.spec.template.spec.volumes;
+        const at = volumes.findIndex(({ name }) => name === "repository-registry");
+        assert.equal(volumes[at]?.configMap?.name, "git-fixture-registry-source");
+        await fixture.kube([
+          "patch",
+          "deployment",
+          api,
+          "-n",
+          fixture.platform,
+          "--type=json",
+          "-p",
+          JSON.stringify([
+            {
+              op: "replace",
+              path: `/spec/template/spec/volumes/${at}/configMap/name`,
+              value: "git-fixture-registry-v1",
+            },
+          ]),
+        ]);
+        await fixture.kube(
+          ["rollout", "status", `deployment/${api}`, "-n", fixture.platform, "--timeout=180s"],
+          { timeout: 190_000 },
+        );
+        const lowered = await statusOf(
+          request("PATCH", source.path, {
+            config: {
+              provider_preset: "github",
+              repositories: "fixture/a:write,fixture/b:read,fixture/c:write",
+            },
+          }),
+        );
+        const loweredAt = Date.now();
+        evidence("ceiling-lowered", { status: lowered });
+        assert.equal(lowered, 200, "SOURCE_CEILING_LOWERED");
+        const exceeded = await observeUntil(
+          "Source loan refusal after the ceiling is lowered",
+          t.signal,
+          async () => {
+            await delay(5_000, undefined, { signal: t.signal });
+            return (await refusals()).find(
+              ({ reason }) =>
+                reason === "source_access_exceeded" || reason === "source_ceiling_exceeded",
+            );
+          },
+          16 * 60_000,
+        );
+        evidence("ceiling-refusal", {
+          reason: exceeded.reason,
+          sourceNamed: exceeded.sourceNamed,
+          versionLogged: exceeded.versionLogged,
+          afterSeconds: Number.isNaN(exceeded.at) ? "untimed" : (exceeded.at - loweredAt) / 1000,
+        });
+        assert.equal(exceeded.reason, "source_access_exceeded", "SOURCE_CEILING_REFUSAL_REASON");
+        return;
+      }
 
       // AC-1 narrowing: B read-only on a new revision, confirmed by readback; same Source value.
       const readOnly = [
