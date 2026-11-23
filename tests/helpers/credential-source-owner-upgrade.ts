@@ -55,18 +55,20 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
   const before = await sources();
   const secretsBefore = await relationships();
   return async function assertOwnershipAfterUpgrade() {
+    const after = await sources();
     assert.deepEqual(
-      await sources(),
-      before.map((source) => ({
-        ...source,
-        owner_capability: "credential_gateway",
-        egress: null,
-        plugin_release_digest: null,
-        plugin_server_name: null,
-      })),
-      "existing sources keep their metadata and Gateway ownership without proxy or plugin template authority",
+      after.map((source, index) =>
+        Object.fromEntries(Object.keys(before[index]).map((key) => [key, source[key]])),
+      ),
+      before,
+      "main source fields survive unchanged",
     );
     assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
+    assert.deepEqual(
+      after.map(({ owner_capability, egress }) => ({ owner_capability, egress })),
+      ids.map(() => ({ owner_capability: "credential_gateway", egress: null })),
+      "main sources retain Gateway ownership without acquiring proxy authority",
+    );
     const relabel =
       "UPDATE occ.credential_sources SET owner_capability='credential_proxy' WHERE id=$1";
     await assert.rejects(app.query(relabel, [ids[0]]), { code: "42501" });
@@ -86,7 +88,7 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
 /** Effective privileges include role membership and default ACLs, not just explicit grants. */
 export async function assertCredentialSchemaPrivileges(app: pg.Client) {
   const tables = [
-    ["egress_installations", "installation"],
+    ["egress_installations", "installation,retired"],
     ["egress_rejected_material", ""],
     ["egress_send_receipts", "authorized_dispatch,outcome,observation,settled,feedback"],
     ["prepared_github_families", "admission,enabled,next_check_at,worker_claim"],

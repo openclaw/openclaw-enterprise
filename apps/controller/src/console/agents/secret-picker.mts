@@ -397,6 +397,7 @@ export function createSecretReferenceField({
   label,
   getCurrentSource,
   onSecretSelected,
+  onPendingChange,
   createSecretName,
   createDialogTitle,
   createFixedKey,
@@ -414,7 +415,8 @@ export function createSecretReferenceField({
   label: string;
   getCurrentSource(): unknown;
   onSecretSelected(secret: SecretMetadata): void | Promise<void>;
-  createSecretName?(): string;
+  onPendingChange?(): void;
+  createSecretName(): string;
   createDialogTitle?: string;
   createFixedKey?: { label: string; value: string; hint: string };
   metadataLabel?: string;
@@ -466,7 +468,8 @@ export function createSecretReferenceField({
   let staged = false;
   // Set while the hint describes the loaded Secret list, which follows the field's state.
   let listedHint = false;
-  let selectionVersion = 0;
+  let selectionVersion: symbol | null = null;
+  let listProblem = "";
   let bindingPending = false;
   let manuallyDisabled = disabled;
   let requiredWhenEnabled = required;
@@ -606,13 +609,11 @@ export function createSecretReferenceField({
         secret,
       });
     }
-    if (createSecretName) {
-      options.push({
-        kind: "create",
-        label: syntheticLabel("Create new Secret...", "action"),
-        searchText: "create new secret",
-      });
-    }
+    options.push({
+      kind: "create",
+      label: syntheticLabel("Create new Secret...", "action"),
+      searchText: "create new secret",
+    });
     options.push({
       kind: "refresh",
       label: syntheticLabel(
@@ -764,7 +765,11 @@ export function createSecretReferenceField({
     }
     // A disabled field stays in the Tab order while its status says what is bound (finding 2899),
     // and, as a natively disabled one, is not required.
-    setUnavailable(input, manuallyDisabled || bindingPending, manuallyDisabled ? status : null);
+    setUnavailable(
+      input,
+      manuallyDisabled || bindingPending,
+      manuallyDisabled || (bindingPending && onPendingChange) ? status : null,
+    );
     input.required = requiredWhenEnabled && !manuallyDisabled;
     const missing = `${labelNode.textContent.trim() || label} is required.`;
     input.setCustomValidity(
@@ -780,6 +785,12 @@ export function createSecretReferenceField({
     if (manuallyDisabled) {
       closeListbox({ restoreSelection: true });
     }
+  }
+
+  function showListStatus() {
+    listedHint = !listProblem;
+    setStatusTone(status, listProblem ? "danger" : null);
+    status.textContent = listProblem || listedStatus();
   }
 
   function listedStatus() {
@@ -821,14 +832,27 @@ export function createSecretReferenceField({
     }
     const startedRefusal = listRefusalVersion;
     bindingPending = true;
-    selectionVersion += 1;
-    input.disabled = true;
+    const choice = Symbol();
+    selectionVersion = choice;
     closeListbox({ restoreSelection: false });
     setStatusTone(status, null);
+    const checking = "Checking Secret access…";
     try {
+      if (onPendingChange) {
+        listedHint = false;
+        status.textContent = checking;
+        onPendingChange();
+      } else {
+        input.disabled = true;
+      }
       // A choice made before the answer arrived waits for it, so no refused binding is staged.
       await (operateRead ?? readOperateAnswer());
-      if (!isCurrent() || manuallyDisabled || startedRefusal !== listRefusalVersion) {
+      if (
+        !isCurrent() ||
+        manuallyDisabled ||
+        choice !== selectionVersion ||
+        startedRefusal !== listRefusalVersion
+      ) {
         return;
       }
       if (secretOperateDenied(secret)) {
@@ -844,7 +868,7 @@ export function createSecretReferenceField({
       }
       forgetSecretMetadata(context, secret.id);
       await onSecretSelected(secret);
-      if (!isCurrent()) {
+      if (!isCurrent() || choice !== selectionVersion) {
         return;
       }
       if (startedRefusal === listRefusalVersion && !secrets.some((item) => item.id === secret.id)) {
@@ -855,8 +879,16 @@ export function createSecretReferenceField({
       listedHint = false;
       status.textContent = stagedHint;
     } finally {
-      bindingPending = false;
-      updateValidity();
+      if (choice === selectionVersion) {
+        bindingPending = false;
+        if (status.textContent === checking) {
+          showListStatus();
+        }
+        updateValidity();
+        if (isCurrent()) {
+          onPendingChange?.();
+        }
+      }
     }
   }
 
@@ -907,7 +939,7 @@ export function createSecretReferenceField({
 
   function openCreateSecretDialog() {
     const { namespaceId, request } = context;
-    if (!createSecretName || !namespaceId || !request || !isCurrent()) {
+    if (!namespaceId || !request || !isCurrent()) {
       return;
     }
     const dialog = element("dialog", {
@@ -1130,6 +1162,11 @@ export function createSecretReferenceField({
       return;
     }
     const startedSelection = selectionVersion;
+    // Clearing a choice returns the hint to this list. A newer choice keeps its own hint.
+    const keepSelectionHint = () =>
+      bindingPending ||
+      (selectionVersion !== null && selectionVersion !== startedSelection) ||
+      (staged && !explicit);
     const loadingHint = `${staged ? `${stagedHint} ` : ""}Loading available Secrets...`;
     const previousSecretIds = new Set(secrets.map((secret) => secret.id));
     loadingSecrets = true;
@@ -1157,8 +1194,9 @@ export function createSecretReferenceField({
         );
         secrets.splice(0, secrets.length, ...listed, ...added);
         secretsListed = true;
+        listProblem = "";
         setSecretOptions({ preserveSearch: true });
-        if (!bindingPending && selectionVersion === startedSelection && (explicit || !staged)) {
+        if (!keepSelectionHint()) {
           setStatusTone(status, null);
           listedHint = !staged;
           status.textContent = staged ? stagedHint : listedStatus();
@@ -1171,6 +1209,9 @@ export function createSecretReferenceField({
         }
         const failureStatus = requestFailure(error).status;
         const expired = failureStatus === 401;
+        listProblem = expired
+          ? "Your session has expired."
+          : `Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))}`;
         if (failureStatus === 403) {
           // Readability was revoked, even if a newer choice owns the status hint.
           listRefusalVersion += 1;
@@ -1184,10 +1225,7 @@ export function createSecretReferenceField({
         }
         // A binding staged while this read was pending keeps its hint, as on success: Save
         // still applies it (finding 1748). A lost session is still reported.
-        if (
-          !expired &&
-          (bindingPending || selectionVersion !== startedSelection || (staged && !explicit))
-        ) {
+        if (!expired && keepSelectionHint()) {
           return;
         }
         listedHint = false;
@@ -1195,9 +1233,7 @@ export function createSecretReferenceField({
         secretsListed = true;
         updateMetadataLink();
         setStatusTone(status, "danger");
-        status.textContent = expired
-          ? "Your session has expired."
-          : `${staged ? `${stagedHint} ` : ""}Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))}`;
+        status.textContent = staged && !expired ? `${stagedHint} ${listProblem}` : listProblem;
         if (expired) {
           context.onExpired?.();
         }
@@ -1333,6 +1369,22 @@ export function createSecretReferenceField({
     },
     setRequired(value: boolean) {
       requiredWhenEnabled = value;
+      updateValidity();
+    },
+    pendingStatus: () => (bindingPending ? status : null),
+    // The caller cleared its source. An earlier choice no longer owns this field, even if
+    // the caller returns to the same provider before the permission answer arrives.
+    resetSelection() {
+      selectionVersion = null;
+      bindingPending = false;
+      staged = false;
+      if (secretsListed) {
+        showListStatus();
+      } else {
+        status.textContent = "Loading available Secrets...";
+      }
+      closeListbox();
+      updateMetadataLink();
       updateValidity();
     },
     refresh() {

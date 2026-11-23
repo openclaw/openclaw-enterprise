@@ -11,7 +11,7 @@
     "tests/integration/runtime-image-model-probe-outcomes.test.ts",
     "tests/integration/runtime-image-startup-probe.test.mjs",
     "tests/integration/runtime-image-startup-termination.test.ts",
-    "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/sandbox-driver-startup.test.ts",
     "tests/integration/sandbox-driver-workspace-admission.test.ts",
     "tests/integration/sandbox-driver-startup-validation.test.ts",
     "tests/integration/sandbox-driver-installation-configuration.test.ts",
@@ -42,7 +42,11 @@
       "path": "tests/integration/runtime-image-gateway-unclean-restart.test.ts",
       "expectedTests": [
         "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
-        "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner"
+        "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
+        "runtime image embedded Gateway serves a new turn after its child dies mid-turn",
+        "a new Gateway Pod starts on state whose previous Gateway was stopped during startup admission",
+        "a new Gateway Pod starts on state whose previous Gateway was stopped while it took its Gateway lock",
+        "a Gateway that exits beside a live Gateway on the same state leaves that Gateway's lock in place"
       ]
     },
     {
@@ -63,12 +67,14 @@
       ]
     },
     {
-      "path": "tests/integration/sandbox-driver-startup.test.mjs",
+      "path": "tests/integration/sandbox-driver-startup.test.ts",
       "expectedTests": [
         "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
-        "OpenShell delivers codex initial workspace files privately after supervisor readiness",
-        "OpenShell delivers openclaw initial workspace files privately after supervisor readiness",
+        "OpenShell legacy delivers codex initial workspace files privately after supervisor readiness",
+        "OpenShell legacy delivers openclaw initial workspace files privately after supervisor readiness",
+        "OpenShell service delivers codex initial workspace files privately after supervisor readiness",
+        "OpenShell service delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits",
         "configured protected OpenShell Git admits only the selected execution and network policy",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"

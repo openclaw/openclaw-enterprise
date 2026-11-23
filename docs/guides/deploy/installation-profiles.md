@@ -27,7 +27,7 @@ catalog discovery ready.
 Both profiles enable:
 
 - Native admin UI and private gateway routing.
-- Standard OpenClaw and Standard Codex Preset seeding.
+- Bundled Preset seeding, unless `presets.includeDefaults` is `false`.
 - Kubernetes Compute, Kubernetes Configuration, Kubernetes Secrets, native IAM,
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
@@ -80,6 +80,10 @@ startup; the renderer validates the list but does not read container files. See
 [Preset initialization](../../reference/presets.md#installation-defaults) for path
 resolution and startup validation.
 
+Set `presets.includeDefaults` to `false` (default `true`) to seed only the
+listed files; saved Presets remain. To keep **Start with default Preset**, name
+your starter Preset `default-codex`.
+
 Repository support is optional. When enabled, the renderer wires the broker
 container, GitHub Backend, Repo Driver, and Compute peer. The repository registry
 needs Namespace IDs that only exist after the first bootstrap, so most installs
@@ -108,7 +112,7 @@ one `@` and a dotted domain.
     "controllerImage": "registry.example/openclaw-enterprise/controller@sha256:<64-hex>",
     "authBaseUrl": "https://console.example.internal",
     "adminEmail": "admin@example.invalid",
-    "bootstrapPasswordClaimName": "occ-bootstrap-admin-password",
+    "bootstrapCredentialsSecretName": "occ-bootstrap-credentials",
     "apiClients": [{ "namespace": "operator-tools", "podLabels": { "app": "operator" } }],
     "databaseCidrs": ["10.45.0.12/32"],
     "clusterCidrs": ["10.43.0.1/32"],
@@ -128,10 +132,13 @@ one `@` and a dotted domain.
     "transportSecretPrefix": "openclaw-agent-transport"
   },
   "channels": {
-    "managedSlackProxy": true
+    "managedEgress": true,
+    "excludedCidrs": ["10.42.0.0/16", "10.43.0.0/16", "192.0.2.10/32"]
   }
 }
 ```
+
+Optional `controlPlane.clusterPort` sets the Kubernetes API egress port (default 443).
 
 `controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
 `controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
@@ -190,6 +197,10 @@ set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
+### Hosted discovery access
+
+The chart leaves API Server egress to the cluster operator. Before using **Load plugins**, verify that the API Pod can reach `auth.openai.com` and `chatgpt.com` over HTTPS. Apply any additional API egress restriction through a separate cluster policy.
+
 ### External sign-in and trusted proxies
 
 Activation of Google or OIDC sign-in is one-way, so keep the selected provider in
@@ -199,6 +210,8 @@ see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
 existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
 set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
 same-site HTTPS Console and Agent domains.
+
+For Keycloak, start with the [production profile example](oidc-keycloak.md#render-the-production-profile).
 
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including
@@ -215,7 +228,7 @@ through a shared proxy address. A source-preserving load balancer needs no prese
 
 Client-ID and client-secret Secret keys must differ; an omitted key counts as
 the chart default (`client-id` or `client-secret`).
-As the chart requires, each credential Secret is dedicated: a sign-in
+Each credential Secret is dedicated: `bootstrapCredentialsSecretName`, a sign-in
 `secretName` (default `occ-google-login` or `occ-oidc-login`),
 `gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
 `repository.publicCaSecretName`), the ChatGPT admin Secret (with
@@ -226,9 +239,8 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`.
-OIDC also accepts `tokenAuth` and `displayName`.
-The `generic` trusted proxy preset requires `trustedProxy.clientAddressHeader`.
+`google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
+`trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
 `x-forwarded-for` or `x-real-ip`.
@@ -273,7 +285,7 @@ Run the renderer from the repository root with Node.js satisfying `engines.node`
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
-node scripts/render-installation-profile.mjs \
+node scripts/render-installation-profile.ts \
   --profile codex \
   --input .build/profile-inputs/codex.json \
   --out-dir .build/profile-renders/codex
@@ -306,7 +318,7 @@ copy it there with mode `0600` first, or render straight into the protected
 directory as the runbook's [profile branch](production-installation.md#recommended-generate-profile-configuration)
 does.
 Skip both configuration-generation branches and continue at the
-[shared bootstrap PVC and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
+[shared credential and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
@@ -318,7 +330,7 @@ writing deployment files. See the [rendering flow](../../flows/installation-prof
 
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and `runtime.gatewayNodeSelector`
 require Kubernetes label keys and label values that are empty or a label name of
-at most 63 characters, matching Helm, bootstrap-volume preparation and Pod
+at most 63 characters, matching Helm and Pod
 admission.
 Preflight rejects invalid placement labels before writing deployment files.
 
@@ -336,29 +348,23 @@ Preflight refuses a prefix that the controller would reject at startup.
 The renderer does not check these prerequisites. Verify them before you treat
 the install as ready:
 
-- Kubernetes 1.35 or later, enforced NetworkPolicies, and exact API/database
-  egress destinations.
+- Kubernetes 1.35 or later, enforced NetworkPolicies, and database connectivity.
 - Envoy Gateway, cert-manager, and, unless external sign-in disables native
   admin, wildcard DNS and TLS for native admin and the shared cookie parent domain.
 - A default ReadWriteOnce storage class for dedicated Codex workspace claims and
   `runtime.gatewayStorageClassName` for gateway state.
 - For Codex, the configured localhost seccomp profile installed and verified on
   every node selected by `runtime.nodeSelector`.
-- For Slack, give gateway runtime traffic a proxy route. The API Server can
-  connect directly to Slack for Console directory lookup. The managed proxy
-  serves both paths. Rendering proxy wiring does not enable a Slack consumer. Either profile
-  can install the managed
-  proxy for API directory lookup and dedicated gateway use, but Slack-enabled
-  Agents require dedicated Codex execution. The example input sets
-  `managedSlackProxy: true` to use the chart-managed proxy Service. Its network
-  policy allows public IPv4 HTTPS, excluding private and reserved ranges, and the
-  proxy authorizes Slack hostnames, so connectivity survives Slack DNS rotation.
-  For an external gateway proxy, omit `managedSlackProxy` and set
-  `runtimeProxyUrl` to its literal IPv4 URL. Set `directoryProxyUrl` if the
-  API Server must use a proxy for directory lookup.
+- For Slack, [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md)
+  with EnvoyPatchPolicy support. `channels.managedEgress` defaults to true;
+  explicit false disables the fleet. `channels.excludedCidrs` produces matching
+  Helm and Compute settings. Supply
+  actual Pod, Service and node ranges, including public node addresses. Rendering
+  the fleet does not enable channel consumers. Slack Agents require dedicated
+  Codex execution; customer upstream proxies are not supported.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  The API Server needs HTTPS access to `auth.openai.com` and `chatgpt.com`.
+  See [hosted discovery access](#hosted-discovery-access).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

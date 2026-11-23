@@ -19,12 +19,11 @@ succeeded on a supporting runtime before relying on the restrictions.
 
 After configuration setup, OCE applies these controls to the managed Gateway.
 
-| Setting                                      | Effect                                                                                                   |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `OPENCLAW_CONFIG_READONLY=1`                 | The OpenClaw config writer refuses edits. The watcher still picks up trusted OCE updates.                |
-| `OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1` | The Gateway refuses local terminals. Authorized node-relayed terminals remain available.                 |
-| `OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1`     | The Gateway refuses Gateway-hosted command jobs. Ordinary scheduled Agent turns still run.               |
-| `OPENCLAW_DISABLE_SKILL_INSTALLS=1`          | The Gateway refuses skill installation, dependency installation, and publication of new skill revisions. |
+| Setting                                      | Effect                                                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `OPENCLAW_CONFIG_READONLY=1`                 | The OpenClaw config writer refuses edits. The watcher still picks up trusted OCE updates.  |
+| `OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1` | The Gateway refuses local terminals. Authorized node-relayed terminals remain available.   |
+| `OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1`     | The Gateway refuses Gateway-hosted command jobs. Ordinary scheduled Agent turns still run. |
 
 OCE also sets `OPENCLAW_CONFIG_READONLY_NOTICE` with guidance for the Gateway UI.
 Gateways that support the notice show where to edit the Agent's draft Configuration

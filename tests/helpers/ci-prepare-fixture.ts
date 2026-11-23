@@ -1,20 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.ts";
 import { readJsonLines } from "./json-lines.mjs";
-import { socketDirectory } from "./socket-directory.mjs";
+import { socketDirectory } from "./socket-directory.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.ts";
 
-// Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.mjs, which split the
-// preparation cases so Checks and Conformance 2 can run them at the same time.
+// Shared by the CI preparation suites.
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
 export const digest = "a".repeat(64);
@@ -26,6 +25,38 @@ export async function fixture(t: CleanupRegistrar) {
   const root = await temporaryDirectory(t, "ci-prepare-test-");
   await mkdir(root, { recursive: true });
   return root;
+}
+
+// A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
+// (a fake server's, when the case runs SQL).
+export function composePostgres(name: string, port = 45431) {
+  return {
+    id: `compose-postgres-${name}`,
+    kind: "compose-postgres",
+    owner: `openclaw-ci-${name}`,
+    status: "ready",
+    name: `openclaw_ci_pg_${name}`,
+    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    port,
+  };
+}
+
+// A postgres-application lane state holding the server and any other resources.
+export async function writePostgresState(
+  statePath: string,
+  server: ReturnType<typeof composePostgres>,
+  ...resources: FixtureResource[]
+) {
+  const state = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres-application",
+    prefix: server.owner,
+    statePath,
+    resources: [server, ...resources],
+  };
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  await chmod(statePath, 0o600);
 }
 
 // Lane preparation stderr opens with timing and host metrics, and assert.match's default
@@ -132,6 +163,29 @@ export function spawnResult(
       clearTimeout(timer);
       resolve({ status, signal, error, ...output });
     });
+  });
+}
+
+// Runs a module program that imports prepare.ts (argv[1]) and uses the state at argv[2].
+export function runProgram(
+  program: string,
+  statePath: string,
+  env: NodeJS.ProcessEnv,
+  timeout?: number,
+) {
+  const prepare = new URL("../../scripts/ci/prepare.ts", import.meta.url).href;
+  return spawnResult(process.execPath, ["--input-type=module", "-e", program, prepare, statePath], {
+    env,
+    ...(timeout === undefined ? {} : { timeout }),
+  });
+}
+
+// prepare.ts appends to $GITHUB_ENV when no --github-env is given, and in CI that is the job's
+// own file, so a case passes GITHUB_ENV or GITHUB_OUTPUT on only when it sets them (finding 1216).
+export function runPrepare(args: string[], env: NodeJS.ProcessEnv = {}) {
+  const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
+  return spawnResult(process.execPath, [preparePath, ...args], {
+    env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
   });
 }
 
@@ -288,7 +342,7 @@ export async function fixtureImageCommands(
       env: { ...env, ...options?.env },
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
-  const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
+  const cleanup = () => run("cleanup.ts", ["--state", statePath]);
   return {
     statePath,
     githubEnv,
@@ -297,22 +351,22 @@ export async function fixtureImageCommands(
         env: { ...env, ...extraEnv },
       }),
     prepare: (args: string[] = [], options?: SpawnOptions) =>
-      run("prepare.mjs", [...prepareArgs, ...args], options),
+      run("prepare.ts", [...prepareArgs, ...args], options),
     prepareStagingSignin: () =>
       spawnResult(
         process.execPath,
         [
           "--input-type=module",
           "-e",
-          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; await prepareStagingSigninCluster(process.argv[1]);',
+          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.ts"; await prepareStagingSigninCluster(process.argv[1]);',
           statePath,
         ],
         { env },
       ),
     warmImageCache: (args: string[] = []) =>
-      run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
+      run("warm-image-cache.ts", ["--state", statePath, ...args]),
     prepareFile: (file: string) =>
-      run("prepare.mjs", ["--lane", lane, "--file", file, "--state", statePath]),
+      run("prepare.ts", ["--lane", lane, "--file", file, "--state", statePath]),
     cleanup,
     cleanupSuccessfully: async () => {
       const result = await cleanup();

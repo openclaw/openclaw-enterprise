@@ -439,13 +439,18 @@ export function pluginApproverScenarios(draft: string) {
 }
 
 export function pluginImportScenarios(draft: string) {
+  const namespacePublisher = {
+    group: "Pages/Namespaces",
+    path: "/console/namespaces",
+    emptyAgents: true,
+    gap: "The fixture simulates package inspection and publication. It does not deploy a worker.",
+  } as const;
   const editor = {
     group: "Pages/Agent detail",
     path: draft + "&tab=plugins",
     harnessId: "openclaw",
     pluginDiscoveryCredential: "none",
     agentPlugins: {},
-    extraSecrets: [{ id: "sec_reports", name: "Reporting service token" }],
     pluginCapabilities: {
       ...pluginCapabilities,
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
@@ -455,31 +460,44 @@ export function pluginImportScenarios(draft: string) {
   };
   return {
     pluginImport: {
-      ...editor,
+      ...namespacePublisher,
       pluginImport: "admin",
       name: "Publish a Namespace plugin",
       description:
-        "Preview a package, publish its release to this Namespace, and select it in the Agent draft.",
+        "A Namespace publisher can preview and publish a package without access to an Agent.",
       actions: [],
       steps: [
-        "Open Import plugin. Choose a .tgz file; for a marketplace archive, enter its entry name.",
-        "Preview the fixture, publish it, then choose Configure plugins to select weekly-reports.",
-        "Keep reports disconnected to select the skill alone. To use tools, create a connection for reports with the existing token Secret, attach it to the Agent, choose the account, and load its tools.",
+        "Choose Engineering's Import plugin action. Choose a .tgz file; for a marketplace archive, enter its entry name.",
+        "Preview the fixture. Review the imported skill, reports server URL, excluded hooks, and the separate skill and MCP deployment warnings.",
+        "Publish to Namespace and check the publication confirmation.",
       ],
     },
     pluginImportDenied: {
-      ...editor,
+      ...namespacePublisher,
       pluginImport: "denied",
       name: "Plugin publication permission denied",
-      description: "This caller can edit Agent selections and lacks Namespace publication access.",
+      description:
+        "The caller can read the Namespace but lacks the Namespace publication grant; the import action is absent.",
       actions: [],
     },
     pluginImportInvalid: {
-      ...editor,
+      ...namespacePublisher,
       pluginImport: "invalid",
       name: "Unsupported plugin archive",
       description: "The fixture rejects inspection and preserves the upload control for retry.",
       actions: [],
+    },
+    pluginImportAgent: {
+      ...editor,
+      pluginImport: "admin",
+      name: "Select an imported release",
+      description:
+        "Publish through the Agent shortcut, select the simulated release, and review both deployment limitations.",
+      actions: [],
+      steps: [
+        "Open Import plugin, preview an archive, and publish the simulated release.",
+        "Choose Configure plugins, select weekly-reports, and add it. Check the skill deployment refusal and hosted MCP unavailability messages.",
+      ],
     },
   } as const;
 }

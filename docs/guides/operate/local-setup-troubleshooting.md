@@ -1,4 +1,25 @@
-# Troubleshoot local k3d setup
+# Troubleshoot local development setup
+
+## Docker Compute reports existing PostgreSQL storage
+
+Use the original credential bundle printed as `Bootstrap input files:`. Its
+`client-key.json` contains the registered key, even if setup stopped before CLI
+export. Keep that directory private. With the original loopback API URL:
+
+```bash
+OCC_URL=http://127.0.0.1:3000 \
+  OCC_SERVICE_KEY_FILE=/absolute/private/original-bundle/client-key.json \
+  ./bin/occ installation get --output json
+```
+
+A successful response identifies the existing Installation. A new output path
+does not recover or rotate credentials. If authentication fails, retain the
+storage and reconcile access; do not initialize replacement credentials.
+
+For an intentional reset of a disposable database, use the original
+project-specific cleanup command with `--volumes` before its `--` separator.
+**This deletes the project's PostgreSQL data.** A fresh setup can then create new
+credentials. Do not use this reset for data you need to retain.
 
 ## Corepack cannot download pnpm through a proxy
 
@@ -30,7 +51,7 @@ deploying again. Replacing the model key is not a demonstrated fix for this erro
 For `RUNTIME_AUTHENTICATION_FAILED`, check the model credential and model access;
 when replacing that credential, supply the replacement and rerun your original
 first-Agent helper command for the same Agent, adding `--replace-key`. Run
-`node scripts/first-agent.mjs --help` for supported options. For other codes,
+`node scripts/first-agent.ts --help` for supported options. For other codes,
 inspect the deployment and controller worker logs before choosing a recovery action.
 
 ## First-Agent reports an existing lock

@@ -3,6 +3,12 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
+edit. Scroll until **Save Configuration** is near the middle of the window and
+**Danger zone** is out of view below it. Save and check that **Edit Configuration**
+has focus in view and **Danger zone** stays below the window. The signed-in test
+in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,
@@ -108,10 +114,15 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    **Open draft** and **Browser chat settings**. In **Browser chat off,
    read-only caller**, it asks you to ask someone who can edit the
    Configuration and offers no settings link.
-5. Open **Components / Workspace / Keep unsaved files**. Choose Instructions and
-   User context. Each keeps its edits and Unsaved indicator. Read every file's
-   role description. Save one file, then Reload another; each action affects
-   that file alone. Return through another Agent tab and check selection survives.
+5. Open **Components / Workspace / Workspace Navigation** (Keep unsaved files).
+   Clear User context.
+   Switch files and check their role descriptions and Unsaved indicators.
+   Check that selection survives switching Agent tabs. Select Instructions,
+   open Namespaces and go Back. The draft survives and warns that AGENTS.md
+   changed. Enter `Previous guidance` and repeat that round trip. The warning
+   stays visible and Save stays enabled. Enter `Updated guidance` to match
+   the simulated file. The warning clears and Save is disabled. Edit and save
+   AGENTS.md, then reload USER.md. Each action affects only its file.
 6. Repeat file selection on a phone using **Workspace file**. Check the editor
    fits the screen. Check Missing file, Save needs Agent operate, Write outcome
    unknown, and Reread keeps a focused editor's caret. A deployment poll must
@@ -148,8 +159,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    button stays enabled. Press Enter during the next six seconds. The button
    becomes busy immediately and keeps focus as the panel switches to v8.
    When the simulated record read fails, v8 shows a retry notice and the
-   button is enabled and still focused. Reset the story to replay. The real
-   Controller regression for this replacement is in
+   button is enabled and still focused. Reset and repeat the refresh. While
+   it is pending, press Shift+Tab to move focus to **Deployment details**.
+   When v8 shows the retry notice, focus stays on the summary. Press Enter to
+   fold the details and Space to reopen them. The real Controller regression
+   for this replacement is in
    `tests/browser/console-agent-detail-2.test.ts`.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →

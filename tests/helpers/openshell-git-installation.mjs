@@ -1,8 +1,7 @@
-import { extractImageFile as extractOpenShellImageFile } from "../../scripts/lib/image-file.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -18,15 +17,26 @@ import {
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
-import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
+import { extractImageFile } from "../../scripts/lib/image-file.ts";
+import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.ts";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
-import { availablePort } from "./available-port.mjs";
-import { listen } from "./listen.mjs";
+import { availablePort } from "./available-port.ts";
+import { listen } from "./listen.ts";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
+import {
+  assertStockDestinationCaProjection,
+  assertStockDestinationCaReadback,
+  stockDestinationCa,
+  stockManagedDestinationCa,
+} from "./openshell-stock-destination-ca.ts";
+import {
+  assertStockSupervisorImport,
+  stockSupervisorConfig,
+  stockSupervisorManifest,
+  waitForStockSupervisor,
+} from "./openshell-stock-supervisor-image.ts";
 import { stopProcess } from "./stop-process.mjs";
-
-export { extractOpenShellImageFile };
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
@@ -125,8 +135,7 @@ async function waitUntil(description, operation, timeout, signal) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
-// Keys remain in this private directory or worker-only Secrets. The image build
-// context below receives only public certificates, never either signing key.
+// Keys stay in the private directory or worker-only Secrets. The Supervisor receives the CA certificate.
 async function certificates(command, directory, originHost, authorityHost) {
   const caKey = join(directory, "ca.key");
   const caFile = join(directory, "ca.crt");
@@ -199,84 +208,21 @@ async function certificates(command, directory, originHost, authorityHost) {
   };
 }
 
-async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
-  // Read the same stock pin used by Local Setup rather than maintaining another
-  // independent image version. Candidate supplier builds are rejected at entry.
-  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
-  assert.match(
-    parent ?? "",
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/,
-  );
-  const context = join(directory, "supervisor-trust");
-  await mkdir(context, { mode: 0o700 });
-  const extract = (image, filename, destination) =>
-    extractOpenShellImageFile({ command, cleanup, image, filename, destination });
-  const stockCertificates = join(directory, "stock-ca-certificates.crt");
-  await extract(parent, "/etc/ssl/certs/ca-certificates.crt", stockCertificates);
-  await extract(parent, "/openshell-supervisor", join(directory, "stock-supervisor"));
-  // docker cp preserves the stock file's read-only mode. Build a new owned
-  // bundle without changing the stock certificates or their permissions.
-  await writeFile(
-    join(context, "ca-certificates.crt"),
-    Buffer.concat([await readFile(stockCertificates), Buffer.from(`\n${ca}`)]),
-  );
-  await writeFile(
-    join(context, "Dockerfile"),
-    `FROM ${parent}\nCOPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n`,
-  );
-  const tag = `oce-git-supervisor-${randomUUID()}:test`;
-  await command("docker", ["build", "--network=none", "--tag", tag, context], { timeout: 120_000 });
-  cleanup.push(() => command("docker", ["image", "rm", tag]));
-  await extract(tag, "/openshell-supervisor", join(directory, "trusted-supervisor"));
-  const binaryHash = hash(await readFile(join(directory, "stock-supervisor")));
-  assert.equal(hash(await readFile(join(directory, "trusted-supervisor"))), binaryHash);
-  await command("k3d", ["image", "import", "--cluster", cluster, tag], { timeout: 120_000 });
-  const containerd = ["exec", `k3d-${cluster}-server-0`, "ctr", "-n", "k8s.io", "images"];
-  const imported = (await command("docker", [...containerd, "list"]))
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/u))
-    .find(
-      ([name]) =>
-        name === tag || name === `docker.io/library/${tag}` || name === `docker.io/${tag}`,
-    );
-  assert.ok(imported, "the owned cluster must import the trust-only supervisor image");
-  assert.match(imported[2], /^sha256:[a-f0-9]{64}$/);
-  const importedRepository = imported[0].slice(0, imported[0].lastIndexOf(":"));
-  const repository = importedRepository.includes("/")
-    ? importedRepository
-    : `docker.io/library/${importedRepository}`;
-  const reference = `${repository}@${imported[2]}`;
-  await command("docker", [...containerd, "tag", imported[0], reference]);
-  const configDigest = (
-    await command("docker", ["image", "inspect", "--format", "{{.Id}}", tag])
-  ).trim();
-  assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
-  await checkpoint("supervisor-trust", { parent, reference, binaryHash, configDigest });
-  const slash = repository.indexOf("/");
-  return {
-    reference,
-    binaryHash,
-    configDigest,
-    image: {
-      registry: repository.slice(0, slash),
-      repository: repository.slice(slash + 1),
-      digest: imported[2],
-      tag: "",
-      pullPolicy: "Never",
-    },
-  };
-}
-
-/** Installs the supported model + selected-repository path in its own k3d cluster. */
+/**
+ * Installs the supported model + selected-repository path in its own k3d cluster.
+ * @param {import("node:test").TestContext} t
+ * @param {{ witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, onSetupStep?: (step: string) => void }} [options]
+ */
 export function createOpenShellGitInstallation(
   t,
-  { witnessIssuedGit = false, allowStandingApprovals = false } = {},
+  { witnessIssuedGit = false, allowStandingApprovals = false, onSetupStep } = {},
 ) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }));
+  return ownFirstAgentWork(t)(
+    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }),
+  );
 }
 
-async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }) {
+async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -305,6 +251,15 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "this fixture qualifies stock OpenShell",
     );
   }
+  onSetupStep?.("read stock Supervisor pin");
+  // Bind the chart from the installed CLI to the pinned stock Supervisor version.
+  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
+  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  const stockVersion = parent.match(
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:(\d+\.\d+\.\d+)@sha256:[a-f0-9]{64}$/,
+  )?.[1];
+  assert.ok(stockVersion, "expected a digest-pinned stock OpenShell supervisor image");
+  const expectedChart = `helm-chart-${stockVersion}.tgz`;
   const cleanup = [];
   const stackCleanup = [];
   const measurement = (event, data) => {
@@ -331,6 +286,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     }
     measurement("cleanup", { outcome: "passed" });
   });
+  onSetupStep?.("Local Setup");
   const stack = await localFirstAgentStack(
     {
       diagnostic: (message) => t.diagnostic(message),
@@ -338,12 +294,23 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     },
     { modelCredential: "openai" },
   );
+  onSetupStep?.("read installation state");
   const state = JSON.parse(await readFile(join(stack.directory, "state.json"), "utf8"));
   assert.equal(state.deploymentMode, "k3d");
   assert.equal(state.sandboxDriver, "openshell");
   assert.equal(state.containerEngine, "docker");
   assert.match(state.cluster, /^occ-dev-first-agent-[a-f0-9]{12}$/);
   assert.match(state.dockerHost, /^unix:\/\//);
+  const chartDirectory = join(stack.directory, "openshell/chart");
+  const charts = (await readdir(chartDirectory)).filter((name) =>
+    /^helm-chart-.*\.tgz$/.test(name),
+  );
+  assert.deepEqual(
+    charts,
+    [expectedChart],
+    "expected only the stock Gateway chart packaged by occ dev",
+  );
+  const chart = join(chartDirectory, expectedChart);
   const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   // The CI reporter retains only the closed identity/digest/counter projection
@@ -389,7 +356,8 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     "--namespace",
     platform,
   ];
-  const serviceKeyFile = join(stack.directory, "initial-admin-service-key.json");
+  onSetupStep?.("read installed API and workspace");
+  const serviceKeyFile = state.keyPath;
   const admin = JSON.parse(await readFile(serviceKeyFile, "utf8"));
   const request = createOpenShellGitApi({
     origin: stack.environment.OCC_URL,
@@ -397,6 +365,11 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     signal: t.signal,
     after: (operation) => cleanup.push(operation),
   });
+  // Locally prepared bootstrap JSON contains only data.key. Confirm access
+  // and obtain Installation metadata from the installed API, not the key file.
+  const installed = await request("GET", "/installation");
+  assert.equal(typeof installed.id, "string");
+  assert.ok(installed.id);
   const namespaces = await request("GET", "/namespaces");
   const defaults = namespaces.filter(({ name }) => name === "default");
   assert.equal(defaults.length, 1);
@@ -408,6 +381,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(namespaceList.items.length, 1);
   const sandboxNamespace = namespaceList.items[0].metadata.name;
   assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
+  onSetupStep?.("start Git origin");
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
   );
@@ -447,6 +421,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   const service = JSON.parse(
     await kube(["get", "service", "git-fixture", "-n", platform, "-o", "json"]),
   );
+  onSetupStep?.("configure Git fixture DNS");
   const dns = JSON.parse(
     await kube(["get", "configmap", "coredns", "-n", "kube-system", "-o", "json"]),
   );
@@ -459,6 +434,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     timeout: 130_000,
   });
 
+  onSetupStep?.("read Gateway values and signing metadata");
   const gatewayValues = JSON.parse(
     await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
   );
@@ -526,9 +502,16 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     type: "Opaque",
     stringData,
   });
+  // The stock Gateway can copy ConfigMaps into its disposable workspace namespace.
+  const { configMap: destinationCa, normalizedPem } = stockDestinationCa(
+    platform,
+    "git-fixture-ca",
+    tls.ca,
+  );
+  onSetupStep?.("apply Git authority resources");
   await apply([
     configMap("git-fixture-registry-v1", { "registry.json": JSON.stringify(registry) }),
-    configMap("git-fixture-ca", { "ca.crt": tls.ca }),
+    destinationCa,
     configMap("git-gateway-public-key", { "gateway-public.pem": publicKey }),
     privateSecret("git-fixture-app", {
       "private-key.pem": origin.privateKey.export({ type: "pkcs8", format: "pem" }),
@@ -569,6 +552,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       metadata: { ...supervisorPolicy.metadata, namespace: sandboxNamespace },
     },
   ]);
+  onSetupStep?.("prepare Git authority startup");
   const installation = loadYaml(await readFile(join(stack.directory, "installation.yaml"), "utf8"));
   const sandbox = installation.drivers.sandbox;
   const backend = installation.backend.find(({ type }) => type === "openshell");
@@ -627,9 +611,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   if (allowStandingApprovals) {
     // The production helper verifies that the authenticated API and Helm target
     // belong to the same Installation before reading the fleet inventory.
-    const { id } = await request("GET", "/installation");
-    assert.equal(typeof id, "string");
-    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": id };
+    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": installed.id };
   }
   await apply([installationSecret]);
   const values = JSON.parse(await readFile(join(stack.directory, "helm-values.json"), "utf8"));
@@ -658,6 +640,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   };
   const valuesFile = join(directory, "oce-values.json");
   await writeFile(valuesFile, JSON.stringify(values), { mode: 0o600 });
+  onSetupStep?.("upgrade controller with Git authority");
   await command(
     "helm",
     [
@@ -676,6 +659,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
 
   // Register after enabling repository.openShell: Git configuration must not divert model
   // registration into the Git-only Proxy. All installed Git journeys use this fresh source.
+  onSetupStep?.("register Gateway model source");
   const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
     name: "installed-git-model",
     value: process.env.OPENAI_API_KEY,
@@ -686,6 +670,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     config: { authorized_base_url: "https://api.openai.com/v1" },
     secrets: { api_key: secret.ref },
   });
+  onSetupStep?.("wait for Gateway model source");
   const modelSource = await eventually("Gateway-owned model source", async () => {
     const current = await request(
       "GET",
@@ -697,15 +682,68 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
   });
 
-  const supervisor = await trustedSupervisor({
+  // Local Setup imported the stock platform image. Bind the selected containerd
+  // manifest to the config of the independently digest-pinned stock image before
+  // accepting either manifest- or config-form CRI image IDs.
+  onSetupStep?.("verify stock Supervisor import");
+  const image = gatewayValues.supervisor.image;
+  assert.equal(image.registry, "docker.io");
+  assert.equal(image.repository, "openclaw-development/openshell-supervisor");
+  assert.equal(image.pullPolicy, "Never");
+  assert.match(image.digest, /^sha256:[a-f0-9]{64}$/);
+  const reference = `${image.registry}/${image.repository}@${image.digest}`;
+  const nodeName = `k3d-${state.cluster}-server-0`;
+  const node = JSON.parse(await kube(["get", "node", nodeName, "-o", "json"]));
+  const nodeInfo = node.status?.nodeInfo;
+  const selectedPlatform = `${nodeInfo?.operatingSystem}/${nodeInfo?.architecture}`;
+  const indexDigest = parent.split("@")[1];
+  const rawImage = (ref) => command("docker", ["buildx", "imagetools", "inspect", "--raw", ref]);
+  const descriptor = stockSupervisorManifest(await rawImage(parent), indexDigest, selectedPlatform);
+  const child = `${parent.split("@")[0]}@${descriptor.digest}`;
+  /** @param {string[]} flags */
+  const inspectLocal = async (flags) => {
+    const inspected = JSON.parse(await command("docker", ["image", "inspect", ...flags, parent]));
+    assert.ok(
+      Array.isArray(inspected) && inspected.length === 1,
+      "stock image inspection is invalid",
+    );
+    return inspected[0];
+  };
+  const configDigest = await stockSupervisorConfig(
+    descriptor,
+    await rawImage(child),
+    inspectLocal,
+    selectedPlatform,
+  );
+  const manifestBytes = await command("docker", [
+    "exec",
+    nodeName,
+    "ctr",
+    "-n",
+    "k8s.io",
+    "content",
+    "get",
+    image.digest,
+  ]);
+  assertStockSupervisorImport(manifestBytes, image.digest, configDigest);
+  const executable = join(directory, "stock-supervisor");
+  await extractImageFile({
     command,
     cleanup,
-    directory,
-    cluster: state.cluster,
-    ca: tls.ca,
-    checkpoint,
+    image: parent,
+    platform: selectedPlatform,
+    pullNever: true,
+    filename: "/openshell-supervisor",
+    destination: executable,
   });
-  gatewayValues.supervisor.image = supervisor.image;
+  const binaryHash = hash(await readFile(executable));
+  const supervisor = { reference, configDigest, binaryHash, image };
+  await checkpoint("supervisor-trust", { parent, reference, binaryHash, configDigest });
+  onSetupStep?.("upgrade Gateway with Supervisor trust");
+  gatewayValues.supervisor.network = {
+    ...gatewayValues.supervisor.network,
+    additionalCaConfigMapName: destinationCa.metadata.name,
+  };
   gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
     {
       name: "oce-prepared-git",
@@ -728,12 +766,6 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   ];
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const chartDirectory = join(stack.directory, "openshell/chart");
-  const charts = (await readdir(chartDirectory)).filter((name) =>
-    /^helm-chart-.*\.tgz$/.test(name),
-  );
-  assert.equal(charts.length, 1, "expected the Gateway chart packaged by occ dev");
-  const chart = join(chartDirectory, charts[0]);
   await command(
     "helm",
     [
@@ -750,6 +782,21 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     { timeout: 190_000 },
   );
 
+  // Check the actual release values and source trust object used by the Gateway.
+  const installedValues = JSON.parse(
+    await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
+  );
+  assert.deepEqual(installedValues.supervisor.image, supervisor.image);
+  assert.equal(
+    installedValues.supervisor.network.additionalCaConfigMapName,
+    destinationCa.metadata.name,
+  );
+  const sourceCa = JSON.parse(
+    await kube(["get", "configmap", destinationCa.metadata.name, "-n", platform, "-o", "json"]),
+  );
+  assertStockDestinationCaReadback(sourceCa, { ...destinationCa.metadata, pem: tls.ca });
+
+  onSetupStep?.("connect to authenticated Gateway workspace");
   const port = await availablePort();
   const forward = spawn(
     "kubectl",
@@ -841,31 +888,54 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "the workload must have exactly one matching supervisor Pod",
     );
     const pod = supervisors[0];
-    assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
-    assert.ok(
-      pod.metadata.ownerReferences?.some(
-        (owner) => owner.kind === "Sandbox" && owner.uid === resource.metadata.uid,
-      ),
-      "the supervisor must belong to the selected Sandbox resource",
-    );
     const container = pod.spec.containers.find(({ name }) => name === "supervisor");
-    const status = pod.status.containerStatuses?.find(({ name }) => name === "supervisor");
-    assert.ok(
-      container && status?.ready && status.state.running,
-      "the supervisor must be running and ready",
+    const status = await waitForStockSupervisor(
+      pod,
+      async (signal) =>
+        JSON.parse(
+          await kube(["get", "pod", pod.metadata.name, "-n", sandboxNamespace, "-o", "json"], {
+            signal,
+          }),
+        ),
+      {
+        sandboxId,
+        sandboxUid: resource.metadata.uid,
+        image: supervisor.reference,
+        // CRI implementations report either the verified manifest or image-config digest.
+        digests: [supervisor.image.digest, supervisor.configDigest],
+      },
+      t.signal,
     );
+
+    // The selected Sandbox determines the expected stock generation, independently of its Pod mount.
+    const gatewayId = resource.metadata.labels?.["openshell.ai/gateway-id"];
+    assert.ok(gatewayId, "the selected Sandbox must identify its Gateway");
+    const expectedCa = stockManagedDestinationCa(sandboxNamespace, gatewayId, normalizedPem);
+    const caPath = "/etc/openshell/tls/additional/ca-bundle.pem";
+    const args = [...(container.command ?? []), ...(container.args ?? [])];
+    const flag = args.indexOf("--additional-ca-bundle");
+    assert.ok(
+      flag >= 0 && args[flag + 1] === caPath,
+      "stock Supervisor must select the additional CA bundle",
+    );
+    const mount = container.volumeMounts?.find((item) => item.mountPath === caPath);
+    assert.ok(mount?.readOnly && mount.subPath === "ca.crt");
+    const volume = pod.spec.volumes?.find((item) => item.name === mount.name);
+    assertStockDestinationCaProjection(volume?.configMap, expectedCa.name);
     assert.equal(
-      container.image,
-      supervisor.reference,
-      "the supervisor must select the imported trust-only image",
+      workload.spec.volumes?.some(
+        (item) =>
+          item.configMap?.name === expectedCa.name ||
+          item.projected?.sources?.some((source) => source.configMap?.name === expectedCa.name),
+      ) ?? false,
+      false,
+      "workload must not receive the managed CA ConfigMap",
     );
-    // CRI implementations report either the manifest or image-config digest.
-    // Both were observed from this build, never inferred from the requested tag.
-    const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
-    assert.ok(
-      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
-      "the running supervisor image must match the imported trust-only build",
+    const managed = JSON.parse(
+      await kube(["get", "configmap", expectedCa.name, "-n", sandboxNamespace, "-o", "json"]),
     );
+    assertStockDestinationCaReadback(managed, expectedCa);
+
     return {
       sandboxId,
       workloadPodUid: workload.metadata.uid,

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999"
 ---
 
 # Audit ledger flow
@@ -145,10 +145,11 @@ The caller can append alongside resource changes in one unit of work. The
 standalone PostgreSQL audit sink opens its own transaction. With Control Plane
 audit enabled, PostgreSQL limits each statement and lock wait in the API's
 standalone audit write to two seconds. Separately, the work queue commits queue
-and claim events with the corresponding change. The queue event records the API
-request ID when a request started the work. The claim event carries a distinct
-attempt ID. That ID also identifies later evidence for the same claim. A claim
-insert failure leaves the job available.
+and claim events with the corresponding change. When the API supplies a request
+ID, the queue event records it from
+`packages/occ/src/controller-work-recorder.ts:record`.
+The claim event carries a distinct attempt ID. That ID also identifies later
+evidence for the same claim. A claim insert failure leaves the job available.
 
 The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
@@ -159,8 +160,17 @@ work `failed_permanent`) are ordinary details, not reserved metadata.
 
 ### 4. The transaction owner finishes or fails
 
-`packages/occ/src/state/postgres-state.ts:PostgresPlatformState` and
+`packages/occ/src/controller-transactions.ts:createControllerTransactions`,
+`packages/occ/src/state/postgres-state.ts:PostgresPlatformState`, and
 `packages/occ/src/ports/transaction.ts:RepositoryTransactionLifetime`
+
+Nested controller mutations use the current unit of work. The transaction scope
+keeps any registered compensation callbacks with that unit. Definite failures
+run compensation. OCC propagates an unknown commit before invoking these callbacks.
+
+PostgreSQL binds the read projection directly to the transaction lifetime.
+A write binds the unit of work and registers it for audit and Native IAM
+operations on the same client.
 
 After the callback returns, State closes admission to repository operations and
 waits for already admitted operations to settle before committing. On failure it
@@ -205,8 +215,8 @@ copies and array are immutable.
 
 ### 6. The Agent audit API saves a disclosure for each page
 
-`apps/controller/src/http/agent-audit.ts:createAgentAuditReader` and
-`packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
+`apps/controller/src/http/agent-audit.ts:createAgentAuditReader`,
+`packages/occ/src/agent-audit-reader.ts:listAgentAuditEvents`, and
 `apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
 When audit is enabled, composition supplies the PostgreSQL audit reader. The
@@ -241,7 +251,7 @@ to the same session, Agent, and window.
 - `tests/integration/postgres-agent-audit-read.test.ts` exercises the Agent
   route with real PostgreSQL, grant revocation, a refused disclosure insert,
   and a lost commit acknowledgement.
-- `tests/integration/postgres-repository-transactions.test.mjs` contains
+- `tests/integration/postgres-repository-transactions.test.ts` contains
   PostgreSQL append, metadata decoding, rejection, and rollback cases. Those
   cases require the [PostgreSQL test setup](../testing/postgresql.md); their
   presence and this source trace do not prove a test or deployed system passed.
@@ -259,6 +269,7 @@ to the same session, Agent, and window.
 
 ## Changelog
 
+- 2026-11-22 10:38: Trace how PostgreSQL binds repository methods for read and write transactions. (authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999 - b766b8ed991110ad86ce9e44adb59215ddb91293)
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 15:31: Trace how a successful Agent read saves the verified Agent and Namespace IDs. (authoring-run/bb7f16b1-d73b-4957-b5bb-212692e7ada9 - 8658496ea654b960bebabca40d18c7d71994db50)

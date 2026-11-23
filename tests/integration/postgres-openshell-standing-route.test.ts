@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   beforeNarrowGitPreparation,
   narrowOnlineGitJourney,
@@ -334,6 +334,7 @@ test(
   async (t) => {
     await beforeNarrowGitPreparation(
       t,
+      import.meta.url,
       async ({ runtime: first, revision, client, workspace, sandbox, pool, peer, writes }) => {
         let lostAcknowledgements = 0;
         const releases: boolean[] = [];
@@ -492,15 +493,11 @@ for (const fault of ["before write", "after commit", "during worker replacement"
       t.after(() => runtime.close());
       const { id, namespaceId, agentId } = revision;
       const worker = runtime["instance"];
+      const workspace = "team";
+      const sandbox = "one";
+      const bindingId = randomBytes(24).toString("base64url");
       await routes.open(
-        {
-          revisionId: id,
-          namespaceId,
-          agentId,
-          workspace: "team",
-          sandbox: "one",
-          bindingId: randomBytes(24).toString("base64url"),
-        },
+        { revisionId: id, namespaceId, agentId, workspace, sandbox, bindingId },
         worker,
       );
       // Neither an old fence nor a different worker who knows the fence can close this open row.
@@ -510,18 +507,66 @@ for (const fault of ["before write", "after commit", "during worker replacement"
         "superseded",
       );
       const hook = { startupId: randomUUID(), observationId: "b".repeat(64) };
+      const provider = "prepared-git";
+      const binding = {
+        workspace,
+        sandbox,
+        executionId: id,
+        provider,
+        providerId: randomUUID(),
+        profile: "git-write",
+        profileVersion: "1",
+        resourceVersion: "2",
+        expiresAt: new Date(revision.repositoryCredentials!.deadlineWallMs).toISOString(),
+        credentialState: "active",
+        update: "accepted",
+        supervisor: "unknown",
+        readiness: { rpc: "GetSandboxProviderStatus", workspace, sandbox, provider },
+      } as const;
+      const installed = {
+        workspace,
+        sandbox,
+        sandboxId: randomUUID(),
+        executionId: id,
+        provider,
+        providerId: binding.providerId,
+        providerResourceVersion: binding.resourceVersion,
+        profileVersion: binding.profileVersion,
+        credentialState: binding.credentialState,
+        attachmentEpoch: "1",
+        providerEnvRevision: "2",
+        configRevision: "1",
+        policyHash: "a".repeat(64),
+        supervisorSessionId: randomUUID(),
+        processInstanceId: randomUUID(),
+        networkInstanceId: randomUUID(),
+        observedHook: hook,
+      } as const;
       const entry = {
         revision,
+        binding,
+        bindingId,
         fence: 1,
         preview: { hook },
-        installed: { observedHook: hook },
+        supervisor: installed,
+        installed,
       } as Parameters<OpenShellGitRuntime["reconcile"]>[0];
       runtime["states"].set(id, { entry });
       let deliveries = 0;
       const release = () =>
-        runtime.releasePreview(id, hook.startupId, async () => {
-          deliveries++;
-          throw new Error("lost release acknowledgement");
+        runtime.releasePreview(id, hook.startupId, {
+          prepare: async () => {},
+          deliver: async () => {
+            deliveries++;
+            // A separate reader can observe the bound generation before the launcher starts.
+            const { rows } = await f.observerPool.query(
+              "SELECT desired, observed FROM occ.credential_deliveries WHERE revision_id = $1",
+              [id],
+            );
+            assert.equal(rows[0]?.desired.resourceVersion, binding.resourceVersion);
+            assert.deepEqual(rows[0]?.observed.observedHook, hook);
+            throw new Error("lost release acknowledgement");
+          },
         });
       await assert.rejects(release(), /lost release acknowledgement/);
       await pending;

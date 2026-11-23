@@ -7,7 +7,6 @@ spec:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-    # api-ingress isolates inbound API traffic. Operators own any API egress policy.
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: NotIn
@@ -110,7 +109,10 @@ spec:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: worker
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [worker]
   policyTypes: [Egress]
   egress:
     - to:
@@ -136,7 +138,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: worker
+    matchExpressions:
+      - {key: app.kubernetes.io/component, operator: In, values: [worker]}
   policyTypes: [Egress]
   egress:
     - to:

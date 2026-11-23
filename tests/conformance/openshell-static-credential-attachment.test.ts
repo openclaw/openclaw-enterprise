@@ -1,4 +1,4 @@
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   OpenShellGateway,
@@ -25,6 +25,7 @@ import type {
   ComputeRevisionContext,
   CredentialSource,
   CredentialSourceSnapshot,
+  OpenShellBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
 import type {
   OpenShellGatewayClient,
@@ -35,46 +36,47 @@ import type {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-type Configuration = ReturnType<typeof createCredentialProxyInstallationConfiguration> & {
-  backend: [
-    {
-      drivers: { sandbox: string; credential_gateway: string; credential_proxy?: string };
-      configuration: Record<string, unknown>;
-    },
-  ];
-  drivers: {
-    credential_proxy?: unknown;
-    compute: {
-      configuration: Record<string, unknown> & {
-        images: unknown;
-        network: Record<string, unknown>;
-      };
-    };
-  };
-};
 test("startup composes both OpenShell members from one Backend for static source preparation", async (t) => {
   const fixture = workspaceSetupFixture(false);
   const { state, objects, namespace } = fixture;
   const fixtureRevision = fixture.revision;
   const context = fixture.context as Mutable<ComputeRevisionContext>;
-  const configuration = createCredentialProxyInstallationConfiguration() as Configuration;
-  delete configuration.drivers.credential_proxy;
-  delete configuration.backend[0].drivers.credential_proxy;
-  configuration.backend[0].configuration = {
-    serviceName: "openshell-gateway",
-    port: 50051,
-    insecureTransport: "network-policy",
-  };
-  configuration.drivers.compute.id = fixture.driver.id;
-  configuration.drivers.compute.configuration = {
-    ...fixture.driver.options,
-    images: configuration.drivers.compute.configuration.images,
-  };
-  configuration.drivers.compute.configuration.network.providerHarness = {
-    namespace: "openshell",
-    podLabels: { app: "openshell-gateway" },
-    address: "10.43.0.50",
-    port: 8080,
+  const base = createCredentialProxyInstallationConfiguration();
+  const [openShell] = base.backend;
+  const { credential_proxy: _proxyLink, ...backendDrivers } = openShell.drivers;
+  const { credential_proxy: _proxySelection, ...drivers } = base.drivers;
+  const compute = fixture.driver.options;
+  const configuration = {
+    ...base,
+    backend: [
+      {
+        ...openShell,
+        configuration: {
+          serviceName: "openshell-gateway",
+          port: 50051,
+          insecureTransport: "network-policy",
+        } satisfies OpenShellBackendDefinition["configuration"],
+        drivers: backendDrivers,
+      },
+    ],
+    drivers: {
+      ...drivers,
+      compute: {
+        id: fixture.driver.id,
+        configuration: {
+          ...compute,
+          images: drivers.compute.configuration.images,
+          network: Object.assign(compute.network, {
+            providerHarness: {
+              namespace: "openshell",
+              podLabels: { app: "openshell-gateway" },
+              address: "10.43.0.50",
+              port: 8080,
+            } satisfies NonNullable<typeof compute.network.providerHarness>,
+          }),
+        },
+      },
+    },
   };
   // This already initialized Agent exercises attachment lifecycle, not file delivery.
   delete context.workspaceSetup;
@@ -123,10 +125,10 @@ test("startup composes both OpenShell members from one Backend for static source
   };
   const client: OpenShellGatewayClient = {
     health: unexpected,
+    attachSandboxProvider: unexpected,
     getWorkspace: unexpected,
     createWorkspace: unexpected,
     deleteWorkspace: unexpected,
-    getServiceUrl: unexpected,
     deleteService: unexpected,
     deleteSandbox: unexpected,
     execSandbox: unexpected,
@@ -217,7 +219,7 @@ test("startup composes both OpenShell members from one Backend for static source
     environment: {},
     createOpenShellBackend: () => ({
       id: "openshell",
-      drivers: configuration.backend[0].drivers,
+      drivers: backendDrivers,
       client: new OpenShellGateway({ serviceName: "openshell-gateway" }, { gatewayClient: client }),
     }),
   };
@@ -582,8 +584,11 @@ test("startup composes both OpenShell members from one Backend for static source
   ] satisfies [string, Partial<CredentialSource>][]) {
     await t.test(`changed live ${name} refuses without public fallback`, async () => {
       assert.equal(revision.harnessAuth.method, "credential_source");
-      if (revision.harnessAuth.method !== "credential_source") {
-        throw new Error("missing Harness source");
+      if (
+        revision.harnessAuth.method !== "credential_source" ||
+        revision.harnessAuth.credentialGatewayId === undefined
+      ) {
+        throw new Error("missing Harness Gateway source");
       }
       const before = calls.length;
       await assert.rejects(

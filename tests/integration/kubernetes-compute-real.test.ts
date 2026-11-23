@@ -1,13 +1,11 @@
+import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { Static } from "typebox";
-import type {
-  KubernetesComputeDriverOptions,
-  KubernetesWorkloadPeer,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import {
@@ -35,8 +33,8 @@ import {
   type UpdateConfigurationBody,
 } from "../../packages/contracts/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { inlineProbeCommand } from "../helpers/kubernetes-real.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { inlineProbeCommand } from "../helpers/kubernetes-real.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import {
   kubeconfigPath,
   kubernetesContext,
@@ -56,16 +54,22 @@ import {
   namespace,
   agentName,
   gatewayName,
+  harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway as readyGateway,
-  assertHarnessWorkspaceClaim as workspaceClaim,
-  assertAgentServiceEndpointCount,
   fixtureComputeConfiguration as createComputeConfiguration,
-  workloadPod as findWorkloadPod,
-  assertExecDenied,
-  createDnsTrafficFixture as provisionDnsTrafficFixture,
   deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  workloadPod,
+  assertExecDenied,
+  createDnsTrafficFixture,
+} from "../helpers/kubernetes-compute-network.ts";
+import {
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertRetainedHarnessWorkspaceClaim,
+  assertAgentServiceEndpointCount,
+} from "../helpers/kubernetes-compute-observations.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type ObjectMetadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
@@ -115,39 +119,8 @@ type RequestPayload =
   | UpdateConfigurationBody
   | AgentRuntimeCredentialsBody;
 type WorkspaceFiles = Record<string, string>;
-type DnsProtocol = "udp" | "tcp";
 type DnsAnswer = { address: string };
-type DnsTrafficFixture = {
-  selected: Pod;
-  unselected: Pod;
-  control: Pod;
-  query(source: Pod, target: Pod, protocol: DnsProtocol, port: number): Promise<string>;
-  assertQueryDenied(
-    description: string,
-    source: Pod,
-    target: Pod,
-    protocol: DnsProtocol,
-    port: number,
-  ): Promise<void>;
-};
-
 const kubectlRead: (...args: string[]) => Promise<string> = runKubectlRead;
-const assertReadyGateway: (
-  placement: string,
-  agentId: string,
-  namespaceId: string,
-  candidate?: Revision,
-) => Promise<Deployment> = readyGateway;
-const assertHarnessWorkspaceClaim: (
-  placement: string,
-  namespaceId: string,
-  agentId: string,
-  expectedUid?: string,
-) => Promise<ListedObject> = workspaceClaim;
-const createDnsTrafficFixture = provisionDnsTrafficFixture as (
-  context: TestContext,
-  peer: KubernetesWorkloadPeer,
-) => Promise<DnsTrafficFixture>;
 const fixtureComputeConfiguration = createComputeConfiguration as (
   overrides: Partial<KubernetesComputeDriverOptions>,
 ) => KubernetesComputeDriverOptions;
@@ -161,8 +134,6 @@ const resources: <K extends string>(
   namespace: string,
 ) => Promise<(K extends keyof ResourcesByKind ? ResourcesByKind[K] : ListedObject)[]> =
   listResources;
-const workloadPod: (namespace: string, selector: string) => Promise<Pod | undefined> =
-  findWorkloadPod;
 const waitFor: <T>(
   description: string,
   operation: () => T | false | undefined | Promise<T | false | undefined>,
@@ -265,7 +236,7 @@ test(
               gatewayNodeSelector: {
                 "kubernetes.io/hostname": await runtimeNodeName(),
               },
-              channels: { proxyUrl: "http://10.42.0.15:3128" },
+              channelEgress: channelEgressOptions,
             },
           },
     );
@@ -743,7 +714,7 @@ test(
           missingConfiguration.error.message,
           /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
         );
-        // This k3d fixture has no runtime.channels proxy and uses the fixture image,
+        // This k3d fixture has no runtime.channelEgress proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
         // projection. Real Slack channel runtime proof belongs to the real-runtime suite.
         const updated = await request<ConfigurationResponse>(
@@ -1393,6 +1364,7 @@ test(
       adoptedNamespaceId,
       adoptedTenant.id,
     );
+    const adoptedWorkspaceName = harnessWorkspaceClaimName(adoptedTenant.id);
     await resource(
       "configmap",
       kubernetesConfigurationName(adoptedTenant.configurationId),
@@ -1472,9 +1444,9 @@ test(
         .filter(({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === adoptedTenant.id);
       return ownedPods.length === 0 ? current.data : undefined;
     });
-    assert.equal(
-      (await resource("persistentvolumeclaim", adoptedWorkspace.metadata.name, existingName))
-        .metadata.uid,
+    await assertRetainedHarnessWorkspaceClaim(
+      existingName,
+      adoptedWorkspaceName,
       adoptedWorkspace.metadata.uid,
       "API stop must retain the exact Agent workspace claim",
     );
@@ -1786,7 +1758,7 @@ test(
     for (const name of adoptedCredentialSecrets) {
       assert.equal(await missing("secret", name, existingName), true);
     }
-    const deletedClaims = [adoptedWorkspace.metadata.name];
+    const deletedClaims = [adoptedWorkspaceName];
     if (runtimeImage !== undefined) {
       deletedClaims.push(`gateway-state-${hash(adoptedTenant.id)}`);
     }

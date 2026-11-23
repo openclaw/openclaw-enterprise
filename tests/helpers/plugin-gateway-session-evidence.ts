@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { SQLOutputValue } from "node:sqlite";
-import { isGatewayCompletionId } from "../../scripts/first-agent-model.mjs";
-import { redactedQaTail } from "./qa-secrets.mjs";
+import { isGatewayCompletionId } from "../../scripts/first-agent-model.ts";
+import { redactedQaTail } from "./qa-secrets.ts";
 
 type TranscriptFailure = "integrity" | "prompt_missing" | "answer_missing" | "source" | "run";
 type ReplyFailure =
@@ -1073,13 +1073,13 @@ function codexSessionBindingInGateway() {
   }
 }
 
-type AgentSelection = {
+export type AgentSelection = {
   id?: string | undefined;
   namespaceId?: string | undefined;
   revision?: { id?: string | undefined } | undefined;
 };
 
-type SessionEvidenceOptions = {
+export type SessionEvidenceOptions = {
   sessionKey: string;
   turnMarker: string;
   toolName?: string;
@@ -1088,6 +1088,10 @@ type SessionEvidenceOptions = {
   expectedCatalog?: Catalog;
   codeModeCall?: CodeModeCall;
 };
+
+// Missing sessions have no transcript fields. Assertions narrow the fields they need
+// after checking the marker window and preserve the raw evidence for diagnostics.
+type HostSessionEvidence = Record<string, unknown> & { runtime: string };
 
 type GatewayCommand = [node: "node", evalFlag: "-e", script: string, ...args: string[]];
 type GatewayExecution = { label: string; stdout: string };
@@ -1143,6 +1147,12 @@ export function createGatewaySessionEvidence({
   execGateway: (agent: AgentSelection, argv: GatewayCommand) => Promise<GatewayExecution>;
   proofMode: "openclaw" | "codex";
 }) {
+  async function execGatewayJson(agent: AgentSelection, script: string, ...args: string[]) {
+    const execution = await execGateway(agent, ["node", "-e", script, ...args]);
+    const value: unknown = JSON.parse(execution.stdout);
+    return { execution, value };
+  }
+
   async function sessionEvidence(
     agent: AgentSelection,
     {
@@ -1154,7 +1164,7 @@ export function createGatewaySessionEvidence({
       expectedCatalog,
       codeModeCall,
     }: SessionEvidenceOptions,
-  ) {
+  ): Promise<HostSessionEvidence> {
     if (codeModeCall !== undefined) {
       assert.equal(proofMode, "openclaw");
       assert.equal(toolName, "exec");
@@ -1163,9 +1173,8 @@ export function createGatewaySessionEvidence({
       assert.equal(codeModeCall.awaitResults, true);
       assert.equal(expectedArguments, undefined);
     }
-    const execution = await execGateway(agent, [
-      "node",
-      "-e",
+    const { execution, value: evidence } = await execGatewayJson(
+      agent,
       sessionEvidenceScript,
       sessionKey,
       turnMarker,
@@ -1176,8 +1185,7 @@ export function createGatewaySessionEvidence({
       JSON.stringify(codeModeCall ?? expectedArguments ?? null),
       JSON.stringify(expectedCatalog ?? null),
       JSON.stringify(codeModeCall ?? null),
-    ]);
-    const evidence: unknown = JSON.parse(execution.stdout);
+    );
     assert.ok(isRecord(evidence), "expected Gateway session evidence");
     const results: unknown = evidence.results;
     if (results != null) {
@@ -1201,14 +1209,12 @@ export function createGatewaySessionEvidence({
     { sessionKey, conversationReply = false }: BindingOptions,
   ): Promise<BindingEvidence> {
     assert.equal(proofMode, "codex");
-    const execution = await execGateway(agent, [
-      "node",
-      "-e",
+    const { value: binding } = await execGatewayJson(
+      agent,
       codexSessionBindingScript,
       sessionKey,
       conversationReply ? "conversation-reply" : "",
-    ]);
-    const binding: unknown = JSON.parse(execution.stdout);
+    );
     assert.ok(isRecord(binding), "expected Gateway session binding evidence");
     if (binding.failure === "session_missing") {
       return { failure: binding.failure };
@@ -1266,9 +1272,8 @@ export function createGatewaySessionEvidence({
         throw new ConversationReplyError("failure" in before ? "session_missing" : "binding");
       }
       reading = "transcript";
-      const execution = await execGateway(selected, [
-        "node",
-        "-e",
+      const { value: evidence } = await execGatewayJson(
+        selected,
         conversationReplyScript,
         sessionKey,
         turnMarker,
@@ -1280,8 +1285,7 @@ export function createGatewaySessionEvidence({
         "conversation-reply",
         before.threadId,
         runId,
-      ]);
-      const evidence: unknown = JSON.parse(execution.stdout);
+      );
       reading = "binding";
       const after = await readCodexSessionBinding(selected, {
         sessionKey,

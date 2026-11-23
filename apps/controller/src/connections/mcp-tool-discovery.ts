@@ -6,7 +6,6 @@ import {
   StreamableHTTPClientTransport,
   type FetchLike,
 } from "@modelcontextprotocol/client";
-import { isOAuthBearerToken } from "@openclaw-enterprise/contracts";
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
 import ipaddr from "ipaddr.js";
 import { Agent, fetch as undiciFetch } from "undici";
@@ -30,7 +29,7 @@ export async function listManagedMcpToolNames(
     url.password ||
     url.search ||
     url.hash ||
-    !isOAuthBearerToken(accessToken)
+    !/^[a-z0-9._~+/-]+=*$/iu.test(accessToken)
   ) {
     throw new PluginDiscoveryError("invalid_response");
   }

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-14
-last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
+updated: 2026-11-20
+last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -21,8 +21,8 @@ actionable error.
   authorized caller posts to the Namespace channel directory route.
 - Assumptions: the caller can create an Agent or update the exact Agent or
   Configuration, and can operate the selected same-Namespace Secret.
-- Source: `apps/controller/src/console/agents/slack-directory.mjs:createSlackDirectoryField`,
-  `packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`,
+- Source: `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`,
+  `packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`,
   and `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.lookupDirectory`.
 
 ## Flow
@@ -36,11 +36,10 @@ graph TD
   P -->|yes| C["SecretDriver reads current value"]
   C --> D["OCC rechecks target, Secret grant, and backend identity"]
   D -->|changed| X
-  D -->|current| M{"API proxy configured?"}
-  M -->|yes| H["Tunnel through the configured Slack proxy"]
-  M -->|no| I["Connect directly over HTTPS"]
+  D -->|current| M{"Managed OCC listener configured?"}
+  M -->|no| X
+  M -->|yes| H["Tunnel through the reserved Envoy listener"]
   H --> E["Slack Driver reads workspace and directory pages"]
-  I --> E
   E -->|provider error| X
   E --> F["Console shows names and exact IDs"]
   F --> G["Configuration saves selected IDs"]
@@ -50,7 +49,7 @@ graph TD
 
 ### 1. Authorize the selected Secret
 
-`packages/occ/src/index.ts:OpenClawController.channelDirectorySecret`
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.channelDirectorySecret`
 
 The request names a same-Namespace Secret and optionally an Agent or
 Configuration being edited. OCC checks the matching create or exact update
@@ -59,25 +58,15 @@ platform state. A missing or foreign target is rejected before provider I/O.
 
 ### 2. Read and use the current value
 
-`packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`
 
-Production composition selects the bundled Slack ChannelDriver. With the default
-Helm settings, the API contacts `slack.com:443` directly. If an operator configures
-a directory proxy, the Driver opens a CONNECT tunnel through it. For the managed
-proxy, Helm sets the Service URL and its trusted host in
-`OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`. Operators own any API egress policy.
-The managed proxy accepts Slack hostnames on port 443. Its own NetworkPolicy
-permits public IPv4 destinations on TCP 443 and excludes private and reserved ranges.
-
-In `apps/controller/src/slack-proxy.mjs:createSlackProxyServer`, the managed
-proxy starts a 10-second wait when a write to the client is pending, even if
-the write buffer is below its high-water mark. The proxy clears the wait when
-all pending writes complete. A later pending write starts a new wait. A quiet
-tunnel has no write deadline. An upstream end, an upstream close, or a client
-close also clears the wait. If the wait expires with a write still pending,
-the proxy resets the client connection so a partial reply cannot appear
-complete. After a clean upstream end, a separate wait gives the client time
-to read the remaining bytes and close its side.
+Composition binds the Slack Driver to the reserved OCC channel-egress listener
+from the validated Installation configuration. Missing routing prevents provider
+I/O; it never enables direct fallback. Directory failures are returned as
+unavailable. Credential validation reports a configuration conflict when the
+managed route is absent. Helm admits only the authorized API Pods to this
+listener. Agent and Harness grants remain separate. See
+[channel egress](channel-egress.md) for policy enforcement and address checks.
 
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
@@ -91,14 +80,14 @@ An incomplete page cannot establish that a name is absent or unique.
 cancels an unused response body on a non-success HTTP status before returning
 the safe rate-limit or unavailable error. This releases occupied transport
 capacity even when the error body has not finished. The same request owner
-serves credential validation; no automatic retry is added. Helm enables direct API HTTPS. With no proxy, an unanswered Slack request returns `503`. A non-Helm installation that expects a proxy can return `409` for a missing route during credential validation. Successful responses
+serves credential validation; no automatic retry is added. Successful responses
 have an 8,000,000-byte streaming cap before decoded JSON is checked against the
 existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read and returns `invalid_response`.
 
 ### 3. Display names and save IDs
 
-`apps/controller/src/console/channels/slack.mjs:appendFields`,
-`apps/controller/src/console/agents/slack-directory.mjs:createSlackDirectoryField`
+`apps/controller/src/console/channels/slack.mts:appendFields`,
+`apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`
 
 The Console presents bot-token selection before channel access and explains that
 name lookup needs that token. It debounces typing and shows each candidate's name,
@@ -146,7 +135,9 @@ view.
 - A denied lookup requires checking the exact edit permission and Secret
   `operate` grant. A token, scope, rate limit, or provider error returns a
   safe code without the token or upstream payload.
-- A `501` lookup indicates the Channel Driver does not provide directory lookup. For a `503`, check the API Pod’s connection to Slack and any configured proxy.
+- An unavailable lookup requires the managed OCC listener. Check the
+  [channel egress fleet](../reference/drivers/kubernetes-compute/channel-egress.md)
+  and its exact API Pod grant before retrying.
 - Directory conformance tests cover provider pagination, safe errors, and native
   HTTP connection recovery after unfinished 429 and 503 response bodies. The
   OCC API integration test covers both authorization checks and response
@@ -169,13 +160,13 @@ view.
 
 ## Changelog
 
-- 2026-11-14 02:38: Trace direct and proxied API lookup. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 847a1d6ae3599e6ddcac3e5a583d0e84eed3fcab)
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
+
+- 2026-11-19 00:02: Routed provider requests through managed OCC channel egress (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - e05a54b4b3daf86249c89aaeb2a8491dd52c80cc)
 
 - 2026-11-14 00:08: Clarify pending client writes and fresh drain budgets in the accompanying Slack proxy correction. (authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8 - 3309c7be21ce3c3c0256eb470f294c75c2c771f1)
 
 - 2026-11-13 22:19: Document bounded client write stalls in the accompanying Slack proxy change. (authoring-run/38e47fe4-fe4c-4f85-9b86-3a9cca43424e - bf84c5566fc92f97e7f9a4f7ae1f4a5778a0e83c)
-
-- 2026-11-05 23:32: Trace direct Slack lookup from the API Server. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
 
 - 2026-11-04 22:37: Document closed-picker reopening and pending activation cancellation in the accompanying local change. (authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 

@@ -198,11 +198,11 @@ Its closed `configuration` accepts:
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
 
-Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
-`drivers.credential_gateway` are required and must match the selected bundled
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). The
-optional `drivers.credential_refresh` member must match the selected
+Either `endpoint` or `serviceName` is required. `drivers.sandbox` must match the selected bundled
+[OpenShell SandboxDriver](drivers/openshell-sandbox.md). Optional `drivers.credential_gateway`
+must match the selected legacy [Credential Gateway Driver](drivers/openshell-credential-gateway.md).
+The Gateway service transport does not require that legacy Driver. The
+optional `drivers.credential_refresh` member requires that Gateway Driver and must match the selected
 [Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
 refresh state on the gateway's provider records, so the two roles share this
 Backend. One

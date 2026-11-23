@@ -1,6 +1,8 @@
 // Startup steps shared by the Kubernetes and Docker runtime wrappers. Each
 // returns program text that a wrapper embeds in its generated Node program.
 
+import { EXITED_OPENCLAW_STATE_STOP_WAIT_MS } from "./embedded-gateway-owner.ts";
+
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
 /**
@@ -35,7 +37,6 @@ export function gatewayManagedModeEnvironment(managedMode: boolean): string {
           OPENCLAW_CONFIG_READONLY: "1",
           OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
           OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
-          OPENCLAW_DISABLE_SKILL_INSTALLS: "1",
           OPENCLAW_CONFIG_READONLY_NOTICE:
             "OpenClaw Enterprise manages this Gateway’s configuration. In the OCE Console, edit and save the Agent’s draft Configuration, then select Deploy new version. https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
         }
@@ -96,8 +97,8 @@ async function timeStartupPhase(phase, run) {
  * a released Gateway and a released workspace node fail when a pin moves either;
  * update them with the pin.
  */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 40;
-export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 39;
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 43;
+export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 40;
 
 // A Gateway and a dedicated Harness's workspace node keep OpenClaw state across
 // runtime image upgrades. OpenClaw refuses an older agent database (exit 78) and
@@ -116,10 +117,14 @@ export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 39;
 // the step is named
 // and the wrapper must not start OpenClaw; `retry` completes the log line's
 // remedy. The wrapper provides `spawn`, `logStartupPhase` and
-// `publishRuntimeFailure`.
+// `publishRuntimeFailure`. A Kubernetes wrapper also passes `releaseExitedState`
+// and provides `releaseExitedOpenClawState` (EXITED_OPENCLAW_STATE_RELEASE): a Doctor
+// that ends without settling, stopped with the Pod or killed, may leave the state
+// directory's owner lock, which no later Pod can verify (finding 3345).
 export function openClawStateMigrationHelper(
   owner: "Gateway" | "Harness" | "Native worker",
   retry: string,
+  { releaseExitedState = false }: { releaseExitedState?: boolean } = {},
 ): string {
   return String.raw`
 // This private presence marker survives a failed or interrupted repair even when
@@ -223,11 +228,12 @@ function outdatedOpenClawDatabases(stateDirectory) {
 // the command (SIGKILL) while it holds the lock. That lock on retained state outlives
 // the Pod, and OpenClaw refuses it from every later PID namespace (finding 3104).
 // forwardStop passes a stop (SIGTERM, SIGINT) to the command, whose own handling
-// cancels its work. Otherwise the command runs to its end: OpenClaw's launcher kills
-// the CLI it respawns about 2 s after forwarding a stop, too soon for native setup to
-// release its lock, while setup itself ends within seconds, inside the Pod's
-// termination grace period. Resolves { status, signal, error } as spawnSync reports a
-// child, and terminating when a stop arrived.
+// cancels its work. Otherwise the command runs to its end: OpenClaw's launchers exit
+// about 2 s after forwarding a stop, and the wrapper with them, which ended the
+// container before native setup released its lock, while setup itself ends within
+// seconds, inside the Pod's termination grace period. A stopped Doctor's CLI outlives
+// its launchers; see EXITED_OPENCLAW_STATE_RELEASE. Resolves { status, signal, error }
+// as spawnSync reports a child, and terminating when a stop arrived.
 function runOpenClawStateOwner(args, options, { forwardStop, onStdout }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["/app/openclaw.mjs", ...args], options);
@@ -316,7 +322,15 @@ async function migrateOpenClawState(stateDirectory, outdated, environment) {
       " with openclaw doctor --fix.",
   );
   setOpenClawMaintenancePending(stateDirectory, true);
-  const doctor = await runStateMigrationDoctor(environment);
+  const doctor = await runStateMigrationDoctor(environment);${
+    releaseExitedState
+      ? "\n  // Before the wrapper exits or holds. A Doctor that completed released its own locks;\n" +
+        "  // a stopped one's CLI can still be cleaning up, within the Pod's termination grace period.\n" +
+        "  if (!doctor.completed) releaseExitedOpenClawState(environment, doctor.terminating ? " +
+        EXITED_OPENCLAW_STATE_STOP_WAIT_MS +
+        " : 0);"
+      : ""
+  }
   if (doctor.terminating) process.exit(0);
   const remaining = outdatedOpenClawDatabases(stateDirectory);
   if (doctor.completed && remaining.length === 0) {

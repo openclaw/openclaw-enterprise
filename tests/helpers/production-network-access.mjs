@@ -11,74 +11,22 @@ import {
   kubectlArguments,
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { kubectlGetJson } from "./kubernetes-api-read.ts";
 import {
   parseProductionChart,
   productionCollectorValues,
   renderProductionChart,
-} from "./production-chart.mjs";
+} from "./production-chart.ts";
 import { createDriver, fixtureComputeConfiguration } from "./kubernetes-compute-real.mjs";
+import { createManagementPolicyControls } from "./production-network-management-access.ts";
+import { createProductionNetworkProbe } from "./production-network-probe.ts";
+
+/** @import { ManagementTenant } from "./production-network-management-access.ts" */
 
 const execute = promisify(execFile);
 const componentLabel = "app.kubernetes.io/component";
 const instanceLabel = "app.kubernetes.io/instance";
-const deniedErrors = new Set([
-  "ETIMEDOUT",
-  "ETIMEOUT",
-  "ECONNREFUSED",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-]);
-
-// Resolve through the Pod's real kube-DNS configuration; TCP destinations are live listeners.
-// Reporting transport errors as data keeps kubectl, image, and JavaScript failures fatal.
-const probeCode = `
-const {createConnection} = require('node:net');
-const {Resolver} = require('node:dns/promises');
-const {get} = require('node:https');
-async function probe(target) {
-  try {
-    if (target.dns) {
-      await new Resolver({timeout: 1500, tries: 1}).resolve4(target.dns);
-    } else if (target.ca) {
-      await new Promise((resolve, reject) => {
-        const request = get({hostname: target.host, port: target.port, path: '/version',
-          servername: 'kubernetes.default.svc', ca: target.ca, agent: false}, response => {
-          let body = '';
-          response.setEncoding('utf8');
-          response.on('data', chunk => { body += chunk; });
-          response.once('error', reject);
-          response.once('end', () => {
-            try {
-              const result = JSON.parse(body);
-              const version = response.statusCode === 200 && typeof result.gitVersion === 'string';
-              const unauthenticated = response.statusCode === 401 && result.kind === 'Status' &&
-                result.reason === 'Unauthorized' && result.code === 401;
-              if (version || unauthenticated) resolve();
-              else reject(Object.assign(new Error('Expected Kubernetes response'), {code: 'INVALID_API_RESPONSE'}));
-            } catch (error) { reject(error); }
-          });
-        });
-        const deadline = setTimeout(() => request.destroy(Object.assign(new Error(), {code: 'ETIMEDOUT'})), 1500);
-        request.once('close', () => clearTimeout(deadline));
-        request.once('error', reject);
-      });
-    } else {
-      await new Promise((resolve, reject) => {
-        const socket = createConnection({host: target.host, port: target.port});
-        socket.setTimeout(1500, () => socket.destroy(Object.assign(new Error(), {code: 'ETIMEDOUT'})));
-        socket.once('connect', () => { socket.destroy(); resolve(); });
-        socket.once('error', reject);
-      });
-    }
-    return 'connected';
-  } catch (error) { return error.code; }
-}
-Promise.all(Object.entries(JSON.parse(process.argv[1])).map(async ([name, target]) =>
-  [name, await probe(target)]
-)).then(results => console.log(JSON.stringify(Object.fromEntries(results))));
-`;
 
 export async function createProductionNetworkAccess(t, { selection, image }) {
   assert.ok(image, "OCC_TEST_KUBERNETES_IMAGE must select an imported Kubernetes fixture image.");
@@ -87,6 +35,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   const destinations = `${namespace}-destinations`;
   const envoyNamespace = `${namespace}-envoy`;
   const ownedNamespaces = [];
+  /** @param {...string} args */
   const kubectl = async (...args) =>
     (await kubectlGetJson(selection, args, { timeoutMs: 30_000 })) ??
     (await execute("kubectl", kubectlArguments(selection, args), { timeout: 30_000 })).stdout;
@@ -95,6 +44,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     kubectl,
     waitTimeoutMs: 60_000,
   });
+  /** @returns {Promise<string>} */
   const kubectlWithInput = (args, object) =>
     new Promise((resolve, reject) => {
       const child = execFile(
@@ -306,62 +256,21 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     }),
   );
 
-  const probe = async (source, names, tcpOnly = []) =>
-    JSON.parse(
-      await kubectl(
-        "exec",
-        "--namespace",
-        sources[source].namespace,
-        source.toLowerCase(),
-        "--",
-        "node",
-        "-e",
-        probeCode,
-        JSON.stringify(
-          Object.fromEntries(
-            names.map((name) => [
-              name,
-              // Denial means no TCP connection. A later TLS failure must never hide
-              // a policy that accidentally allowed the connection through.
-              tcpOnly.includes(name) && targets[name].ca
-                ? { host: targets[name].host, port: targets[name].port }
-                : targets[name],
-            ]),
-          ),
-        ),
-      ),
-    );
+  const { controls, verify: verifyNetworkAccess } = await createProductionNetworkProbe({
+    kubectl,
+    waitFor,
+    diagnostic: (message) => t.diagnostic(message),
+    sources,
+    targets,
+  });
   let envoyEnabled = false;
-  async function controls(names, controlSource) {
-    for (const source of controlSource ? [controlSource] : ["operator", "api"]) {
-      const selected = controlSource
-        ? names
-        : names.filter(
-            (name) => (envoyEnabled && name === "envoy" ? "api" : "operator") === source,
-          );
-      if (!selected.length) {
-        continue;
-      }
-      let last;
-      await waitFor(
-        `${source}: reachable positive controls ${selected}`,
-        async () => {
-          last = await probe(source, selected);
-          return selected.every((name) => last[name] === "connected");
-        },
-        30_000,
-      ).catch((error) => {
-        t.diagnostic(`${source}: last positive-control results ${JSON.stringify(last)}`);
-        throw error;
-      });
-    }
-  }
 
   const quickstart = fileURLToPath(
     new URL("../../docs/snippets/openshell-quickstart/", import.meta.url),
   );
   const runDir = await temporaryDirectory(t, "oce-network-");
   await symlink(join(quickstart, "kubernetes"), join(runDir, "kubernetes"));
+  /** @param {string} command @param {ManagementTenant} [tenant] */
   const runNetworkHelper = (command, tenant, path = process.env.PATH) =>
     execute(
       "bash",
@@ -397,6 +306,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     metadata: { name, namespace: space },
     spec,
   });
+  /** @type {ManagementTenant[] | undefined} */
   let managementTenants;
   let ownedApiDiscoveryPath;
   async function updateApiEndpointSlice(update) {
@@ -730,67 +640,26 @@ print(json.dumps(payload))
       );
       assert.match(result.stderr, /No ready Kubernetes API endpoint/);
     },
-    async confirmManagementPortControls() {
-      // Change only destination ingress. A successful connection from each caller
-      // proves that its preceding 8081 denial was not caused by source egress.
-      const name = "verify-management-listener";
-      await apply([
-        policy(name, system, {
-          podSelector: { matchLabels: sources.management.labels },
-          policyTypes: ["Ingress"],
-          ingress: [{ ports: [{ protocol: "TCP", port: 8081 }] }],
-        }),
-      ]);
-      try {
-        await Promise.all(
-          [
-            "managementapi",
-            "managementworker",
-            "supervisor0",
-            "gateway0",
-            "supervisor1",
-            "gateway1",
-          ].map((source) => controls(["managementWrongPort"], source)),
-        );
-      } finally {
-        await kubectl("delete", "networkpolicy", "-n", system, name);
-      }
-    },
-    async removeRecordedServicePolicies() {
-      await runNetworkHelper("delete_service_peers");
-      for (const tenant of managementTenants) {
-        const remaining = await kubectl(
-          "get",
-          "networkpolicy",
-          "-n",
-          system,
-          "--ignore-not-found",
-          "-o",
-          "name",
-          "oce-management-from-supervisors-" + kubernetesHash(tenant.id),
-          "oce-management-from-" + kubernetesHash(tenant.agent),
-        );
-        assert.equal(remaining.trim(), "", "uninstall must remove earlier and later tenant grants");
-      }
-    },
-    async withdrawSupervisorGrant(index) {
-      const tenant = managementTenants[index];
-      await kubectl(
-        "delete",
-        "networkpolicy",
-        "-n",
-        "oce-system",
-        "oce-management-from-supervisors-" + kubernetesHash(tenant.id),
-      );
-    },
-    async removeTenantOwnership(index) {
-      await kubectl(
-        "label",
-        "namespace",
-        managementTenants[index].namespace,
-        "openclaw.dev/namespace-",
-      );
-    },
+    ...createManagementPolicyControls({
+      system,
+      allowManagementPort: (name, port) =>
+        apply([
+          policy(name, system, {
+            podSelector: { matchLabels: sources.management.labels },
+            policyTypes: ["Ingress"],
+            ingress: [{ ports: [{ protocol: "TCP", port }] }],
+          }),
+        ]),
+      controls,
+      kubectl,
+      runNetworkHelper,
+      *recordedTenants() {
+        for (const tenant of managementTenants) {
+          yield tenant;
+        }
+      },
+      tenantField: (index, field) => managementTenants[index][field],
+    }),
     async installPublicReaderRevisions() {
       const address = "10.43.0.19";
       const peer = { namespace: destinations, podLabels: { app: "public-reader" }, address };
@@ -881,34 +750,9 @@ print(json.dumps(payload))
       );
       envoyEnabled = phase === "routing";
     },
-    async verify({ source, allow = [], deny = [], controlSource }) {
-      const names = [...allow, ...deny];
-      await controls(names, controlSource);
-      let consecutive = 0;
-      let last;
-      await waitFor(
-        `${source}: allow ${allow}; deny ${deny}`,
-        async () => {
-          last = await probe(source, names, deny);
-          for (const name of names) {
-            assert.ok(
-              last[name] === "connected" || deniedErrors.has(last[name]),
-              `${source} -> ${name}: unexpected probe result ${last[name]}`,
-            );
-          }
-          const matches =
-            allow.every((name) => last[name] === "connected") &&
-            deny.every((name) => deniedErrors.has(last[name]));
-          consecutive = matches ? consecutive + 1 : 0;
-          return consecutive >= (deny.length ? 2 : 1);
-        },
-        30_000,
-      ).catch((error) => {
-        t.diagnostic(`${source}: last connection results ${JSON.stringify(last)}`);
-        throw error;
-      });
-      await controls(names, controlSource);
-      t.diagnostic(`${source}: allow [${allow.join(", ")}]; deny [${deny.join(", ")}]`);
+    /** @param {Parameters<typeof verifyNetworkAccess>[0]} scenario */
+    verify(scenario) {
+      return verifyNetworkAccess(scenario, envoyEnabled);
     },
   };
 }

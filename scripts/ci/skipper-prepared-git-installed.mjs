@@ -31,7 +31,7 @@ import {
   run,
   startLocalSetup,
   workDirectory,
-} from "./first-agent-smoke.mjs";
+} from "./first-agent-smoke.ts";
 
 const env = process.env;
 const lane = "skipper-prepared-git-installed";
@@ -283,7 +283,7 @@ try {
   const runner = await run(
     process.execPath,
     [
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/run-tests.ts",
       "run",
       lane,
       "--state",
@@ -375,7 +375,9 @@ try {
       if (
         Number.isSafeInteger(nativePolls) &&
         nativePolls >= 0 &&
-        ["running", "completed", "deadline", "unrecognized"].includes(nativeStatus) &&
+        ["running", "completed", "deadline", "tool-denied", "unrecognized"].includes(
+          nativeStatus,
+        ) &&
         (nativeExitCode === null || Number.isInteger(nativeExitCode)) &&
         typeof nativeSessionPresent === "boolean"
       ) {

@@ -33,8 +33,8 @@ import {
   serviceAccountDriverId,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
 
 test(
   "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",

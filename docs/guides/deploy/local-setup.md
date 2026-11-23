@@ -13,6 +13,10 @@ Install OpenClaw Enterprise (OCE) in a private k3d cluster.
 - [Prepare your Linux host](local-kubernetes-tools.md). Check that your operator account can use Docker, pnpm and the Kubernetes tools.
 - Use an operator account with permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
+The local launcher prepares [managed channel egress](channel-egress.md), including
+the Envoy dependencies and matching network exclusions. After deploying a
+dedicated Codex Agent, you can [connect it to Slack](../integrations/channels.md).
+
 ## 1. Prepare the quickstart files and select a matching release
 
 At the root of the OCE checkout, start a child Bash shell. Run the remaining blocks there. A failed command stops setup and returns you to your original terminal. Keep the printed run directory for recovery.
@@ -55,7 +59,7 @@ private directory created above, even after changing checkouts.
 ```bash
 # Stage the network policy for cluster startup and the configuration script for the Helm reload.
 install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mts "$RUN_DIR/configure-installation.mts"
 source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
@@ -89,11 +93,11 @@ The launcher enables Gateway TLS, mTLS and authentication before startup. Wait f
 
 Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
 
-The [configuration script](../../snippets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
+The [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) checks that the generated rule matches the expected settings before changing it.
 
 ```bash
 # Edit the fresh installation.yaml once, before provisioning Agents.
-node "$RUN_DIR/configure-installation.mjs"
+node "$RUN_DIR/configure-installation.mts"
 ```
 
 Step 4 reloads this edit through the authenticated operator session, preserving the

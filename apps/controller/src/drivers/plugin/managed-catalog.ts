@@ -2,16 +2,12 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
-  type AgentRevision,
   type CredentialSource,
-  type ImportedMcpServer,
-  type ImportedPluginConnectionTemplate,
-  type InspectedPluginPackage,
-  type ImportedPluginReleasePin,
-  type PluginDesiredSelection,
   type PluginConnectionRelease,
   type PluginCatalogEntry,
   type PluginDesiredState,
+  type PluginDeploymentContract,
+  type PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -53,7 +49,7 @@ function loadManagedInstall(packageName: string) {
       ? /^occ-plugin:([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/u.exec(extension.id)?.[1]
       : undefined;
   if (
-    policyScope !== "enablement_only" ||
+    (policyScope !== "enablement_only" && policyScope !== "tool_human_approval") ||
     extension?.release !== "./ai.openclaw.oce/release.json" ||
     !runtimeName ||
     !isNonEmptyString(extension.displayName) ||
@@ -75,20 +71,10 @@ function loadManagedInstall(packageName: string) {
     throw new Error(`Invalid placement in bundled package: ${packageName}.`);
   }
 
-  // The Gateway exposes this skill root only when the bundled release declares it.
-  const gateway = asRecord(release?.capabilities)?.gateway;
-  let skillName: string | undefined;
-  if (Array.isArray(gateway) && gateway.includes("skill")) {
-    if (!isNonEmptyString(release?.skill)) {
-      throw new Error(`Invalid Gateway skill in bundled package: ${packageName}.`);
-    }
-    skillName = release.skill;
-  }
   const id = `${extension.id}@${pkg.version}`;
   return {
     id,
     packageName,
-    skillName,
     directory,
     release,
     runtimeName,
@@ -129,7 +115,9 @@ const bundledInstalls = marketplace.plugins.map(({ name, source }) => {
 function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
   const { release } = install;
   const credentials = release?.credentials;
+  const gatewayCapabilities = asRecord(release?.capabilities)?.gateway;
   if (
+    install.policyScope !== "enablement_only" ||
     !Check(
       Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
         minProperties: 1,
@@ -138,6 +126,10 @@ function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
       }),
       credentials,
     ) ||
+    typeof release?.skill !== "string" ||
+    !/^[a-z][a-z0-9-]*$/.test(release.skill) ||
+    !Array.isArray(gatewayCapabilities) ||
+    !gatewayCapabilities.includes("skill") ||
     !isNonEmptyString(release?.executable) ||
     !/^[a-z][a-z0-9-]*$/.test(release.executable) ||
     typeof release.runtimeDirectory !== "string" ||
@@ -145,10 +137,30 @@ function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
   ) {
     throw new Error(`Invalid managed CLI release: ${install.packageName}.`);
   }
+  const skillBytes = readFileSync(new URL(`skills/${release.skill}/SKILL.md`, install.directory));
+  const skillSha256 = createHash("sha256").update(skillBytes).digest("hex");
+  if (skillSha256 !== release.skillSha256) {
+    throw new Error(`The managed CLI skill does not match its release: ${install.packageName}.`);
+  }
+  const artifacts = asRecord(release.artifacts);
+  const binarySha256ByPlatform: Record<string, string> = {};
+  for (const platform of ["linux-amd64", "linux-arm64"]) {
+    const digest = asRecord(artifacts?.[platform])?.binarySha256;
+    if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
+      throw new Error(
+        `Invalid ${platform} executable digest in managed release: ${install.packageName}.`,
+      );
+    }
+    binarySha256ByPlatform[platform] = digest;
+  }
   return {
     ...install,
     kind: "cli" as const,
     credentials,
+    skill: release.skill,
+    skillSha256,
+    binarySha256ByPlatform,
+    executable: release.executable,
     runtimeDirectory: release.runtimeDirectory,
     binaryPath: `${release.runtimeDirectory}/bin/${release.executable}`,
   };
@@ -184,6 +196,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   const slots = release?.credentials;
   const capabilities = asRecord(release?.capabilities);
   if (
+    install.policyScope !== "tool_human_approval" ||
     !Check(mcpSlots, slots) ||
     !Array.isArray(capabilities?.harness) ||
     !capabilities.harness.includes("mcp") ||
@@ -195,7 +208,8 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   const [slotId, slot] = Object.entries(slots)[0]!;
   const { server, resource, versions } = slot.mcp;
   const bytes = readFileSync(new URL("mcp.json", install.directory));
-  if (createHash("sha256").update(bytes).digest("hex") !== release?.mcpServersSha256) {
+  const manifestSha256 = createHash("sha256").update(bytes).digest("hex");
+  if (manifestSha256 !== release?.mcpServersSha256) {
     throw invalid();
   }
   const manifest = asRecord(JSON.parse(bytes.toString("utf8")));
@@ -224,6 +238,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     credentials: slots,
     server,
     slotId,
+    manifestSha256,
     url: url.href,
     endpoint: { host: url.hostname, port: Number(url.port || 443), path: url.pathname },
     credentialEnvironment: slot.delivery.env,
@@ -233,24 +248,21 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   } as const;
 }
 
-type BundledMcpInstall = ReturnType<typeof loadManagedMcpInstall>;
-export type ManagedMcpInstall = Pick<
-  BundledMcpInstall,
-  | "id"
-  | "runtimeName"
-  | "server"
-  | "slotId"
-  | "url"
-  | "endpoint"
-  | "credentialEnvironment"
-  | "credentialLabel"
-  | "binaryPath"
-  | "mcpVersions"
-  | "releaseSha256"
-> & {
-  readonly entry: { readonly name: string };
-  readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
-};
+export type ManagedMcpInstall = ReturnType<typeof loadManagedMcpInstall>;
+
+/** MCP protocol exchanges and exact tool calls the worker needs for this selection. */
+export function managedMcpRequests(
+  toolNames: readonly string[],
+): readonly { method: string; toolName?: string }[] {
+  const methods = toolNames.length
+    ? ["ping", "initialize", "notifications/initialized", "tools/list"]
+    : ["ping"];
+  return [
+    ...methods.map((method) => ({ method })),
+    ...toolNames.map((toolName) => ({ method: "tools/call", toolName })),
+  ];
+}
+
 export const managedInstalls = Object.freeze(
   bundledInstalls.map((install) => {
     const harness = asRecord(install.release?.capabilities)?.harness;
@@ -272,6 +284,14 @@ export const managedMcpInstalls = managedInstalls.filter((install) => install.ki
 const cliCredentialPolicies = [googleWorkspaceCredentialPolicy];
 const cliCredentialPolicy = (install: ManagedCliInstall) =>
   cliCredentialPolicies.find(({ packageName }) => packageName === install.packageName);
+
+export function managedCliDeploymentNetworks(install: ManagedCliInstall) {
+  const policy = cliCredentialPolicy(install);
+  if (!policy) {
+    throw new ConfigurationHarnessError("The selected CLI has no reviewed deployment policy.");
+  }
+  return policy.deploymentNetworks(install);
+}
 
 if (
   new Set(managedInstalls.map(({ runtimeName }) => runtimeName)).size !== managedInstalls.length ||
@@ -368,29 +388,42 @@ export function managedMcpCredentialBinding(
       `Select distinct literal ${install.entry.name} tool names whose OpenClaw aliases fit within 64 characters.`,
     );
   }
-  // Imported accounts grant only their selected tools. An empty selection keeps the
-  // configured account available to the editor without activating its provider.
-  const active = !install.importedPluginTemplate || selected.length > 0;
-  return { install, sourceId, toolNames: selected as string[], active };
+  const selectedNames = selected as string[];
+  const approvalToolNames: string[] = [];
+  for (const [name, tool] of Object.entries(selection.tools ?? {})) {
+    if (
+      !selectedNames.includes(name) ||
+      Object.keys(tool).length !== 1 ||
+      (tool.approval !== "none" && tool.approval !== "all_actions")
+    ) {
+      throw new ConfigurationHarnessError(
+        `Select an enabled ${install.entry.name} tool and choose no approval or human approval for each override.`,
+      );
+    }
+    if (tool.approval === "all_actions") {
+      approvalToolNames.push(name);
+    }
+  }
+  return { install, sourceId, toolNames: selectedNames, approvalToolNames };
 }
 
 export function managedMcpCredentialBindings(
   selections: PluginDesiredState | undefined,
-  installs: readonly ManagedMcpInstall[] = managedMcpInstalls,
+  installs = managedMcpInstalls,
 ) {
   const servers = new Set<string>();
   const tools = new Set<string>();
   const bindings = [];
   for (const install of installs) {
-    const binding = managedMcpCredentialBinding(selections, install);
-    if (selections?.[install.id]?.enabled && (!install.importedPluginTemplate || binding?.active)) {
-      if (servers.has(install.server.toLowerCase())) {
+    if (selections?.[install.id]?.enabled) {
+      if (servers.has(install.server)) {
         throw new ConfigurationHarnessError(
           `Two enabled MCP packages use the same worker server name: ${install.server}.`,
         );
       }
-      servers.add(install.server.toLowerCase());
+      servers.add(install.server);
     }
+    const binding = managedMcpCredentialBinding(selections, install);
     if (!binding) {
       continue;
     }
@@ -408,208 +441,13 @@ export function managedMcpCredentialBindings(
   return bindings;
 }
 
-function importedMcpEndpoint(
-  template: ImportedPluginConnectionTemplate,
-  url: string,
-): ManagedMcpInstall {
-  const { releaseSha256, serverName } = template;
-  const endpoint = URL.parse(url);
-  if (
-    !/^[a-f0-9]{64}$/.test(releaseSha256) ||
-    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(serverName) ||
-    !mcpEndpointUrl.test(url) ||
-    !endpoint ||
-    endpoint.href !== url ||
-    !exactDnsName(endpoint.hostname) ||
-    !endpoint.hostname.includes(".") ||
-    /(?:^|\.)(?:localhost|localdomain)$/.test(endpoint.hostname)
-  ) {
-    throw new ConfigurationHarnessError(
-      "Imported MCP connections require a fixed HTTPS endpoint and a valid release and server name.",
-    );
-  }
-  // OCE owns both the provider placeholder and the rule name. Neither comes from the package environment.
-  const suffix = createHash("sha256")
-    .update(releaseSha256 + ":" + serverName)
-    .digest("hex")
-    .slice(0, 24);
-  return {
-    id: `occ-mcp:${releaseSha256}:${serverName}`,
-    runtimeName: "import-" + suffix,
-    server: /^[a-zA-Z](?:[a-zA-Z0-9_-]{0,21}[a-zA-Z0-9])?$/.test(serverName)
-      ? serverName
-      : "import_" + suffix.slice(0, 16),
-    slotId: serverName,
-    url,
-    endpoint: {
-      host: endpoint.hostname,
-      port: Number(endpoint.port || 443),
-      path: endpoint.pathname,
-    },
-    credentialEnvironment: "PLUGIN_MCP_" + suffix.toUpperCase() + "_TOKEN",
-    credentialLabel: serverName,
-    entry: { name: serverName },
-    binaryPath: "/usr/local/bin/node",
-    mcpVersions: ["2025-03-26", "2025-06-18", "2025-11-25"],
-    releaseSha256,
-    importedPluginTemplate: template,
-  };
-}
-
-export function importedMcpInstall(
-  release: Pick<InspectedPluginPackage, "digest">,
-  server: ImportedMcpServer,
-): ManagedMcpInstall {
-  return importedMcpEndpoint(
-    { releaseSha256: release.digest, serverName: server.name },
-    server.url,
-  );
-}
-
-export function importedMcpSourceConfig(
-  release: PluginConnectionRelease,
-  server: ImportedMcpServer,
-): Readonly<Record<string, string>> {
-  const install = importedMcpInstall(release, server);
-  return {
-    protocol: "mcp",
-    host: install.endpoint.host,
-    port: String(install.endpoint.port),
-    path: install.endpoint.path,
-    env_var: install.credentialEnvironment,
-  };
-}
-
-export function managedMcpInstallsForReleases(
-  releases: Readonly<Record<string, ImportedPluginReleasePin>> = {},
-): readonly ManagedMcpInstall[] {
-  return [
-    ...managedMcpInstalls,
-    ...Object.values(releases).flatMap((release) =>
-      release.mcpServers.map((server) => importedMcpInstall(release, server)),
-    ),
-  ];
-}
-
-export function managedMcpInstallsForRevision(
-  revision: Pick<AgentRevision, "plugins">,
-): readonly ManagedMcpInstall[] {
-  return managedMcpInstallsForReleases(revision.plugins?.importedReleases);
-}
-
-/** Resolve each imported selection to the reviewed runtime policy. Keep its separate release identity on the revision. */
-export function managedSelectionsForImportedReleases(
-  selections: PluginDesiredState,
-  releases: Readonly<Record<string, ImportedPluginReleasePin>>,
-): PluginDesiredState {
-  const effective: Record<string, PluginDesiredSelection> = { ...selections };
-  for (const [id, selection] of Object.entries(selections)) {
-    if (!id.startsWith("occ-import:")) {
-      continue;
-    }
-    delete effective[id];
-    if (!selection.enabled) {
-      continue;
-    }
-    const release = releases[id];
-    if (!release || id !== `occ-import:${release.digest}`) {
-      throw new ConfigurationHarnessError(
-        "The selected imported plugin must match its published release digest.",
-      );
-    }
-    const policy = selection.driverPolicy;
-    const servers = asRecord(policy?.servers);
-    if (
-      policy !== undefined &&
-      (policy.releaseSha256 !== release.digest ||
-        !servers ||
-        Object.keys(policy).some((key) => key !== "releaseSha256" && key !== "servers"))
-    ) {
-      throw new ConfigurationHarnessError(
-        "An imported plugin policy must name its published release digest and server bindings.",
-      );
-    }
-    const declared = new Set(release.mcpServers.map((server) => server.name));
-    if (Object.keys(servers ?? {}).some((name) => !declared.has(name))) {
-      throw new ConfigurationHarnessError(
-        "An imported MCP binding names a server outside the selected release.",
-      );
-    }
-    for (const server of release.mcpServers) {
-      const install = importedMcpInstall(release, server);
-      if (!servers || !Object.hasOwn(servers, server.name)) {
-        continue;
-      }
-      const bound = asRecord(servers[server.name]);
-      if (
-        !bound ||
-        !Array.isArray(bound.toolNames) ||
-        Object.keys(bound).some((key) => key !== "sourceId" && key !== "toolNames")
-      ) {
-        throw new ConfigurationHarnessError(
-          `Imported MCP server ${server.name} requires a reviewed endpoint and its OCE account and tool policy.`,
-        );
-      }
-      if (effective[install.id]?.enabled) {
-        throw new ConfigurationHarnessError(
-          `The reviewed MCP server ${install.server} is selected more than once.`,
-        );
-      }
-      effective[install.id] = {
-        enabled: true,
-        driverPolicy: {
-          releaseSha256: install.releaseSha256,
-          credentials: { [install.slotId]: bound.sourceId },
-          toolNames: bound.toolNames,
-        },
-      };
-      managedMcpCredentialBinding(effective, install);
-    }
-  }
-  // Every active native alias and host:port must have a single policy and account, even across releases.
-  const installs = managedMcpInstallsForReleases(releases);
-  const endpoints = new Set<string>();
-  for (const { install, active } of managedMcpCredentialBindings(effective, installs)) {
-    if (!active) {
-      continue;
-    }
-    const endpoint = install.endpoint.host + ":" + install.endpoint.port;
-    if (endpoints.has(endpoint)) {
-      throw new ConfigurationHarnessError(
-        "More than one selected MCP server uses the same credentialed host and port.",
-      );
-    }
-    endpoints.add(endpoint);
-  }
-  return effective;
-}
-
-export function managedSelectionsForRevision(
-  revision: Pick<AgentRevision, "plugins">,
-): PluginDesiredState | undefined {
-  const state = revision.plugins;
-  return state?.importedReleases
-    ? managedSelectionsForImportedReleases(state.plugins, state.importedReleases)
-    : state?.plugins;
-}
-
 export function managedMcpInstallForSourceConfig(
   config: CredentialSource["config"],
-  template?: ImportedPluginConnectionTemplate,
 ): ManagedMcpInstall | undefined {
   if (config.protocol !== "mcp") {
     return undefined;
   }
-  let candidates: readonly ManagedMcpInstall[] = managedMcpInstalls;
-  if (template) {
-    const port = config.port === "443" ? "" : ":" + config.port;
-    try {
-      candidates = [importedMcpEndpoint(template, `https://${config.host}${port}${config.path}`)];
-    } catch {
-      return undefined;
-    }
-  }
-  return candidates.find(
+  return managedMcpInstalls.find(
     ({ credentialEnvironment, endpoint }) =>
       config.host === endpoint.host &&
       Number(config.port ?? 443) === endpoint.port &&
@@ -628,116 +466,125 @@ export function managedMcpSlotAcceptsSource(
     source.egress === undefined &&
     source.type === "bearer-token" &&
     source.secrets.token?.namespaceId === source.namespaceId &&
-    managedMcpInstallForSourceConfig(source.config, source.importedPluginTemplate)?.id ===
-      install.id &&
-    source.config.env_var === install.credentialEnvironment &&
-    source.config.host === install.endpoint.host &&
-    Number(source.config.port ?? 443) === install.endpoint.port &&
-    source.config.path === install.endpoint.path
+    managedMcpInstallForSourceConfig(source.config) === install
   );
 }
 
-export const managedPluginCredentials = {
-  templateConfig: importedMcpSourceConfig,
-  mcpToolDiscovery(
-    pluginId: string,
-    slotId: string,
-    source: CredentialSource,
-    release?: PluginConnectionRelease,
-  ) {
-    const server = release?.mcpServers.find((entry) => entry.name === slotId);
-    const install =
-      release && server && pluginId === `occ-import:${release.digest}`
-        ? importedMcpInstall(release, server)
-        : managedMcpInstalls.find(({ id }) => id === pluginId);
-    if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
-      return undefined;
-    }
-    return { endpoint: install.url };
-  },
-  choices(sources: readonly CredentialSource[], releases: readonly PluginConnectionRelease[] = []) {
-    const bundled = managedInstalls.flatMap((install) =>
-      Object.entries(install.credentials).map(([id, slot]) => ({
-        pluginId: install.id,
-        releaseSha256: install.releaseSha256,
-        id,
-        label: slot.label,
-        ...(install.kind === "mcp" && { toolDiscovery: true as const }),
-        sources: sources
-          .filter((source) =>
-            install.kind === "mcp"
-              ? managedMcpSlotAcceptsSource(install, source)
-              : cliCredentialPolicy(install)?.accepts(install, install.credentials[id]!, source) ===
-                true,
-          )
-          .map(({ id, name }) => ({ id, name })),
-      })),
-    );
-    const imported = releases.flatMap((release) =>
-      release.mcpServers.map((server) => {
-        const install = importedMcpInstall(release, server);
-        return {
+function acceptsManagedSource(
+  install: ManagedCliInstall | ManagedMcpInstall,
+  requirement: string,
+  source: CredentialSource,
+): boolean {
+  if (install.kind === "mcp") {
+    return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source);
+  }
+  const slot = install.credentials[requirement];
+  return !!slot && cliCredentialPolicy(install)?.accepts(install, slot, source) === true;
+}
+
+export function managedPluginCredentials(
+  driver: PluginDeploymentContract,
+): NonNullable<PluginDriver["credentials"]> {
+  return {
+    mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
+      const install = managedMcpInstalls.find(({ id }) => id === pluginId);
+      if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
+        return undefined;
+      }
+      return { endpoint: install.url };
+    },
+    choices(
+      sources: readonly CredentialSource[],
+      releases: readonly PluginConnectionRelease[] = [],
+    ) {
+      const bundled = managedInstalls.flatMap((install) =>
+        Object.entries(install.credentials).map(([id, slot]) => ({
+          pluginId: install.id,
+          releaseSha256: install.releaseSha256,
+          id,
+          label: slot.label,
+          ...(install.kind === "mcp" && { toolDiscovery: true as const }),
+          sources: sources
+            .filter((source) => acceptsManagedSource(install, id, source))
+            .map(({ id, name }) => ({ id, name })),
+        })),
+      );
+      const imported = releases.flatMap((release) =>
+        release.mcpServers.map((server) => ({
           pluginId: `occ-import:${release.digest}`,
           releaseSha256: release.digest,
           id: server.name,
           label: server.name,
+          serverUrl: server.url,
           toolDiscovery: true as const,
-          sources: sources
-            .filter((source) => managedMcpSlotAcceptsSource(install, source))
-            .map(({ id, name }) => ({ id, name })),
-        };
-      }),
-    );
-    return [...bundled, ...imported];
-  },
-  validate(
-    selections: PluginDesiredState,
-    sources: readonly CredentialSource[],
-    modelSourceId?: string,
-    releases: Readonly<Record<string, InspectedPluginPackage>> = {},
-  ) {
-    const effective = managedSelectionsForImportedReleases(selections, releases);
-    const imported = managedMcpInstallsForReleases(releases).filter(
-      (install) => install.importedPluginTemplate,
-    );
-    for (const { install, sourceId } of managedMcpCredentialBindings(effective, imported)) {
-      const source = sources.find((entry) => entry.id === sourceId);
-      if (!source || source.id === modelSourceId || !managedMcpSlotAcceptsSource(install, source)) {
-        throw new ConfigurationHarnessError(
-          `Select an attached account created from this release's ${install.slotId} connection template.`,
+          // TODO(C6T): offer Sources after Plugin admission can verify their approved Template.
+          sources: [],
+        })),
+      );
+      return [...bundled, ...imported];
+    },
+    async validate(selections, sources, modelSourceId, releases = {}) {
+      const attached = new Map(sources.map((source) => [source.id, source]));
+      for (const [pluginId, selection] of Object.entries(selections)) {
+        const release = releases[pluginId];
+        if (release) {
+          // Imported selections have no credential policy until canonical Plugin delivery is available.
+          continue;
+        }
+        const install = managedInstalls.find(({ id }) => id === pluginId);
+        const unavailable = () =>
+          new ConfigurationHarnessError(
+            `Select a ready ${install?.entry.name ?? pluginId} account attached to this Agent that matches the reviewed credential slot.`,
+          );
+        // Existing Agent selections name one source per slot. Only OCC's authorized
+        // source records can supply the Namespace and identity for its default connection.
+        const connections = Object.fromEntries(
+          Object.entries(asRecord(selection.driverPolicy?.credentials) ?? {}).map(
+            ([requirement, id]) => {
+              const source = typeof id === "string" ? attached.get(id) : undefined;
+              if (!source) {
+                throw unavailable();
+              }
+              return [
+                requirement,
+                {
+                  default: {
+                    kind: "credential_source" as const,
+                    namespaceId: source.namespaceId,
+                    id: source.id,
+                  },
+                },
+              ];
+            },
+          ),
         );
+        const deployment = await driver.describeDeployment({
+          plugin: { catalog: "driver", pluginId },
+          selection,
+          connections,
+        });
+        for (const [requirement, accounts] of Object.entries(deployment.credentials)) {
+          for (const { sourceRef } of Object.values(accounts)) {
+            const source = attached.get(sourceRef.id);
+            if (
+              !install ||
+              !source ||
+              source.id === modelSourceId ||
+              source.namespaceId !== sourceRef.namespaceId ||
+              !acceptsManagedSource(install, requirement, source)
+            ) {
+              throw unavailable();
+            }
+            const conflict =
+              install.kind === "cli"
+                ? cliCredentialPolicy(install)?.conflict(source, sources)
+                : undefined;
+            if (conflict) {
+              throw new ConfigurationHarnessError(conflict);
+            }
+          }
+        }
       }
-    }
-    for (const install of managedInstalls) {
-      const binding =
-        install.kind === "mcp"
-          ? managedMcpCredentialBinding(selections, install)
-          : managedCredentialBinding(selections, install);
-      if (!binding) {
-        continue;
-      }
-      const source = sources.find(({ id }) => id === binding.sourceId);
-      const accepts =
-        source &&
-        (install.kind === "mcp"
-          ? managedMcpSlotAcceptsSource(install, source)
-          : cliCredentialPolicy(install)?.accepts(
-              install,
-              Object.values(install.credentials)[0]!,
-              source,
-            ));
-      if (!source || source.id === modelSourceId || !accepts) {
-        throw new ConfigurationHarnessError(
-          `Select a ready ${install.entry.name} account attached to this Agent that matches the reviewed credential slot.`,
-        );
-      }
-      const conflict =
-        install.kind === "cli"
-          ? cliCredentialPolicy(install)?.conflict(source, sources)
-          : undefined;
-      if (conflict) {
-        throw new ConfigurationHarnessError(conflict);
-      }
-    }
-  },
-};
+    },
+  };
+}

@@ -233,6 +233,10 @@ export function createAgentLifecycle(
   } else if (scenario.deployed) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
+  const activeRevisionId =
+    scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
+      ? null
+      : selectedRevisionId;
   let agentReadCount = 0;
   let agentListReadCount = 0;
   const agent: StoredAgent = {
@@ -257,10 +261,7 @@ export function createAgentLifecycle(
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId:
-      scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
-        ? null
-        : selectedRevisionId,
+    ...(activeRevisionId === null ? {} : { activeRevisionId }),
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -439,12 +440,13 @@ export function createAgentLifecycle(
   if (scenario.emptyAgents) {
     agents.clear();
   } else {
-    agents.set("agt_00000000-0000-4000-8000-000000000002", {
+    const otherAgent = {
       ...agent,
       id: "agt_00000000-0000-4000-8000-000000000002",
       name: "Documentation assistant",
-      activeRevisionId: null,
-    });
+    };
+    delete otherAgent.activeRevisionId;
+    agents.set(otherAgent.id, otherAgent);
   }
   if (scenario.unreadableAgentConfiguration) {
     delete agent.harnessAuth;
@@ -507,7 +509,7 @@ export function createAgentLifecycle(
         if (scenario.stoppedOnListReread && reread) {
           for (const listed of agents.values()) {
             listed.desiredRuntimeState = "stopped";
-            listed.activeRevisionId = null;
+            delete listed.activeRevisionId;
           }
         }
         // Another person's deletion of the first Agent started after the list's first read.
@@ -576,7 +578,7 @@ export function createAgentLifecycle(
           return error(404);
         }
         if (clearRevisionOnRead.delete(id)) {
-          saved.activeRevisionId = null;
+          delete saved.activeRevisionId;
         }
         return response(saved);
       }

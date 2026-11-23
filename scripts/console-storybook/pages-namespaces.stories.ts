@@ -5,9 +5,13 @@ import { story } from "./story.ts";
 export default { title: "Pages/Namespaces" };
 
 export const Namespaces = { ...story("namespaces"), name: "Ready and provisioning" };
+export const SearchNamespaces = { ...story("namespaceSearch", { openInNewTab: true }) };
 export const NamespacesEmpty = { ...story("namespacesEmpty"), name: "Empty" };
 export const NamespacesEmptyMember = { ...story("namespacesEmptyMember") };
 export const NamespacesDenied = { ...story("namespacesDenied"), name: "Access denied" };
+export const PublishNamespacePlugin = story("pluginImport");
+export const PluginPublicationDenied = story("pluginImportDenied");
+export const UnsupportedPluginArchive = story("pluginImportInvalid");
 export const CreateNamespace = { ...story("namespaceCreate") };
 export const CreateNamespaceMobile = { ...story("namespaceCreateMobile") };
 export const CreateRequired = { ...story("namespaceCreateRequired") };
@@ -19,6 +23,7 @@ export const CreatePending = { ...story("namespaceCreatePending") };
 export const CreateUnknown = { ...story("namespaceCreateUnknown") };
 export const CreateSuccess = { ...story("namespaceCreateSuccess") };
 export const CreateUnreadable = { ...story("namespaceCreateUnreadable") };
+export const CreateAccessUnconfirmed = { ...story("namespaceCreateAccessUnconfirmed") };
 
 export const DeleteNamespace = { ...story("namespaceDelete") };
 export const DeleteConfirmation = { ...story("namespaceDeleteConfirmation") };

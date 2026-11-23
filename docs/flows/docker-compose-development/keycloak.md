@@ -1,7 +1,7 @@
 ---
 created: 2026-10-07
-updated: 2026-11-05
-last_updated_session: authoring-run/01a1a93c-8fff-7f52-8f35-e6b7724d147a
+updated: 2026-11-16
+last_updated_session: authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70
 ---
 
 # Local Keycloak startup and teardown
@@ -48,11 +48,17 @@ with sandbox `none`. Before claiming state, startup rejects another publication
 on reserved port 443 and checks that no listener already serves it. The engine
 must also be able to bind and forward that port. k3d publishes
 `127.0.0.1:443` to NodePort 30443; the dedicated Envoy listener forwards to
-Keycloak on port 8080.
+Keycloak on port 8080. The API's NetworkPolicy permits the Envoy Pod's post-DNAT
+port 10443 without opening general egress.
 
 ### 2. Provision the realm and its network path
 
 `internal/occdev/keycloak_k3d.go:installDevelopmentKeycloak`.
+
+`internal/occdev/bootstrap.go:prepareBootstrapCredentials` removes one optional
+LF or CRLF before saving the password, preserving spaces and rejecting remaining
+line breaks or NUL. Its private `initial-admin-password` file supplies both the
+bootstrap Secret and subsequent administrator sign-ins.
 
 The first Helm pass installs OCE with password sign-in and its gateway-routing
 CA. Startup then installs the pinned Keycloak image and shared realm in
@@ -72,7 +78,7 @@ is not continuous drift detection; ordinary `up` rejects existing state/clusters
 
 After OCE readiness, the launcher signs in through the verified Console HTTPS
 endpoint with the bootstrap password and reads the administrator's ID. It
-replaces `helm-values.json` with complete second-pass values, applies the OIDC
+uses the verified Console endpoint for the second-pass sign-in setup. The chart leaves API egress to the cluster operator. It replaces `helm-values.json` with complete second-pass values, applies the OIDC
 client Secret, and runs Helm again. That pass enables OIDC and recovery-only
 passwords and preserves the configured Agent browser access. Sessions use the
 shared cookie domain derived from the Console and Agent DNS hosts.
@@ -118,7 +124,7 @@ repair access to its recorded engine and cluster before retrying cleanup.
 
 ## Changelog
 
-- 2026-11-05 23:27: Updated Keycloak sign-in setup after removal of the API egress policy. (authoring-run/01a1a93c-8fff-7f52-8f35-e6b7724d147a - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
+- 2026-11-16 16:16: Persist the initializer's normalized password for both Keycloak setup sign-ins. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - ecbcd544cb7e6eebb97ff293676af2f437fb6444)
 
 - 2026-10-08 09:57: Documented Keycloak egress repair and manual qualification. (authoring-run/e5c12029-7b1c-4214-a4b9-bde04d03ab41 - 12719f1d366291b774eb9d4948be451c9dd7d805)
 

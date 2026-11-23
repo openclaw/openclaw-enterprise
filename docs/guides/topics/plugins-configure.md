@@ -13,12 +13,11 @@ whose selections belonged to the Codex Driver.
 
 ## Import a plugin for a dedicated OpenClaw Agent
 
-The Installation must enable the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) for the OpenClaw Harness. Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. Publishing requires `namespace:publish_plugins` on the target Namespace. The built-in Installation administrator Role includes this permission.
+The Installation must enable the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) for the OpenClaw Harness. Open **Namespaces** and select **Import plugin** on the target Namespace. No Agent is required. Publishing requires `namespace:publish_plugins`; the built-in Installation administrator Role includes this permission.
 
 1. Choose a tar or gzip-compressed tar package of up to 16 MiB. Leave the marketplace entry blank to import the plugin at the archive root, even if the archive also contains a marketplace. To import a marketplace entry, enter its exact name. If the entry points to a remote repository, upload the resolved plugin package separately.
 2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.
-3. With `namespace:read` on the release's Namespace, open **Configure plugins**, add the published release and choose the hosted servers to use. You can leave a server off and use the skills. To enable a server, the Installation administrator must include `/usr/local/bin/node` in the [OpenShell Credential Gateway’s `toolBinaries`](../../reference/drivers/openshell-credential-gateway.md). Creating a connection from the server template also requires `credential_source:create` in that Namespace and `secret:operate` on the token Secret. Attach the connection to the Agent, then select the account and allowed tools.
-4. Choose **Save plugin selections**, then **Deploy new version**. Both actions require `namespace:read` while the draft references an imported release. To upgrade, publish the changed package, replace the old release in the draft and deploy again. To remove its skills and tools, remove the selection and deploy.
+3. With `namespace:read`, open a dedicated OpenClaw Agent's **Configure plugins** to select the release. Deployment currently returns a conflict because imported skills and hosted MCP execution require the pending [runtime dependencies](../../reference/namespace-plugin-releases.md#runtime-dependencies).
 
 ## Use the console
 
@@ -94,6 +93,12 @@ Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
 Choose the tools to enable, then save and deploy. Loading tools again refreshes
 the inventory. Additional tools require selection and deployment before the Agent
 can use them. An empty selection leaves the worker server disabled.
+For an enabled tool, open **Tool policy** and set **Require approval for** to
+**Every action** to require human approval for each native call. Select
+**No additional approval** to run without a prompt. The request names the server and tool;
+it does not show arguments. Save and deploy the new version. A direct
+script using the same credential can call that enabled tool without Gateway approval.
+If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.

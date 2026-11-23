@@ -39,6 +39,19 @@ allows manual entry but does not prove access. Execution mode follows the
 harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
 the runtime-build warning; Embedded OpenClaw does not.
 
+**Native Plugins Unrestricted**, **Native Plugins Empty Allowlist** and
+**Native Plugins Allowlist** preserve authored policy across Harness switches.
+**Native Plugins Codex Round Trip** retains the Codex-only allowlist when switching
+to OpenClaw and back. OpenClaw uses existing provider admission; this editor does
+not add a stricter permission rule.
+**Native Plugins Deny Conflict** retains a Codex denial; existing server admission
+refuses it when creation is attempted with Codex.
+**Native Plugins Disabled Entry** preserves `plugins.entries.codex.enabled: false`
+through Harness switches. Creation can proceed without a JSON repair because the
+Dedicated Codex runtime overlay enables the required plugin. An absent entry gets
+the normal enabled runtime defaults. These stories simulate API and runtime state;
+they do not prove plugin loading or model execution.
+
 In **Enter another model ID**, switch to **Choose a model from the list** and
 back: listed models survive both switches, focus moves to the active input, and
 other settings persist. Edit the manual ID to another listed model; returning
@@ -72,6 +85,19 @@ approvals, runtime images, and credential-service networking.
 In **Return to loaded pages**, Tab to Namespaces and press Enter: its heading
 receives focus, then Tab reaches Refresh. Check retained editors through
 Back/Forward, Refresh, refocus, and Namespace switches.
+
+In **Return to an interrupted Agent link**, choose **← Agents** while the
+Console looks for the linked Agent in another Namespace. The list stays open
+when the delayed response arrives. Back opens the historical version in
+**Z history holder** with **Deployment** selected; Forward returns to the list.
+The fixture simulates API responses.
+
+In **Recover from a mismatched Agent lookup**, the fixture simulates an unavailable
+holder probe and a reply from that holder returned for another Namespace. Confirm
+**Agent not in this Namespace**, an unscoped URL, and that **Switch Namespace**
+focuses the selector. Use the Console **Refresh** once to open the requested
+historical version in the holder Namespace with **Deployment** selected. Browser
+reload resets the fixture.
 
 **Return Backend access denied** checks Installation-wide denial.
 **Return access denied** and **Return session expired** must remove retained
@@ -154,6 +180,22 @@ Plugin stories simulate catalogs, Secret metadata, and policy capabilities; they
 do not prove installation, invocation access, runtime enforcement, or live Agent
 turns.
 
+In **Pages/Agent detail → Choose tools for a connected Slack account**, select the
+simulated account and load tools. After the simulated permission error, choose
+**Recheck access**. Verify it disappears and focus moves to **Load plugins**
+when the recheck still owns focus. Choose **Load plugins**, reopen Slack and
+load its tools.
+Enable a tool, open **Tool policy**, and set **Require approval for** to **Every
+action**. Confirm unsupported settings are disabled. Save, reopen, and verify the
+selection. Disable the tool to remove its approval setting. The displayed note
+explains that Gateway approval does not cover direct credentialed scripts.
+
+In **Pages/Agent detail → Recover a Slack account after access is restored**,
+follow the same steps through **Recheck access** and **Load plugins**. Reopen
+Slack. Check that no account is eligible. Activate **Recheck accounts** with the
+keyboard. Focus moves to **Load plugins**. Load plugins, reopen Slack, and load
+tools for the restored account.
+
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844
 and 390×640, check scrolling and reachable pagination. In **Short window plugin
@@ -188,11 +230,23 @@ and can be cleared to inherit. Tool IDs match the JSON keys.
 **Plugins** preloads the catalog with its Service Accounts Secret. In **Configure
 plugins**, add Documents, change Calendar's policy, save, and deploy. The deployment details show the saved plugin settings.
 
-## Import a package for a dedicated OpenClaw Agent
+In **Pages/Agent detail → Plugin catalog changed while loading**, confirm stale
+entries are gone, then use **Load plugins**. In **Plugin details changed while
+loading**, confirm **Add** is disabled, then use **Retry tools** for the selected
+plugin. Both stories show the request ID and keep draft selections unchanged.
 
-Open **Pages / Agent detail / Publish a Namespace plugin**. On the Agent's draft Plugins tab, open **Import plugin**. Choose a local tar or compressed tar package. Enter an entry name when testing a packaged marketplace. Select **Preview package** and review the skill, hosted MCP server, bearer binding requirement, and excluded hook. Select **Publish to Namespace**, open **Configure plugins**, and choose **weekly-reports** from the refreshed catalog. Leave **reports** off to select the skill alone. To select server tools, choose **Create connection for reports**, use the existing **Reporting service token** Secret, then select **Attach to Agent**. Choose the account, load its tools, and select **report_summary**. Save plugin selections separately.
+In **Plugin discovery during Agent deletion**, wait for Calendar’s tools and
+choose **Load plugins**. Check that both tabs show the deletion message and
+request ID, and that discovery is disabled. Choose **Done** and check that
+**Plugin selections JSON** still contains the unsaved Project tracker selection.
 
-The Storybook response always describes the weekly reports fixture. **Unsupported plugin archive** simulates an inspection error. **Plugin publication permission denied** lets the caller edit Agent selections and omits the import control. These stories exercise Console requests and state transitions. Runtime deployment and package inspection require integration verification.
+## Publish and select an imported plugin
+
+Open **Pages / Namespaces / Publish a Namespace plugin**. Choose Engineering's **Import plugin** action, select a package archive, and choose **Preview package**. Review the skills, hosted MCP server URL, excluded components, and deployment limitations. Publish the release and check the confirmation. This action requires Namespace publication access and does not require an Agent.
+
+Open **Pages / Agent detail / Select an imported release** to publish through the Agent shortcut and select **weekly-reports** in **Configure plugins**. The selection explains that imported skills cannot deploy until the pinned runtime supports installation. The reports server explains that Plugin credential delivery is unavailable and links to Connection templates in a separate tab.
+
+**Unsupported plugin archive** simulates an inspection error. **Plugin publication permission denied** omits the import control. These stories simulate Console requests and state transitions. They do not verify package inspection, persistence, deployment, or a working MCP call.
 
 ## Update
 

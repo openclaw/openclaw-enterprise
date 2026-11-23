@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
-import { image, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image } from "../helpers/runtime-image-startup.ts";
 
 export async function verifyRuntimeCodexAuthMount(
   t: TestContext,

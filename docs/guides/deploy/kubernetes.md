@@ -1,9 +1,23 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy on standard Kubernetes
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
 [the custom Helm installation](production-installation.md). To install with
 OpenShell and use the shared first-Agent session, follow
 [Kubernetes setup](kubernetes-setup.md) or the [Amazon EKS guide](eks-openshell-setup.md).
+
+For cloud infrastructure, choose an independent target from the
+[`oce-terraform` reference](https://github.com/freeqaz-openai/oce-terraform).
+The AWS EKS target has a [dedicated OCE handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster).
+The Google Cloud GKE and Azure AKS targets are previews covered by mocked Terraform
+plans; live cluster deployment and OCE installation remain unverified. Each target
+provides `terraform output -json oce_placement` with the node selectors and Gateway
+StorageClass fields for the OCE installation profile. Review that output against
+the selected cluster before using it.
 
 ## Prepare the cluster
 
@@ -47,7 +61,7 @@ Provide these cluster services before installing OCC:
 | Requirement               | Operator preparation                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Private gateway state     | An explicit block-backed filesystem StorageClass supporting `10Gi` RWO claims and reliable SQLite locking.         |
-| Bootstrap output          | A fresh `1Gi` RWO claim using a protected StorageClass; prepare it during shared installation.                     |
+| Bootstrap credentials     | An existing Secret containing the administrator password and service key; create it before Helm installation.      |
 | Dedicated Agent workspace | A default StorageClass supporting `40Gi` RWO claims. Embedded Agents do not need this Harness claim.               |
 | PostgreSQL                | An external database with separate application and migrator roles and verified TLS.                                |
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |
@@ -94,21 +108,8 @@ addresses and ports as observed from controller Pods. These become the shared
 installation's network settings; do not substitute whole cluster or VPC ranges.
 See [networking and isolation](../../reference/drivers/kubernetes-compute/networking-and-isolation.md).
 
-On OpenShift, select the actual DNS backend namespace and Pod labels; the
-[Helm DNS grants](../../reference/settings/production.md#required-production-controller-environment)
-permit both Service and backend ports. Helm merges `dns.podLabels` into the chart
-default `k8s-app: kube-dns`. Profile rendering removes that default for you. In
-hand-written values, set `dns.podLabels.k8s-app: null` when the DNS Pods lack that
-label. Verify UDP and TCP DNS resolution from
-the initialization, API, worker, and enabled supporting workloads, plus denied
-traffic to a Pod outside the configured DNS selectors.
-
-On OpenShift with OVN-Kubernetes, the CNI applies egress policy after the
-`kubernetes` Service translates port 443 to the API server port, usually 6443.
-Set Helm `cluster.cidrs` to the API server endpoint IPs and `cluster.port` to
-that port. With the default 443, the API and worker fail with
-`KUBERNETES_API_UNAVAILABLE`. List the endpoints with
-`oc get endpoints kubernetes -n default`.
+For OpenShift DNS selectors and translated API ports, complete the
+[OpenShift setup](openshift.md) before installation.
 
 ## Configure the protected copies and install
 

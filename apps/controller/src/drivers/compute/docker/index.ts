@@ -342,7 +342,7 @@ delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 try {
-if (gatewayToolPolicyInput !== undefined || ${managedMode}) requireGatewayPolicyRuntime(${managedMode});
+if (gatewayToolPolicyInput !== undefined) requireGatewayToolPolicyRuntime();
 if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
 if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayToolPolicyInput);
 // State on the Agent's state volume outlives runtime image upgrades. Doctor
@@ -1295,6 +1295,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         OPENCLAW_CONFIG_JSON: configuration,
         OPENCLAW_CONFIG_PATH: CONFIGURATION_DOCUMENT,
         OPENCLAW_GATEWAY_PORT: String(GATEWAY_PORT),
+        // Only a restart of this revision resumes an interrupted turn (finding 3347).
         OPENCLAW_STATE_DIR: "/home/node/.openclaw",
         HOME: "/home/node",
       },

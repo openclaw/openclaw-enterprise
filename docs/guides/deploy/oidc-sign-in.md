@@ -19,13 +19,13 @@ together with Google. One issuer is supported per Installation.
 - Everything the [external sign-in profile](../../reference/authentication/external-sign-in.md#external-sign-in-profile)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
   Console origin, and an Agent DNS suffix under the same non-public domain.
-  Enable [native browser access](native-admin.md) separately for Agent chat and administration.
-  The existing `operate` and `administer` permissions control access.
+  OIDC can enable [native chat and administration](native-admin.md); the existing
+  `operate` and `administer` permissions select access.
 - A controller image that includes OIDC sign-in.
   [Build a compatible image](production-installation.md#build-and-publish-production-images).
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
-  443 from one DNS host name, and signs ID tokens with RS256 keys of at least 2,048 bits.
-- API Pod HTTPS egress to that host. Browsers, not the API, visit the authorization URL.
+  443 with DNS host names, and signs ID tokens with RS256 keys of at least 2,048 bits.
+- API Pod HTTPS egress to the token and JWKS hosts. Browsers visit the authorization URL.
 - A certificate the API and users' browsers trust. Publicly trusted certificates need
   no extra chart configuration. For a private IdP CA, use the
   [CA Secret settings](#trust-a-private-idp-ca) below; browser trust is managed separately.
@@ -52,16 +52,19 @@ Copy four values from the IdP's discovery document
 (`<issuer>/.well-known/openid-configuration`): `issuer`, `authorization_endpoint`,
 `token_endpoint` and `jwks_uri`. The controller never fetches the discovery document, so
 these values are reviewed configuration. Each must be `https:` on port 443 with a DNS
-host name, no user name, query or fragment, and all four must share the issuer's host.
+host name and no user name, query or fragment. The endpoint hosts can differ. Review the
+token URL carefully: the controller sends the confidential client secret to that exact URL. It
+does not accept token endpoints from responses or follow redirects.
 Copy the issuer exactly, without a port: the controller compares it byte for byte with the
 token's `iss`.
 
-| IdP      | Values that fit                                                                                                                                                                  |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Keycloak | Issuer `https://<host>/realms/<realm>`; endpoints `…/protocol/openid-connect/{auth,token,certs}`; a confidential client. Verified in CI; see [Keycloak](oidc-keycloak.md).       |
-| Okta     | Org server `https://<org>.okta.com` with `/oauth2/v1/…`, or a custom server `https://<org>.okta.com/oauth2/<id>` with `/oauth2/<id>/v1/…`.                                       |
-| Auth0    | Issuer `https://<tenant>.auth0.com/` (with the trailing slash) or the custom domain for all four values; the application must sign with RS256.                                   |
-| Entra ID | Tenant **v2** only: `https://login.microsoftonline.com/<tenant>/v2.0`, `/oauth2/v2.0/{authorize,token}`, `/discovery/v2.0/keys`. The v1 issuer `sts.windows.net` does not match. |
+| IdP      | Values that fit                                                                                                                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Google   | [Public metadata](https://accounts.google.com/.well-known/openid-configuration) uses issuer `https://accounts.google.com`, token host `oauth2.googleapis.com`, and JWKS host `www.googleapis.com`. |
+| Keycloak | Issuer `https://<host>/realms/<realm>`; endpoints `…/protocol/openid-connect/{auth,token,certs}`; a confidential client. Verified in CI; see [Keycloak](oidc-keycloak.md).                         |
+| Okta     | Org server `https://<org>.okta.com` with `/oauth2/v1/…`, or a custom server `https://<org>.okta.com/oauth2/<id>` with `/oauth2/<id>/v1/…`.                                                         |
+| Auth0    | Issuer `https://<tenant>.auth0.com/` (with the trailing slash) or the custom domain for all four values; the application must sign with RS256.                                                     |
+| Entra ID | Tenant **v2** only: `https://login.microsoftonline.com/<tenant>/v2.0`, `/oauth2/v2.0/{authorize,token}`, `/discovery/v2.0/keys`. The v1 issuer `sts.windows.net` does not match.                   |
 
 The `issuer` value must equal the ID token's `iss` exactly, trailing slash included.
 
@@ -94,10 +97,10 @@ auth:
     displayName: Acme SSO # optional button label, up to 40 characters
 ```
 
-Rendering rejects invalid URLs, a shared Secret, an HTTP base URL, an unknown
-`tokenAuth`, or a label over 40 characters.
+OIDC supports [native browser access](native-admin.md); enable it separately
+when users need Agent chat or administration.
 
-The API Server connects to the token and JWKS URLs. If you enforce your own egress policy, permit those endpoints. For an in-cluster IdP, check the destination Pod port and its ingress policy.
+Rendering fails on invalid URLs, a shared Secret, an HTTP base URL, an unknown `tokenAuth`, or a label over 40 characters. The API Server connects to the token and JWKS URLs. The chart leaves API egress to the cluster operator. If another policy restricts it, allow both destinations at their translated ports.
 
 The API reads these variables; see
 [production settings](../../reference/settings/oidc.md):

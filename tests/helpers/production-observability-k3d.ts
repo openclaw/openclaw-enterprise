@@ -4,12 +4,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
-import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
+import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
+import { prepareObservabilityNativeRepository } from "./observability-native-repository.ts";
 import { createObservabilityCollector } from "./production-observability-collector.ts";
-import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
+import { installProductionHelmControlPlane } from "./production-helm-real.ts";
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
@@ -20,7 +22,7 @@ import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 type CommandOptions = {
   cwd?: string;
@@ -29,6 +31,10 @@ type CommandOptions = {
   timeout?: number;
   signal?: AbortSignal;
 };
+
+const installationProbeTransportCodes = ["ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "ECONNRESET"];
+const installationProbeReceipt =
+  /^installation probe (?:(fetch) (timeout|unknown|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ECONNRESET)|(body) (timeout|invalid-json|unknown) ([1-5][0-9]{2}))\n$/;
 
 type Images = {
   controller: string;
@@ -41,31 +47,33 @@ type Images = {
 };
 
 type Labels = Record<string, string>;
-type KubernetesClient = {
-  resource(kind: string, name: string, namespace?: string): Promise<unknown>;
-  resources(kind: string, namespace: string, ...args: string[]): Promise<unknown>;
-  waitFor<T>(
-    description: string | (() => string),
-    probe: () => Promise<T | false | undefined>,
-    timeoutMs?: number,
-  ): Promise<T>;
-};
 
 type InstallationOptions = {
   modelTurns?: boolean;
   nativeRepository?: boolean;
+  initialAgentImageTag?: string;
 };
+
+const nativeRepositoryValues = Type.Object({
+  enabled: Type.Literal(true),
+  authority: Type.Literal("prepared-git"),
+  image: Type.String(),
+  serviceName: Type.String(),
+  backendId: Type.String(),
+  registryConfigMapName: Type.String(),
+  serviceConfigSecretName: Type.String(),
+  appKeySecretName: Type.String(),
+  preparedCustodySecretName: Type.String(),
+  tlsSecretName: Type.String(),
+  publicCaSecretName: Type.String(),
+  upstreamCidrs: Type.Array(Type.String()),
+});
+
+export type NativeRepositoryValues = Static<typeof nativeRepositoryValues>;
 
 type HarnessConfiguration = OpenClawConfigurationDocument & {
   agents: { defaults: OpenClawConfigurationDocument };
 };
-
-// The JavaScript runner infers its default environment's exact allowlist.
-const runCommand = runProcess as (
-  command: string,
-  args: string[],
-  options: CommandOptions & { allowFailure: boolean },
-) => Promise<unknown>;
 
 function importedImage(variable: string): string {
   const image = process.env[variable] ?? "";
@@ -109,11 +117,24 @@ export const observabilitySelection = {
   timeout: 1_200_000,
 };
 
+// A waited Namespace delete costs about 16 s of Kubernetes namespace-controller passes.
+// Each test starts its deletes; the test file's after hook waits for all of them once, so a
+// later test overlaps an earlier teardown and a Namespace that never goes still fails the file.
+const pendingNamespaceDeletes: (() => Promise<unknown>)[] = [];
+
+export async function waitForObservabilityNamespaces() {
+  const results = await Promise.allSettled(pendingNamespaceDeletes.splice(0).map((wait) => wait()));
+  const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length) {
+    throw new AggregateError(errors, "observability namespace cleanup failed");
+  }
+}
+
 // Own only test resources. API calls, lifecycle, telemetry and policy enforcement
 // all use the installed production implementations, with a credential-free runtime fixture.
 export async function installObservabilityControlPlane(
   t: TestContext,
-  { modelTurns = false, nativeRepository = false }: InstallationOptions = {},
+  { modelTurns = false, nativeRepository = false, initialAgentImageTag }: InstallationOptions = {},
 ) {
   const modelInputs = modelTurns ? readModelTurnInputs() : undefined;
   const selectionInput = explicitK3dSelection();
@@ -152,7 +173,12 @@ export async function installObservabilityControlPlane(
   };
   const redact = (value: string) =>
     secrets.reduce((text, item) => text.replaceAll(item, "[redacted]"), value);
-  const run = async (command: string, args: string[], options: CommandOptions = {}) => {
+  const run = async (
+    command: string,
+    args: string[],
+    options: CommandOptions = {},
+    reportInstallationFailure = false,
+  ) => {
     const executables: Record<string, string | undefined> = {
       helm: process.env.OCC_HELM_BIN,
       kubectl: process.env.OCC_KUBECTL_BIN,
@@ -171,15 +197,34 @@ export async function installObservabilityControlPlane(
     const diagnostics = readString(stderr, "command stderr");
     // Validation errors can quote the submitted Secret, including escaped PEM
     // or base64 data. Never expose diagnostics from a command with private stdin.
-    assert.equal(
-      code,
-      0,
-      options.input ? `${command} failed with input` : redact(`${command}: ${diagnostics}`),
-    );
+    try {
+      assert.equal(
+        code,
+        0,
+        options.input ? `${command} failed with input` : redact(`${command}: ${diagnostics}`),
+      );
+    } catch (error) {
+      if (reportInstallationFailure && error instanceof Error && typeof stdout === "string") {
+        const receipt = installationProbeReceipt.exec(stdout);
+        // An absent or invalid receipt leaves the failed operation unknown.
+        if (receipt?.[0] === stdout) {
+          const [, fetch, fetchReason, body, bodyReason, status] = receipt;
+          Object.assign(error, {
+            openclawCiDiagnostic: {
+              kind: "observability-installation-probe",
+              phase: fetch ?? body,
+              reason: fetchReason ?? bodyReason,
+              status: body ? Number(status) : undefined,
+            },
+          });
+        }
+      }
+      throw error;
+    }
     return readString(stdout, "command stdout");
   };
   const kubectl = (...args: string[]) => run("kubectl", kubectlArguments(selection, args));
-  const kubernetes: KubernetesClient = createKubernetesClient({
+  const kubernetes = createKubernetesClient({
     selection,
     kubectl,
     waitTimeoutMs: 180_000,
@@ -221,17 +266,21 @@ export async function installObservabilityControlPlane(
       errors.push(error);
     }
     try {
-      await kubectl(
+      await kubectl("delete", "namespace", ...namespaces, "--ignore-not-found", "--wait=false");
+    } catch (error) {
+      errors.push(error);
+    }
+    // Callers register waitForObservabilityNamespaces as their file's after hook.
+    pendingNamespaceDeletes.push(() =>
+      kubectl(
         "delete",
         "namespace",
         ...namespaces,
         "--ignore-not-found",
         "--wait=true",
         "--timeout=120s",
-      );
-    } catch (error) {
-      errors.push(error);
-    }
+      ),
+    );
     await rm(directory, { recursive: true, force: true });
     if (errors.length) {
       throw new AggregateError(errors, "observability resource cleanup failed");
@@ -244,11 +293,15 @@ export async function installObservabilityControlPlane(
       metadata: { name, labels: { "oce-test": suffix } },
     });
   }
+  const agentImage = images.codex ?? images.runtime;
   const configuration = createKubernetesInstallationConfiguration({
     authentication: { mode: "inCluster" },
     platformNamespace: system,
     gatewayImage: images.runtime,
-    codexImage: images.codex ?? images.runtime,
+    // Kubernetes uses the digest when the reference includes both a tag and a digest.
+    codexImage: initialAgentImageTag
+      ? agentImage.replace(/(?::[^/@]+)?@sha256:/, `:${initialAgentImageTag}@sha256:`)
+      : agentImage,
     codexSeccompProfile: modelTurns
       ? process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE
       : undefined,
@@ -260,9 +313,9 @@ export async function installObservabilityControlPlane(
       modelProvider: { protocol: "openai-responses", baseUrl: "https://model.stub.invalid/v1" },
     });
   }
-  let repositoryCredentials: Record<string, unknown> | undefined;
+  let repositoryCredentials: NativeRepositoryValues | undefined;
   if (nativeRepository) {
-    const prepared: unknown = await prepareObservabilityNativeRepository({
+    const prepared = await prepareObservabilityNativeRepository({
       configuration,
       system,
       release,
@@ -274,10 +327,13 @@ export async function installObservabilityControlPlane(
       apply,
       metadata,
     });
-    repositoryCredentials = readRecord(prepared, "native repository Helm values");
-    assert.equal(repositoryCredentials.image, images.credentials);
+    assert.ok(
+      Check(nativeRepositoryValues, prepared) && prepared.image === images.credentials,
+      "Expected native repository sender Helm values with the selected image",
+    );
+    repositoryCredentials = prepared;
   }
-  await installProductionHelmControlPlane({
+  const { serviceKey } = await installProductionHelmControlPlane({
     selection,
     images,
     namespace: system,
@@ -296,6 +352,9 @@ export async function installObservabilityControlPlane(
     createSecretValue: secret,
     record,
   });
+  secrets.push(serviceKey);
+  // Subsequent upgrades must not need the fresh-install credential Secret.
+  await kubectl("-n", system, "delete", "secret", "occ-bootstrap-credentials");
   const values = readRecord(
     JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
     "Helm values",
@@ -329,7 +388,7 @@ export async function installObservabilityControlPlane(
     capabilities: { drop: ["ALL"] },
     readOnlyRootFilesystem: true,
   };
-  async function probePod(name: string, namespace: string, labels: Labels, bootstrap = false) {
+  async function probePod(name: string, namespace: string, labels: Labels) {
     await apply({
       apiVersion: "v1",
       kind: "Pod",
@@ -358,18 +417,8 @@ export async function installObservabilityControlPlane(
               requests: { cpu: "10m", memory: "32Mi" },
               limits: { cpu: "500m", memory: "128Mi" },
             },
-            ...(bootstrap
-              ? { volumeMounts: [{ name: "bootstrap", mountPath: "/bootstrap", readOnly: true }] }
-              : {}),
           },
         ],
-        ...(bootstrap
-          ? {
-              volumes: [
-                { name: "bootstrap", persistentVolumeClaim: { claimName: "bootstrap-password" } },
-              ],
-            }
-          : {}),
       },
     });
     await kubectl(
@@ -384,12 +433,10 @@ export async function installObservabilityControlPlane(
   // Independent probe Pods can become ready together; settle all creation before
   // a failure triggers namespace cleanup.
   const probes = await Promise.allSettled([
-    probePod(
-      "operator",
-      system,
-      { app: "operator", "app.kubernetes.io/name": "approved-gateway-client" },
-      true,
-    ),
+    probePod("operator", system, {
+      app: "operator",
+      "app.kubernetes.io/name": "approved-gateway-client",
+    }),
     probePod("scraper", monitoring, { app: "scraper" }),
     probePod("wrong-pod", monitoring, { app: "wrong" }),
     probePod("wrong-namespace", foreign, { app: "scraper" }),
@@ -400,7 +447,13 @@ export async function installObservabilityControlPlane(
       throw reason;
     }
   }
-  async function node(pod: string, namespace: string, script: string, input?: unknown) {
+  async function node(
+    pod: string,
+    namespace: string,
+    script: string,
+    input?: unknown,
+    reportInstallationFailure = false,
+  ) {
     return run(
       "kubectl",
       kubectlArguments(selection, [
@@ -416,9 +469,12 @@ export async function installObservabilityControlPlane(
         script,
       ]),
       { input: JSON.stringify(input) },
+      reportInstallationFailure,
     );
   }
   async function request(method: string, path: string, body?: unknown, authenticated = true) {
+    const reportInstallationFailure =
+      method === "GET" && path === "/installation" && body === undefined && !authenticated;
     const result: unknown = JSON.parse(
       await node(
         "operator",
@@ -427,16 +483,34 @@ export async function installObservabilityControlPlane(
       import fs from 'node:fs';
       const input=JSON.parse(fs.readFileSync(0,'utf8'));
       const headers=input.body===undefined?{}:{'content-type':'application/json'};
-      if(input.authenticated)headers['x-api-key']=JSON.parse(fs.readFileSync('/bootstrap/initial-admin-service-key.json','utf8')).data.key;
-      const r=await fetch(input.url,{method:input.method,headers,body:input.body===undefined?undefined:JSON.stringify(input.body),signal:AbortSignal.timeout(15000)});
-      console.log(JSON.stringify({status:r.status,requestId:r.headers.get('x-request-id'),body:await r.json()}));
+      if(input.serviceKey)headers['x-api-key']=input.serviceKey;
+      const signal=AbortSignal.timeout(15000);
+      let response;
+      try {
+        response=await fetch(input.url,{method:input.method,headers,body:input.body===undefined?undefined:JSON.stringify(input.body),signal});
+        console.log(JSON.stringify({status:response.status,requestId:response.headers.get('x-request-id'),body:await response.json()}));
+      } catch (error) {
+        if (!input.reportInstallationFailure) throw error;
+        const transportCode=error?.cause?.code;
+        const timedOut=signal.aborted&&error instanceof DOMException&&
+          (error.name==='TimeoutError'||error.name==='AbortError');
+        const reason=timedOut?'timeout'
+          :response&&error instanceof SyntaxError?'invalid-json'
+          :!response&&${JSON.stringify(installationProbeTransportCodes)}.includes(transportCode)?transportCode
+          :'unknown';
+        const detail=response?'body '+reason+' '+response.status:'fetch '+reason;
+        process.stdout.write('installation probe '+detail+'\\n');
+        process.exitCode=1;
+      }
     `,
         {
           url: `http://openclaw-enterprise-api.${system}.svc:8080${path}`,
           method,
           body,
-          authenticated,
+          serviceKey: authenticated ? serviceKey : undefined,
+          reportInstallationFailure: reportInstallationFailure || undefined,
         },
+        reportInstallationFailure,
       ),
     );
     for (const value of secrets) {

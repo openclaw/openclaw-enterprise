@@ -124,7 +124,7 @@ export function documentApiExamples<T>(document: T): T {
           }
           failure = [code, "Too many requests. Wait for Retry-After and try again."];
         }
-        if (status === "504") {
+        if (status === "504" && name !== "chatWithAgent") {
           failure = ["RUNTIME_LOGS_TIMEOUT", "The runtime status or log read timed out."];
         }
         if (!response.description || response.description === "Default Response") {
@@ -136,15 +136,26 @@ export function documentApiExamples<T>(document: T): T {
         const responseContent = record(response.content ?? {}, `${name} ${status} content`);
         for (const [mediaType, rawContent] of Object.entries(responseContent)) {
           const content = record(rawContent, `${name} ${status} media`);
-          if (isError) {
+          if (name === "chatWithAgent" && status === "default") {
+            content.examples = example(
+              { error: { type: "invalid_request_error", message: "Invalid completion request." } },
+              "Native application error",
+            );
+          } else if (isError) {
             if (!failure) {
               throw new Error(`Missing error example: ${name} ${status}`);
             }
-            sharedExamples[failure[0]] = {
+            const key = failure[0];
+            sharedExamples[key] = {
               summary: failure[0],
               value: { error: { code: failure[0], message: failure[1] }, meta },
             };
-            content.examples = { example: { $ref: `#/components/examples/${failure[0]}` } };
+            content.examples = { example: { $ref: `#/components/examples/${key}` } };
+          } else if (mediaType === "text/event-stream") {
+            content.examples = example(
+              'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello."},"index":0}]}\n\ndata: [DONE]\n\n',
+              "Native SSE completion",
+            );
           } else if (mediaType === "text/plain") {
             content.examples = example(
               "2026-10-01T12:00:00.000Z Agent ready\n",
@@ -158,7 +169,7 @@ export function documentApiExamples<T>(document: T): T {
             const responseMeta =
               name === "listAgentRevisions" ? { ...meta, nextCursor: null } : meta;
             const examples: Record<string, unknown> = example(
-              { data, meta: responseMeta },
+              name === "chatWithAgent" ? data : { data, meta: responseMeta },
               "Example response",
             );
             if (Array.isArray(data) && data.length) {

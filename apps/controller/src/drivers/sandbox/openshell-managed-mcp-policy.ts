@@ -1,15 +1,15 @@
 import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
-import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
   managedMcpCredentialBinding,
-  managedSelectionsForRevision,
-  managedMcpInstallsForRevision,
+  managedMcpInstalls,
+  managedMcpRequests,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
-import { sameOpenShellPolicy } from "./openshell-policy.ts";
+import { openShellNetworkRouteMayOverlap, sameOpenShellPolicy } from "./openshell-policy.ts";
 
 function managedMcpNetworkName(install: ManagedMcpInstall): string {
   return `oce-${install.runtimeName}-mcp`;
@@ -31,9 +31,6 @@ function unsupported(message: string): never {
 }
 
 export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonly string[]) {
-  const methods = toolNames.length
-    ? ["ping", "initialize", "notifications/initialized", "tools/list"]
-    : ["ping"];
   const { port, ...endpoint } = openShellProfileEndpoint(managedMcpProviderEndpoint(install));
   return {
     name: managedMcpNetworkName(install),
@@ -42,12 +39,12 @@ export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonl
       {
         ...endpoint,
         ports: [port],
-        rules: [
-          ...methods.map((method) => ({ allow: { method } })),
-          ...toolNames.map((name) => ({
-            allow: { method: "tools/call", params: { name: { glob: name } } },
-          })),
-        ],
+        rules: managedMcpRequests(toolNames).map(({ method, toolName }) => ({
+          allow: {
+            method,
+            ...(toolName !== undefined && { params: { name: { glob: toolName } } }),
+          },
+        })),
       },
     ],
   };
@@ -58,18 +55,12 @@ function openShellManagedMcpPolicy(
   revision: Readonly<AgentRevision>,
   requirements: HarnessWorkloadRequirements,
   installationProviders: readonly string[],
-  selections: ReturnType<typeof managedSelectionsForRevision>,
 ) {
-  const binding = managedMcpCredentialBinding(selections, install);
+  const binding = managedMcpCredentialBinding(revision.plugins?.plugins, install);
   const { host, port, path } = install.endpoint;
-  const ownsScope = (scope: (typeof requirements.credentialAttachments)[number]["requestScope"]) =>
-    scope?.importedPluginTemplate?.releaseSha256 ===
-      install.importedPluginTemplate?.releaseSha256 &&
-    scope?.importedPluginTemplate?.serverName === install.importedPluginTemplate?.serverName;
   const attached = requirements.credentialAttachments.filter(
     ({ sourceId, requestScope }) =>
-      sourceId === binding?.sourceId ||
-      (ownsScope(requestScope) && requestScope?.host === host && requestScope.port === port),
+      sourceId === binding?.sourceId || (requestScope?.host === host && requestScope.port === port),
   );
   const selected = attached[0];
   // Compute drops withdrawn sources from the dispatch even when the immutable revision names one.
@@ -82,9 +73,7 @@ function openShellManagedMcpPolicy(
   if (
     attached.length !== 1 ||
     !selected ||
-    (install.importedPluginTemplate && !binding?.active) ||
     selected.ref !== openShellProviderName(selected.sourceId) ||
-    !ownsScope(selected.requestScope) ||
     selected.requestScope?.host !== host ||
     selected.requestScope.port !== port ||
     selected.requestScope.path !== path ||
@@ -103,7 +92,6 @@ function openShellManagedMcpPolicy(
   }
   return {
     install,
-    sourceId: selected.sourceId,
     provider: {
       name: "_provider_" + selected.ref.replaceAll("-", "_"),
       binaries: [{ path: install.binaryPath }],
@@ -123,27 +111,15 @@ export function openShellManagedMcpPolicies(
   requirements: HarnessWorkloadRequirements,
   installationProviders: readonly string[],
 ) {
-  const selections = managedSelectionsForRevision(revision);
-  const policies = managedMcpInstallsForRevision(revision).flatMap((install) => {
+  return managedMcpInstalls.flatMap((install) => {
     const policy = openShellManagedMcpPolicy(
       install,
       revision,
       requirements,
       installationProviders,
-      selections,
     );
     return policy ? [policy] : [];
   });
-  if (
-    requirements.credentialAttachments.some(
-      (attachment) =>
-        attachment.requestScope?.importedPluginTemplate &&
-        !policies.some((policy) => policy.sourceId === attachment.sourceId),
-    )
-  ) {
-    unsupported("An imported MCP provider requires its active revision tool policy.");
-  }
-  return policies;
 }
 
 /** Matching OpenShell allowances compose. A second route must not permit
@@ -157,49 +133,12 @@ export function assertNoManagedMcpRouteOverlap(
   if (!network) {
     unsupported("OpenShell could not verify the managed MCP network policy.");
   }
-  const { host, port } = install.endpoint;
-  for (const [name, rule] of Object.entries(network)) {
-    if (exactRoutes.includes(name)) {
-      continue;
-    }
-    if (name === managedMcpNetworkName(install)) {
-      unsupported("The managed MCP network rule name is reserved.");
-    }
-    const endpoints = asRecord(rule)?.endpoints;
-    if (endpoints === undefined) {
-      // OpenShell emits an endpointless provider for its runtime files.
-      continue;
-    }
-    if (!Array.isArray(endpoints)) {
-      unsupported("OpenShell could not verify an endpoint against the managed MCP network policy.");
-    }
-    for (const entry of endpoints) {
-      const endpoint = asRecord(entry);
-      if (typeof endpoint?.host !== "string") {
-        unsupported(
-          "OpenShell could not verify a destination against the managed MCP network policy.",
-        );
-      }
-      const ports =
-        Array.isArray(endpoint.ports) && endpoint.ports.length
-          ? endpoint.ports
-          : typeof endpoint.port === "number" && endpoint.port > 0
-            ? [endpoint.port]
-            : [port];
-      if (!ports.includes(port)) {
-        continue;
-      }
-      const candidate = endpoint.host.toLowerCase().replace(/\.$/, "");
-      const wildcard = /^\*{1,2}\.[a-z0-9.-]+$/.test(candidate);
-      if (
-        (!wildcard && !/^[a-z0-9.-]+$/.test(candidate)) ||
-        numericLastLabel(candidate) ||
-        candidate === host ||
-        (wildcard && host.endsWith(candidate.slice(candidate.indexOf("."))))
-      ) {
-        unsupported("An OpenShell network route overlaps the credentialed managed MCP endpoint.");
-      }
-    }
+  const reserved = managedMcpNetworkName(install);
+  if (Object.hasOwn(network, reserved) && !exactRoutes.includes(reserved)) {
+    unsupported("The managed MCP network rule name is reserved.");
+  }
+  if (openShellNetworkRouteMayOverlap(network, install.endpoint, exactRoutes)) {
+    unsupported("An OpenShell network route overlaps the credentialed managed MCP endpoint.");
   }
 }
 

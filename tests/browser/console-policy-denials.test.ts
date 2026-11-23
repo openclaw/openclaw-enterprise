@@ -4,12 +4,9 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import {
-  callerDenied,
-  DEPLOY_SANDBOX_POLICY_READ_DENIED,
-  PLACEHOLDER_DESTINATION,
-} from "../helpers/refusal-text.mjs";
-import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
+import { callerDenied, PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import { DEPLOY_SANDBOX_POLICY_READ_DENIED } from "../helpers/refusal-access.ts";
+import { openShellSandboxRecords } from "../helpers/runtime-logs.ts";
 
 import {
   apiRequests,
@@ -23,7 +20,7 @@ import {
   pathRequests,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   id: `python-${name}`,
@@ -114,6 +111,67 @@ test("read-only Installation defaults display formatted JSON within the policy c
   const block = card.locator("pre");
   assert.equal(await block.innerText(), JSON.stringify(defaults, null, 2));
   await expectNoHorizontalScroll(page);
+});
+
+test("a policy reader can inspect repository limits without opening a proposal", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t);
+  restrict(fixture.policy, "manage_policy", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  const { page } = await newPage(t, fixture);
+  let repositoryCeiling = [
+    { repository: "example/application", access: "read" },
+    { repository: "example/tooling", access: "write" },
+  ];
+  // Supply Namespace grants on the real read response. IAM and all other routes stay real.
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    assert.deepEqual(body.data.ceiling, []);
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        data: {
+          ...body.data,
+          repositoryNetworkPolicyCeiling: repositoryCeiling,
+          repositoryNetworkPolicySaveSupported: false,
+        },
+      },
+    });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "policy"));
+  const openLimits = page.getByRole("button", { name: "View network limits", exact: true });
+  const limits = page.getByRole("dialog", { name: "Network limits", exact: true });
+  await openLimits.click();
+  assert.match(await limits.innerText(), /example\/application · read/);
+  assert.match(await limits.innerText(), /example\/tooling · write/);
+  assert.match(await limits.innerText(), /No ordinary network rules are delegated/);
+  await limits.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+  const repositoryPanel = page.getByRole("region", { name: "Repository network policy" });
+  assert.match(await repositoryPanel.innerText(), /No repository policy saved/);
+  assert.equal(
+    await page.getByRole("button", { name: "Withdraw saved repository grants" }).count(),
+    0,
+  );
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+
+  repositoryCeiling = [];
+  await page.reload();
+  await openLimits.click();
+  assert.match(await limits.innerText(), /No repository access is delegated to this Namespace/);
+  await limits.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+  assert.equal(await repositoryPanel.count(), 0, "no saved policy or delegated repositories");
 });
 
 test("the Policy denials page controls policy editing and disabling preserves saved rules", async (t) => {

@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import test, { type TestContext } from "node:test";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = repositoryClientData();

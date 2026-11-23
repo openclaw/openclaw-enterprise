@@ -5,24 +5,25 @@ the [single-controller external sign-in profile](../authentication/external-sign
 and a recovery account. Use [Enable OIDC sign-in](../../guides/deploy/oidc-sign-in.md)
 for setup.
 
-| Variable                                                     | Helm value                                          | Behavior                                                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `OCC_AUTH_OIDC_ISSUER`                                       | `auth.oidc.issuer`                                  | The exact `iss`; with the client ID it determines the provider instance.                    |
-| `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `_TOKEN_URL`, `_JWKS_URL` | `auth.oidc.authorizationUrl`, `tokenUrl`, `jwksUrl` | `https:` on 443 on the issuer's DNS host, no userinfo, query or fragment. Never discovered. |
-| `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                             | Read from the dedicated `auth.oidc.secretName` Secret. All required values or none.         |
-| `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
-| `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
+| Variable                                                     | Helm value                                          | Behavior                                                                                                               |
+| ------------------------------------------------------------ | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `OCC_AUTH_OIDC_ISSUER`                                       | `auth.oidc.issuer`                                  | The exact `iss`; with the client ID it determines the provider instance.                                               |
+| `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `_TOKEN_URL`, `_JWKS_URL` | `auth.oidc.authorizationUrl`, `tokenUrl`, `jwksUrl` | Each URL uses `https:` on 443 and a DNS host, with no userinfo, query or fragment. Hosts can differ. Never discovered. |
+| `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                             | Read from the dedicated `auth.oidc.secretName` Secret. All required values or none.                                    |
+| `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                                                 |
+| `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                                                     |
 
 `OCC_AUTH_OIDC_ENROLLMENT` (Helm `auth.oidc.enrollment`) accepts the JSON
 [OIDC enrollment policy](../authentication/team-enrollment.md). The installation
 profile uses `controlPlane.oidc.enrollment`. Absence requires explicit identity
 attachment and disables automatic account creation.
 
-The API Server connects to the token and JWKS URLs. If the cluster restricts
-egress, allow the IdP's destination address and port in the operator's network
-policy. For an in-cluster IdP, see [OIDC setup](../../guides/deploy/oidc-sign-in.md#configure-the-chart).
-The chart rejects invalid endpoint settings, a shared credential Secret or an HTTP
-base URL. OIDC supports native Agent access.
+The operator selects each endpoint independently. The API sends the client secret only to the
+configured token URL, fetches keys only from the configured JWKS URL, and refuses HTTP redirects.
+The browser visits the configured authorization URL; the API does not fetch it. The issuer still
+must match the signed ID token exactly.
+
+The API Server connects to the configured token and JWKS URLs. The chart leaves API egress to the cluster operator. If a separate policy restricts it, allow both destinations at their translated ports. Rendering rejects invalid endpoint settings, a shared credential Secret, or an HTTP base URL. OIDC supports native Agent access.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both

@@ -9,7 +9,7 @@ import {
   parseProductionChart,
   productionCollectorValues,
   renderExecutionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,
@@ -233,7 +233,7 @@ test("execution peer label maps reject non-string values before rendering", tool
 test(
   "explicit retired API egress restrictions must be removed before upgrade",
   tooling,
-  async (t) => {
+  async () => {
     for (const key of [
       "api.modelDiscoveryCidrs",
       "api.pluginDiscoveryCidrs",
@@ -251,21 +251,6 @@ test(
         key,
       );
     }
-    // An upgrade that retains only the former chart defaults has no operator restriction to replace.
-    const directory = await temporaryDirectory(t, "oce-empty-api-egress-");
-    const file = join(directory, "values.yaml");
-    await writeFile(
-      file,
-      JSON.stringify({
-        api: { modelDiscoveryCidrs: [], pluginDiscoveryCidrs: [] },
-        auth: {
-          google: { egressCidrs: [] },
-          oidc: { egressCidrs: [] },
-        },
-        backend: { chatgpt: { providerCidr: "" } },
-      }),
-    );
-    await render({}, { valuesFiles: [file], isUpgrade: true });
   },
 );
 

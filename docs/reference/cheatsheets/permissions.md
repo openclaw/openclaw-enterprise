@@ -8,18 +8,18 @@ override grants, and one action never implies another. See
 
 ## Actions
 
-| Action            | What it permits                                                                                                                                                                |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `create`          | Create a resource in its parent Installation or Namespace.                                                                                                                     |
-| `read`            | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                                             |
-| `update`          | Change a resource or its credential.                                                                                                                                           |
-| `delete`          | Request deletion of the exact resource.                                                                                                                                        |
-| `deploy`          | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                        |
-| `operate`         | Chat in an Agent browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
-| `administer`      | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                 |
-| `read_logs`       | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                     |
-| `read_audit`      | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                  |
-| `publish_plugins` | Preview or publish a plugin release in the target Namespace.                                                                                                                   |
+| Action            | What it permits                                                                                                                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `create`          | Create a resource in its parent Installation or Namespace.                                                                                                                                             |
+| `read`            | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                                                                     |
+| `update`          | Change a resource or its credential.                                                                                                                                                                   |
+| `delete`          | Request deletion of the exact resource.                                                                                                                                                                |
+| `deploy`          | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                                                |
+| `operate`         | Submit an Agent HTTP turn or chat in its browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
+| `administer`      | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                                         |
+| `read_logs`       | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                                             |
+| `read_audit`      | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                                          |
+| `publish_plugins` | Inspect and publish an immutable plugin release in a Namespace.                                                                                                                                        |
 
 ## Resources and scopes
 
@@ -36,14 +36,23 @@ service principal. Grant `read_logs` and `read_audit` separately.
 | [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                                                                | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                                                                                                                                                                                                              |
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                                                     | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.                                                                                                                                                       |
 | [`credential_source`](../credential-sources.md) | `create`, `read`, `update`, `delete`, `operate`                                                                     | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. `update` also gates rotation and needs `secret:operate` on each Secret it reads; Roles bootstrapped before `update` existed must have it granted. |
-| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy`, `read_audit` | Namespace for create; exact Agent otherwise. Native chat, administration, and audit reads require a human session. See [Read an Agent’s audit events](../../guides/topics/audit-log.md#read-an-agents-audit-events).                                                                                                                                       |
-| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                                    | Exact Agent-owned policy, or an exact binding on its Agent. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing; apply also requires `read`, as do Agent deploy and an Agent update with repository bindings when saved additions exist.                                                            |
+| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy`, `read_audit` | Namespace for create; exact Agent otherwise. Native browser chat, administration, and audit reads require a human session. [HTTP chat](../agent-http-chat.md) also accepts service keys with `operate`. See [Read an Agent’s audit events](../../guides/topics/audit-log.md#read-an-agents-audit-events).                                                  |
+| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                                    | Exact Agent-owned policy, or an exact binding on its Agent. See the SandboxPolicy permission conditions below.                                                                                                                                                                                                                                             |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                                              | Exact AgentRevision, or an exact binding on its Agent; deployment-status reads use this permission too.                                                                                                                                                                                                                                                    |
+
+SandboxPolicy reads and discovery require Agent `read`. Preview, save, and live
+application require Agent `manage_policy` and enabled editing. Live application also
+requires SandboxPolicy `read`. Saving an explicit empty repository network policy list
+requires SandboxPolicy `read`. Ordinary deployment and fresh first deployment
+require SandboxPolicy `read` for saved network policy additions or an explicit
+[repository network policy list](../sandbox-policies.md#repository-network-policy), even an empty list. Deploying an explicit list
+also requires Agent `manage_policy` and SandboxPolicy `update` on the exact
+resources. An Agent update that leaves
+repository bindings requires SandboxPolicy `read` when saved additions exist.
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
 source lists check each returned resource. Listing Agents, ServiceAccounts or Presets also requires `namespace:read`;
-using an imported plugin release in an Agent selection or a new CredentialSource requires `namespace:read` on its Namespace.
-Listing AgentRevisions also requires `agent:read` on the parent. The
+listing AgentRevisions also requires `agent:read` on the parent. The
 [HTTP API reference](../api.md#operations) lists exact targets and conditions for
 each operation.
 
@@ -54,8 +63,9 @@ authorized Installation-scoped service key. A Namespace-scoped key cannot access
 another Namespace or Installation endpoints. An Installation-scoped key still
 needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
-An account created with the Installation administrator `roleId` holds only
-`installation:administer` and `installation:read`; see
+The direct binding for an account created with the Installation administrator
+`roleId` grants only `installation:administer` and `installation:read`. Configured
+Group and other bindings can add access. See
 [Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
 
 ## Configured Roles
@@ -68,19 +78,27 @@ creator as the `ownerRole`. See
 
 ## Denial messages
 
-A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
+A `403 FORBIDDEN` can name the required action and safe scope, for example
 `Not authorized: this needs Agent deploy on Agent agt_1. Ask an Installation
-administrator to grant it.` The Namespace policy API cannot grant create, so a
-create denial names its Namespace and says only an Installation administrator
-can create it. The message does not mention [configured Roles](#configured-roles),
-which can also grant create. The
-message names a resource ID only when your request sent it in the path or an ID
-field, or you can already read that resource, never a binding, Role or
-Restriction. A Secret or credential source that an Agent, Configuration or
-credential source binds is named only when you can also read the record that
-binds it. Log text needs `Agent read_logs (or Agent administer)`. A Restriction, a missing grant and
-a resource that does not exist get the same message. A denial about your own
-account, session or provisioning job says so: `The acting account is disabled.`,
+administrator to grant it.` Ordinary create and Namespace delete denials
+end with `Review this permission with whoever manages IAM.`
+[Configured Roles](#configured-roles) can grant permissions that the exact
+Namespace policy API cannot issue.
+
+A message names a resource ID only when your request sent it in the path or an
+ID field, or you can already read that resource. It does not name a binding,
+Role, Restriction ID, or another principal. A Secret or credential source that
+an Agent, Configuration, or credential source binds is named only when you can
+also read the record that binds it. Log text needs
+`Agent read_logs (or Agent administer)`.
+Ordinary denials do not distinguish a matching Restriction from a missing grant
+or disclose whether an unreadable resource exists. The exception is an actual
+non-Namespace create refused to a confirmed Installation administrator when OCC
+has matching Restriction evidence. That denial says a Restriction denies create
+without naming its ID. Advisory permission booleans do not provide that evidence.
+
+A denial about your own account, session or provisioning job says so:
+`The acting account is disabled.`,
 `The acting identity is unavailable.`, `The human administrator session is no
 longer current.`, `The assigning session is no longer current.`, `Only the
 initiating actor can retry provisioning.` or `Only the initiating actor can read
@@ -89,15 +107,19 @@ operation was not authorized.`
 
 ## Additional checks
 
+- [Native browser access](../agent-native-admin.md#native-authority-and-drift)
+  delegates `operator.sessions.write` for exact-Agent `operate`, or
+  `operator.admin` for `administer`, under the person's native profile. Native
+  roles can narrow either grant. Agent `read` alone and service keys do not
+  admit a browser session.
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
   (device login) requires Namespace `agent:create`, or exact `agent:read` and
-  `agent:update` for an existing Agent. Start also requires `secret:create` and
-  `credential_source:create`, which the Namespace policy API cannot grant, so
-  only an Installation administrator or a holder of a configured Role with
-  those permissions can start it. Polling and closure require the initiating actor
-  and exact session `secret:operate`; source use requires exact
-  `credential_source:operate`. The session holds only an opaque Gateway handle.
-  Saved-Agent discovery also checks the Agent principal's source grant.
+  `agent:update` for an existing Agent. Start also requires
+  `credential_source:create` in the Namespace. Only the initiating actor can poll
+  or cancel the login, with current Agent permissions. Polling additionally
+  requires exact `credential_source:operate` on the resulting source. The
+  temporary login session is not an IAM resource. Saved-Agent discovery also
+  checks the Agent principal's source grant.
 
 - [Channel directory lookup](../api.md#post-namespacesnamespaceidchanneldirectorylookup)
   requires `agent:create` in the Namespace, or `agent:update` or
@@ -158,7 +180,7 @@ except `create`.
 It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
 checks, such as `secret:read_logs` or `configuration:deploy`, because it would
 grant nothing, and a Role with any `create` Permission, which no exact-resource
-binding can grant. On `namespace` it accepts `read` and `publish_plugins`.
+binding can grant. On `namespace` it accepts only `read`.
 It can bind an existing human Principal or a Namespace-local ServicePrincipal
 to an existing exact resource, including the path Namespace itself. Exact
 Namespace access does not grant access to child resources.

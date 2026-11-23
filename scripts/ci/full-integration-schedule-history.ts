@@ -513,8 +513,18 @@ export async function readScheduleHistory(
         : await readUnmarkedClock(readHistory, "workflow_dispatch", now, markedManualRuns);
     const previousFull = combineClocks(observed, manual);
     operation = "coverage-markers";
+    // Coverage cannot admit a run during cooldown. Keep the final ref check;
+    // a skipped lookup provides no evidence that this SHA was exercised.
+    const cadence = decideAdmission({
+      now,
+      eventSha,
+      mainSha: firstMain,
+      previousFull,
+      lastExercisedSha: null,
+    });
     const lastExercisedSha =
-      previousFull.status === "active"
+      cadence.result === "skip" &&
+      (cadence.reason === "active-full" || cadence.reason === "cooldown")
         ? null
         : await readCovered(readHistory, firstMain, currentRunId);
     operation = "main-ref";

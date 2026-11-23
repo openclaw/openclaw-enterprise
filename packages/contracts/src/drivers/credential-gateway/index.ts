@@ -1,8 +1,7 @@
-import type { CredentialRefreshStatus } from "../credential-refresh/index.ts";
+import type { CredentialRefreshStatus } from "../token-service/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
-  ImportedPluginConnectionTemplate,
   CredentialSource,
   CredentialSourceType,
   Namespace,
@@ -75,7 +74,6 @@ export interface CredentialSourceAttachment {
   readonly ref: string;
   /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
   readonly requestScope?: {
-    readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
     readonly host: string;
     readonly port: number;
     readonly path: string;
@@ -94,7 +92,6 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
-  readonly importedPluginTemplates?: true;
   /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
   withSourceToken?<T>(
     context: CredentialSourceContext,
@@ -107,9 +104,7 @@ export interface CredentialGatewayDriver extends Driver {
    * the written one, such as a URL in the normalized form the gateway uses.
    */
   validateSourceConfig(
-    input: Pick<CredentialSourceInput, "type" | "config"> & {
-      readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
-    },
+    input: Pick<CredentialSourceInput, "type" | "config">,
   ): Readonly<Record<string, string>> | void;
   registerSource(
     context: CredentialSourceContext,

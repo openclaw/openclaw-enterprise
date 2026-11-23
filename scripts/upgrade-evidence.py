@@ -19,7 +19,11 @@ REQUIRED = (
     "inventory/restart-preflight.json",
     "prepared-helm-attempt.json",
 )
-OPTIONAL = ("before-candidate-installation-secret.json", "installation-changed", "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json")
+OPTIONAL = (
+    "before-candidate-installation-secret.json", "installation-changed",
+    "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json",
+    "migration-secret-identities.json",
+)
 
 
 def digest(directory, name, optional=False):
@@ -101,6 +105,19 @@ def validate_compatibility(path, released, candidate):
         if (not re.fullmatch(r"sha256:[a-f0-9]{64}", expected) or
                 result.get("imageDigests", {}).get(role) != expected):
             raise ValueError("compatibility image selection does not match")
+    measurements = result.get("measurements")
+    if isinstance(measurements, list) and any(
+        isinstance(item, dict) and item.get("kind") == "released-controller-history" and
+        item.get("status") == "unsupported" for item in measurements
+    ):
+        try:
+            os.write(
+                2, b"warning: The released controller rejected the candidate migration history. "
+                   b"Qualify another recovery controller before maintenance.\n"
+            )
+        except OSError:
+            # An unavailable diagnostic stream must not change validation.
+            pass
 
 
 def main():

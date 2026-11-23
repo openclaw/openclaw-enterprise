@@ -4,14 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-/** @param {{ mcpUrl?: string, skillName?: string, referencePages?: readonly string[] }} [options] */
+/** @param {{ mcpUrl?: string, skillName?: string | null, referencePages?: readonly string[] }} [options] */
 export async function importedPluginPackage(t, marker, options = {}) {
   const { mcpUrl, skillName = "import-probe", referencePages = [] } = options;
   const root = await mkdtemp(join(tmpdir(), "oce-plugin-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const skill = join(root, "skills", skillName);
-  await mkdir(join(skill, "references"), { recursive: true });
-  await mkdir(join(skill, "scripts"));
   await writeFile(
     join(root, "plugin.json"),
     JSON.stringify({
@@ -21,20 +18,26 @@ export async function importedPluginPackage(t, marker, options = {}) {
       description: "Read the installed release marker.",
     }),
   );
-  await writeFile(
-    join(skill, "SKILL.md"),
-    `---\nname: ${skillName}\ndescription: Read the installed release marker from a supporting file.\n---\nRun the executable scripts/read-marker beside these instructions and return its output.\n`,
-  );
-  await writeFile(join(skill, "references", "marker.txt"), marker);
-  for (const [index, page] of referencePages.entries()) {
-    await writeFile(join(skill, "references", `page-${index}.txt`), page);
+  const entries = ["plugin.json"];
+  if (skillName !== null) {
+    const skill = join(root, "skills", skillName);
+    await mkdir(join(skill, "references"), { recursive: true });
+    await mkdir(join(skill, "scripts"));
+    await writeFile(
+      join(skill, "SKILL.md"),
+      `---\nname: ${skillName}\ndescription: Read the installed release marker from a supporting file.\n---\nRun the executable scripts/read-marker beside these instructions and return its output.\n`,
+    );
+    await writeFile(join(skill, "references", "marker.txt"), marker);
+    for (const [index, page] of referencePages.entries()) {
+      await writeFile(join(skill, "references", `page-${index}.txt`), page);
+    }
+    await writeFile(
+      join(skill, "scripts", "read-marker"),
+      '#!/bin/sh\nprintf "IMPORT_SCRIPT_RESULT="\nexec cat "$(dirname "$0")/../references/marker.txt"\n',
+      { mode: 0o755 },
+    );
+    entries.push("skills");
   }
-  await writeFile(
-    join(skill, "scripts", "read-marker"),
-    '#!/bin/sh\nprintf "IMPORT_SCRIPT_RESULT="\nexec cat "$(dirname "$0")/../references/marker.txt"\n',
-    { mode: 0o755 },
-  );
-  const entries = ["plugin.json", "skills"];
   if (mcpUrl) {
     await writeFile(
       join(root, "mcp.json"),

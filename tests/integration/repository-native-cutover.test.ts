@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { rootCertificates } from "node:tls";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
@@ -33,11 +33,11 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import {
   serviceConfigurationData,
   githubTokenConfigurationData,
-} from "../fixtures/repository-credentials/builders.mjs";
+} from "../fixtures/repository-credentials/builders.ts";
 
 async function fixture(t: TestContext) {
   const directory = await socketDirectory(t, "native-cutover-");

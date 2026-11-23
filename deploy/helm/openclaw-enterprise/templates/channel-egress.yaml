@@ -1,0 +1,276 @@
+{{- if .Values.channelEgress.enabled }}
+{{- $root := . }}
+{{- $egress := .Values.channelEgress }}
+{{- $generated := .Files.Get "files/channel-egress.json" | fromJson }}
+{{- if ne $egress.image $generated.image }}{{- fail "channelEgress.image must select the qualified Envoy digest" }}{{- end }}
+{{- $fleet := dict "gateway.envoyproxy.io/owning-gateway-name" $egress.gatewayName "gateway.envoyproxy.io/owning-gateway-namespace" .Release.Namespace "app.kubernetes.io/name" "envoy" }}
+{{- $occ := deepCopy $generated.occFilterChain }}
+{{- $rbac := (index (index (index $occ.filters 0).typed_config.http_filters 2).typed_config.upstream_http_filters 0).typed_config.rules.policies.destinations }}
+{{- $excluded := (index (index $rbac.permissions 0).and_rules.rules 2).not_rule.or_rules }}
+{{- range $cidr := $egress.excludedCidrs }}
+{{- $parts := splitList "/" $cidr }}
+{{- if ne (len $parts) 2 }}{{- fail "channelEgress.excludedCidrs must contain CIDRs" }}{{- end }}
+{{- $permission := dict "matcher" (dict "name" "envoy.rbac.matchers.upstream_ip_port" "typed_config" (dict "@type" "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher" "upstream_ip" (dict "address_prefix" (index $parts 0) "prefix_len" (int (index $parts 1))))) }}
+{{- $_ := set $excluded "rules" (append $excluded.rules $permission) }}
+{{- end }}
+{{- $_ := set $occ "name" (printf "occ-%s" (toJson $occ | sha256sum | trunc 24)) }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: {{ $egress.gatewayName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  shutdown:
+    drainTimeout: 5s
+    minDrainDuration: 1s
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: {{ $egress.replicas }}
+        container:
+          image: {{ $egress.image | quote }}
+          resources:
+            {{- toYaml $egress.resources | nindent 12 }}
+      envoyService:
+        type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ $egress.gatewayName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    openclaw.dev/channel-egress-fleet: {{ $egress.gatewayName | quote }}
+spec:
+  gatewayClassName: {{ $egress.gatewayClassName | quote }}
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: {{ $egress.gatewayName | quote }}
+  listeners:
+    - name: occ
+      protocol: HTTP
+      port: {{ $egress.occListenerPort }}
+    - name: inspection
+      protocol: HTTP
+      port: {{ $egress.inspectionPort }}
+    {{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
+    - name: agent-{{ $port }}
+      protocol: HTTP
+      port: {{ $port }}
+    {{- end }}
+---
+# An unallocated listener has no forwarding route, including before patches arrive.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: {{ $egress.gatewayName }}-deny
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  directResponse:
+    statusCode: 503
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $egress.gatewayName }}-deny
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  parentRefs:
+    - name: {{ $egress.gatewayName | quote }}
+  rules:
+    - filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ $egress.gatewayName }}-deny
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: {{ $egress.gatewayName }}-base
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  type: JSONPatch
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ $egress.gatewayName | quote }}
+  jsonPatches:
+    {{- range $cluster := list $generated.forwardCluster $generated.inspectionCluster }}
+    - type: type.googleapis.com/envoy.config.cluster.v3.Cluster
+      name: {{ $cluster.name | quote }}
+      operation:
+        op: add
+        path: ""
+        value: {{ toJson $cluster }}
+    {{- end }}
+    {{- range $listener, $chain := dict "occ" $occ "inspection" $generated.inspectionFilterChain }}
+    - type: type.googleapis.com/envoy.config.listener.v3.Listener
+      name: {{ printf "%s/%s/%s" $root.Release.Namespace $egress.gatewayName $listener }}
+      operation:
+        op: replace
+        path: /default_filter_chain
+        value: {{ toJson $chain }}
+    {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $egress.serviceName | quote }}
+  namespace: {{ $egress.envoyNamespace | quote }}
+  labels:
+    openclaw.dev/channel-egress-fleet: {{ $egress.gatewayName | quote }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- toYaml $fleet | nindent 4 }}
+  ports:
+    - name: occ
+      port: {{ $egress.occListenerPort }}
+      targetPort: {{ $egress.occListenerPort }}
+    {{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
+    - name: agent-{{ $port }}
+      port: {{ $port }}
+      targetPort: {{ $port }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $egress.gatewayName }}-fleet
+  namespace: {{ $egress.envoyNamespace | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $fleet | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- range $component, $port := dict "api" $egress.occListenerPort "worker" $egress.inspectionPort }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $root.Release.Namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/instance: {{ $root.Release.Name | quote }}
+              app.kubernetes.io/component: {{ $component }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+    {{- end }}
+  egress:
+    {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              control-plane: envoy-gateway
+      ports:
+        - protocol: TCP
+          port: 18000
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $cidr := concat $generated.excludedIpv4Cidrs $egress.excludedCidrs | uniq }}
+              {{- if not (contains ":" $cidr) }}
+              - {{ $cidr | quote }}
+              {{- end }}
+              {{- end }}
+      ports:
+        - protocol: TCP
+          port: 1
+          endPort: 65535
+{{- range $component, $port := dict "worker" $egress.inspectionPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $egress.gatewayName }}-{{ $component }}
+  namespace: {{ $root.Release.Namespace | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ $root.Release.Name | quote }}
+      app.kubernetes.io/component: {{ $component }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $egress.envoyNamespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $fleet | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- end }}
+{{- range $component := list "api" "worker" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $egress.gatewayName }}-{{ $component }}
+  namespace: {{ $root.Release.Namespace | quote }}
+rules:
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gateways]
+    resourceNames: [{{ $egress.gatewayName | quote }}]
+    verbs: [get]
+  {{- if eq $component "worker" }}
+  - apiGroups: [gateway.envoyproxy.io]
+    resources: [envoypatchpolicies]
+    verbs: [get, list, create, update]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $egress.gatewayName }}-{{ $component }}
+  namespace: {{ $root.Release.Namespace | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-{{ $component }}
+    namespace: {{ $root.Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $egress.gatewayName }}-{{ $component }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $root.Release.Name }}-{{ $egress.gatewayName }}-{{ $component }}-fleet
+  namespace: {{ $egress.envoyNamespace | quote }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, services]
+    verbs: [get, list]
+  {{- if eq $component "worker" }}
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, create, update]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $root.Release.Name }}-{{ $egress.gatewayName }}-{{ $component }}-fleet
+  namespace: {{ $egress.envoyNamespace | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-{{ $component }}
+    namespace: {{ $root.Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $root.Release.Name }}-{{ $egress.gatewayName }}-{{ $component }}-fleet
+{{- end }}
+{{- end }}

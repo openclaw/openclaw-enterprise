@@ -9,15 +9,18 @@ import {
   DEPLOYED_VERSION_UNREADABLE,
   deployAcceptedVersionUnreadable,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
-  MODEL_CREDENTIAL_REJECTED_REPLACED,
-  modelCredentialRejectedAsk,
-  modelCredentialRejectedReadOnly,
   requestedVersionUnavailable,
   VERSION_READ_DENIED,
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
+import {
+  type CredentialRejectionAccess,
+  MODEL_CREDENTIAL_REJECTED_REPLACED,
+  modelCredentialRejectedAsk,
+  modelCredentialRejectedReadOnly,
+} from "../helpers/refusal-credential-admission.ts";
 import {
   routeFailedDeployment,
   AGENT_READ,
@@ -184,7 +187,7 @@ test("a rejected model credential tells a member without Agent update which gran
   // The Agent's credential is a Secret, so the text names both grants that fix it: Secret update
   // replaces the value in place, which the permission answer does not cover.
   assert.equal(record(record(agent.harnessAuth).source).kind, "secret");
-  const access = { secretBacked: true, gap: "update", deploy: true };
+  const access: CredentialRejectionAccess = { secretBacked: true, gap: "update", deploy: true };
   await recovery.getByText(modelCredentialRejectedAsk(access)).waitFor();
   await page.getByText(modelCredentialRejectedReadOnly(access), { exact: true }).waitFor();
   // No step the operator cannot take: neither "update or replace" nor a link to Credentials.
@@ -242,7 +245,7 @@ test("a rejected credential names the grant a member lacks and what deploying ne
     // Every grant replacing the value in place and deploying it needs.
     deployer: [...AGENT_READ, ["deploy", "agent"], ["update", "secret"], ["operate", "secret"]],
   };
-  const expected = {
+  const expected: Record<"editor" | "updater" | "deployer", CredentialRejectionAccess> = {
     editor: { secretBacked: true, gap: "sources", deploy: true },
     updater: { secretBacked: true, gap: "update", deploy: false },
     deployer: { secretBacked: true, gap: "update", deploy: true },

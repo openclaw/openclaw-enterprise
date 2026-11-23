@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-25
-last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
+updated: 2026-11-22
+last_updated_session: authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d
 ---
 
 # Container package bootstrap flow
@@ -62,7 +62,7 @@ hosted bootstrap or subsequent release has succeeded.
 ### 1. Validate the approved source and destinations
 
 `scripts/ci/container-bootstrap.ts:main` reuses
-`scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
+`scripts/ci/container-release/admission.ts:verifyMainSource`, `verifyCi`, and
 `verifyEnvironment`. Source equals the trusted main workflow source commit and
 checkout. The repository is public, exact-source main-push CI succeeds, and the
 environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
@@ -104,7 +104,7 @@ lock, which does not constrain external package administrators. Partial success
 is possible. The operator follows the existing publication procedure to build,
 smoke and publish actual Enterprise images.
 
-`scripts/ci/container-release.mjs:verifyGhcr` is shared by publication and promotion.
+`scripts/ci/container-release/admission.ts:verifyGhcr` is shared by publication and promotion.
 It checks public package identity and rejects conflicting repository metadata.
 When GitHub omits repository metadata, it accepts the omission without querying
 approval history. Package linkage is configured during
@@ -118,14 +118,14 @@ publication. `scripts/ci/container-resume.ts:verifyPreparation` checks the
 current recovery workflow's main-push CI separately from the original image
 source. The original producer must be the trusted publication workflow on main,
 completed at the unchanged selected attempt, with successful validation, all four
-native platform jobs and both image assembly jobs on the original source SHA. A
-complete older run that prepared each image in one job is still accepted. Exactly
+native preparation jobs, both runtime smoke jobs, and both image assembly jobs
+on the original source SHA. Exactly
 named, nonexpired artifacts must belong to that run
 and source; the workflow downloads their validated IDs with digest checks.
 
 `scripts/ci/container-resume.ts:resume` preserves the producer identity in each
 seal and rechecks original source CI. It calls
-`scripts/ci/container-release.mjs:publishPrepared`, which verifies both archive
+`scripts/ci/container-release/publication.ts:publishPrepared`, which verifies both archive
 hashes and OCI digests before registry writes. Before each image, source, CI,
 producer, environment, and public-package metadata are rechecked. A
 matching existing source tag is inspected remotely and left untouched, even if
@@ -148,7 +148,7 @@ without deleting the original archives or rerunning their producer.
 - `node --test tests/integration/container-resume.test.ts` exercises the recovery
   CLI with HTTP/transport fixtures; a hosted run must prove actual GHCR transfer.
 
-- `node --test tests/integration/container-release.test.mjs` checks shared gate
+- `node --test tests/integration/container-release.test.ts` checks shared gate
   behavior, bootstrap 404 handling, and stderr-only Helm push output. The
   subprocess-stream case does not publish to GHCR.
 - Inspect the hosted job summary and authenticated package metadata for both
@@ -171,6 +171,8 @@ without deleting the original archives or rerunning their producer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 23:03: Corrected container recovery job requirements (authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 
 - 2026-10-25: Recovery requires validation, four native platform jobs and two image assemblies, matching the release guide after #3654. (finding 2490)
 

@@ -1,7 +1,7 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import type { SavedConnection, Secret, ConnectionSession } from "@openclaw-enterprise/contracts";
+import type { SavedConnection, Secret } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
-import type { SavedConnectionRepository } from "./platform-state.ts";
+import type { SavedConnectionRepository } from "../ports/saved-connections.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
@@ -46,24 +46,6 @@ function connectionFromRow(row: Row): Readonly<SavedConnection> {
     connectionTemplateId: text(row, "connection_template_id"),
     connectionTemplateVersion: integer(row, "connection_template_version"),
     createdAt: timestamp(row, "created_at"),
-  });
-}
-
-function sessionFromRow(row: Row): Readonly<ConnectionSession> {
-  return immutableCopy({
-    stateHash: text(row, "state_hash"),
-    namespaceId: text(row, "namespace_id"),
-    credentialSourceId: text(row, "credential_source_id"),
-    pkceVerifier: text(row, "pkce_verifier"),
-    selectedScopes: row.selected_scopes as string[],
-    issuerRequired: row.issuer_required === true,
-    sessionId: text(row, "session_id"),
-    redirectUri: text(row, "redirect_uri"),
-    actorId: text(row, "actor_id"),
-    connectionTemplateId: text(row, "connection_template_id"),
-    connectionTemplateVersion: integer(row, "connection_template_version"),
-    createdAt: timestamp(row, "created_at"),
-    expiresAt: timestamp(row, "expires_at"),
   });
 }
 
@@ -227,52 +209,6 @@ export function postgresSavedConnections(
         [namespaceId, credentialSourceId],
       );
       return deleted.rowCount === 1;
-    },
-    createConnectionSession: async (session) => {
-      await requireInitialized();
-      await client.query(
-        `INSERT INTO occ.connection_sessions
-         (state_hash, namespace_id, credential_source_id, pkce_verifier, actor_id,
-          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required,selected_scopes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,$13)`,
-        [
-          session.stateHash,
-          session.namespaceId,
-          session.credentialSourceId,
-          session.pkceVerifier,
-          session.actorId,
-          session.sessionId,
-          session.redirectUri,
-          session.connectionTemplateId,
-          session.connectionTemplateVersion,
-          session.createdAt,
-          session.expiresAt,
-          session.issuerRequired,
-          session.selectedScopes,
-        ],
-      );
-      return immutableCopy(session);
-    },
-    consumeConnectionSession: async (stateHash, actorId, sessionId, at) => {
-      const { rows } = await client.query(
-        `DELETE FROM occ.connection_sessions WHERE state_hash = $1 AND actor_id = $2
-         AND session_id = $3 AND expires_at > $4 RETURNING *`,
-        [stateHash, actorId, sessionId, at],
-      );
-      return rows[0] === undefined ? undefined : sessionFromRow(rows[0] as Row);
-    },
-    takeExpiredConnectionSessions: async (at, limit) => {
-      const { rows } = await client.query(
-        `DELETE FROM occ.connection_sessions WHERE state_hash IN (
-          SELECT state_hash FROM occ.connection_sessions WHERE expires_at <= $1
-          ORDER BY expires_at, state_hash LIMIT $2)
-         RETURNING namespace_id, credential_source_id`,
-        [at, limit],
-      );
-      return rows.map((row) => ({
-        namespaceId: text(row as Row, "namespace_id"),
-        credentialSourceId: text(row as Row, "credential_source_id"),
-      }));
     },
   };
 }

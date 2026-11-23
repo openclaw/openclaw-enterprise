@@ -7,15 +7,11 @@ import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
 import { record } from "../../drivers/repo/access/configuration.ts";
 import { createSystemClock } from "../../drivers/repo/access/clock.ts";
-import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
+import { GITHUB_REPOSITORY_REGISTRY_MAX_BYTES } from "../../drivers/repo/github/access/registry.ts";
+import { inputLimits, loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
 import { runService } from "./service.ts";
 import { readStableDescriptor } from "./stable-file-descriptor.ts";
 
-const inputLimits = {
-  "config.json": 262144,
-  "tls.crt": 131072,
-  "tls.key": 65536,
-} as const;
 const privateNames = [...Object.keys(inputLimits), "registry.json"];
 const controlSocket = "/run/openclaw/repository-control/private/control.sock";
 
@@ -152,7 +148,10 @@ export async function prepareProjectedInputs(
     const registryGeneration = await projectionGeneration(dirname(options.registryFile));
     contents.set(
       "registry.json",
-      await readProjected(join(registryGeneration, basename(options.registryFile)), 262144),
+      await readProjected(
+        join(registryGeneration, basename(options.registryFile)),
+        GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
+      ),
     );
     const root = record(JSON.parse(contents.get("config.json")!.toString("utf8")));
     const gateway = record(root.gateway);

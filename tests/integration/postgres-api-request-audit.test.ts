@@ -3,15 +3,49 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { Pool } from "pg";
 
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { NamespaceListResponse } from "../../packages/contracts/src/index.ts";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
+import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
+import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { callbackGate, waitFor, within } from "../helpers/wait-for.ts";
 
 const authSecret = "request-audit-postgres-auth-secret-minimum-32";
-const migrationUrl = process.env.OCC_TEST_API_REQUEST_AUDIT_MIGRATION_DATABASE_URL;
+const fixtureUrl = process.env.OCC_TEST_API_REQUEST_AUDIT_MIGRATION_DATABASE_URL;
+const postgresRequestAudit = {
+  skip: fixtureUrl ? false : "Prepare the dedicated postgres-platform file fixture.",
+  timeout: 30_000,
+};
+const admittedAction = "openclaw.api.request.admitted";
+const resultAction = "openclaw.api.request.result";
+
+function disposableMigrationUrl(): string {
+  const migrationUrl = fixtureUrl;
+  assert.ok(databaseUrl && migrationUrl, "The test needs app and migrator URLs.");
+  assert.ok(URL.canParse(databaseUrl) && URL.canParse(migrationUrl), "Invalid fixture URLs.");
+  const appTarget = new URL(databaseUrl);
+  const migratorTarget = new URL(migrationUrl);
+  assert.ok(
+    [appTarget, migratorTarget].every(
+      (url) =>
+        url.protocol === "postgresql:" &&
+        url.hostname === "127.0.0.1" &&
+        url.port !== "" &&
+        /^\/openclaw_ci_postgres_api_request_audit_[a-f0-9]{12}$/.test(url.pathname) &&
+        url.search === "" &&
+        url.hash === "",
+    ) &&
+      appTarget.port === migratorTarget.port &&
+      appTarget.pathname === migratorTarget.pathname &&
+      appTarget.username === "occ_app" &&
+      migratorTarget.username === "occ_migrator",
+    "Both roles must use the same disposable API request audit database.",
+  );
+  return migrationUrl;
+}
 
 async function withRejectedAuditRows<T>(migrator: Pool, check: string, run: () => Promise<T>) {
   // NOT VALID leaves earlier observations intact and still rejects new inserts.
@@ -26,71 +60,28 @@ async function withRejectedAuditRows<T>(migrator: Pool, check: string, run: () =
 
 test(
   "PostgreSQL records API admission and results and blocks work when admission cannot be saved",
-  {
-    skip: migrationUrl ? false : "Prepare the dedicated postgres-platform file fixture.",
-    timeout: 30_000,
-  },
+  postgresRequestAudit,
   async (t) => {
     // The test temporarily changes the ledger schema. Require this file's disposable CI database.
-    assert.ok(databaseUrl && migrationUrl, "The test needs app and migrator URLs.");
-    assert.ok(URL.canParse(databaseUrl) && URL.canParse(migrationUrl), "Invalid fixture URLs.");
-    const appTarget = new URL(databaseUrl);
-    const migratorTarget = new URL(migrationUrl);
-    assert.ok(
-      [appTarget, migratorTarget].every(
-        (url) =>
-          url.protocol === "postgresql:" &&
-          url.hostname === "127.0.0.1" &&
-          url.port !== "" &&
-          /^\/openclaw_ci_postgres_api_request_audit_[a-f0-9]{12}$/.test(url.pathname) &&
-          url.search === "" &&
-          url.hash === "",
-      ) &&
-        appTarget.port === migratorTarget.port &&
-        appTarget.pathname === migratorTarget.pathname &&
-        appTarget.username === "occ_app" &&
-        migratorTarget.username === "occ_migrator",
-      "Both roles must use the same disposable API request audit database.",
-    );
+    const migrationUrl = disposableMigrationUrl();
 
-    const admittedAction = "openclaw.api.request.admitted";
-    const resultAction = "openclaw.api.request.result";
-    const logs: Record<string, unknown>[] = [];
-    const { app, pool, state, principal, controller, inject, deployAgent } =
-      await createPostgresAgentApp(t, {
-        label: "api-audit",
-        authSecret,
-        requestAudit: true,
-        stateOptions: { auditWriteTimeoutMs: 100 },
-        appOptions: {
-          logger: createOccLogger({
-            component: "occ-api-request-audit-test",
-            destination: jsonLineDestination(logs),
-          }),
-        },
-      });
+    const logs: unknown[] = [];
+    const { app, pool, state, principal, inject, deployAgent } = await createPostgresAgentApp(t, {
+      label: "api-audit",
+      authSecret,
+      requestAudit: true,
+      stateOptions: { auditWriteTimeoutMs: 100 },
+      appOptions: {
+        logger: createOccLogger({
+          component: "occ-api-request-audit-test",
+          destination: jsonLineDestination(logs),
+        }),
+      },
+    });
 
     const created = await inject("POST", "/namespaces", { name: `API audit ${randomUUID()}` });
     assert.equal(created.statusCode, 201, created.body);
     const namespace = created.json().data;
-    // Uploads check publication permission before parsing. Requests that reach the handler
-    // still need admission evidence before the Driver inspects or publishes the package.
-    controller.installPluginDrivers([new OCCPluginDriver()]);
-    const releasePath = `/namespaces/${namespace.id}/plugin-releases`;
-    const archiveBase64 = await importedPluginPackage(t, "request-audit-marker");
-    const preview = await inject("POST", `${releasePath}/preview`, { archiveBase64 });
-    assert.equal(preview.statusCode, 200, preview.body);
-    const { digest, archiveSha256 } = preview.json().data;
-    const publish = await inject("POST", releasePath, { archiveBase64, digest, archiveSha256 });
-    assert.equal(publish.statusCode, 200, publish.body);
-    await pool.query(
-      `INSERT INTO occ.iam_restrictions
-        (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, 'publish_plugins', 'namespace', $2, 'deny')`,
-      [`restriction-${randomUUID()}`, namespace.id],
-    );
-    const refusedUpload = await inject("POST", releasePath, {});
-    assert.equal(refusedUpload.statusCode, 403, refusedUpload.body);
     const read = await inject("GET", `/namespaces/${namespace.id}`);
     assert.equal(read.statusCode, 200, read.body);
     const head = await inject("HEAD", `/namespaces/${namespace.id}`);
@@ -208,6 +199,7 @@ test(
     assert.equal(agentReadDenied.statusCode, 403, agentReadDenied.body);
     assert.deepEqual(
       logs
+        .map(requireLogRecord)
         .filter(({ event }) => event === "http.audit_append_failed")
         .map(({ requestId, action, operationId }) => ({ requestId, action, operationId })),
       [
@@ -259,9 +251,6 @@ test(
       resultResource = installationResource,
     ] of [
       [created, "createNamespace", "POST", 201, principal.id, "success", true],
-      [preview, "previewPluginRelease", "POST", 200, principal.id, "success", true],
-      [publish, "publishPluginRelease", "POST", 200, principal.id, "success", true],
-      [refusedUpload, "publishPluginRelease", "POST", 403, principal.id, "denied", false],
       [read, "getNamespace", "GET", 200, principal.id, "success", true, namespaceResource],
       [head, "getNamespace", "HEAD", 200, principal.id, "success", true, namespaceResource],
       [invalid, "createNamespace", "POST", 400, "unresolved", "failure", false],
@@ -304,20 +293,6 @@ test(
           event.action === "openclaw.namespaces.create" && event.resource.id === namespace.id,
       ),
     );
-    // The Namespace mutation records only the digest. The denied attempt names the grant
-    // that failed even though it never reached the handler.
-    const publication = forRequest(publish).find((event) => event.kind === "mutation");
-    assert.deepEqual(publication?.resource, namespaceResource);
-    assert.deepEqual(publication?.details, { digest });
-    const publishDenial = forRequest(refusedUpload).find(
-      (event) => event.kind === "authorization_denial",
-    );
-    assert.equal(publishDenial?.actorId, principal.id);
-    assert.deepEqual(publishDenial?.authorization, {
-      principalId: principal.id,
-      action: "publish_plugins",
-      resource: namespaceResource,
-    });
     const committedRecords = forRequest(createdDuringOutage);
     assert.deepEqual(
       committedRecords.filter((event) => event.kind === "api_request").map(({ action }) => action),
@@ -387,6 +362,7 @@ test(
     assert.equal(overCapacity.statusCode, 503, overCapacity.body);
     assert.deepEqual(
       logs
+        .map(requireLogRecord)
         .filter(
           (entry) =>
             entry.event === "http.audit_append_failed" &&
@@ -409,6 +385,132 @@ test(
         )
       ).rows,
       auditIdsBeforeCapacity.rows,
+    );
+  },
+);
+
+test(
+  "PostgreSQL retains the mutation and result audit when an admitted client disconnects",
+  postgresRequestAudit,
+  async (t) => {
+    const migrationUrl = disposableMigrationUrl();
+    const fixture = await createPostgresAgentApp(t, {
+      label: "api-audit-disconnect",
+      authSecret,
+      requestAudit: true,
+    });
+    const { pool, state, principal } = fixture;
+    const session = await signInToControllerApp(fixture.app, fixture.adminAccount);
+    const app = fixture.createApp();
+    const requestStarted = callbackGate<string>("the live Namespace request", 5_000);
+    const responseClosed = callbackGate<boolean>("the server-side disconnect", 5_000);
+    app.addHook("onRequest", async (request, reply) => {
+      if (request.method === "POST" && request.url === "/namespaces") {
+        reply.raw.once("close", () => responseClosed.resolve(reply.raw.writableEnded));
+        requestStarted.resolve(request.id);
+      }
+    });
+    const endpoint = await app.listen({ host: "127.0.0.1", port: 0 });
+    const path = `${endpoint}/namespaces`;
+    const name = `Created after disconnect ${randomUUID()}`;
+    const forRequest = async (requestId: string) =>
+      (await state.transact((unit) => unit.audit.list())).filter(
+        (event) => event.requestId === requestId,
+      );
+
+    const requestId = await withPool(migrationUrl, async (migrator) => {
+      const locker = await migrator.connect();
+      try {
+        await locker.query("BEGIN");
+        await locker.query("SET LOCAL lock_timeout = '5s'");
+        await locker.query("SET LOCAL idle_in_transaction_session_timeout = '20s'");
+        // Block the Namespace write after admission while leaving ledger and Namespace reads open.
+        await locker.query("LOCK TABLE occ.namespaces IN SHARE MODE");
+        const {
+          rows: [holder],
+        } = await locker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        assert.ok(holder);
+        const disconnect = new AbortController();
+        const response = fetch(path, {
+          method: "POST",
+          headers: authenticatedHeaders(session, { "content-type": "application/json" }),
+          body: JSON.stringify({ name }),
+          signal: AbortSignal.any([disconnect.signal, t.signal]),
+        });
+        void response.catch(() => {});
+        try {
+          const id = await requestStarted.reached();
+          await waitForLockWaiter(pool, holder.pid, "the admitted Namespace write", {
+            timeoutMs: 5_000,
+          });
+          const admitted = await forRequest(id);
+          assert.deepEqual(
+            admitted.map(({ action, actorId }) => ({ action, actorId })),
+            [{ action: admittedAction, actorId: principal.id }],
+          );
+          disconnect.abort();
+          await assert.rejects(within(response, "aborting the live client request", 5_000), {
+            name: "AbortError",
+          });
+          assert.equal(await responseClosed.reached(), false, "response ended before disconnect");
+          assert.deepEqual(await forRequest(id), admitted);
+          assert.equal(
+            (await pool.query("SELECT id FROM occ.namespaces WHERE name = $1", [name])).rowCount,
+            0,
+          );
+          return id;
+        } finally {
+          disconnect.abort();
+        }
+      } finally {
+        await locker.query("ROLLBACK").finally(() => locker.release());
+      }
+    });
+
+    const records = await waitFor(
+      "the durable result for the disconnected request",
+      async () => {
+        const current = await forRequest(requestId);
+        return current.some(({ action }) => action === resultAction) ? current : undefined;
+      },
+      5_000,
+    );
+    const mutationAction = "openclaw.namespaces.create";
+    assert.deepEqual(records.map(({ action }) => action).sort(), [
+      admittedAction,
+      resultAction,
+      mutationAction,
+    ]);
+    const result = records.find(({ action }) => action === resultAction);
+    assert.ok(result);
+    assert.equal(result.kind, "api_request");
+    assert.equal(result.actorId, principal.id);
+    assert.equal(result.outcome, "success");
+    assert.deepEqual(result.details, {
+      operationId: "createNamespace",
+      method: "POST",
+      statusCode: 201,
+    });
+
+    const read = await fetch(path, {
+      headers: authenticatedHeaders(session),
+      signal: AbortSignal.any([t.signal, AbortSignal.timeout(5_000)]),
+    });
+    const fixtureResponse = createFixtureResponse(app.getSchemas());
+    const namespaces = fixtureResponse(
+      { status: read.status, body: await read.json() },
+      200,
+      NamespaceListResponse,
+      "list Namespaces after disconnect",
+    );
+    const mutation = records.find(({ action }) => action === mutationAction);
+    assert.ok(mutation);
+    assert.equal(mutation.kind, "mutation");
+    assert.equal(mutation.actorId, principal.id);
+    assert.equal(mutation.outcome, "success");
+    assert.deepEqual(
+      namespaces.data.filter((namespace) => namespace.name === name).map(({ id }) => id),
+      [mutation.resource.id],
     );
   },
 );

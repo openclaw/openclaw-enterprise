@@ -1,9 +1,6 @@
-import type {
-  InspectedPluginPackage,
-  PluginConnectionRelease,
-  ImportedMcpServer,
-} from "./import-package.ts";
 import type { Driver } from "../index.ts";
+import type { PluginDeploymentContract } from "./deployment.ts";
+import type { InspectedPluginPackage, PluginConnectionRelease } from "./import-package.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
@@ -37,14 +34,10 @@ export interface PluginDriver extends Driver {
   /** Harness family authorized to use this catalog. */
   readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
-  /** Inspects untrusted package bytes without installing code, resolving credentials or fetching a source. */
+  readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
   inspectPackage?(archive: Uint8Array, marketplaceEntry?: string): Promise<InspectedPluginPackage>;
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
-    templateConfig?(
-      release: PluginConnectionRelease,
-      server: ImportedMcpServer,
-    ): Readonly<Record<string, string>>;
     choices(
       sources: readonly CredentialSource[],
       releases?: readonly PluginConnectionRelease[],
@@ -54,14 +47,13 @@ export interface PluginDriver extends Driver {
       pluginId: string,
       slotId: string,
       source: CredentialSource,
-      release?: PluginConnectionRelease,
     ): { readonly endpoint: string } | undefined;
     validate(
       selections: PluginDesiredState,
       sources: readonly CredentialSource[],
       modelSourceId?: string,
       releases?: Readonly<Record<string, InspectedPluginPackage>>,
-    ): void;
+    ): void | Promise<void>;
   };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(

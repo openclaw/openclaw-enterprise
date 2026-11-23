@@ -8,10 +8,10 @@ import type {
   ComputeDriver,
   RevisionHarnessDescriptor,
 } from "../../packages/contracts/src/index.ts";
-import { SandboxRevisionUnsupportedError, type ClaimedWork } from "../../packages/occ/src/index.ts";
+import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import type { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { deferWork, makeWorkDue } from "../helpers/postgres-worker-revision-queue.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RevisionFixtures = ReturnType<typeof createWorkerRevisionFixtures>;
 type RevisionFixture = Awaited<ReturnType<RevisionFixtures["setup"]>>;
@@ -343,32 +343,16 @@ export function registerHarnessExposureSweepCases({ revisionTest }: RevisionFixt
       );
       const [worker]: Iterable<unknown> = database.workers;
       assert.ok(worker instanceof ControllerWorker);
-      type RevisionIdentity = {
-        id: string;
-        agentId: unknown;
-        idempotencyKey: string;
-      };
-      const handOver = async (revision: RevisionIdentity) => {
-        const identity: Pick<
-          ClaimedWork,
-          "namespaceId" | "agentId" | "revisionId" | "idempotencyKey"
-        > = {
+      const sweep = worker["harnessExposureSweep"];
+      // Keep Work deferred so this case controls when the worker hands each revision over.
+      const handOver = (revision: { id: string; agentId: unknown }) =>
+        sweep.enqueueFailedCandidate({
           namespaceId: fixture.namespace.id,
           agentId: admittedAgentId(revision),
           revisionId: revision.id,
-          idempotencyKey: revision.idempotencyKey,
-        };
-        // The scheduler reads only claim identity. Leave the Work deferred so the
-        // running worker cannot schedule a withdrawal through the deployment path.
-        const scheduled: unknown = Reflect.apply(
-          worker["scheduleFailedCandidateExposureWithdrawal"],
-          worker,
-          [identity],
-        );
-        await scheduled;
-      };
-      const pending = () => [...worker["harnessExposureWithdrawals"].keys()];
-      await waitUntil("the start listing", () => worker["harnessExposureListed"]);
+        });
+      const pending = () => [...sweep["pending"].keys()];
+      await waitUntil("the start listing", () => sweep["listed"]);
       assert.deepEqual(pending(), []);
       // The served Agent's revision activates after the listing: the hand-over reads the pointer.
       await fixture.observerPool.query(
@@ -388,14 +372,14 @@ export function registerHarnessExposureSweepCases({ revisionTest }: RevisionFixt
             revisionId === failed.id && attempt === 1 && outcome === "retry",
         ),
       );
-      const entry = worker["harnessExposureWithdrawals"].get(failed.id);
+      const entry = sweep["pending"].get(failed.id);
       assert.ok(entry);
       const dueAt = entry.dueAt;
       assert.equal(entry.attempts, 1);
       assert.ok(dueAt > Date.now(), "the retry waits for its backoff");
       // A second hand-over of the same revision changes nothing: no reset, no second attempt now.
       await handOver(failed);
-      assert.equal(worker["harnessExposureWithdrawals"].get(failed.id), entry);
+      assert.equal(sweep["pending"].get(failed.id), entry);
       assert.equal(entry.attempts, 1);
       assert.equal(entry.dueAt, dueAt);
       const settledReports = named("worker.health").length + 2;

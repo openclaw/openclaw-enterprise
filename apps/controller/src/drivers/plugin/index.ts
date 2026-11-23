@@ -1,5 +1,6 @@
 import { inspectPluginPackage } from "./import-package.ts";
 import { validateImportedSkillSize } from "./imported-skill-size.ts";
+import { describeManagedDeployment } from "./managed-deployment.ts";
 import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import {
   importedPluginDigest,
@@ -14,8 +15,6 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   managedCliCredentialBindings,
-  managedSelectionsForImportedReleases,
-  managedMcpInstallsForReleases,
   managedInstalls,
   managedPluginCredentials,
   managedMcpCredentialBindings,
@@ -29,6 +28,7 @@ import {
   type PluginDiscoveryAuthentication,
   type PluginDriver,
   type PluginDesiredState,
+  type PluginDeploymentContract,
   type PluginApprovers,
   type PluginPolicyCapabilities,
   type PluginDriverContext,
@@ -44,6 +44,7 @@ import {
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
+  describeNativeOpenClawDeployment,
   hasAliasedSelections,
   openClawCatalogEntries,
   openClawManagedPluginIds,
@@ -415,7 +416,20 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   readonly harnessId = "openclaw" as const;
   readonly inspectPackage = inspectPluginPackage;
   readonly discoveryCredential = "none" as const;
-  readonly credentials = managedPluginCredentials;
+  readonly credentials = managedPluginCredentials(this);
+
+  async describeDeployment(input: Parameters<PluginDeploymentContract["describeDeployment"]>[0]) {
+    if (input.plugin.catalog !== "driver") {
+      throw new ConfigurationHarnessError(
+        "OpenClaw deployment requires a Driver catalog selection.",
+      );
+    }
+    const install = managedInstalls.find(({ id }) => id === input.plugin.pluginId);
+    return install
+      ? describeManagedDeployment(install, input)
+      : describeNativeOpenClawDeployment(input);
+  }
+
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     policyScopeByPlugin: Object.fromEntries(
@@ -434,16 +448,17 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   ): void {
     const { managed, native, imported } = splitOpenClawSelections(selections);
     const skillNames = new Set(
-      managed.flatMap(({ id, skillName }) =>
-        selections[id]!.enabled && skillName ? [skillName] : [],
+      managed.flatMap((install) =>
+        selections[install.id]!.enabled && install.kind === "cli" ? [install.skill] : [],
       ),
     );
     for (const id of imported) {
       const selection = selections[id]!;
-      if (Object.keys(selection).some((key) => key !== "enabled" && key !== "driverPolicy")) {
-        throw new ConfigurationHarnessError(
-          "Imported releases support enablement and reviewed tool selections.",
-        );
+      if (
+        typeof selection.enabled !== "boolean" ||
+        Object.keys(selection).some((key) => key !== "enabled")
+      ) {
+        throw new ConfigurationHarnessError("Imported releases currently support enablement only.");
       }
       if (selection.enabled) {
         for (const { name } of releases?.[id]?.skills ?? []) {
@@ -464,22 +479,21 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       const policy = selections[pkg.id]!;
       if (
         typeof policy.enabled !== "boolean" ||
-        Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
+        Object.keys(policy).some(
+          (key) =>
+            key !== "enabled" && key !== "driverPolicy" && !(pkg.kind === "mcp" && key === "tools"),
+        ) ||
+        (pkg.kind === "mcp" && policy.tools !== undefined && policy.driverPolicy === undefined)
       ) {
         throw new ConfigurationHarnessError(
-          `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
+          pkg.kind === "mcp"
+            ? `The ${pkg.entry.name} package supports enablement, a credential slot, and per-tool human approval.`
+            : `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
         );
       }
     }
     managedCliCredentialBindings(selections);
-    if (releases) {
-      managedMcpCredentialBindings(
-        managedSelectionsForImportedReleases(selections, releases),
-        managedMcpInstallsForReleases(releases),
-      );
-    } else {
-      managedMcpCredentialBindings(selections);
-    }
+    managedMcpCredentialBindings(selections);
   }
 
   static validateConfiguration(): readonly ErrorDetail[] {

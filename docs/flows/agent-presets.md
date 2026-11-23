@@ -1,15 +1,15 @@
 ---
 created: 2026-09-21
-updated: 2026-11-10
-last_updated_session: authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d
+updated: 2026-11-22
+last_updated_session: authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The Console renders a Namespace Preset and saves an independent Configuration
-and Agent through existing APIs. This flow stops at the draft; deployment follows
+The Console renders a Namespace Preset into an independent Configuration and Agent draft
+through existing APIs. Deployment follows
 [version admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
@@ -22,7 +22,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
 - [Preset routes](../../packages/contracts/src/api/routes.ts): authenticated
   collection and exact-resource operations in a Namespace.
-- [OCC Preset methods](../../packages/occ/src/index.ts): `createPreset`,
+- [OCC Preset methods](../../packages/occ/src/preset-operations.ts): `createPreset`,
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
@@ -38,8 +38,11 @@ graph TD
   S1 --> S2["Create missing names; preserve existing copies"]
   S2 --> C
   N["Authorized Namespace creation"] --> S2
-  A["Operator writes Preset"] --> B["OCC authorizes and validates template"]
-  B --> C["Store Namespace-owned Preset"]
+  A["Operator creates or updates a Preset"] --> B["OCC checks the grant"]
+  B --> W["OCC locks the Namespace and checks the grant again"]
+  W -->|Allowed| V["OCC validates any submitted template"]
+  W -->|Denied| P["Return 403"]
+  V --> C["Store Namespace-owned Preset"]
   C --> D["Console reads selected Preset once"]
   D --> E["User supplies variables and selects Use Preset"]
   D -->|Default quick-start without variables| F
@@ -70,28 +73,25 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-presets.ts:loadInstallationPresets`
 
-The loader validates the opt-in boolean and file list, reads bundled JSON, and
-resolves explicit paths beside the startup YAML. It validates names/templates and rejects missing,
-malformed, invalid, or duplicate-name files; a file named like a bundled default
-replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
-snapshot and source path (files are not watched), but only the API applies
-defaults and logs Preset warnings. [Production composition](../../apps/controller/src/composition/production.ts)
-and [development composition](../../apps/controller/src/composition/development-postgres.ts)
-pass generic definitions into `ControllerOptions.defaultPresets` and initialize
-defaults after selecting Configuration and IAM Drivers. They try each persisted
-Installation administrator in turn, moving on when one cannot create a
-Namespace's Presets (say, its grant stops at the Installation); startup fails
-only when none can seed. Native template contents
-remain in the application bundle; OCC owns generic Preset lifecycle. Seeding and
-rendering copy the native policy of the [standard Codex artifact](../../deploy/presets/standard-codex.json)
-([build hosts](../guides/topics/standard-codex-preset.md#build-network-allowlist));
-the deployed Codex plugin enforces it. `loadBundledPresetVersions` also loads every shipped version
-listed in `deploy/presets/archive/versions.json`, whether or not defaults are
-enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
-`tests/conformance/presets.test.ts` fails when a bundled file changes without
-its previous version archived there.
+The loader validates the opt-in boolean, file list, names and templates; reads bundled
+JSON; and resolves explicit paths beside startup YAML. It rejects missing, malformed,
+invalid or duplicate-name files. A file matching a bundled name replaces that default
+and triggers `presets.bundled-default-shadowed` . API and worker share the unwatched
+startup snapshot and source path; only the API applies defaults and logs warnings.
+[Production composition](../../apps/controller/src/composition/production.ts) and
+[development composition](../../apps/controller/src/composition/development-postgres.ts)
+pass definitions to `ControllerOptions.defaultPresets` , select Configuration and IAM
+Drivers, then try persisted Installation administrators in turn. Startup fails only if
+none can seed the Namespace Presets. Native templates remain bundled; OCC owns generic
+lifecycle. Seeding and rendering copy the
+[standard Codex artifact](../../deploy/presets/standard-codex.json) policy
+([build hosts](../guides/topics/standard-codex-preset.md#build-network-allowlist)); the
+deployed Codex plugin enforces it. Regardless of defaults, `loadBundledPresetVersions`
+loads every version in `deploy/presets/archive/versions.json` into
+`ControllerOptions.bundledPresetVersions` . `tests/conformance/presets.test.ts` requires
+archiving the previous version when a bundled file changes.
 
-`packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
+`packages/occ/src/preset-operations.ts:initializeDefaultPresets`
 
 Initialization authorizes Installation administration, locks Namespaces in ID
 order in one transaction, and skips failed/deleting Namespaces. Missing names
@@ -121,11 +121,11 @@ transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
 returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
 the grant get 403 before any body is read.
 
-`packages/occ/src/index.ts:OpenClawController.createPreset`
+`packages/occ/src/preset-operations.ts:createPreset`
 
-[`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
-lock the Namespace, check the exact collection grant and ready state, then call
-[`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
+The [Preset operations module](../../packages/occ/src/preset-operations.ts) checks
+the exact collection grant, locks the Namespace, and checks the grant again and
+the ready state. It then calls [`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
 The normalizer copies the template and fills omitted `namespaceId` fields in
 Harness authentication and Configuration Secret binding sources from the locked
 Namespace. Explicit scopes remain unchanged for same-Namespace validation.
@@ -142,9 +142,17 @@ when the partial renderer identifies an unresolved whole-string variable at that
 exact field. The completed Configuration must contain an accepted credential
 reference. A missing Driver validation capability fails closed.
 
+`packages/occ/src/preset-operations.ts:updatePreset`
+
+PATCH checks the exact update grant in its transaction before locking the
+Namespace and checks it again under the lock before looking up the Preset.
+AccessBinding DELETE takes the same Namespace lock. With Native IAM on
+PostgreSQL at READ COMMITTED, PATCH returns 403 if DELETE commits first and
+removes the caller's update permission.
+
 The [repository](../../packages/occ/src/state/postgres-state.ts) stores the whole
-template in `occ.presets`. PATCH locks the resource and replaces an included
-template atomically. DELETE removes its exact IAM bindings in the transaction.
+template in `occ.presets`. PATCH then locks the Preset and replaces an included
+template atomically. Preset DELETE removes its exact IAM bindings in the transaction.
 Presets prevent Namespace deletion while present. The controller's normal audit
 path records mutations and denials without template or variable contents.
 
@@ -167,25 +175,23 @@ creation authorization applies.
 empty templates, reset and Harness transitions, adding model routing. Installed
 Namespace templates are never exposed by that module.
 
-The chooser prefills typed defaults. String controls accept multiple lines;
-untouched defaults and restored drafts retain exact line endings, while edits use
-browser LF. Empty strings override defaults. Referenced variables without defaults
-are required; defaulted or unused variables are optional. The password variable
-offers a masked new token or an existing same-Namespace Secret. The chooser reads
-Secret metadata, validates the original template, then substitutes the selected
-reference in a temporary copy. Changing mode discards tokens; stale catalog
-responses cannot replace a later selection.
-The user then selects **Use Preset**. The shared
-[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mts)
-walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
-keys, and preserves runtime placeholders and unresolved SecretRefs.
+The chooser prefills typed defaults. Multiline strings preserve exact line endings in
+untouched defaults and restored drafts; edits use browser LF. Empty strings override
+defaults. Only referenced variables without defaults are required. Passwords use a
+masked new token or existing same-Namespace Secret. The chooser reads Secret metadata,
+validates the original template and substitutes the reference in a temporary copy. Mode
+changes discard tokens; stale catalog responses cannot replace later selections.
+**Use Preset** calls the shared
+[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mts), which walks
+JSON once, rejects missing or mistyped inputs and duplicate rendered native keys, and
+preserves runtime placeholders and unresolved SecretRefs.
 
-An older stored Preset can contain a non-null, non-text primary model that current
-Controller admission refuses. `agents/create.mts:renderAgentForm` rejects that
-selected primary before opening the form. The chooser explains that it must be
-text and keeps entered variables. Select another Preset or ask a Preset editor
-to fix the template. A null primary remains unset so the user can choose a model.
-Partial Presets and valid roster-only selections still open.
+For an older Preset with a non-null, non-text primary model that current Controller
+admission refuses, `agents/create.mts:renderAgentForm` rejects the selected primary
+before opening the form. The chooser requires text and retains entered variables; select
+another Preset or ask a Preset editor to fix the template. Null primaries remain unset
+so users can choose a model; partial Presets and valid roster-only selections still
+open.
 
 Rendering makes no requests. Success opens the Agent form with rendered settings
 and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
@@ -194,27 +200,26 @@ later Preset changes cannot alter the form. Before saving, **Start over** confir
 discard and opens a fresh chooser. A successful or uncertain save disables restart
 and uses ordinary creation recovery.
 
-The form keeps the chooser state and the `configuration.values` path each variable
-filled. A Create refusal that starts `Configuration setting <path>` and covers such a
-path names those variables and offers **Change** with their labels, unless the submitted
-value at that path differs from the one the Preset rendered. While restart is
-enabled, that action reopens the chooser from the kept state, marks those fields
-with the server's sentence and focuses the first. The added text names variables, never
-their values. A quoted path segment, such as `models["openai/gpt 5"]`, is one key. If the
-Preset then fails to load, focus moves to the chooser heading.
+The form retains chooser state and each variable's `configuration.values` path. If a
+Create refusal starts `Configuration setting <path>`, names a setting filled by a Preset
+variable, and the submitted value still matches the rendered value, the form names those
+variables and offers **Change** with their labels. While restart is enabled, **Change** restores the chooser, marks
+those fields with the server's sentence and focuses the first. Feedback names variables,
+never values. A quoted segment such as `models["openai/gpt 5"]` is one key. A failed
+Preset load focuses the chooser heading.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` captures JSON, model controls, workspace files, repositories and staged
-Secret references per user/Namespace before resetting views. Explicit
-Preset, default-shortcut and bare forms all return from this copy with fresh
-capability and repository discovery. A confirmed **Cancel** removes creation and
-channel snapshots and the retained view; re-entry opens the chooser and preserves
-saved resources. `beforeunload` asks first while any capture holds changes. Invalid JSON stays text; passwords
-and discovery results are excluded. Start over, session loss, logout, user change or
-page exit clears captures, not a failed `/namespaces` read. A known Create refusal keeps
-the capture and its saved resources, unless repository policy refused it or an Agent,
-provisioning job or credential registration exists.
+Secret references per user/Namespace before resetting views. Preset, default-shortcut
+and bare forms restore that copy with fresh capability and repository discovery.
+Confirmed **Cancel** removes creation/channel snapshots and the retained view; re-entry
+opens the chooser and preserves saved resources. `beforeunload` asks while any capture
+has changes. Invalid JSON remains text; passwords and discovery results are excluded.
+Start over, session loss, logout, user change and page exit clear captures; a failed
+`/namespaces` read does not. Known Create refusals retain captures and saved resources
+unless repository policy refused creation or an Agent, provisioning job or credential
+registration exists.
 
 `agents/create.mts:updateModelConfiguration` synchronizes qualified shared primaries
 and existing local policies. Empty maps and inherited selections remain. Invalid
@@ -259,19 +264,17 @@ grants access; dedicated provisioning follows its existing flow. Password bytes
 reach only Secret creation. Each API request performs schema, native credential
 and authorization admission before persistence.
 
-A confirmed duplicate-name Secret response offers the existing permission-aware
-picker or an independent new Secret name in the same form. Selection clears the
-entered key; neither path deletes or reads the existing value. Other draft fields
-remain. Other known refusals keep the masked input for correction or retry;
-uncertain writes clear it and lock creation. Agent-name conflicts do not enable
-Secret recovery. Credential-context changes clear the notice, alternate name,
-and required state. Returning to a password method does not revive that recovery.
-The notice and choices share a focused block under the model credential field.
-The notice belongs to the attempted Secret name. Changing that name or submitting
-a new attempt clears the old feedback without discarding an edited alternate name.
-Submit trims and validates alternate names before any write. Choosing an existing
-Secret restores the normal optional service-account plugin discovery token field.
-If a later save fails, its saved Secret reference is reused.
+A confirmed duplicate-name Secret response offers the permission-aware picker or an
+independent new name in the same form. Selection clears the entered key; neither option
+reads or deletes the existing value, and other draft fields remain. Other known refusals
+retain the masked input for correction or retry; uncertain writes clear it and lock
+creation. Agent-name conflicts do not enable Secret recovery. Credential-context changes
+clear the notice, alternate name and required state; returning to a password method does
+not restore that recovery. The focused notice and choices sit under model credentials
+and belong to the attempted name. Changing that name or submitting a new attempt clears
+feedback but preserves an edited alternate name. Submit trims and validates alternate
+names before writing. Selecting an existing Secret restores the optional service-account
+plugin discovery token field. Later save failures reuse the saved Secret reference.
 If Configuration creation succeeds but Agent creation fails, the form retains
 the Configuration ID and locks Configuration-affecting controls. A safe retry
 reuses the saved Configuration. An uncertain response requires inspection before
@@ -279,7 +282,7 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 ### 5. Hand off to deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
@@ -318,6 +321,8 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-22 12:08: Explain how Preset PATCH rechecks the update grant under the Namespace lock. (authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d - ec37f064957a64fb8b8f4185ae17de6ca86f0b7a)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
 - 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)

@@ -1,4 +1,4 @@
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 // A ready replacement Pod can still be enrolling its workspace node at Gateway.
 // Retry only that explicit protocol state; authentication and other failures stay fatal.

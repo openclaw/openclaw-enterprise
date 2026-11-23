@@ -70,12 +70,9 @@ Verify cloud volume detach and node fencing separately.
 The [State and Lifecycle check](ci/required-checks.md#scenarios) traces a deploy
 from request to worker success and checks the direct Agent audit grant.
 
-For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
-[credentialed runtime](openshell.md). Delete only your disposable cluster:
-
-```sh
-k3d cluster delete oce
-```
+Live OAuth uses [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md). After your fixture's tests (including direct
+[routing](#private-gateway-routing)), delete only that cluster with `k3d cluster delete '<name>'`.
 
 ### Installation handoff
 
@@ -90,8 +87,8 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
 quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
 remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
-runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
-after interruption before and after UID capture.
+checks PostgreSQL bootstrap after interrupted Job capture and lost Secret-create
+acknowledgements through `installation-receipt-k3d-real.test.ts`.
 
 ### Production workload network access
 
@@ -101,7 +98,7 @@ Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` av
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-  node --test tests/integration/production-network-access.test.mjs
+  node --test tests/integration/production-network-access.test.ts
 ```
 
 Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
@@ -112,10 +109,11 @@ are required.
 
 ## Kubernetes model turns and Secrets
 
-The real-runtime suite needs an authorized model credential, real gateway and
-Codex images, a disposable cluster with enforcing NetworkPolicies, and a
-migrated `openclaw_k8s_*` database. A fixture pass is not a model turn. Follow
-[Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp prerequisites.
+Use authorized model credentials, real Gateway/Codex images, enforcing
+NetworkPolicies, and a migrated `openclaw_k8s_*` database in a disposable cluster.
+A fixture pass is not a model turn. See
+[Codex seccomp setup](../guides/deploy/codex-sandbox.md) and
+[restart qualification](harness-restart-recovery.md).
 
 ### Develop with local containers and k3d
 
@@ -138,13 +136,13 @@ the variable. For a custom Codex Responses endpoint, use:
   --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
 ```
 
-`./scripts/k3d info` shows connections; `reset` retains images.
-Fresh preparation pins images against kubelet collection. Recreate older
-environments with `./scripts/k3d down --harness codex`, then reprepare (`openclaw`
-for that harness). This deletes that environment; use before image changes or
-after preparation failures. Default kubeconfig/context and unrelated resources
-stay unchanged. `OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`;
-`OCC_K3D_STATE_DIR` sets its directory.
+`./scripts/k3d info` shows connections. Reset retains images. After namespace
+removal, duplicate journal IDs stop database cleanup and preserve the journal.
+Preparation pins images against kubelet collection. To replace older environments, change images,
+or recover from failed preparation, delete the environment with
+`./scripts/k3d down --harness codex` (or `openclaw`), then prepare again.
+Default kubeconfig, context and unrelated resources stay intact.
+`OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`; `OCC_K3D_STATE_DIR` selects its directory.
 See [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
 
 ### Run the real-runtime suite directly
@@ -226,9 +224,9 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
-node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
-  node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
-node scripts/ci/cleanup.mjs --state "$state"
+node scripts/ci/prepare.ts --lane keycloak-oidc --state "$state" &&
+  node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
+node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Preparation creates a private CA, fixture credentials and a Keycloak container.
@@ -252,43 +250,46 @@ recovery and rollback. It uses its own CA and does not edit `/etc/hosts`.
 
 ## Private gateway routing
 
-This suite tests private workspace routing through real Envoy Gateway and
-cert-manager in a disposable k3d cluster. It verifies file access, model
-consumption after Gateway replacement, authentication denial, key rotation,
-certificate renewal, and the dedicated node route. It does not prove a full
-Helm installation or Harness node credential persistence.
+This k3d suite checks private file access through Envoy Gateway, model reads
+after Gateway replacement, authentication denial, key rotation, certificate
+renewal, and dedicated node routing. It excludes full Helm installation and
+Harness node credential persistence.
 
 ### Run private gateway routing
 
-Install the [k3d helper prerequisites](#develop-with-local-containers-and-k3d)
-and provide an authorized `OPENAI_API_KEY` privately:
+Install the [k3d prerequisites](#develop-with-local-containers-and-k3d)
+and supply an authorized `OPENAI_API_KEY` privately.
 
 ```sh
 ./scripts/k3d test
 ./scripts/k3d down
 ```
 
-The helper prepares a cluster, database, images, Envoy Gateway, cert-manager,
-and test CA. Direct execution also requires `OCC_TEST_GATEWAY_ROUTING_REAL=1`,
+Direct execution requires the runtime setup above, `OCC_TEST_GATEWAY_ROUTING_REAL=1`,
 `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, `OCC_TEST_GATEWAY_CA_CERT_PATH`,
-`OCC_TEST_GATEWAY_CA_KEY_PATH`, `NODE_EXTRA_CA_CERTS`, and the runtime setup above.
-Keep the CA key private.
+`OCC_TEST_GATEWAY_CA_KEY_PATH`, and `NODE_EXTRA_CA_CERTS`. Keep the CA key private.
 
-For CI-shaped setup, supply `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
-`NODE_BASE_IMAGE` in the environment. In a GitHub Actions runner, execute:
+On GitHub Actions, set `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
+`NODE_BASE_IMAGE`.
 
 ```sh
-node scripts/ci/prepare.mjs \
+node scripts/ci/prepare.ts \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
-node scripts/ci/run-tests.mjs run gateway-routing \
+node scripts/ci/run-tests.ts run gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-Use `scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/gateway-routing.json"`
-to remove the lane's resources.
+Run `node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
+after success or failure.
+
+If cert-manager or Envoy Gateway manifest downloads fail with
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` and the system certificate store
+trusts the issuer, clean up and retry preparation with
+`node --use-system-ca scripts/ci/prepare.ts` and the same arguments.
+TLS and SHA-256 checks stay enabled.
 
 ### Native workspace identity
 
@@ -313,9 +314,8 @@ enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 
-The opt-in Helm test exercises production API and native TUI revision cutover
-with a real model on disposable k3d. Allow 4 GiB or more per gateway container.
-Missing prerequisites fail a selected test.
+This Helm test exercises production API and native TUI revision cutover with a real
+model on disposable k3d. Each gateway container needs at least 4 GiB.
 
 ### Production TUI Helm test environment
 
@@ -329,8 +329,7 @@ In a [private environment file](README.md#requirements-and-credentials), set:
 - `OPENAI_API_KEY`: existing authorized credential; optionally set
   `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`).
 
-Ordinary teardown requests Helm uninstall and namespace deletion. It suppresses
-command errors and returns without waiting for namespace deletion. Verify resource absence separately.
+Teardown requests Helm uninstall and asynchronous namespace deletion, suppressing errors. Verify resource removal.
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` retains the setup for rehearsal with
 `attach.sh` and `proof.json`. Require a completed run for proof.
 
@@ -341,36 +340,17 @@ OCC_TEST_PRODUCTION_TUI_REAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Select both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE` and
-`OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE` for independent upgrades.
-One input fails. Omitting both skips upgrades.
+For independent upgrades, set both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`
+and `OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE`. One input fails. Omit both to skip upgrades.
 
 ### Run an isolated upgrade qualification lane
 
-This lane requires an explicit `OCC_TEST_OPENAI_MODEL`. Select compatible prior
-controller and runtime digests and distinct reviewed candidate digests. Verify
-provenance separately. Install Docker, k3d, kubectl, Helm, yq, and Go to build OCC.
+The scheduled TUI job covers revision cutover. To qualify upgrades, set
+`OCC_TEST_OPENAI_MODEL` and both upgrade images. Verify provenance and compatibility
+of the incumbent and candidate digests. Installation probes the incumbent Worker.
+Upgrades use the candidate chart. Install Docker, k3d, kubectl, Helm, yq, jq and Go.
 
-```sh
-run_dir="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
-  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run production-tui \
-    --state "$run_dir/state.json" --results "$run_dir/results.json"
-```
-
-Before removing the runner, [retain both private availability receipts](populated-controller-return.md#retain-ordinary-upgrade-observations).
-
-After success or failure, save the private image mapping if needed and clean up:
-
-```sh
-install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
-node scripts/ci/cleanup.mjs --state "$run_dir/state.json"
-```
-
-Retain the state if cleanup fails. Do not publish the state or environment file.
-Confirm evidence includes both upgrades and a fresh model reply. Imported local
-references can differ from registry digests; this does not prove exact registry
-reference deployment or live EKS behavior.
+Follow the [qualification and cleanup procedure](populated-controller-return.md#qualify-distinct-controller-and-runtime-images).
 
 ## Two-cluster validation
 
@@ -483,10 +463,10 @@ from controller and runtime Pods before creating Agents.
 ### Install and exercise the platform
 
 Follow [production installation](../guides/deploy/production-installation.md)
-for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Prepare
-bootstrap PVC ownership before initialization. If initialization fails, check
+for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Precreate
+the bootstrap Secret before initialization. If initialization fails, check
 commit state and follow bootstrap recovery; do not reset the database or delete
-protected output automatically.
+protected inputs automatically.
 
 Grant the DP tenant worker and API bindings and the three CP bindings in
 [Agent preparation](../guides/deploy/production-agents.md#grant-tenant-rolebindings).
@@ -514,26 +494,30 @@ establish recovery after worker retry exhaustion or an aged node reconnect after
 its pairing code expires. Remote Codex plugin installation needs a separate
 ChatGPT-backed credential and proof.
 
-When finished, remove only the clusters and network created above:
-
-```sh
-k3d_local cluster delete openclaw-k8s-local-cp openclaw-k8s-local-dp
-docker --context "$OCE_DOCKER_CONTEXT" network rm oce-two-cluster-local
-```
-
-Remove the private test directory when you no longer need its kubeconfigs.
-
 ### Upgrade the execution chart
 
 Upgrade the execution release before the control-plane image upgrade:
 
 ```bash
-helm upgrade <execution-release> deploy/helm/openclaw-execution \
-  --kube-context <execution-context> --namespace <execution-system-namespace> \
-  -f <execution-values.yaml>
+# Fixture kubeconfig "$OCE_TEST_DIR/dp.kubeconfig"
+helm upgrade '<execution-release>' deploy/helm/openclaw-execution \
+  --kubeconfig '<execution-kubeconfig>' \
+  --kube-context '<execution-context>' --namespace '<execution-system-namespace>' \
+  -f '<execution-values.yaml>'
 ```
 
 Pass the installation values; do not use `--reuse-values`. Keep
 `agentRuntimeLogs.enabled` equal to the CP chart value. The control-plane
 [upgrade preflight](../guides/deploy/production-upgrade.md) checks tenant grants
 before stopping the old controller.
+
+### Test cleanup
+
+Verify upgrades after testing. Remove only your clusters and network.
+
+```sh
+k3d_local cluster delete openclaw-k8s-local-cp openclaw-k8s-local-dp
+docker --context "$OCE_DOCKER_CONTEXT" network rm oce-two-cluster-local
+```
+
+Remove the private directory when kubeconfigs are unneeded.

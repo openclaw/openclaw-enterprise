@@ -15,11 +15,11 @@ import {
   CredentialSourceId,
   CredentialSourceReference,
   CredentialSourceSecrets,
-  ImportedPluginConnectionTemplateSchema,
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
+  ModelProviderId,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -87,7 +87,13 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
   {
     data: Type.Object(
       {
-        session: SecretReference,
+        session: Type.Object(
+          { id: SecretId, namespaceId: NamespaceId },
+          {
+            additionalProperties: false,
+            description: "Device-login handle for the poll and cancel operations.",
+          },
+        ),
         source: Type.Optional(CredentialSourceReference),
         status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
         verificationUrl: Type.String({ format: "uri" }),
@@ -262,7 +268,12 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
-    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
+    policyScopeByPlugin: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.Literal("enablement_only"), Type.Literal("tool_human_approval")]),
+      ),
+    ),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -309,6 +320,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
                 releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
                 id: Type.String(),
                 label: Type.String(),
+                serverUrl: Type.Optional(Type.String()),
                 toolDiscovery: Type.Optional(Type.Literal(true)),
                 sources: Type.Array(
                   Type.Object(
@@ -468,6 +480,7 @@ export const NamespaceSchema = Type.Object(
 
 export const AgentSchema = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     sandboxPolicyEditing: Type.Optional(Type.Boolean()),
     id: AgentId,
     namespaceId: NamespaceId,
@@ -706,7 +719,7 @@ export const CredentialRefreshStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+      "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
   },
 );
 
@@ -724,7 +737,7 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+      "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -734,7 +747,6 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
-    importedPluginTemplate: Type.Optional(ImportedPluginConnectionTemplateSchema),
     ownerCapability: Type.Union(
       [
         Type.Literal("credential_gateway"),
@@ -1644,7 +1656,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete.",
+          "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read.",
       },
     ),
     progress: Type.Union(

@@ -9,7 +9,9 @@ owns the API and policy vocabulary. The
 
 ## Selection and catalogs
 
-List the Plugin Drivers in trusted Installation YAML. Include one entry for each Harness whose catalog you want to offer.
+See [Namespace releases](../namespace-plugin-releases.md) for imported packages and runtime limits.
+
+List one Plugin Driver per Harness in trusted Installation YAML.
 
 ```yaml
 drivers:
@@ -22,7 +24,10 @@ drivers:
 ```
 
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
-using a PAT or a Secret containing one. Hosted discovery connects to `auth.openai.com` and `chatgpt.com` from the API Server. By default, the [Helm installation](../../guides/operate/network-isolation.md) can reach both over HTTPS.
+using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
+`auth.openai.com` and `chatgpt.com`. The
+[Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-access)
+requires that connectivity. The driver does not configure Kubernetes networking.
 
 The `openai-curated` setting above enables browsing without a credential or
 provider request.
@@ -99,11 +104,10 @@ selections and still requires the Agent's projected credentials and provider
 access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
-| Driver ID      | Implementation        | Agent Harness      | Catalog source                                                                                                            |
-| -------------- | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw  | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.                          |
-| `occ-plugin`   | `occ/openclaw-plugin` | Dedicated OpenClaw | Bundled CLI and MCP packages. [Namespace releases](../namespace-plugin-releases.md) provide skills or hosted MCP servers. |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex    | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`.              |
+| Driver ID      | Implementation        | Agent Harness   | Catalog source                                                                                                |
+| -------------- | --------------------- | --------------- | ------------------------------------------------------------------------------------------------------------- |
+| `occ-plugin`   | `occ/openclaw-plugin` | OpenClaw        | Embedded `occ-plugin:diffs` (`@openclaw/diffs@2026.8.2`, npm integrity); reviewed dedicated CLI/MCP packages. |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`.  |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
 `plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills
@@ -124,18 +128,19 @@ checks native metadata, tool ownership, and effective configuration. Runtime
 versions and the OpenClaw-to-Codex projection constrain enforcement: emitting a
 native setting does not prove an Agent thread retains it.
 
-| Surface                                  | Current translation                                                                                                                             |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plugin `enabled`                         | Gate the selected plugin; disabled plugins cannot be re-enabled by tool overrides.                                                              |
-| OpenClaw default/tool `enabled`          | Resolve explicit tool enablement before the default using the pinned catalog's complete tool inventory. Emit native denies for disabled tools.  |
-| OpenClaw `provider_default` / `none`     | Use existing native tool execution without an added plugin approval step. Existing denies and profiles remain effective.                        |
-| OpenClaw `all_actions` / `write_actions` | Reject before save; no generic per-call review is implemented. Explicit reviewers and Driver policy fields are also unsupported.                |
-| Codex approval defaults                  | Write app `default_tools_approval_mode`: `provider_default` → `auto`, `all_actions` → `prompt`, `write_actions` → `writes`, `none` → `approve`. |
-| Codex explicit tool overrides            | Write only supplied `enabled` and `approval_mode` fields under the owning app and exact native tool name; use the same approval mapping.        |
-| Codex `toolDefaults.enabled`             | Write native `default_tools_enabled` when supplied.                                                                                             |
-| Codex `toolDefaults.reviewer`            | Write app `approvals_reviewer`: `human` maps to `user`, `auto` maps to `auto_review`. Per-tool reviewers are rejected.                          |
-| Codex `driverPolicy`                     | Write `destructive_enabled` when supplied. Reject destructive defaults combined with explicit default tool enablement.                          |
-| Empty Codex selection                    | Disable user apps/plugins; no remote install RPC runs.                                                                                          |
+| Surface                              | Current translation                                                                                                                             |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plugin `enabled`                     | Gate the selected plugin; disabled plugins cannot be re-enabled by tool overrides.                                                              |
+| OpenClaw default/tool `enabled`      | Resolve explicit tool enablement before the default using the pinned catalog's complete tool inventory. Emit native denies for disabled tools.  |
+| OpenClaw `provider_default` / `none` | Use existing native tool execution without an added plugin approval step. Existing denies and profiles remain effective.                        |
+| Embedded OpenClaw approvals          | Reject `all_actions`, `write_actions`, and explicit reviewers.                                                                                  |
+| Dedicated MCP tool `all_actions`     | Require Gateway approval for the server and tool name, without arguments; scripts bypass review.                                                |
+| Codex approval defaults              | Write app `default_tools_approval_mode`: `provider_default` → `auto`, `all_actions` → `prompt`, `write_actions` → `writes`, `none` → `approve`. |
+| Codex explicit tool overrides        | Write only supplied `enabled` and `approval_mode` fields under the owning app and exact native tool name; use the same approval mapping.        |
+| Codex `toolDefaults.enabled`         | Write native `default_tools_enabled` when supplied.                                                                                             |
+| Codex `toolDefaults.reviewer`        | Write app `approvals_reviewer`: `human` maps to `user`, `auto` maps to `auto_review`. Per-tool reviewers are rejected.                          |
+| Codex `driverPolicy`                 | Write `destructive_enabled` when supplied. Reject destructive defaults combined with explicit default tool enablement.                          |
+| Empty Codex selection                | Disable user apps/plugins; no remote install RPC runs.                                                                                          |
 
 OpenClaw extends a nonempty native `tools.allow`, otherwise `tools.alsoAllow`,
 with the selected plugin. The pinned catalog currently exposes the `diffs` tool

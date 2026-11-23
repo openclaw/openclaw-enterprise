@@ -158,7 +158,7 @@ SOURCE_SHA="$expected_sha" GITHUB_WORKFLOW_SHA="$workflow_sha" \
 GITHUB_RUN_ID="$run_id" GITHUB_RUN_ATTEMPT="$attempt" \
 CI_RUN_ID='' CI_ATTEMPT='' NODE_BASE_IMAGE="$pinned_node_base" \
 IMAGE=runtime PLATFORM=linux/arm64 IMAGE_DIGEST="$build_digest" \
-node scripts/ci/container-release.mjs verify-platform "$extracted_layout"
+node scripts/ci/container-release.ts verify-platform "$extracted_layout"
 ```
 
 For a manual **CI** run that requests native images, use that CI run’s own ID
@@ -260,13 +260,11 @@ on `main` with:
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
   Containers** run. Validation, all four native preparation jobs, both runtime
-  smoke jobs, and both image assembly jobs must succeed. For older runs that assembled each image
-  in its preparation job, validation and both image jobs must succeed.
+  smoke jobs, and both image assembly jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
 
-Native preparations that ran smoke inside `Prepare` jobs are unsupported by the
-current recovery gate. They require fresh full qualification, which does not
+Runs that tested runtime startup only inside the `Prepare` jobs are ineligible for recovery. They require fresh full qualification, which does not
 reconstruct their original bytes.
 
 Review the original digests and current public package settings before dispatch.

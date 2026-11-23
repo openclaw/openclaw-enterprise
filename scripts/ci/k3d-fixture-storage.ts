@@ -1,68 +1,36 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { K3dCommand, PreparationTiming } from "./k3d-node-images.ts";
+import { captureK3dDiagnostics } from "./k3d-preparation-diagnostics.ts";
+import type { K3dCluster, PreparationJournal, PreparationState } from "./k3d-preparation.ts";
 import { ownedName } from "./resource-names.ts";
-
-interface FixtureState {
-  lane: string;
-  prefix: string;
-}
-
-interface FixtureResource {
-  id: string;
-}
-
-interface FixtureCluster extends FixtureResource {
-  directory: string;
-  kubeconfig: string;
-  context: string;
-  kubernetesVersion?: string;
-}
 
 interface FixtureImage {
   image: string;
   resourceId: string;
 }
 
-interface FixtureDependencies {
+type FixtureDependencies = PreparationJournal & {
   execFile: K3dCommand;
   progress: (lane: string, message: string) => void;
   k3dStage: <Result>(
-    state: FixtureState,
+    state: PreparationState,
     stage: string,
     operation: () => Promise<Result>,
   ) => Promise<Result>;
   timedPreparation: PreparationTiming;
-  captureK3dDiagnostics: (options: {
-    execFile: K3dCommand;
-    cluster: FixtureCluster;
-    lane: string;
-    statePath: string;
-    failure: string | undefined;
-  }) => Promise<unknown>;
   fixtureDockerContext: string;
   imageCommandTimeoutMs: number;
   imageBuildBudgetMs: () => number | undefined;
   imageBuildTestReserveMs: number;
-  addResource: (
-    state: FixtureState,
-    kind: "image-tag",
-    resource: { name: string; owner: string },
-  ) => FixtureResource;
-  writeState: (statePath: string, state: FixtureState) => Promise<void>;
-  markResourceReady: (
-    statePath: string,
-    state: FixtureState,
-    resource: FixtureResource,
-  ) => Promise<void>;
   registerImageInK3d: (
     statePath: string,
-    state: FixtureState,
-    cluster: FixtureCluster,
+    state: PreparationState,
+    cluster: K3dCluster,
     image: string,
     envName: string,
   ) => Promise<{ reference: string }>;
-}
+};
 
 interface KubernetesCondition {
   type: string;
@@ -154,7 +122,6 @@ export function createK3dFixtureStorage({
   progress,
   k3dStage,
   timedPreparation,
-  captureK3dDiagnostics,
   fixtureDockerContext,
   imageCommandTimeoutMs,
   imageBuildBudgetMs,
@@ -164,7 +131,7 @@ export function createK3dFixtureStorage({
   markResourceReady,
   registerImageInK3d,
 }: FixtureDependencies) {
-  async function verifyFixtureStorage(cluster: FixtureCluster, timeoutSeconds = 120) {
+  async function verifyFixtureStorage(cluster: K3dCluster, timeoutSeconds = 120) {
     const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
     const scope = [
       "--kubeconfig",
@@ -271,7 +238,7 @@ export function createK3dFixtureStorage({
   }
 
   // The fixture build needs no cluster, so lanes can overlap it with k3d creation.
-  async function buildFixtureImage(statePath: string, state: FixtureState) {
+  async function buildFixtureImage(statePath: string, state: PreparationState) {
     const run = (stage: string, args: string[], limitMs: number) =>
       k3dStage(state, stage, async () => {
         if (!Number.isFinite(limitMs) || limitMs <= 0 || limitMs > 2_147_483_647) {
@@ -338,8 +305,8 @@ export function createK3dFixtureStorage({
 
   async function importFixtureImage(
     statePath: string,
-    state: FixtureState,
-    cluster: FixtureCluster,
+    state: PreparationState,
+    cluster: K3dCluster,
     built: FixtureImage,
   ) {
     const registered = await registerImageInK3d(
@@ -356,8 +323,8 @@ export function createK3dFixtureStorage({
   // both before the lane pins the image, restarts storage, or hands off to cleanup.
   async function prepareFixtureStorageAndImage(
     statePath: string,
-    state: FixtureState,
-    cluster: FixtureCluster,
+    state: PreparationState,
+    cluster: K3dCluster,
     built: FixtureImage,
   ) {
     const { lane } = state;
@@ -390,7 +357,7 @@ export function createK3dFixtureStorage({
     return fixture.value;
   }
 
-  async function pinFixtureImageInK3d(cluster: FixtureCluster, image: string) {
+  async function pinFixtureImageInK3d(cluster: K3dCluster, image: string) {
     const name = "openclaw-ci-fixture-image-pin";
     const manifestPath = join(cluster.directory, `${name}.json`);
     const manifest = {

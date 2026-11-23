@@ -6,7 +6,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 ## Start the profile
 
 [Install Linux tools](local-kubernetes-tools.md): Node.js satisfying `engines.node` in `package.json`, repository-pinned pnpm, the Go version from `go.mod`, k3d,
-kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
+kubectl, Helm, yq v4, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
 K3s requires the `cpuset` cgroup controller, which systemd does not delegate to
@@ -132,7 +132,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.8`, Agent Sandbox,
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.9`, Agent Sandbox,
 cert-manager, and Envoy Gateway assets. PostgreSQL, the central OpenShell Gateway,
 and OCE run in `oce-system`; Agent Sandbox runs in `agent-sandbox-system`.
 Tenant Workspaces, Sandboxes, and Agent Pods use OCC-owned `oce-*` Namespaces.
@@ -192,9 +192,11 @@ requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
 5 GiB with initial workspace files; size the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
-## Configure Slack connectivity
+## Require both proxies before enabling Slack
 
-For a Slack-enabled local installation, configure the [gateway proxy](../integrations/slack.md#configure-both-slack-proxies) before deploying the Agent. The API Server can contact Slack directly.
+For a Slack-enabled local installation, complete [both Slack proxy paths](../integrations/slack.md#configure-both-slack-proxies)
+before creating or deploying the Agent. The launcher neither provisions these
+proxies nor configures their URLs.
 
 Provision the reviewed proxy on the owned k3d container network (no
 host-published listener needed) or at another private address reachable from the
@@ -202,11 +204,12 @@ API and dedicated gateway Pods. Do not use host loopback: `127.0.0.1` inside a
 Pod is that Pod. Restrict its source access to this cluster's actual traffic,
 accounting for node source NAT.
 
-Back up the generated files you change in the private state directory.
+Back up both generated files in the private state directory, then update them:
 
-- `installation.yaml`: set `drivers.compute.configuration.runtime.channels.proxyUrl`
-  for gateway Slack messaging.
-- `helm-values.json`: optionally set `api.channelDirectoryProxyUrl` to route Console user and channel lookup through the proxy.
+- `installation.yaml`: configure `drivers.compute.configuration.runtime.channelEgress`.
+- `helm-values.json`: enable `channelEgress` with matching fleet and listener
+  settings, and the actual Pod, Service and node address exclusions.
+  Follow [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md).
 
 Apply the edits to the existing release as shown below. Use the chart
 source matching the installed controller, retain its image references and other
@@ -433,6 +436,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.8` remains fail-closed for unsupported Secret and
+- The OpenShell development profile remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

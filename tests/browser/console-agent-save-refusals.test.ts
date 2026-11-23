@@ -6,9 +6,9 @@ import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type { Restriction } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -41,13 +41,15 @@ import {
   AGENT_STOP_DENIED,
   AGENT_UPDATE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  DIAGNOSTICS_DENIED,
   stopRefused,
+} from "../helpers/refusal-text.mjs";
+import {
+  DIAGNOSTICS_DENIED,
   WORKSPACE_SAVE_DENIED,
   REPOSITORY_CHOICES_AGENT_DENIED,
   SAVE_READ_REFUSED,
   WORKSPACE_SAVE_REFUSED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
