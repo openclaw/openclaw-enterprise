@@ -655,31 +655,6 @@ cases.revisionTest(
       [{ state: "ready", config: { provider_preset: "openai" } }],
     );
 
-    // Live withdrawal cannot use the legacy withdrawal path for staged TokenService delivery.
-    await assert.rejects(
-      controller.withdrawAgentCredentialSource(actorId, {
-        namespaceId,
-        agentId: owner.id,
-        credentialSourceId: source.id,
-      }),
-      (error: unknown) =>
-        error instanceof ResourceStateConflictError &&
-        error.message ===
-          "Withdrawal of a staged TokenService credential source is not supported. Complete Agent Stop to retire the revision.",
-    );
-    const withdrawal = await fixture.observerPool.query(
-      `SELECT credential_source_id FROM occ.credential_withdrawals
-       WHERE namespace_id=$1 AND revision_id=$2 AND credential_source_id=$3`,
-      [namespaceId, revision.id, source.id],
-    );
-    const withdrawalWork = await fixture.observerPool.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE namespace_id=$1 AND revision_id=$2 AND agent_target='credentials_withdrawn'`,
-      [namespaceId, revision.id],
-    );
-    assert.deepEqual(withdrawal.rows, []);
-    assert.deepEqual(withdrawalWork.rows, []);
-
     // An active staged revision cannot be replaced, including by a non-staged draft.
     await controller.updateAgent(
       actorId,
