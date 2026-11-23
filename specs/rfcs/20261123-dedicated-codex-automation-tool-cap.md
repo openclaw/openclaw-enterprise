@@ -40,6 +40,16 @@ metadata, and remove credential, token, and account environment entries before s
 `CODEX_HOME` auth and configuration state is revision-local. This scope has no authenticated cloud
 Agent Security requirements source.
 
+Every dedicated grant, including `toolsAllow: []`, also requires
+`revision.repositoryCredentials === undefined` and
+`revision.sandboxPolicy?.repositoryNetworkPolicy === undefined`. Preserve the ordinary unprotected
+posture: `executionAdmission.mode === "unprotected"` and no `sandboxDriverId`, `egressPlan`, or
+`credentialDeployment`. This excludes protected native Git, including
+`egressPlan.repositoryGitAuthorization === "network-policy"`. Repository credentials and protected
+Git add another Agent authority and can change the launcher or revision configuration asset; the
+ordinary requirements verifier cannot qualify that variant. Use a separate ordinary Agent without
+repository authority. Supporting repository-enabled Agents needs separate qualification.
+
 The raw `revision.configuration` must also contain both:
 
 ```json
@@ -130,10 +140,11 @@ launcher variant, ConfigMap, or native RPC proxy is needed. No infrastructure si
 
 - **AC1. Admission:** Through OCC, an exact-Agent authorized human cannot create either a model-only
   or MCP automation on a dedicated revision without API-key auth and both raw opt-in settings.
-  Verify denial of runtime, PAT, ChatGPT/OAuth, and credential-source modes. A revision with the
-  required reviewer, proxy, and verified effective managed requirements can proceed. A missing,
-  conflicting, or unavailable `configRequirements/read` reply fails Agent readiness; admission
-  refuses the unready Pod.
+  Verify denial of runtime, PAT, ChatGPT/OAuth, credential-source, repository-credential,
+  repository-network-policy, and protected native-Git modes for both empty and finite caps. A
+  revision with the required reviewer, proxy, and verified effective managed requirements can
+  proceed. A missing, conflicting, or unavailable `configRequirements/read` reply fails Agent
+  readiness; admission refuses the unready Pod.
 - **AC2. Execution:** On the packaged dedicated Harness, a genuine model-only scheduled turn exposes
   no native `exec` or sleep tool. A genuine MCP scheduled turn calls its exact approved direct
   dynamic tool; audit and independent service records prove the approved effect and no selected
