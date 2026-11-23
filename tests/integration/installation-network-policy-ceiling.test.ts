@@ -54,10 +54,13 @@ test(
         const before = await auditCount();
         const candidate = restarted([rule]);
         await assert.rejects(
-          candidate.transact(async () => {
-            await candidate.initializeSandboxNetworkPolicyCeiling();
-            throw new Error("interrupt seed transaction");
-          }),
+          candidate.transact(
+            async () => {
+              await candidate.initializeSandboxNetworkPolicyCeiling();
+              throw new Error("interrupt seed transaction");
+            },
+            { readCommitted: true },
+          ),
           /interrupt seed transaction/,
         );
         assert.equal(
@@ -245,14 +248,17 @@ test(
         ).rows[0].count;
       const auditCount = await count();
       await assert.rejects(
-        controller.transact(async () => {
-          await controller.updateInstallationSandboxNetworkPolicyCeiling(
-            principal.id,
-            before.version,
-            [],
-          );
-          throw new Error("interrupt the owner transaction");
-        }),
+        controller.transact(
+          async () => {
+            await controller.updateInstallationSandboxNetworkPolicyCeiling(
+              principal.id,
+              before.version,
+              [],
+            );
+            throw new Error("interrupt the owner transaction");
+          },
+          { readCommitted: true },
+        ),
         /interrupt the owner transaction/,
       );
       assert.deepEqual((await request("GET")).data, before);
@@ -446,10 +452,13 @@ test(
             ).rows[0].count;
           const beforeFailedStartup = await initializationCount();
           await assert.rejects(
-            initialization.transact(async () => {
-              await initialization.initializeSandboxNetworkPolicyCeiling();
-              throw new Error("startup transaction failed before publication");
-            }),
+            initialization.transact(
+              async () => {
+                await initialization.initializeSandboxNetworkPolicyCeiling();
+                throw new Error("startup transaction failed before publication");
+              },
+              { readCommitted: true },
+            ),
             /startup transaction failed/,
           );
           assert.equal(

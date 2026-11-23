@@ -1697,13 +1697,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.registerDriver(options.sandboxDriver);
           created.selectDriver("sandbox", options.sandboxDriver.id);
         }
-        await created.transact(async (unit) => {
-          await created.initializeSandboxNetworkPolicyCeiling(context.actorId);
-          await createBootstrapResources(created, context.actorId);
-          await unit.audit.append(
-            event(operation, request, target, "bootstrap", context, decision.evidence),
-          );
-        });
+        await created.transact(
+          async (unit) => {
+            await created.initializeSandboxNetworkPolicyCeiling(context.actorId);
+            await createBootstrapResources(created, context.actorId);
+            await unit.audit.append(
+              event(operation, request, target, "bootstrap", context, decision.evidence),
+            );
+          },
+          { readCommitted: true },
+        );
         await created.applyIAMConfiguration();
         controller = created;
         reply.status(201).send({

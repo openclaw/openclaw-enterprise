@@ -71,7 +71,9 @@ Preview uses the same checks without writes or reconciliation.
 
 Admission and worker application explicitly use Read Committed, taking the shared
 ceiling lock before Namespace and Agent locks. They read committed updates;
-unrelated Stop and credential operations avoid this lock. Missing or invalid
+unrelated Stop and credential operations avoid this lock. Outer controller transactions
+request `{ readCommitted: true }` for these operations; unrelated mutations retain
+the normal transaction settings. Missing or invalid
 state fails explicitly. See the
 [ceiling contract](../reference/sandbox-policies.md#installation-ceiling).
 
@@ -307,6 +309,7 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-23 19:11: Request Read Committed only on outer transactions that initialize or apply ceiling-dependent policy. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - b33e9efe691c008f8a7c9d5c48fde34e5e752aea)
 - 2026-11-23 18:40: Integrate the persisted ceiling with extracted Sandbox policy, provisioning and deployment owners. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 03d64d7fee54fa6aa44c217732e19ca44d0a3991)
 
 See [documentation history](agent-sandbox-policy/history.md) for earlier changes.

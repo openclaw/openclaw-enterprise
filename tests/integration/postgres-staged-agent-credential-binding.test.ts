@@ -1300,6 +1300,14 @@ test(
       instanceId,
     );
     installSelectedSandboxDrivers(nativeController, runtime);
+    // The earlier API fixture seeded empty state. Only this explicit authorized
+    // owner update delegates the model grants; restarting with a seed preserves state.
+    const ceiling = await nativeController.getInstallationSandboxNetworkPolicyCeiling(principal.id);
+    await nativeController.updateInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+      ceiling.version,
+      [grant, ambiguousGrant],
+    );
     assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
     const nativeApp = createApp(nativeController);
     const nativeMaterial = randomUUID();

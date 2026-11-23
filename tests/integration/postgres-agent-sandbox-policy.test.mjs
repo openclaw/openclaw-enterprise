@@ -1348,17 +1348,20 @@ test(
       const independent = await deployAgent("Stop independent of policy admission");
       const locked = Promise.withResolvers();
       const replace = Promise.withResolvers();
-      const update = fixture.controller.transact(async (unit) => {
-        await unit.installations.holdSandboxNetworkPolicyCeiling("exclusive");
-        locked.resolve();
-        await replace.promise;
-        const previous = await unit.installations.getSandboxNetworkPolicyCeiling();
-        await fixture.controller.updateInstallationSandboxNetworkPolicyCeiling(
-          fixture.principal.id,
-          previous.version,
-          [],
-        );
-      });
+      const update = fixture.controller.transact(
+        async (unit) => {
+          await unit.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+          locked.resolve();
+          await replace.promise;
+          const previous = await unit.installations.getSandboxNetworkPolicyCeiling();
+          await fixture.controller.updateInstallationSandboxNetworkPolicyCeiling(
+            fixture.principal.id,
+            previous.version,
+            [],
+          );
+        },
+        { readCommitted: true },
+      );
       await locked.promise;
       let admission;
       let stop;
@@ -1456,17 +1459,20 @@ test(
         try {
           if (scenario === "tightened") {
             const locked = Promise.withResolvers();
-            ownerUpdate = fixture.controller.transact(async (unit) => {
-              await unit.installations.holdSandboxNetworkPolicyCeiling("exclusive");
-              locked.resolve();
-              await replace.promise;
-              const previous = await unit.installations.getSandboxNetworkPolicyCeiling();
-              await fixture.controller.updateInstallationSandboxNetworkPolicyCeiling(
-                fixture.principal.id,
-                previous.version,
-                [],
-              );
-            });
+            ownerUpdate = fixture.controller.transact(
+              async (unit) => {
+                await unit.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+                locked.resolve();
+                await replace.promise;
+                const previous = await unit.installations.getSandboxNetworkPolicyCeiling();
+                await fixture.controller.updateInstallationSandboxNetworkPolicyCeiling(
+                  fixture.principal.id,
+                  previous.version,
+                  [],
+                );
+              },
+              { readCommitted: true },
+            );
             await locked.promise;
           } else {
             // Keep the worker alive but hold admission until persisted state is removed.

@@ -1909,7 +1909,7 @@ export class OpenClawController {
     work: (state: PlatformUnitOfWork) => Promise<T>,
     options?: Parameters<ControllerTransactions["transact"]>[1],
   ): Promise<T> {
-    return this.composition.transactions.transact(work, options ?? { readCommitted: true });
+    return this.composition.transactions.transact(work, options);
   }
 
   /** Compensate a Driver side effect if the owning resource transaction fails. */
