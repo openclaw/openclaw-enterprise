@@ -137,7 +137,8 @@ When a pending job names its Agent and first revision, Create gives the deployme
 second to finish. If it succeeds, Create stops polling and opens that revision's Deployment tab
 for progress, Stop, and recovery. A 403 or 404 keeps Create on the job: the line explains that
 deployment details are unavailable, drops the wait text and ends deployment checks for this
-attempt, and a job that then succeeds completes on the form, offering **Open Agent** — the
+attempt, and a job that then succeeds completes on the form: the completed line offers **Open
+Agent**, the form stays terminal so the finished request cannot be replayed, and the
 deployment tab belongs to a caller who can read it. If the read is unavailable or times out,
 Create shows any wait reported by the job and rechecks the deployment on the next poll; a job
 that succeeds then opens Configuration. A 401 sends the caller to sign in again.
@@ -245,14 +246,13 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-11-26 15:03: Trace inline Slack Source enrollment. (authoring-run/b01217a9-df42-4b2b-9110-e266330732d6 - 95d045c383baa1eb4bac2677ff4f5067e361ee45)
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
+- 2026-11-23 03:35: Follow the maintainer review: the completed form stays terminal after a refused deployment read, so the finished request cannot be replayed. (feat/create-agent-progress - ebe6829fb3)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
-- 2026-11-22 02:50: Follow the maintainer review: the sticky line is the one live provisioning status and takes focus; a refused deployment read completes on the form with an Open Agent offer. (feat/create-agent-progress - 0f7e0359)
-- 2026-11-20 21:40: Follow the maintainer review: drop a deleted channel-editor Secret from the replacement plan; cover the different-plan replay refusal with a fresh request ID in tests. (feat/create-agent-progress - ba989a85)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 17:05: Follow the maintainer review: one live status line naming the last server-confirmed checkpoint replaces the step meter. (feat/create-agent-progress - 7bbf9296)
+- 2026-11-22 02:50: Follow the maintainer review: the sticky line is the one live provisioning status and takes focus; a refused deployment read completes on the form with an Open Agent offer. (feat/create-agent-progress - 200b5a7fde)
+- 2026-11-20 21:40: Follow the maintainer review: drop a deleted channel-editor Secret from the replacement plan; cover the different-plan replay refusal with a fresh request ID in tests. (feat/create-agent-progress - ead21587d1)
 
-- 2026-11-17 16:05: Clear a deleted Secret from a restored draft's saved status and picker; a new request requires a replacement. (feat/create-agent-progress - 37f35694)
+- 2026-11-17 16:05: Clear a deleted Secret from a restored draft's saved status and picker; a new request requires a replacement. (feat/create-agent-progress - 07653aade1)
 
-- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - 86e759e0)
+- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - 1b0bbc62a9)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.

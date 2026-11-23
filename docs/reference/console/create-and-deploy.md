@@ -66,7 +66,7 @@ as the reason Dedicated OpenClaw is disabled.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
    A live status line names the last confirmed checkpoint; a refused
-   deployment read says details are unavailable. Create opens the first revision's **Deployment** tab once it can read it. A refused read completes on the form, offering **Open Agent**. If a newer deployment takes over, Create offers no retry or link.
+   deployment read says details are unavailable. Create opens the first revision's **Deployment** tab once readable. A refused read completes on the form with **Open Agent**. If a newer deployment takes over, Create offers no retry or link.
    For a failure, follow the linked version's recovery guidance. After a Stop, deploy
    again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Open draft**,
