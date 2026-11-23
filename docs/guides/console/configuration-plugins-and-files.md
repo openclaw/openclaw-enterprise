@@ -138,9 +138,14 @@ plugin allowlist and is separate from these Agent-owned selections.
 
 ## Workspace files tab
 
-If the gateway or the API does not answer, one notice above the files says why.
-The empty box does not mean the file is empty. Check that the Agent is running,
-then select **Retry**.
+If the gateway or the API does not answer, each affected file shows the reason
+under its editor, and one notice above the files names those files. The empty box
+does not mean the file is empty. Check that the Agent is running, then select
+**Retry**.
+
+**Retry** does not read a file that has unsaved edits or an unknown save outcome.
+Select **Reload** for that file. **Reload** replaces your unsaved edits with the
+current file.
 
 These are live files belonging to the Agent, even when you browse an older
 version. They are not historical copies or Configuration fields.

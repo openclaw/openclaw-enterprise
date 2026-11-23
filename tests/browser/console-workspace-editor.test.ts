@@ -997,110 +997,236 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
 });
 
-// An unreachable gateway is one cause for every file. The section says it once, with one Retry
-// that repeats the unanswered reads, and no file is marked Needs attention for it. A refusal
-// about one file stays with that file.
-test("an unreachable Workspace gateway shows one notice whose Retry rereads the files", async (t) => {
-  let unavailable = true;
+// A deployed Agent's Workspace tab over the real Console, Fastify, and IAM paths, before sign-in.
+// While `gateway.down` is set, the controller answers every file read and write as it does when
+// the Agent's gateway is unavailable. Otherwise a read returns a line that names its file.
+async function unreachableWorkspace(t: TestContext, marker: string) {
+  const gateway = { down: false };
   const fixture = await createConsoleAppFixture(t, {
     publicOrigin: true,
     workspaceFilesAccess: {
       async read({ filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
-        return unavailable
+        return gateway.down
           ? { status: "unavailable" }
           : { status: "ok", file: { name: filename, content: `# ${filename}\n` } };
       },
       async write() {
-        throw new Error("no Workspace file may be written");
+        return { status: "unavailable" };
       },
     },
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unreachable workspace", { ready: true });
+  const namespace = await fixture.createNamespace(`Unreachable ${marker}`, { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
-    "Unreachable gateway Agent",
-    nativeValues("unreachable"),
+    `Unreachable ${marker} Agent`,
+    nativeValues(marker),
   );
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const filePath = (name: string) =>
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/${name}`;
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
+  const section = page.locator(".workspace-files");
+  const notice = section.locator(":scope > [role=alert]");
+  const form = (name: string) =>
+    section.locator("form").filter({ has: page.getByLabel(name, { exact: true }) });
+  return {
+    fixture,
+    gateway,
+    page,
+    filePath,
+    section,
+    notice,
+    form,
+    url: detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+    retry: notice.getByRole("button", { name: "Retry", exact: true }),
+    reload: (name: string) =>
+      page.getByRole("button", { name: `Reload ${name}`, exact: true }).click(),
+    // The request ID that a file shows under its editor, after the reason that the gateway did
+    // not answer.
+    async requestId(name: string) {
+      const text = await form(name)
+        .getByText(WORKSPACE_UNREACHABLE, { exact: false })
+        .textContent();
+      const id = text?.slice(WORKSPACE_UNREACHABLE.length) ?? "";
+      assert.match(id, /^ Request ID: req_[0-9a-f-]{36}$/, `${name} request ID`);
+      return id;
+    },
+    // Every request so far has been applied and none is in flight, so a count is neither an
+    // early one nor short of a read that Retry started.
+    async settled(requests: Record<string, number>) {
+      for (const [name, count] of Object.entries(requests)) {
+        await waitForSettledFetches(page, filePath(name), count);
+      }
+      await waitForIdleFetches(page);
+      for (const [name, count] of Object.entries(requests)) {
+        assert.equal(await settledFetches(page, filePath(name)), count, `${name} requests`);
+      }
+    },
+  };
+}
+
+// A read that nothing answered keeps its reason and request ID under its file. One notice above
+// the files names those files, with one Retry that repeats their reads, and none of them is
+// marked Needs attention. A refusal about one file stays with that file.
+test("an unreachable Workspace gateway shows one notice whose Retry rereads the files", async (t) => {
+  const { fixture, gateway, page, filePath, section, notice, form, retry, reload, url, ...files } =
+    await unreachableWorkspace(t, "gateway");
+  gateway.down = true;
   // The API limits the first USER.md read. That refusal is about one file, not the gateway.
   await page.route(
     fixture.origin + filePath("USER.md"),
     (route) => route.fulfill({ ...proxyErrorResponse(429), headers: { "retry-after": "30" } }),
     { times: 1 },
   );
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
-  );
-  // Every read so far has been applied, so a count below is not an early one.
-  const settled = async (reads: Record<string, number>) => {
-    for (const [name, count] of Object.entries(reads)) {
-      await waitForSettledFetches(page, filePath(name), count);
-      assert.equal(await settledFetches(page, filePath(name)), count, `${name} reads`);
-    }
-  };
-  const section = page.locator(".workspace-files");
-  const reasons = section.getByText(WORKSPACE_UNREACHABLE, { exact: false });
+  await login(page, fixture, url);
   const attention = section.getByText("Needs attention", { exact: true });
-  const retry = section.getByRole("alert").getByRole("button", { name: "Retry", exact: true });
   const user = page.getByRole("tab", { name: /USER\.md/ });
-  const limited = section.locator("form").getByText(tooManyRequestsIn(30), { exact: false });
+  const limited = form("USER.md").getByText(tooManyRequestsIn(30), { exact: false });
   const hasFocus = (locator: Locator) =>
     locator.evaluate((node) => node === node.ownerDocument.activeElement);
-  const oneNotice = async () => {
-    await retry.waitFor();
-    // The three unanswered reads share one reason; only the rate-limited file is marked.
-    assert.equal(await reasons.count(), 1);
+  const oneNotice = async (text: string, names: string[]) => {
+    await notice.getByText(text, { exact: true }).waitFor();
+    // Each named file shows the ID of its own request. Only the rate-limited file is marked.
+    const ids = await Promise.all(names.map(files.requestId));
+    assert.equal(new Set(ids).size, names.length);
     assert.equal(await attention.count(), 1);
     assert.equal(await user.getByText("Needs attention", { exact: true }).count(), 1);
     assert.equal(await limited.count(), 1);
   };
-  await settled({ "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 });
-  await oneNotice();
+  const three = "AGENTS.md, SOUL.md and IDENTITY.md could not be read. Retry reads them again.";
+  await files.settled({ "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 });
+  await oneNotice(three, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
 
   // The gateway still does not answer. Retry repeats the three unanswered reads only, the
   // notice returns, and keyboard focus is back on Retry instead of lost with the removed button.
   await retry.focus();
   await page.keyboard.press("Enter");
-  await settled({ "AGENTS.md": 2, "SOUL.md": 2, "IDENTITY.md": 2, "USER.md": 1 });
-  await oneNotice();
+  await files.settled({ "AGENTS.md": 2, "SOUL.md": 2, "IDENTITY.md": 2, "USER.md": 1 });
+  await oneNotice(three, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
   assert.equal(await hasFocus(retry), true);
 
   // The gateway answers: the notice goes, the three files load, and focus moves to the selected
   // file's tab. USER.md keeps its own refusal until its own Reload.
-  unavailable = false;
+  gateway.down = false;
   await page.keyboard.press("Enter");
-  await settled({ "AGENTS.md": 3, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
+  await files.settled({ "AGENTS.md": 3, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
   await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
-  assert.equal(await reasons.count(), 0);
-  assert.equal(await retry.count(), 0);
+  assert.equal(await notice.textContent(), "");
+  assert.equal(await section.getByText(WORKSPACE_UNREACHABLE, { exact: false }).count(), 0);
   assert.equal(await hasFocus(page.getByRole("tab", { name: /AGENTS\.md/ })), true);
   assert.equal(await attention.count(), 1);
   assert.equal(await limited.count(), 1);
 
   // A later Reload that nothing answers brings the notice back for that file alone. At phone
   // width the tabs are not shown, so focus moves to the Workspace file picker instead.
-  unavailable = true;
-  await page.getByRole("button", { name: "Reload AGENTS.md", exact: true }).click();
-  await settled({ "AGENTS.md": 4 });
-  await oneNotice();
+  gateway.down = true;
+  await reload("AGENTS.md");
+  await files.settled({ "AGENTS.md": 4 });
+  await oneNotice("AGENTS.md could not be read. Retry reads it again.", ["AGENTS.md"]);
   await page.setViewportSize({ width: 390, height: 844 });
-  unavailable = false;
+  gateway.down = false;
   await retry.focus();
   await page.keyboard.press("Enter");
-  await settled({ "AGENTS.md": 5, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
+  await files.settled({ "AGENTS.md": 5, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
   await waitForWorkspaceEditors(page, ["AGENTS.md"]);
-  assert.equal(await reasons.count(), 0);
+  assert.equal(await notice.textContent(), "");
   assert.equal(
     await hasFocus(page.getByRole("combobox", { name: "Workspace file", exact: true })),
     true,
   );
+});
+
+// Retry repeats only the reads that have nothing to lose. A file whose own Reload got no answer
+// while it holds unsaved edits or an unknown save is not named in the notice. Its next read is
+// the reader's own Reload of that file, which replaces the edits and settles the save.
+test("the Workspace notice's Retry leaves a file with unsaved edits for its own Reload", async (t) => {
+  const { fixture, gateway, page, filePath, notice, form, retry, reload, url, ...files } =
+    await unreachableWorkspace(t, "draft");
+  await login(page, fixture, url);
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]);
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  const draft = "# Unsaved instructions\n";
+  await editor.fill(draft);
+  // The gateway does not answer the AGENTS.md Reload, so the edits stay in the browser.
+  gateway.down = true;
+  await reload("AGENTS.md");
+  await files.settled({ "AGENTS.md": 2 });
+  // The gateway is back, and the USER.md Reload fails for another reason: its request does not
+  // reach the API.
+  gateway.down = false;
+  await page.route(fixture.origin + filePath("USER.md"), (route) => route.abort(), { times: 1 });
+  await chooseWorkspaceFile(page, "USER.md");
+  await reload("USER.md");
+  await files.settled({ "USER.md": 2 });
+  // Each file shows its own reason. The notice names only the file that Retry reads again, and
+  // the file that waits for its own Reload is marked.
+  await form("USER.md").getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
+  const requestId = await files.requestId("AGENTS.md");
+  await notice
+    .getByText("USER.md could not be read. Retry reads it again.", { exact: true })
+    .waitFor();
+  const marked = page.getByRole("tab", { name: /AGENTS\.md/ }).getByText("Needs attention");
+  assert.equal(await marked.count(), 1);
+
+  await retry.click();
+  await waitForWorkspaceEditors(page, ["USER.md"]);
+  await files.settled({ "AGENTS.md": 2, "USER.md": 3 });
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await files.requestId("AGENTS.md"), requestId);
+  assert.equal(await marked.count(), 1);
+  assert.equal(await notice.textContent(), "");
+
+  await chooseWorkspaceFile(page, "AGENTS.md");
+  await reload("AGENTS.md");
+  await waitForInputValue(editor, "# AGENTS.md\n");
+});
+
+test("the Workspace notice's Retry leaves a file with an unknown save for its own Reload", async (t) => {
+  const { fixture, gateway, page, notice, form, retry, reload, url, ...files } =
+    await unreachableWorkspace(t, "save");
+  // A phone: the Workspace file picker replaces the tabs.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, url);
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]);
+  // The gateway answers neither the SOUL.md save nor the Reload that would settle it.
+  gateway.down = true;
+  await chooseWorkspaceFile(page, "SOUL.md");
+  await page.getByLabel("SOUL.md", { exact: true }).fill("# Unsaved personality\n");
+  await page.getByRole("button", { name: "Save SOUL.md", exact: true }).click();
+  await form("SOUL.md").getByText("Outcome unknown.", { exact: false }).waitFor();
+  await reload("SOUL.md");
+  // The first read, the save, and this Reload.
+  await files.settled({ "SOUL.md": 3 });
+  await chooseWorkspaceFile(page, "USER.md");
+  await reload("USER.md");
+  await files.settled({ "USER.md": 2 });
+  // The selected file shows the reason with the ID of its own request. The notice names only
+  // the file that Retry reads again.
+  const reason = (name: string) => form(name).getByText(WORKSPACE_UNREACHABLE, { exact: false });
+  await reason("USER.md").waitFor();
+  const userId = await files.requestId("USER.md");
+  await chooseWorkspaceFile(page, "SOUL.md");
+  await reason("SOUL.md").waitFor();
+  const soulId = await files.requestId("SOUL.md");
+  assert.notEqual(soulId, userId);
+  await notice
+    .getByText("USER.md could not be read. Retry reads it again.", { exact: true })
+    .waitFor();
+
+  gateway.down = false;
+  await retry.click();
+  await waitForWorkspaceEditors(page, ["USER.md"]);
+  await files.settled({ "SOUL.md": 3, "USER.md": 3 });
+  assert.equal(
+    await page.locator('#workspace-file-picker option[value="SOUL.md"]').textContent(),
+    "Personality · SOUL.md — Check save",
+  );
+  await reason("SOUL.md").waitFor();
+  assert.equal(await files.requestId("SOUL.md"), soulId);
+  assert.equal(await notice.textContent(), "");
 });
 
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {
@@ -1185,8 +1311,6 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     includeHidden: true,
   });
   const form = page.locator("form").filter({ has: editor });
-  // A read nothing answered is reported once for the section, not in the file's own form.
-  const unreached = page.locator(".workspace-files > [role=alert]");
   // An unavailable Agent does not tell us its file is absent, even on the first read.
   await chooseWorkspaceFile(page, "USER.md");
   await form.getByText("File unavailable or missing.", { exact: false }).waitFor();
@@ -1226,7 +1350,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   administrator.permissions = permissions;
   unavailable = true;
   await reload.click();
-  await unreached.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
+  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await editor.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
@@ -1242,7 +1366,6 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   );
   await reload.click();
   await form.getByText(tooManyRequestsIn(30), { exact: false }).waitFor();
-  assert.equal(await unreached.textContent(), "", "the next read clears the section notice");
   // A request that never reached the API says so, not that the gateway is down.
   await page.route(
     fixture.origin + path,
@@ -1250,7 +1373,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     { times: 1 },
   );
   await reload.click();
-  await unreached.getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
+  await form.getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   const reply = page.waitForResponse(
@@ -1296,7 +1419,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(await save.isDisabled(), true);
   assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
   await reload.click();
-  await unreached.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
+  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   await reload.click();
   await form.getByText("USER.md loaded.", { exact: true }).waitFor({ state: "attached" });

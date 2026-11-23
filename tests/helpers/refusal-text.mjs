@@ -355,12 +355,12 @@ export const READ_OUTAGE_REASON =
   "The service did not answer. Try again; if it continues, ask an operator to check the API.";
 export const OVERVIEW_REFRESH_FAILED =
   "Current version and version history could not be refreshed.";
-// A workspace file read that the gateway did not answer.
+// A workspace file read or write that the gateway did not answer.
 export const WORKSPACE_UNREACHABLE =
-  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then retry. If it continues, ask an operator to check the gateway.";
-// A workspace file read that never reached the API (a fetch that failed in the browser).
+  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+// A workspace file request that never reached the API (a fetch that failed in the browser).
 export const WORKSPACE_API_UNREACHABLE =
-  "The request did not reach the API. Check your connection, then retry.";
+  "The request did not reach the API. Check your connection, then reload this file.";
 // A Stop that the API accepted for an Agent with a running version.
 export const STOP_REQUESTED =
   "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here.";

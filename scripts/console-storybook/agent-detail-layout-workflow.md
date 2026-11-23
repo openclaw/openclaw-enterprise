@@ -136,8 +136,9 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
    Check **Components / Workspace / Gateway unreachable**: one notice above the
-   files gives the reason and no file shows **Needs attention**. Choose **Retry**;
-   the notice goes and the four files load.
+   files names the four files, each file shows the reason under its editor, and
+   no file shows **Needs attention**. Choose **Retry**; the notice goes and the
+   four files load.
 7. Open **Pages / Agent detail / New version in progress, then current**. Follow
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during

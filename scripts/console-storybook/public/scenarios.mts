@@ -1831,12 +1831,12 @@ const authoredScenarios = {
       once: true,
     })),
     description:
-      "The Agent's gateway answers none of the four file reads. One notice above the files gives the reason once, and no file is marked Needs attention.",
+      "The Agent's gateway answers none of the four file reads. One notice above the files names the four files, each file shows the reason under its editor, and no file is marked Needs attention.",
     steps: [
-      "Switch between the four files, or use Workspace file on a phone. Each editor is disabled and no file has an indicator.",
+      "Switch between the four files, or use Workspace file on a phone. Each editor is disabled with the reason and request ID under it, and no file has an indicator.",
       "Choose Retry. The notice goes, the four files load, and focus moves to the selected file.",
     ],
-    gap: "Simulated files; no live Agent gateway. The browser test covers a Retry that fails again and a refusal for one file beside the notice.",
+    gap: "Simulated files; no live Agent gateway. The browser test covers a Retry that fails again, a refusal for one file beside the notice, and a file with unsaved edits or an unknown save, which Retry does not read.",
   } satisfies LocalScenario,
   workspaceUnknown: {
     group: "Components/Workspace",
