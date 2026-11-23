@@ -2994,6 +2994,7 @@ export function registerSharingCredentialsAndChannelsCases(
     assert.equal(writes().length, 0);
 
     await principal.fill("prn_00000000-0000-4000-8000-000000000000");
+    await panel.getByRole("checkbox").check();
     await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
     await panel
       .getByText("No existing person with that Principal ID can be granted access here", {

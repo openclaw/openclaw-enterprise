@@ -557,6 +557,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Enter prn_person-demo as the existing Principal ID.",
           "Review the native-access disclosure and acknowledge it.",
+          "Press Shift+Tab and change the Principal ID. Confirm the checkbox clears. Restore prn_person-demo and check the box again.",
           "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
