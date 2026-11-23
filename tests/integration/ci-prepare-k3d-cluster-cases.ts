@@ -12,7 +12,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import {
   assertStderrMatch,
   digest,
-  fixtureImageCommands,
+  fixtureImageCommands as imageCommands,
   fixturePreparationMetrics,
   immutableImage,
   nodeBaseImage,
@@ -20,8 +20,17 @@ import {
 } from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.ts";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
 import { interceptFixtureDocker, type ImageCommands } from "./ci-prepare-k3d-docker-fixture.ts";
+
+// Reuse Node's compiled modules only among the CLI children of this test file.
+const cacheEnv =
+  process.env.NODE_DISABLE_COMPILE_CACHE || process.env.NODE_V8_COVERAGE
+    ? {}
+    : { NODE_COMPILE_CACHE: fileTemporaryDirectory("k3d-compile-") };
+const fixtureImageCommands: typeof imageCommands = (t, scenario, lane, env) =>
+  imageCommands(t, scenario, lane, { ...cacheEnv, ...env });
 
 // Linux reports an exited but unreaped process as a zombie; it holds nothing.
 function processRunning(pid: number) {
