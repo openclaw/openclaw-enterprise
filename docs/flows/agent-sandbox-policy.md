@@ -34,10 +34,6 @@ graph TD
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
   P -->|"Explicit apply<br/>policy and revision<br/>lack repository lists"| W["Live application work<br/>exact running revision"]
-  CLI["CLI apply flags or JSON file"] --> Apply["OCC apply admission<br/>POST apply"]
-  Apply -->|additions supplied| Replace["Save complete replacement<br/>and enqueue in one transaction"]
-  Apply -->|additions omitted| W
-  Replace --> W
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
   S --> V["Confirm matching<br/>loaded version"]
@@ -45,7 +41,7 @@ graph TD
 ```
 
 Arrows show implementation. Verify provider enforcement separately. OCC rejects apply for repository lists in
-saved policy or active Agent revision, even `[]`. Save and apply can share a transaction.
+saved policy or active Agent revision, even `[]`.
 Other admission checks apply.
 
 ## Execution Trace
@@ -141,12 +137,6 @@ the policy before dispatch. An explicit list blocks live application.
 defaults and additions in `AgentRevision.sandboxPolicy`. The OpenShell Driver
 provisions from that snapshot.
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` accepts either the revision
-and saved-version flags or a JSON request file. It checks file syntax and the
-targeting fields before using `internal/occclient/client.go:ApplyAgentSandboxPolicy`
-to make one POST. The request preserves the complete additions array, including
-an explicit empty array, and OCC checks policy fields and admits the grants.
-
 For a saved repository policy and a bound Channel Secret,
 `packages/occ/src/deployment-channels.ts:startDeploymentValidation` checks
 deployment admission before handing the Secret to the Channel provider.
@@ -165,6 +155,7 @@ Authorization denials still return `403 FORBIDDEN`.
 active revision and a supporting Driver. One transaction saves supplied
 changes, records the pending application and queues work. Omitting additions
 keeps the saved policy version. Provider readback confirms enforcement.
+CLI `--file` sends checked JSON.
 
 ### 3. Reconcile provider effects
 
@@ -283,6 +274,8 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-23: CLI file apply.
+
 - 2026-11-23 11:47: Clarify policy flow. (authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80 - 226621cc08c630e3e966896ef04a7290d87d713a)
 
 - 2026-11-23 09:00: Explain that OpenShell alone enforces PR reads and creation, with no request-time OCE check. (authoring-run/19359633-e6f9-48aa-aedb-66a9b329a7fd - eab74449a971c0efd318d62304640dca4f54ba76)
@@ -324,8 +317,6 @@ counters, controls and empty rows.
 - 2026-11-18 15:37: Clarify projection and request matching. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - f099db22a50b4929601520d156b5b14d6bb63613)
 
 - 2026-11-18 05:50: Trace per-binding static request admission. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 913c717d12f78645b5f8d47216aaddd2dfe90c0e)
-
-- 2026-11-15 05:43: Trace the CLI JSON file input to live policy application. (authoring-run/51b1eb3a-3be1-45ce-909b-675f5633419d - 287ea04a6b15caed9b9fce6de6e9459bf6d2dae8)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
