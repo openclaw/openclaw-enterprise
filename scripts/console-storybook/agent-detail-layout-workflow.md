@@ -3,6 +3,12 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
+edit. Scroll until **Save Configuration** is near the middle of the window and
+**Danger zone** is out of view below it. Save and check that **Edit Configuration**
+has focus in view and **Danger zone** stays below the window. The signed-in test
+in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,
@@ -129,6 +135,9 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during
    that reread: busy feedback is immediate and only one user refresh follows.
+   Reset again. Tab to **v7** under **Latest visible deployment** before
+   completion. When the badge reads **Completed**, check that focus stays visible.
+   Press Enter to open **Deployment** for v7.
 
 8. In **New version queued**, fold **Deployment details**, then Tab to **Run
    diagnostics for this version**. Routine polls keep the fold and the visible

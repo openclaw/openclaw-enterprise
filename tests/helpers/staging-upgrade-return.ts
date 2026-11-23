@@ -1740,6 +1740,10 @@ export async function rehearsePopulatedReturn({
     candidatePods,
     helmRevision: candidateRelease.version,
   });
+  await phase("Check the candidate database with the previous controller", async () => {
+    await custody.assertRelease();
+    await checkMigration(previous, previousJob, originalDatabase, "return-preflight");
+  });
 
   const stopCandidateWriters = async () => {
     await custody.assertPostgres();
