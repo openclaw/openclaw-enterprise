@@ -9,8 +9,8 @@ import { createSystemClock } from "/app/apps/controller/src/drivers/repo/access/
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
+  requireGitHubApp,
   resolveSelectedRepositoryGrant,
-  type GitHubRepositoryRegistry,
 } from "/app/apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   prepareProviderScope,
@@ -83,7 +83,7 @@ function matchesId(value: unknown, expected: string): boolean {
 
 function installationGet(
   options: RequestOptions,
-  expected: Pick<GitHubRepositoryRegistry, "appId" | "githubInstallationId">,
+  expected: ReturnType<typeof requireGitHubApp>,
   assertCurrent: () => void,
 ): Promise<InstallationReply> {
   return new Promise((resolve, reject: (reason: unknown) => void) => {
@@ -131,7 +131,7 @@ function installationGet(
           packet !== null &&
           typeof packet === "object" &&
           "id" in packet &&
-          matchesId(packet.id, expected.githubInstallationId);
+          matchesId(packet.id, expected.installationId);
         resolve({
           statusCode: res.statusCode,
           tlsVerified,
@@ -199,6 +199,7 @@ async function verify() {
     readFileSync("/etc/openclaw/repository-registry/registry.json", "utf8"),
   );
   const registry = validateGitHubRepositoryRegistry(registryJson);
+  const app = requireGitHubApp(registry);
   const binding = resolveGitHubRepositoryBinding(registry, {
     namespaceId,
     repositoryRef,
@@ -222,14 +223,14 @@ async function verify() {
   }
   const owner = createGitHubKeyOwner({
     privateKey,
-    appId: registry.appId,
+    appId: app.appId,
     clock: createSystemClock(),
   });
   try {
     return await owner.withJwt(async (jwt, assertCurrent) => {
       const prepared = providerRequestOptions(scope, "issue", jwt, ca);
       // Reuse the issuer's TLS options and authorization headers for a bodyless read.
-      const path = `/app/installations/${registry.githubInstallationId}`;
+      const path = `/app/installations/${app.installationId}`;
       const options: RequestOptions = {
         ...prepared.options,
         method: "GET",
@@ -239,7 +240,7 @@ async function verify() {
       assert.equal(options.rejectUnauthorized, true);
       assert.equal(options.agent, false);
       assertCurrent();
-      const reply = await installationGet(options, registry, assertCurrent);
+      const reply = await installationGet(options, app, assertCurrent);
       return {
         method: "GET",
         installationAccessTokenMintRequested: false,

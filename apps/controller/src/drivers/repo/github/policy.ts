@@ -143,6 +143,16 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     return allowsGitHubRepositoryNetworkGrant(this.#registry, input);
   }
 
+  /** Whether a registration of this Namespace selects the Source, so it must stay in place. */
+  namesCredentialSource(input: { readonly namespaceId: string; readonly sourceId: string }): boolean {
+    return this.#registry.repositories.some((repository) =>
+      repository.namespaces.some(
+        (policy) =>
+          policy.namespaceId === input.namespaceId && policy.credentialSource === input.sourceId,
+      ),
+    );
+  }
+
   standingApprovalScope(input: {
     namespaceId: string;
     binding: import("@openclaw-enterprise/contracts").AdmittedRepositoryBinding;
@@ -197,6 +207,9 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
           : {
               selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
               ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
+              ...(selected.credential.kind === "credential_source" && {
+                credentialSource: selected.credential.sourceId,
+              }),
             }),
       });
     } catch {

@@ -24,6 +24,7 @@ import type {
   RepositoryRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import {
+  requireGitHubApp,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
@@ -1109,7 +1110,7 @@ async function assertTerminalRetirement(
     providerInstanceId: binding.grant.providerInstanceId,
     grantId: binding.grant.grantId,
     scope: "github-repository" as const,
-    installationId: registry.githubInstallationId,
+    installationId: requireGitHubApp(registry).installationId,
     repositories: entries.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
     operation: "receive-pack" as const,
   });
@@ -2003,7 +2004,7 @@ for (const removal of [
         providerInstanceId: bindings[0]!.grant.providerInstanceId,
         grantId: bindings[0]!.grant.grantId,
         scope: "github-repository" as const,
-        installationId: registry.githubInstallationId,
+        installationId: requireGitHubApp(registry).installationId,
         repositories: entries.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
         operation: "receive-pack" as const,
       });

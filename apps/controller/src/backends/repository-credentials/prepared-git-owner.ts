@@ -23,6 +23,7 @@ import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/pre
 import {
   validateGitHubRepositoryRegistry,
   resolveCurrentGitHubRepositoryBinding,
+  requireGitHubApp,
   resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
@@ -220,7 +221,10 @@ export async function startPreparedGitHubGitOwner(
   const authority = preparationIssuerAuthority(apiOrigin, ca);
   // Refuse a key that cannot sign before the worker reports ready, not at the first
   // preparation (finding 2217). Maintenance reads it again, so a rotated Secret applies.
-  (await appSigningKey(options.privateKeyPath, registry.appId, clock)).owner.close();
+  // TODO(repository token Source delivery, part B): start without the App key when the registry
+  // has no App. Until then a registry without the App refuses here, before the Worker is ready.
+  const app = requireGitHubApp(registry);
+  (await appSigningKey(options.privateKeyPath, app.appId, clock)).owner.close();
   const custody = await privateInput(options.custodyKeyPath);
   if (custody.length !== 32) {
     custody.fill(0);
@@ -297,8 +301,7 @@ export async function startPreparedGitHubGitOwner(
       const grant = {
         id: admitted.grant.grantId,
         isolationId: session.revisionId,
-        appId: registry.appId,
-        installationId: registry.githubInstallationId,
+        ...app,
       };
       if (installation) {
         return {
@@ -358,7 +361,7 @@ export async function startPreparedGitHubGitOwner(
       }
       const { keyObject, owner: key } = await appSigningKey(
         options.privateKeyPath,
-        registry.appId,
+        app.appId,
         clock,
       );
       try {
