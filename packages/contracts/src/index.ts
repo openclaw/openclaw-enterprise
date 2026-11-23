@@ -455,11 +455,10 @@ export {
   normalizeInferenceBaseUrl,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "./model-providers.ts";
-export type { GitHubTokenClass } from "./repository-token-source.ts";
 export {
   canonicalSourceRepositoryCeiling,
-  classifyGitHubToken,
   GITHUB_SOURCE_PRESET_ID,
+  isGitHubFineGrainedToken,
   readSourceRepositoryCeiling,
   SOURCE_REPOSITORIES_CONFIG_KEY,
   SourceRepositoryCeilingError,

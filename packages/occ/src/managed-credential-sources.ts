@@ -2,8 +2,8 @@ import { driverOperation } from "./driver-operation.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   canonicalSourceRepositoryCeiling,
-  classifyGitHubToken,
   GITHUB_SOURCE_PRESET_ID,
+  isGitHubFineGrainedToken,
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   SOURCE_REPOSITORIES_CONFIG_KEY,
@@ -118,7 +118,7 @@ function sourceRepositoryCeilingConfig(
 function assertGitHubSourceMaterial(secret: Readonly<Record<string, string>>): void {
   for (const [field, value] of Object.entries(secret)) {
     // GitHub tokens are printable ASCII; a pasted newline or space would fail only at use.
-    if (classifyGitHubToken(value) !== "fine-grained" || !/^[\x21-\x7e]+$/.test(value)) {
+    if (!isGitHubFineGrainedToken(value) || !/^[\x21-\x7e]+$/.test(value)) {
       throw new CredentialSourceConfigError(
         field,
         "A github credential source accepts only a fine-grained personal access token.",

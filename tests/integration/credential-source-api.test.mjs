@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Check } from "typebox/value";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import { isGitHubFineGrainedToken } from "../../packages/contracts/src/repository-token-source.ts";
+import { classifyGitHubToken } from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
 
 import {
   createOpenShellBackend,
@@ -438,6 +440,29 @@ const REFUSED_CLASSES = {
 };
 const CLASS_REFUSAL =
   "A github credential source accepts only a fine-grained personal access token.";
+
+test("Source enrollment and the Repo Driver agree on which tokens are fine-grained", () => {
+  const values = [
+    FINE_GRAINED,
+    ...Object.values(REFUSED_CLASSES),
+    ["github", "pat", ""].join("_"),
+    ["github", "pat"].join("_"),
+    ["github", "pat", "x"].join("_"),
+    fakeToken("GITHUB", "PAT"),
+    "x" + FINE_GRAINED,
+    " " + FINE_GRAINED,
+    FINE_GRAINED + " ",
+    fakeToken("github", "pat") + "\u00e9",
+    "",
+  ];
+  for (const value of values) {
+    assert.equal(
+      isGitHubFineGrainedToken(value),
+      classifyGitHubToken(Buffer.from(value)) === "fine-grained",
+      JSON.stringify(value.slice(0, 12)),
+    );
+  }
+});
 
 /**
  * A request refused on one member of a managed Source body: HTTP 400 naming only that field.
