@@ -72,6 +72,34 @@ func removeDevelopmentGatewayAPICRDs(data []byte) ([]byte, error) {
 		if err := yaml.Unmarshal(document.Bytes(), &header); err != nil {
 			return fmt.Errorf("invalid pinned Envoy manifest: %w", err)
 		}
+		if header.Kind == "ConfigMap" && header.Metadata.Name == "envoy-gateway-config" {
+			var configMap map[string]any
+			if err := yaml.Unmarshal(document.Bytes(), &configMap); err != nil {
+				return err
+			}
+			data := configMap["data"].(map[string]any)
+			var config map[string]any
+			if err := yaml.Unmarshal([]byte(data["envoy-gateway.yaml"].(string)), &config); err != nil {
+				return err
+			}
+			extensions, ok := config["extensionApis"].(map[string]any)
+			if !ok {
+				extensions = map[string]any{}
+			}
+			extensions["enableEnvoyPatchPolicy"] = true
+			config["extensionApis"] = extensions
+			encoded, err := yaml.Marshal(config)
+			if err != nil {
+				return err
+			}
+			data["envoy-gateway.yaml"] = string(encoded)
+			encoded, err = yaml.Marshal(configMap)
+			if err != nil {
+				return err
+			}
+			document.Reset()
+			document.Write(encoded)
+		}
 		if header.Kind != "CustomResourceDefinition" || !strings.HasSuffix(header.Metadata.Name, ".gateway.networking.k8s.io") {
 			result.WriteString("---\n")
 			result.Write(document.Bytes())
@@ -197,7 +225,7 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 			namespace := "cert-manager"
 			deployments := []string{"cert-manager", "cert-manager-cainjector", "cert-manager-webhook"}
 			if controller.name == "envoy-gateway" {
-				crds = []string{"securitypolicies.gateway.envoyproxy.io"}
+				crds = []string{"securitypolicies.gateway.envoyproxy.io", "envoyproxies.gateway.envoyproxy.io", "envoypatchpolicies.gateway.envoyproxy.io", "httproutefilters.gateway.envoyproxy.io"}
 				namespace = "envoy-gateway-system"
 				deployments = []string{"envoy-gateway"}
 			}
@@ -398,11 +426,12 @@ func composeDevelopmentRoutingValues(
 ) map[string]any {
 	_, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 	return map[string]any{
-		"images": map[string]string{"controller": routing.reference},
-		"auth":   map[string]string{"baseUrl": state.BrowserOrigin},
+		"images":        map[string]string{"controller": routing.reference},
+		"channelEgress": map[string]any{"enabled": false},
+		"auth":          map[string]string{"baseUrl": state.BrowserOrigin},
 		"bootstrap": map[string]any{
-			"adminEmail": "admin@development.openclaw.invalid",
-			"password":   map[string]string{"claimName": "bootstrap-password"},
+			"adminEmail":  "admin@development.openclaw.invalid",
+			"credentials": map[string]string{"secretName": "bootstrap-credentials"},
 		},
 		"api": map[string]any{"clients": []any{map[string]any{
 			"namespace": developmentEnvoyNamespace,

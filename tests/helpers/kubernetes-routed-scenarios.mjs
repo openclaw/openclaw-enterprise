@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { conformanceKubernetesOptions } from "./kubernetes-compute.mjs";
+import { routedGatewayConfiguration } from "./kubernetes-routed-options.ts";
+
+export { routedGatewayConfiguration };
+export { gatewayRouting, options, routedOptions } from "./kubernetes-routed-options.ts";
 
 export { selectorMatches } from "./kubernetes-rendered-resources.ts";
 
@@ -59,40 +62,8 @@ export function preparedAuth(driver, namespace, embedded = false, harnessAuth = 
   });
 }
 
-export function options(overrides = {}) {
-  return {
-    ...conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
-    ...overrides,
-    ...(overrides.runtime === undefined
-      ? {}
-      : {
-          runtime: { gatewayNodeSelector: { "oce-role": "control-plane" }, ...overrides.runtime },
-        }),
-  };
-}
-
 export function digest(value, length = 12) {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
-}
-
-export const gatewayRouting = {
-  hostname: "agents.example.internal",
-  gatewayName: "oce-agent-gateways",
-  gatewayNamespace: "openclaw-system",
-  envoyNamespace: "envoy-gateway-system",
-};
-
-export function routedOptions(overrides = {}) {
-  const configured = options();
-  const { gatewayClients, ...network } = configured.network;
-  return options({
-    ...overrides,
-    gatewayRouting: overrides.gatewayRouting ?? gatewayRouting,
-    network: {
-      ...network,
-      ...(overrides.network ?? {}),
-    },
-  });
 }
 
 /** Construct the immutable settings that production admission resolves before execution. */
@@ -129,18 +100,7 @@ export function routedRevision(driver, overrides = {}) {
         consoleStyle: "json",
       },
       diagnostics: { otel: { logs: false } },
-      gateway: {
-        trustedProxies: ["10.42.0.0/16"],
-        allowRealIpFallback: true,
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-      },
+      gateway: routedGatewayConfiguration(),
     },
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: apiKeyAuth,

@@ -13,8 +13,16 @@ import {
   SandboxPolicyEditingBody,
   SandboxPolicyRecommendationsResponse,
 } from "./sandbox-policy.ts";
+import {
+  ModelProviderBody,
+  UpdateModelProviderBody,
+  ModelProviderParams,
+  ModelProviderResponse,
+  ModelProviderListResponse,
+} from "./model-providers.ts";
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
+import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -40,6 +48,7 @@ import {
   AgentParams,
   FirstDeploymentIntent,
   AgentDeploymentBody,
+  AgentStopQuery,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -252,7 +261,7 @@ export const occApiRoutes = [
   {
     operationId: "pollAgentDeviceAuthorization",
     method: "POST",
-    path: "/namespaces/:namespaceId/agents/device-authorizations/:secretId/poll",
+    path: "/namespaces/:namespaceId/agents/device-authorizations/:sessionId/poll",
     action: "openclaw.agents.device_authorization.poll",
     iamAction: "create",
     resourceKind: "agent",
@@ -262,7 +271,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, secretId: SecretId },
+        { namespaceId: NamespaceId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -272,7 +281,7 @@ export const occApiRoutes = [
   {
     operationId: "cancelAgentDeviceAuthorization",
     method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/device-authorizations/:secretId",
+    path: "/namespaces/:namespaceId/agents/device-authorizations/:sessionId",
     action: "openclaw.agents.device_authorization.cancel",
     iamAction: "create",
     resourceKind: "agent",
@@ -282,7 +291,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, secretId: SecretId },
+        { namespaceId: NamespaceId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -314,7 +323,7 @@ export const occApiRoutes = [
   {
     operationId: "pollSavedAgentDeviceAuthorization",
     method: "POST",
-    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:secretId/poll",
+    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:sessionId/poll",
     action: "openclaw.agents.device_authorization.poll",
     iamAction: "update",
     resourceKind: "agent",
@@ -324,7 +333,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -334,7 +343,7 @@ export const occApiRoutes = [
   {
     operationId: "cancelSavedAgentDeviceAuthorization",
     method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:secretId",
+    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:sessionId",
     action: "openclaw.agents.device_authorization.cancel",
     iamAction: "update",
     resourceKind: "agent",
@@ -344,7 +353,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -476,6 +485,86 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "listModelProviders",
+    method: "GET",
+    path: "/model-providers",
+    action: "openclaw.model_providers.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "List Installation model providers",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: ModelProviderListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getModelProvider",
+    method: "GET",
+    path: "/model-providers/:modelProviderId",
+    action: "openclaw.model_providers.read",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Read a model provider",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ModelProviderParams,
+      response: { 200: ModelProviderResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "createModelProvider",
+    method: "POST",
+    path: "/model-providers",
+    action: "openclaw.model_providers.create",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Create an Installation model provider",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      body: ModelProviderBody,
+      response: { 201: ModelProviderResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "updateModelProvider",
+    method: "PUT",
+    path: "/model-providers/:modelProviderId",
+    action: "openclaw.model_providers.update",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Replace model provider settings if the saved fingerprint matches",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ModelProviderParams,
+      body: UpdateModelProviderBody,
+      response: { 200: ModelProviderResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listUsableModelProviders",
+    method: "GET",
+    path: "/namespaces/:namespaceId/model-providers",
+    action: "openclaw.model_providers.list_usable",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary: "List the model providers available when creating an Agent",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: ModelProviderListResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "listConnectionTemplates",
     method: "GET",
     path: "/connection-templates",
@@ -530,7 +619,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rename a connection template, or create a version with new approved values",
+    summary: "Rename a connection template or create a version with updated settings",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1130,7 +1219,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "List connection templates the caller may connect in this Namespace",
+    summary: "List connection templates available in this Namespace",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1195,13 +1284,13 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Register a credential source with the selected Credential Gateway",
+    summary: "Register a credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors },
+      body: Type.Union([CreateCredentialSourceBody, Type.Ref("RegisterTokenServiceSourceBody")]),
+      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1228,7 +1317,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Get one credential source and its live Credential Gateway status",
+    summary: "Get one readable credential source and its available status",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -1244,12 +1333,12 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Push current or replacement Secret values to the Credential Gateway copy",
+    summary: "Update a Source through its recorded owner",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: UpdateCredentialSourceBody,
+      body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
@@ -1277,7 +1366,7 @@ export const occApiRoutes = [
     iamAction: "delete",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Remove an unreferenced credential source from the Credential Gateway",
+    summary: "Remove an unreferenced credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -1298,6 +1387,23 @@ export const occApiRoutes = [
           },
         },
       },
+    },
+  },
+  {
+    operationId: "pushAgentCredentials",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/credentials/push",
+    action: "openclaw.agents.credentials.push",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Retry delivery for selected deployed Agent credential sources",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: Type.Ref("PushAgentCredentialsBody"),
+      response: { 200: PushAgentCredentialsResponse, ...createErrors },
     },
   },
   {
@@ -2203,7 +2309,7 @@ export const occApiRoutes = [
     summary: "Stop one Agent and keep its saved Agent revision and persistent state",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: AgentStopQuery,
       params: AgentParams,
       response: { 202: AgentResponse, ...mutationErrors },
     },

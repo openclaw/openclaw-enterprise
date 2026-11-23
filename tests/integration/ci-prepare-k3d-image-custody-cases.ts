@@ -6,7 +6,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import {
   assertStderrMatch,
   fixtureImageCommands,
@@ -142,16 +142,68 @@ export function registerHostImageCustodyCases() {
 }
 
 export function registerAgentSandboxImageCustodyCase() {
+  const repository = "registry.k8s.io/agent-sandbox/agent-sandbox-controller";
+  const child = "sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
+  const index = "sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403";
+  const config = "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17";
+  const source = `${repository}:v0.5.2@${child}`;
+  const cached = `${repository}:v0.5.2@${index}`;
+
+  test("Agent Sandbox cache preflight checks the native controller before cluster setup", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "openshell");
+    let cachedId: string | undefined = config;
+    const unexpected: string[] = [];
+    await interceptFixtureDocker(t, commands, (args) => {
+      if (args[0] === "version") {
+        return "echo linux/amd64; exit 0";
+      }
+      if (args[0] !== "image" || args[1] !== "inspect") {
+        unexpected.push(args.join(" "));
+        return "exit 61";
+      }
+      const ref = args.at(-1);
+      // Only the pinned index exists. A classic image store identifies its native config.
+      if (ref === cached && cachedId) {
+        const image = {
+          Id: cachedId,
+          RepoDigests: [`${repository}@${index}`],
+          Os: "linux",
+          Architecture: "amd64",
+        };
+        return `echo ${bashString(JSON.stringify([image]))}; exit 0`;
+      }
+      return `echo ${bashString(`Error response from daemon: No such image: ${ref}`)} >&2; exit 1`;
+    });
+    const check = () => commands.runShell("node scripts/ci/agent-sandbox.ts check-cache");
+    const hit = await check();
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.deepEqual(JSON.parse(hit.stdout), {
+      platform: "linux/amd64",
+      source,
+      acquisitionReference: cached,
+      hostImageId: config,
+    });
+
+    cachedId = child;
+    const mismatch = await check();
+    assert.equal(mismatch.status, 1);
+    assertStderrMatch(mismatch.stderr, /does not match the selected native config/u);
+
+    cachedId = undefined;
+    const miss = await check();
+    assert.equal(miss.status, 1);
+    assertStderrMatch(
+      miss.stderr,
+      /Agent Sandbox controller is missing from the linux\/amd64 cache/u,
+    );
+    assert.ok(miss.stderr.includes(source));
+    assert.deepEqual(unexpected, []);
+  });
+
   // Exercise the prepare-lane closure, importer journal and ordinary cleanup. Only
   // unrelated installation/bootstrap dependencies are substituted; the real preload
   // derives the native selection and calls the real registration closure twice.
   test("Agent Sandbox preparation imports its native cache and verifies reuse", async (t) => {
-    const repository = "registry.k8s.io/agent-sandbox/agent-sandbox-controller";
-    const child = "sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
-    const index = "sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403";
-    const config = "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17";
-    const source = `${repository}:v0.5.2@${child}`;
-    const cached = `${repository}:v0.5.2@${index}`;
     // Re-encode the independent pinned manifest to model transport changing its
     // digest without changing the selected native config.
     const content =

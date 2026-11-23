@@ -37,6 +37,16 @@ export function registerInputMatrixCases(): void {
   // a fresh input(), and a string message is the refusal text after it.
   for (const { name, profile = "openclaw", input = baseInput, cases } of [
     {
+      name: "profiles reject the retired bootstrap password claim setting",
+      cases: [
+        [
+          "controlPlane.bootstrapPasswordClaimName",
+          ["retired-bootstrap-claim"],
+          "is not supported by installation profiles",
+        ],
+      ],
+    },
+    {
       name: "profiles refuse ChatGPT workspace IDs the controller refuses",
       profile: "codex",
       input: managedCodexInput,
@@ -315,6 +325,11 @@ export function registerInputMatrixCases(): void {
       profile: "codex",
       input: codexInput,
       cases: [
+        [
+          "presets.includeDefaults",
+          ["false", null, 0],
+          /presets\.includeDefaults must be a boolean/,
+        ],
         ["presets.files", ["presets/custom.json", [""], [42]], /presets\.files/],
         ["presets.unknown", [true], /presets\.unknown/],
       ],

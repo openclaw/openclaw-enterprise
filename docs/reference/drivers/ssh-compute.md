@@ -117,7 +117,9 @@ Activation restarts the gateway and interrupts Agent service.
 The unit runs `<nodePath> <openclawPath> gateway --port <port>` as the Agent's private Unix account,
 with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`,
 `OPENCLAW_GATEWAY_PORT`, and `OPENCLAW_NO_AUTO_UPDATE=1`, so OpenClaw does not
-check for or install its own updates. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
+check for or install its own updates. Native OpenClaw owns
+[interrupted-turn recovery](../agents/interrupted-turns.md) when it starts with
+retained state. The unit uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
 `TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The saved
 document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journald.
 

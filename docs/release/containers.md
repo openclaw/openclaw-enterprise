@@ -172,12 +172,14 @@ use their own evidence. For local use, follow the
 
 ## Prepare and publish
 
-1. Merge the reviewed workflow and source changes to `main`. Wait for that exact
-   main **push** run of `.github/workflows/ci.yml` to finish successfully, including
-   its `CI Required` job. A PR merge SHA or a matching check name is insufficient.
-2. Manually dispatch **Enterprise Containers**, selecting branch `main`, its full
-   current `source_sha`, and that `ci_run_id`. Leave `publish` false for no-push
-   preparation. If main moved, select the new SHA and its own completed CI run.
+1. Merge reviewed changes to `main`. Wait for that commit’s
+   `.github/workflows/ci.yml` **push** run and its `CI Required` job to succeed.
+   A PR check is insufficient. To look up the inputs with Node 24 and `gh`, run
+   `node scripts/ci/container-source.ts "$REVIEWED_SHA"` with the full commit ID.
+   This read-only command prints `source_sha` and `ci_run_id` as JSON.
+2. Manually dispatch **Enterprise Containers** on `main` with those inputs.
+   Leave `publish` false for no-push preparation. The workflow rechecks both
+   inputs. If `main` moved, review the new commit and select its own CI run.
 3. To publish, dispatch with `publish` true after reviewing the SHA, CI run,
    and [package setup](#confirm-package-linkage). Leave `image_tag` blank to
    update `latest` for both images, or enter a custom alias such as `candidate`.
@@ -260,13 +262,11 @@ on `main` with:
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
   Containers** run. Validation, all four native preparation jobs, both runtime
-  smoke jobs, and both image assembly jobs must succeed. For older runs that assembled each image
-  in its preparation job, validation and both image jobs must succeed.
+  smoke jobs, and both image assembly jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
 
-Native preparations that ran smoke inside `Prepare` jobs are unsupported by the
-current recovery gate. They require fresh full qualification, which does not
+Runs that tested runtime startup only inside the `Prepare` jobs are ineligible for recovery. They require fresh full qualification, which does not
 reconstruct their original bytes.
 
 Review the original digests and current public package settings before dispatch.

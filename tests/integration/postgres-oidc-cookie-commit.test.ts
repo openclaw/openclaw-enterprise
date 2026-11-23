@@ -8,7 +8,7 @@ import {
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration } from "../../apps/controller/src/auth/oidc.ts";
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
@@ -52,7 +52,7 @@ test(
     assert.ok(databaseUrl);
     function injectLocalhost(
       target: App,
-      method: string,
+      method: Parameters<typeof injectRequest>[1],
       path: string,
       options: RequestOptions = {},
     ) {

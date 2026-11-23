@@ -18,8 +18,9 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "./password-hasher.mjs";
+import { createPostgresControllerAuth } from "./password-hasher.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { oidcLoginConfiguration } from "../../apps/controller/src/auth/oidc.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -33,7 +34,7 @@ import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
-import { injectJson } from "./inject-json.mjs";
+import { injectJson as inject } from "./inject-json.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -47,14 +48,6 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 import { waitUntil } from "./wait-for.ts";
 
 type NativeApp = ReturnType<typeof createFastifyApp>;
-
-// The JavaScript helper does not infer its optional body and session properties.
-const inject: (
-  app: NativeApp,
-  method: "GET" | "POST" | "PATCH",
-  url: string,
-  options: { body?: unknown; session?: NativeSession; headers?: Record<string, string> },
-) => ReturnType<NativeApp["inject"]> = injectJson;
 
 interface NativeSession {
   origin: string;
@@ -118,10 +111,16 @@ function nativeComputeDriver(upstreamPort: number): ComputeDriver {
     {
       implementation: "native-admin-postgres-test-upstream",
       validateHarnessAuth() {},
-      getGatewayChatEndpoint(
-        revision: Parameters<NonNullable<ComputeDriver["getGatewayChatEndpoint"]>>[0],
-      ) {
-        return `wss://localhost:${upstreamPort}/native-chat/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
+      async getGatewayBrowserRequest(revision, { principalId, mode }) {
+        return {
+          endpoint: `wss://localhost:${upstreamPort}/native-browser/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`,
+          subject: `test:${principalId}`,
+          headers: {
+            "x-occ-identity": `test:${principalId}`,
+            "x-occ-browser-key": "server-browser-credential",
+            "x-openclaw-scopes": mode === "admin" ? "operator.admin" : "operator.sessions.write",
+          },
+        };
       },
       getGatewayEndpoint(
         revision: Parameters<NonNullable<ComputeDriver["getGatewayEndpoint"]>>[0],
@@ -246,26 +245,29 @@ export async function createApi(
     installation.id,
     betterAuthIssuer(installation.id),
   );
+  // Provider redirects are exercised by the browser suite; API cases use recovery login.
+  const oidc = oidcLoginConfiguration({
+    OCC_AUTH_OIDC_ISSUER: fixtureOidcIssuer.issuer,
+    OCC_AUTH_OIDC_AUTHORIZATION_URL: fixtureOidcIssuer.authorizationUrl,
+    OCC_AUTH_OIDC_TOKEN_URL: fixtureOidcIssuer.tokenUrl,
+    OCC_AUTH_OIDC_JWKS_URL: fixtureOidcIssuer.jwksUrl,
+    OCC_AUTH_OIDC_CLIENT_ID: "native-session-proof",
+    OCC_AUTH_OIDC_CLIENT_SECRET: "native-session-proof-secret",
+    OCC_AUTH_OIDC_TOKEN_AUTH: "client_secret_post",
+    OCC_AUTH_OIDC_DISPLAY_NAME: "Test SSO",
+  });
+  assert.ok(oidc);
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: installation.id,
     baseURL: origin,
     secret: authSecret,
     pool,
-    secureCookies: true,
     state,
     iamDriver,
     agentDomain: nativeDomain,
     sessionMode: options.exchange ? "host-only-exchange" : "shared-cookie",
-    // Provider redirects are exercised by the browser suite; API cases use recovery login.
-    oidc: {
-      ...fixtureOidcIssuer,
-      clientId: "native-session-proof",
-      clientSecret: "native-session-proof-secret",
-      tokenAuth: "client_secret_post",
-      displayName: "Test SSO",
-      recoveryUserId,
-    },
+    oidc: { ...oidc, recoveryUserId },
   });
   const computeDriver = nativeComputeDriver(upstreamPort);
   const configurationDriver = createTestConfigurationDriver({
@@ -298,23 +300,7 @@ export async function createApi(
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: nativeDomain,
-      ...(options.exchange
-        ? { sessionMode: "host-only-exchange" }
-        : {
-            // Shared native sessions retain main's guarded OIDC account path. Provider redirects
-            // are exercised separately; these cases sign in with the recovery password.
-            oidc: {
-              issuer: "https://idp.example.test",
-              authorizationUrl: "https://idp.example.test/authorize",
-              tokenUrl: "https://idp.example.test/token",
-              jwksUrl: "https://idp.example.test/jwks",
-              clientId: "native-session-proof",
-              clientSecret: "native-session-proof-secret",
-              tokenAuth: "client_secret_post",
-              displayName: "Test SSO",
-              recoveryUserId,
-            },
-          }),
+      ...(options.exchange ? { sessionMode: "host-only-exchange" } : {}),
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
     nativeAdminWebSocketLeaseIntervalMs: leaseIntervalMs,

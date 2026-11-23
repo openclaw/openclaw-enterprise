@@ -4,6 +4,7 @@ import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/
 import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { Check } from "typebox/value";
 import type {
   ComputeDriver,
@@ -48,6 +49,10 @@ import type {
   RuntimeLogPage,
 } from "../../packages/occ/src/runtime-logs/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
+import {
+  assertLogSecurityCondition,
+  assertSensitiveValuesAbsent,
+} from "./runtime-log-security-assertions.ts";
 import { denialsDuring } from "../helpers/console-app.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
@@ -177,9 +182,9 @@ function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
   });
   return new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -447,13 +452,21 @@ test("sandbox log pages never contain planted credentials from command lines or 
   ];
 
   const runtime = await request("GET", target.runtimePath);
-  assert.equal(runtime.status, 200, runtime.text);
+  assertLogSecurityCondition(runtime.status === 200, "runtimeStatus", "status");
   const source = required(runtimeData(runtime).sources.find(({ id }) => id === "sandbox"));
-  assert.deepEqual(
-    { ...source, retention: undefined },
-    { id: "sandbox", kind: "sandbox", pods: [], available: true, retention: undefined },
+  assertLogSecurityCondition(
+    isDeepStrictEqual(
+      { ...source, retention: undefined },
+      { id: "sandbox", kind: "sandbox", pods: [], available: true, retention: undefined },
+    ),
+    "runtimeStatus",
+    "metadata",
   );
-  assert.match(source.retention, /last 2000 lines per sandbox/);
+  assertLogSecurityCondition(
+    /last 2000 lines per sandbox/.test(source.retention),
+    "runtimeStatus",
+    "metadata",
+  );
   // Describing the runtime reads only the Sandbox record, for its Harness lifecycle.
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
   gateway.touched.length = 0;
@@ -461,27 +474,43 @@ test("sandbox log pages never contain planted credentials from command lines or 
 
   const auditBefore = auditSink.events.length;
   const logs = await read("source=sandbox&tailLines=1000");
-  assert.equal(logs.status, 200, logs.text);
-  assert.equal(logs.headers.get("cache-control"), "no-store");
-  for (const [name, value] of Object.entries(values)) {
-    assert.equal(logs.text.includes(value), false, `canary ${name} leaked into the response`);
-  }
+  assertSensitiveValuesAbsent(logs.text, "sandboxPage", values);
+  assertLogSecurityCondition(logs.status === 200, "sandboxPage", "status");
+  assertLogSecurityCondition(
+    logs.headers.get("cache-control") === "no-store",
+    "sandboxPage",
+    "header",
+  );
   const download = await read("source=sandbox&download=true");
-  assert.equal(download.status, 200, download.text);
-  for (const [name, value] of Object.entries(values)) {
-    assert.equal(download.text.includes(value), false, `canary ${name} leaked into the download`);
-  }
-  assert.match(download.text, /^# agent=\S+ revision=\S+ source=sandbox sandbox=sb-[0-9a-f]+ /);
+  assertSensitiveValuesAbsent(download.text, "sandboxDownload", values);
+  assertLogSecurityCondition(download.status === 200, "sandboxDownload", "status");
+  assertLogSecurityCondition(
+    /^# agent=\S+ revision=\S+ source=sandbox sandbox=sb-[0-9a-f]+ /.test(download.text),
+    "sandboxDownload",
+    "header",
+  );
 
   // The route reached OpenShell only through the log RPC, for the revision's own Sandbox.
   assert.deepEqual([...new Set(gateway.touched)], ["getSandboxLogs"]);
   assert.equal(gateway.requests.length, 2);
   const first = logRequest(gateway.requests[0]);
-  assert.equal(first.workspace, kubernetesNamespaceName(target.namespace.id));
-  assert.match(first.sandbox, /^sb-[0-9a-f]+$/);
+  assertLogSecurityCondition(
+    first.workspace === kubernetesNamespaceName(target.namespace.id),
+    "sandboxPage",
+    "metadata",
+  );
+  assertLogSecurityCondition(/^sb-[0-9a-f]+$/.test(first.sandbox), "sandboxPage", "metadata");
   assert.equal(first.lines, 1000);
-  assert.equal(logs.data.stream?.sandbox, first.sandbox);
-  assert.deepEqual(logs.data.stream, { source: "sandbox", sandbox: first.sandbox });
+  assertLogSecurityCondition(
+    logs.data.stream?.sandbox === first.sandbox,
+    "sandboxPage",
+    "metadata",
+  );
+  assertLogSecurityCondition(
+    isDeepStrictEqual(logs.data.stream, { source: "sandbox", sandbox: first.sandbox }),
+    "sandboxPage",
+    "metadata",
+  );
 
   // One view audit before the read, naming the source but no Sandbox text.
   const views = auditSink.events
@@ -492,7 +521,11 @@ test("sandbox log pages never contain planted credentials from command lines or 
         recordValue(event.details.runtimeLogs).source === "sandbox",
     );
   assert.equal(views.length, 2, "the view and the download are audited");
-  assert.equal(recordValue(required(views[0]).details?.runtimeLogs).revisionId, target.revisionId);
+  assertLogSecurityCondition(
+    recordValue(required(views[0]).details?.runtimeLogs).revisionId === target.revisionId,
+    "audit",
+    "metadata",
+  );
 
   const lines = logs.data.records.filter((record) => record.type === "line");
   assert.equal(lines.length, 8);
@@ -500,58 +533,109 @@ test("sandbox log pages never contain planted credentials from command lines or 
     lines.every((record) => record.kind === "sandbox" && record.contentClass === "activity"),
   );
   const clone = withFields(lines[0]);
+  assertLogSecurityCondition(
+    clone.fields.cmd_line === "git clone https://[redacted:userinfo]@github.com/acme/repo.git",
+    "sandboxPage",
+    "record0",
+  );
+  assertLogSecurityCondition(clone.fields.binary === "git", "sandboxPage", "record0");
+  assertLogSecurityCondition(clone.fields.pid === "4242", "sandboxPage", "record0");
+  assertLogSecurityCondition(clone.fields.activity === "PROC:LAUNCH", "sandboxPage", "record0");
+  assertLogSecurityCondition(
+    clone.message === "PROC:LAUNCH [INFO] git(4242)",
+    "sandboxPage",
+    "record0",
+  );
   const curl = withFields(lines[1]);
+  assertLogSecurityCondition(
+    /Authorization: \[redacted:header\]/.test(stringValue(curl.fields.cmd_line)),
+    "sandboxPage",
+    "record1",
+  );
   const http = withFields(lines[2]);
+  assertLogSecurityCondition(
+    isDeepStrictEqual(
+      {
+        method: http.fields.method,
+        url: http.fields.url,
+        rule_name: http.fields.rule_name,
+        rule_type: http.fields.rule_type,
+        action: http.fields.action,
+      },
+      {
+        method: "GET",
+        url: "https://storage.example.com/obj$&?token=[redacted:query]&sig=[redacted:query]",
+        rule_name: "egress",
+        rule_type: "opa",
+        action: "ALLOWED",
+      },
+    ),
+    "sandboxPage",
+    "record2",
+  );
+  assertLogSecurityCondition(
+    http.message ===
+      "HTTP:GET [INFO] ALLOWED curl(51) -> GET https://storage.example.com/obj$&?token=[redacted:query]&sig=[redacted:query] [policy:egress engine:opa]",
+    "sandboxPage",
+    "record2",
+  );
   const denied = withFields(lines[3]);
+  assertLogSecurityCondition(denied.level === "warn", "sandboxPage", "record3");
+  assertLogSecurityCondition(
+    denied.fields.dst_host === "blocked.example.com",
+    "sandboxPage",
+    "record3",
+  );
+  assertLogSecurityCondition(denied.fields.dst_port === "443", "sandboxPage", "record3");
+  assertLogSecurityCondition(
+    /not in policy default/.test(stringValue(denied.fields.reason)),
+    "sandboxPage",
+    "record3",
+  );
   const tracing = withFields(lines[4]);
+  assertLogSecurityCondition(tracing.level === "warn", "sandboxPage", "record4");
+  assertLogSecurityCondition(
+    tracing.subsystem === "openshell_supervisor::proxy",
+    "sandboxPage",
+    "record4",
+  );
+  assertLogSecurityCondition(
+    isDeepStrictEqual(Object.keys(tracing.fields).sort(), ["action", "dst_host", "source", "url"]),
+    "sandboxPage",
+    "record4",
+  );
   const long = withFields(lines[5]);
+  assertLogSecurityCondition(
+    Buffer.byteLength(stringValue(long.fields.cmd_line)) <= 1024,
+    "sandboxPage",
+    "record5",
+  );
+  assertLogSecurityCondition(
+    /…\[truncated\]$/.test(stringValue(long.fields.cmd_line)),
+    "sandboxPage",
+    "record5",
+  );
   const curlUser = withFields(lines[6]);
+  assertLogSecurityCondition(
+    curlUser.fields.cmd_line === "curl -u [redacted:argv] https://a.example.com",
+    "sandboxPage",
+    "record6",
+  );
   const sshpass = withFields(lines[7]);
-  assert.equal(curlUser.fields.cmd_line, "curl -u [redacted:argv] https://a.example.com");
-  assert.equal(sshpass.fields.cmd_line, "sshpass -p [redacted:argv] ssh build@host");
-  assert.equal(
-    clone.fields.cmd_line,
-    "git clone https://[redacted:userinfo]@github.com/acme/repo.git",
+  assertLogSecurityCondition(
+    sshpass.fields.cmd_line === "sshpass -p [redacted:argv] ssh build@host",
+    "sandboxPage",
+    "record7",
   );
-  assert.equal(clone.fields.binary, "git");
-  assert.equal(clone.fields.pid, "4242");
-  assert.equal(clone.fields.activity, "PROC:LAUNCH");
-  assert.equal(clone.message, "PROC:LAUNCH [INFO] git(4242)");
-  assert.match(stringValue(curl.fields.cmd_line), /Authorization: \[redacted:header\]/);
-  assert.deepEqual(
-    {
-      method: http.fields.method,
-      url: http.fields.url,
-      rule_name: http.fields.rule_name,
-      rule_type: http.fields.rule_type,
-      action: http.fields.action,
-    },
-    {
-      method: "GET",
-      url: "https://storage.example.com/obj$&?token=[redacted:query]&sig=[redacted:query]",
-      rule_name: "egress",
-      rule_type: "opa",
-      action: "ALLOWED",
-    },
-  );
-  assert.equal(
-    http.message,
-    "HTTP:GET [INFO] ALLOWED curl(51) -> GET https://storage.example.com/obj$&?token=[redacted:query]&sig=[redacted:query] [policy:egress engine:opa]",
-  );
-  assert.equal(denied.level, "warn");
-  assert.equal(denied.fields.dst_host, "blocked.example.com");
-  assert.equal(denied.fields.dst_port, "443");
-  assert.match(stringValue(denied.fields.reason), /not in policy default/);
-  assert.equal(tracing.level, "warn");
-  assert.equal(tracing.subsystem, "openshell_supervisor::proxy");
-  assert.deepEqual(Object.keys(tracing.fields).sort(), ["action", "dst_host", "source", "url"]);
-  assert.ok(Buffer.byteLength(stringValue(long.fields.cmd_line)) <= 1024);
-  assert.match(stringValue(long.fields.cmd_line), /…\[truncated\]$/);
-  assert.deepEqual(
-    logs.data.records
-      .filter((record) => record.type === "withheld")
-      .map(({ reason, count }) => ({ reason, count })),
-    [{ reason: "unrecognised_structured", count: 1 }],
+  assertLogSecurityCondition(
+    isDeepStrictEqual(
+      logs.data.records
+        .filter((record) => record.type === "withheld")
+        .map(({ reason, count }) => ({ reason, count })),
+      [{ reason: "unrecognised_structured", count: 1 }],
+    ),
+    "sandboxPage",
+    "content",
   );
 });
 
@@ -1429,10 +1513,24 @@ test("sandbox sanitization masks credentials passed as command-line arguments", 
         sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
       ].map(openShellLogDecision),
     );
-    assert.equal(withFields(records[0]).fields.cmd_line, expected, command);
-    assert.equal(logLine(records[1]).message, `PROC:LAUNCH [INFO] x(1) ${expected}`, command);
-    assert.equal(withFields(records[2]).fields.cmd_line, expected, command);
-    assert.equal(JSON.stringify(records).includes(secret), false, command);
+    assertSensitiveValuesAbsent(JSON.stringify(records), "commandRecords", {
+      ARGUMENT_SECRET: secret,
+    });
+    assertLogSecurityCondition(
+      withFields(records[0]).fields.cmd_line === expected,
+      "commandRecords",
+      "commandField",
+    );
+    assertLogSecurityCondition(
+      logLine(records[1]).message === `PROC:LAUNCH [INFO] x(1) ${expected}`,
+      "commandRecords",
+      "commandMessage",
+    );
+    assertLogSecurityCondition(
+      withFields(records[2]).fields.cmd_line === expected,
+      "commandRecords",
+      "commandField",
+    );
   }
 });
 

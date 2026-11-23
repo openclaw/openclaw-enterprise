@@ -28,6 +28,13 @@ lane/group definitions. Registration does not mean a test runs on every PR:
 the check pages distinguish ordinary CI, manual/advisory workflows, and lanes
 with [no GitHub workflow](../manual-tests.md). Each manifest is the exact file and selector inventory.
 
+On eligible pull requests and main pushes, Checks and Conformance 2 emits a test-graph
+advisory after the required workspace typecheck. It reports owner hints for indexed TypeScript and runtime changes in ordinary and Full Integration-only lanes,
+index coverage, fallback reasons, and zero test omissions. The notice is untrusted
+evidence from the tested checkout. Type-only edges can overselect; JavaScript and
+runtime relationships remain incomplete. CI Impact still selects actual checks. If
+the graph is missing or incomplete, retain ordinary coverage.
+
 To find the owning lane for a file name or path fragment, run from the repository root:
 
 ```sh
@@ -90,7 +97,7 @@ artifact from the same workflow run and source. If that artifact has expired,
 rerun the producer as well. Local runs without an artifact selection keep their
 source-building path.
 
-The producer's build has a provisional 180-minute limit within a 240-minute job.
+The producer's build has a 40-minute limit within a 60-minute job.
 These limits allow measurement of cold builds; they are not expected build times.
 The **CI runtime image timing** notice measures source argument preparation,
 the Buildx build and OCI export. Local image verification follows the notice.
@@ -276,6 +283,13 @@ share a 30-minute deadline unless `CI_RUNNER_DEADLINE_MS` supplies an absolute U
 millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowance
 (default 120 seconds). This mode does not promise immediate interruption.
 
+After preparation succeeds, complete mode keeps `state.json` until final cleanup,
+including when the journal has no resources. If the expected journal disappears,
+the result reports `cleanup-state-missing` and `reconciliation-required`. The
+runner stops automatic cleanup after it confirms the loss. Retain the attempt
+directory and reconcile the ownership and status of remaining resources before
+acting. Preparation can fail before creating a journal.
+
 A timeout, lost phase result or unconfirmed process termination produces
 `reconciliation-required` and prevents a later cleanup phase. Command owners stop
 their process groups when their phase loses its parent. Retain the attempt,
@@ -284,7 +298,7 @@ with its `state.json`. Do not remove another attempt's resources. SIGKILL or hos
 failure can prevent a final result; a missing result is not cleanup evidence.
 
 The [runner](../../../scripts/ci/run-tests.ts) starts each phase through a private IPC channel.
-[Preparation](../../../scripts/ci/prepare.mjs) and
+[Preparation](../../../scripts/ci/prepare.ts) and
 [cleanup](../../../scripts/ci/cleanup.ts) report their owned command groups.
 The runner checks that these groups have stopped before it starts cleanup.
 
@@ -298,7 +312,7 @@ From the checkout root on a disposable host, prepare the lane and keep its priva
 state file until cleanup completes.
 
 ```sh
-corepack pnpm exec node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
+corepack pnpm exec node scripts/ci/prepare.ts --lane <lane> --state <private-state-file>
 node scripts/ci/run-tests.ts run <lane> --state <private-state-file> --results <results-file>
 node scripts/ci/cleanup.ts --state <private-state-file>
 ```

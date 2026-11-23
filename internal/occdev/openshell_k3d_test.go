@@ -307,8 +307,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				primary = "controller-image-import"
 			case "network check failure":
 				primary = "network-verification"
-			case "cleanup failure":
-				cleanupFailed = true
+			case "refused", "invalid result", "keep on failure", "cleanup failure":
+				primary = "codex-sandbox-preparation"
+				cleanupFailed = scenario == "cleanup failure"
 			}
 			wantMeasurement := fmt.Sprintf("[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t", primary, cleanupFailed, scenario == "cancelled")
 			if primary == "routing" {

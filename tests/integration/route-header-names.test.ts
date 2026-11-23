@@ -6,7 +6,7 @@ import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createNativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 
 function createApp() {
   const installationId = `ins_${randomUUID()}`;
@@ -29,39 +29,64 @@ function createApp() {
 
 test("route registration rejects mixed-case literals that constrain a header name", async (t) => {
   const cases = {
-    enum: { propertyNames: { enum: ["host", "X-Blocked"] } },
-    const: { propertyNames: { const: "X-Blocked" } },
-    "denied enum": { propertyNames: { not: { enum: ["x-other", "X-Blocked"] } } },
-    "denied const": { propertyNames: { not: { const: "X-Blocked" } } },
+    enum: { headers: { propertyNames: { enum: ["host", "X-Blocked"] } }, refused: "X-Blocked" },
+    const: { headers: { propertyNames: { const: "X-Blocked" } }, refused: "X-Blocked" },
+    "denied enum": {
+      headers: { propertyNames: { not: { enum: ["x-other", "X-Blocked"] } } },
+      refused: "X-Blocked",
+    },
+    "denied const": {
+      headers: { propertyNames: { not: { const: "X-Blocked" } } },
+      refused: "X-Blocked",
+    },
     "composed header and name schemas": {
-      allOf: [{ propertyNames: { anyOf: [{ not: { oneOf: [{ const: "X-Blocked" }] } }] } }],
+      headers: {
+        allOf: [{ propertyNames: { anyOf: [{ not: { oneOf: [{ const: "X-Blocked" }] } }] } }],
+      },
+      refused: "X-Blocked",
     },
     "conditional header schema": {
-      dependencies: { host: { propertyNames: { not: { const: "X-Blocked" } } } },
+      headers: { dependencies: { host: { propertyNames: { not: { const: "X-Blocked" } } } } },
+      refused: "X-Blocked",
     },
-    "dependency trigger": { dependencies: { "X-Blocked": ["x-companion"] } },
-    "dependency array member": { dependencies: { "x-trigger": ["X-Blocked"] } },
+    "dependency trigger": {
+      headers: { dependencies: { "X-Blocked": ["x-companion"] } },
+      refused: "X-Blocked",
+    },
+    "dependency array member": {
+      headers: { dependencies: { "x-trigger": ["X-Blocked"] } },
+      refused: "X-Blocked",
+    },
     "conditional name": {
-      propertyNames: { if: { const: "host" }, then: true, else: { not: { const: "X-Blocked" } } },
+      headers: {
+        propertyNames: { if: { const: "host" }, then: true, else: { not: { const: "X-Blocked" } } },
+      },
+      refused: "X-Blocked",
     },
     // Patterns match the lowercased name too, so an uppercase letter in one never matches.
-    "pattern property": { patternProperties: { "^X-Blocked$": { type: "string" } } },
-    "name pattern": { propertyNames: { not: { pattern: "^X-Blocked$" } } },
-    "name pattern in a character class": { propertyNames: { pattern: "^[Xx]-blocked$" } },
-    "hex-escaped name pattern": { propertyNames: { pattern: "^\\u0058-blocked$" } },
+    "pattern property": {
+      headers: { patternProperties: { "^X-Blocked$": { type: "string" } } },
+      refused: "^X-Blocked$",
+    },
+    "name pattern": {
+      headers: { propertyNames: { not: { pattern: "^X-Blocked$" } } },
+      refused: "^X-Blocked$",
+    },
+    "name pattern in a character class": {
+      headers: { propertyNames: { pattern: "^[Xx]-blocked$" } },
+      refused: "^[Xx]-blocked$",
+    },
+    "hex-escaped name pattern": {
+      headers: { propertyNames: { pattern: "^\\u0058-blocked$" } },
+      refused: "^\\u0058-blocked$",
+    },
   };
-  const refused: Record<string, string> = {
-    "pattern property": "^X-Blocked$",
-    "name pattern": "^X-Blocked$",
-    "name pattern in a character class": "^[Xx]-blocked$",
-    "hex-escaped name pattern": "^\\u0058-blocked$",
-  };
-  for (const [name, headers] of Object.entries(cases)) {
+  for (const [name, { headers, refused }] of Object.entries(cases)) {
     await t.test(name, async (t) => {
       const app = createApp();
       t.after(() => app.close());
       app.get("/example", { schema: { headers: { type: "object", ...headers } } }, () => "ok");
-      const expected = `Route headers schemas must name headers in lowercase: ${refused[name] ?? "X-Blocked"}`;
+      const expected = `Route headers schemas must name headers in lowercase: ${refused}`;
       await assert.rejects(
         async () => app.ready(),
         (error: Error & { code?: string }) => {
@@ -99,13 +124,14 @@ test("lowercase header constraints preserve header values and query names", asyn
       return { mode: request.headers["x-mode"], query: request.query.Mode };
     },
   );
-  const url = "/example?Mode=READ";
-  const response = await app.inject({ url, headers: { "X-Mode": "READ" } });
+  const inject = (headers: Record<string, string> = {}) =>
+    app.inject({ url: "/example?Mode=READ", headers: { "X-Mode": "READ", ...headers } });
+  const response = await inject();
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), { mode: "READ", query: "READ" });
   // Both wire spellings reach the validator as the same lowercase header name.
   for (const name of ["X-Blocked", "x-blocked"]) {
-    const denied = await app.inject({ url, headers: { "X-Mode": "READ", [name]: "1" } });
+    const denied = await inject({ [name]: "1" });
     assertApiError(denied, 400, "INVALID_REQUEST");
   }
   for (const headers of [
@@ -113,20 +139,20 @@ test("lowercase header constraints preserve header values and query names", asyn
     { "X-Trigger": "1", "X-Companion": "1" },
     { "x-companion": "1" },
   ]) {
-    const allowed = await app.inject({ url, headers: { "X-Mode": "READ", ...headers } });
+    const allowed = await inject(headers);
     assert.equal(allowed.statusCode, 200);
     assert.deepEqual(allowed.json(), { mode: "READ", query: "READ" });
   }
   for (const name of ["x-trigger", "X-Trigger"]) {
-    const missing = await app.inject({ url, headers: { "X-Mode": "READ", [name]: "1" } });
+    const missing = await inject({ [name]: "1" });
     assertApiError(missing, 400, "INVALID_REQUEST");
   }
   // The pattern property matches the lowercased name and checks the value as sent.
-  const counted = await app.inject({ url, headers: { "X-Mode": "READ", "X-Count-1": "AB" } });
+  const counted = await inject({ "X-Count-1": "AB" });
   assert.equal(counted.statusCode, 200);
-  const badCount = await app.inject({ url, headers: { "X-Mode": "READ", "X-Count-1": "ab" } });
+  const badCount = await inject({ "X-Count-1": "ab" });
   assertApiError(badCount, 400, "INVALID_REQUEST");
-  const wrongValue = await app.inject({ url, headers: { "X-Mode": "read" } });
+  const wrongValue = await inject({ "X-Mode": "read" });
   assertApiError(wrongValue, 400, "INVALID_REQUEST");
   assert.equal(hits, 5);
 });

@@ -212,7 +212,7 @@ export function requireCodexPlugin(
 
 /**
  * Enabled channels need a dedicated Agent workload and an Installation channel runtime
- * (`runtime.channels`: isolated credentials and a reviewed proxy). `providers` lists the
+ * (`runtime.channelEgress`: isolated credentials and managed per-Agent routing). `providers` lists the
  * enabled channel providers, in Configuration order.
  */
 export function requireChannelTopology(
@@ -233,7 +233,7 @@ export function requireChannelTopology(
   if (!topology.channelRuntime) {
     throw createError(
       `channels.${provider}`,
-      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and a reviewed proxy",
+      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and managed per-Agent routing",
     );
   }
 }
@@ -382,7 +382,9 @@ export function enabledChannelProviders(
     if (!supported.includes(provider)) {
       throw createError(
         keyedSettingPath("channels", provider),
-        `is not a supported channel: use ${supported.join(" or ")}, or set its enabled to false`,
+        supported.length === 0
+          ? "is not a supported channel: install its Channel Driver, or set its enabled to false"
+          : `is not a supported channel: use ${supported.join(" or ")}, or set its enabled to false`,
       );
     }
   }

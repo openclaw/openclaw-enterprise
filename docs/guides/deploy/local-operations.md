@@ -14,19 +14,28 @@ build and import commands. Local digests vary by build and platform; read them
 from the imported images instead of copying a sample digest.
 
 Prerequisites: Docker, k3d, and [yq v4](https://github.com/mikefarah/yq).
+Keep exclusive control of this trial and its Docker engine through cleanup.
 Create a disposable single-server cluster without changing your kubeconfig:
 
 ```bash
-export CLUSTER="occ-images-$(date +%s)"
-export OCC_EXAMPLE_DIRECTORY="$(mktemp -d)"
-k3d cluster create "$CLUSTER" --image +v1.35 --servers 1 --agents 0 \
+unset CLUSTER KUBECONFIG_FILE CONTEXT OCC_EXAMPLE_DIRECTORY cluster_candidate suffix &&
+OCC_EXAMPLE_DIRECTORY="$(mktemp -d)" &&
+suffix="$(od -An -N 8 -tx1 /dev/urandom)" &&
+suffix="${suffix//[[:space:]]/}" &&
+[[ "$suffix" =~ ^[0-9a-f]{16}$ ]] &&
+cluster_candidate="occ-images-$suffix" &&
+k3d cluster create "$cluster_candidate" --image +v1.35 --servers 1 --agents 0 \
   --api-port 127.0.0.1:random \
-  --kubeconfig-update-default=false --kubeconfig-switch-context=false
-k3d kubeconfig get "$CLUSTER" > "$OCC_EXAMPLE_DIRECTORY/kubeconfig"
-chmod 600 "$OCC_EXAMPLE_DIRECTORY/kubeconfig"
-export KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig"
-export CONTEXT="k3d-$CLUSTER"
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false &&
+k3d kubeconfig get "$cluster_candidate" > "$OCC_EXAMPLE_DIRECTORY/kubeconfig" &&
+chmod 600 "$OCC_EXAMPLE_DIRECTORY/kubeconfig" &&
+export CLUSTER="$cluster_candidate" &&
+export OCC_EXAMPLE_DIRECTORY KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig" CONTEXT="k3d-$CLUSTER"
 ```
+
+Stop if any setup step fails or its outcome is uncertain. Do not delete a cluster by
+the attempted name until you confirm this trial created it. Keep the attempted
+name in the private `cluster_candidate` shell variable until you resolve the failure.
 
 In the same Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments),
 then build and import the images:
@@ -64,7 +73,7 @@ Populate private YAML copies with those references:
 
 ```bash
 umask 077
-cp deploy/examples/production/{values,installation,bootstrap-pvc}.yaml "$OCC_EXAMPLE_DIRECTORY/"
+cp deploy/examples/production/{values,installation}.yaml "$OCC_EXAMPLE_DIRECTORY/"
 yq -i '.images.controller = strenv(CONTROLLER_IMAGE)' "$OCC_EXAMPLE_DIRECTORY/values.yaml"
 yq -i '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
   .drivers.compute.configuration.images.agent = strenv(RUNTIME_IMAGE)' "$OCC_EXAMPLE_DIRECTORY/installation.yaml"
@@ -80,7 +89,9 @@ Set the remaining database, HTTPS, network, and storage inputs for your trial
 CRDs, GatewayClass, service-key Secret, and matching Installation settings.
 The images alone do not configure
 those dependencies or prove an Agent model turn. When finished with the trial,
-run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
+confirm it still owns the named cluster on the same Docker engine. k3d deletes by
+name, so the kubeconfig cannot confirm ownership. Run
+`KUBECONFIG="${KUBECONFIG_FILE:?}" k3d cluster delete "${CLUSTER:?}"`.
 
 For an already installed, persistent Helm release on k3d, follow
 [local k3d image upgrades](local-k3d-image-upgrade.md) to preserve its state.
@@ -112,11 +123,11 @@ startup, including macOS machine connections. See the
 [cleanup flow](../../flows/docker-compose-development.md#3-clean-up-docker-or-podman-compose)
 for how the host connection and worker socket are handled.
 
-Compose keeps PostgreSQL, Configuration, and bootstrap-key volumes unless you
+Compose keeps PostgreSQL and Configuration volumes unless you
 pass `--volumes` to delete the local Installation. Account for Agent containers
 and their Namespace networks before deleting the database. Docker Compute owns
-those networks. The service-key copy at the path printed by `dev up` also
-stays on disk. Remove that copy when you no longer need it.
+those networks. The private bootstrap input files and CLI service-key file are outside these
+volumes. Retain or remove them according to your credential-retention policy.
 
 A Kubernetes profile's `Cleanup` command instead deletes its k3d cluster,
 database, Agents, and volumes; see [stop and clean up](local-kubernetes-development.md#stop-and-clean-up).

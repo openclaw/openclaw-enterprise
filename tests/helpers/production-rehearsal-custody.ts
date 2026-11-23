@@ -26,6 +26,7 @@ type FixtureCommandOutcome = {
   interrupted: boolean;
   spawned: boolean;
   terminationFailed: boolean;
+  timeoutCleanupConfirmed?: true;
 };
 
 export class FixtureCommandError extends Error {
@@ -127,7 +128,7 @@ export function runFixtureCommand(
     allowFailure = false,
     protectedInput = false,
   }: CommandOptions = {},
-  redact = String,
+  redact: (value: unknown) => string = String,
   bounded = false,
 ): Promise<string> {
   assert.ok(!protectedInput || !allowFailure);
@@ -166,16 +167,18 @@ export function runFixtureCommand(
     let interruptionKilled = false;
     let closed = false;
     let killed = false;
+    let groupGoneOnKill = false;
     let cleanupFailed = false;
     let exitCode: number | null = null;
     let exitSignal: NodeJS.Signals | null = null;
-    const outcome = (): FixtureCommandOutcome => ({
+    const outcome = (timeoutCleanupConfirmed = false): FixtureCommandOutcome => ({
       exitCode,
       signal: exitSignal,
       timedOut,
       interrupted,
       spawned: child.pid !== undefined,
       terminationFailed: cleanupFailed,
+      ...(timeoutCleanupConfirmed ? { timeoutCleanupConfirmed: true } : {}),
     });
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     const timeoutError = () =>
@@ -183,20 +186,31 @@ export function runFixtureCommand(
         cleanupFailed
           ? `${command} could not terminate a timed-out fixture operation`
           : `${command} timed out${protectedInput ? " during a protected fixture operation" : ""}`,
-        outcome(),
+        outcome(
+          !interrupted &&
+            !cleanupFailed &&
+            (exitCode !== null || exitSignal !== null) &&
+            (groupGoneOnKill || signal(0)),
+        ),
       );
-    const signal = (name: NodeJS.Signals) => {
+    const signal = (name: NodeJS.Signals | 0): boolean => {
+      const group = processGroup ? child.pid : undefined;
       try {
-        if (processGroup && child.pid) {
-          process.kill(-child.pid, name);
-        } else {
+        if (group !== undefined) {
+          process.kill(-group, name);
+        } else if (name !== 0) {
           child.kill(name);
         }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+          return group !== undefined;
+        }
+        if (name !== 0) {
           cleanupFailed = true;
         }
       }
+      // Delivering a signal can succeed while the group still exists.
+      return false;
     };
     const closePipes = () => {
       child.stdin.destroy();
@@ -239,11 +253,11 @@ export function runFixtureCommand(
     const timer = setTimeout(() => {
       timedOut = true;
       signal("SIGTERM");
-      // A shell can exit before its subprocesses. Always finish terminating the
-      // owned process group before allowing the rehearsal to continue.
+      // A shell can exit before its subprocesses. Attempt to stop the owned
+      // group even if its leader already exited during the grace period.
       cleanupTimer = setTimeout(() => {
         killed = true;
-        signal("SIGKILL");
+        groupGoneOnKill = signal("SIGKILL");
         if (closed) {
           releaseCommand();
           reject(timeoutError());

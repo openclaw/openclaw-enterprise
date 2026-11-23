@@ -29,12 +29,14 @@ ID’s SHA-256 digest, which fits OpenShell pre.5 Workspace names. Earlier
 this form. Wrong names or duplicate tenant claims fail closed. Adopted namespaces
 keep their names; OpenShell rejects names exceeding its Workspace limit.
 
-The optional [OpenShell Sandbox Driver](openshell-sandbox.md) is designed to
-own dedicated Codex and native OpenClaw Harness Pods while Compute keeps the
-other resources. Dedicated native OpenClaw requires a selected
+OpenShell integrations ([operator](openshell-sandbox.md) or experimental
+[managed](kubernetes-openshell-compute.md)) own dedicated Codex and native
+OpenClaw Harness Pods. Internal execution classes share `occ/kubernetes`;
+Compute keeps other resources. Dedicated native OpenClaw requires a selected
 SandboxDriver that provisions the Harness and declares networking, filesystem, and
-process containment. Stock OpenShell cannot provide required credential and
-workload-identity projections; Agent deployment with OpenShell remains unsupported.
+process containment. OpenShell rejects Kubernetes Secret environment projection and
+projected Agent identity. Use a supported credential delivery path and disable
+ServicePrincipal credential projection; see [OpenShell qualification](openshell-sandbox.md#workload-identity).
 
 HTTP chat defaults on for new single-cluster runtime revisions and uses a
 private exact-POST route with trusted-proxy chat authority. Explicit opt-out
@@ -44,6 +46,7 @@ Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
+- [Managed channel egress](kubernetes-compute/channel-egress.md): per-Agent Envoy listeners, provider destinations and revocation.
 
 ## Lifecycle
 
@@ -64,14 +67,15 @@ Harness configuration selects the Agent's execution topology:
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
   Service DNS and the paired node for workspace operations. Codex accepts an
-  Agent-scoped model API key or a managed ChatGPT service-account credential,
-  and permits `openai/` or `codex/` models.
+  Agent-scoped API key, a managed ChatGPT account credential, or a supported
+  Credential Source, and permits `openai/` or `codex/` models.
 - **Dedicated native OpenClaw:** The gateway and paired OpenClaw Harness run in
   separate Pods with separate ServiceAccounts. Compute issues a node-only setup
   credential through the gateway and stores the resulting device identity on the
   Harness workspace claim. The node host supervises the remote worker, which owns
-  the agent loop, model inference, and coding tools. Only the Harness receives the
-  model API key. Compute makes its generated `dedicated-native` worker-inference
+  the agent loop, model inference, and coding tools. With direct Secret delivery,
+  only the Harness receives the model API key. With managed delivery, it receives a
+  placeholder and the paired Proxy injects the credential. Compute makes its generated `dedicated-native` worker-inference
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
@@ -96,7 +100,7 @@ Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-p
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
 retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
-absent.
+absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source; the [OpenShell Proxy](credential-proxy.md) retires its delivery copy after the last binding is removed.
 
 ### Plugin startup status
 
@@ -158,19 +162,18 @@ Agent revision cleanup runs even when Compute's ordinary Harness Deployment is a
 and a failed provider Namespace cleanup keeps the Kubernetes namespace.
 Provider-owned Harness removal stays with the provider, so Compute needs no
 Sandbox custom-resource permissions.
-Allow privileged OpenShell init or sidecar containers only through an
-operator-approved RuntimeClass or equivalent admission exemption with a matching
-fail-closed policy ([admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements));
-the Harness container itself remains unprivileged.
+OpenShell workloads retain restricted tenant Pod Security Admission without an
+OCE-configured exemption. OCE leaves runtime selection to Kubernetes and the
+independently managed provider; see [admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements).
 
 A provider-owned dedicated Harness is ready only when exactly one live Pod in
 the resolved namespace carries the Agent ID, Agent revision ID, and `agent` workload-role
 labels used by the active Service selector, plus all supplied Harness
 requirement labels, and reports `Ready=True`. Zero candidates, multiple live
 candidates (including one Ready and one unready), or a single unready candidate
-leave preparation at `ready: false` and prevent activation. Pods with a valid
-deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
-role do not count.
+leave preparation at `ready: false`. Pods with a valid deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or role do not count.
+
+For managed credential delivery, Compute prepares an idle Sandbox and reports `preparedForCredentialActivation` only after the network policy matches, the Credential Proxy reports ready, and the Sandbox has fresh launch inputs. Worker selects the Agent revision and authorizes the Credential Source before Compute activates the Harness. Compute keeps the authenticated Gateway operator route available during node enrollment. It publishes user chat and delegated browser routes only after it verifies the runtime and workspace node. See [Credential Source implementation status](../credential-sources.md#implementation-status) for current limits. Other unready revisions cannot activate.
 
 Malformed or incomplete Pod lists, invalid identities or conditions, duplicate
 condition types, contradictory Harness labels, and pagination with more results
@@ -264,9 +267,9 @@ before replacing the controller images.
 
 <a id="failure-conditions"></a>
 
-- **Namespace provisioning fails:** A `worker.completed` log for `namespace.ensure` with
-  `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes returned HTTP 403 while the
-  worker reconciled the tenant's quota, limits, or network policies. Check the worker's
+- **Namespace provisioning or deletion fails:** A `worker.completed` log for `namespace.ensure`
+  or `namespace.delete` with `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes
+  returned HTTP 403 while the worker reconciled or cleaned up the tenant's resources. Check the worker's
   [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
   Also verify namespace ownership labels, restricted Pod Security labels, and enforced
   NetworkPolicies in each selected tenant target. Existing
@@ -322,7 +325,7 @@ before replacing the controller images.
   [repository broker policy](kubernetes-compute/networking-and-isolation.md#networking).
 - **Approved traffic fails or denied traffic succeeds:** Verify NetworkPolicy
   enforcement, configured DNS selectors, gateway-client selectors, and any
-  configured channel proxy address.
+  assigned Envoy channel listener.
 - **Production startup fails:** Confirm the controller API and worker share the
   same `OCC_CONFIG_PATH`, image digests are immutable, Kubernetes credentials
   are valid, and required runtime Secret prefixes are configured.

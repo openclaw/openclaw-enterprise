@@ -221,7 +221,7 @@ esac
 			})
 
 			cmd := New(writer, io.Discard)
-			cmd.SetArgs([]string{"installation", "install", "--kubeconfig", config, "--context", "read",
+			cmd.SetArgs([]string{"installation", "install", "--bootstrap-credentials", "existing", "--kubeconfig", config, "--context", "read",
 				"--release", "demo", "--kube-namespace", "operations", "--receipt", receipt,
 				"--chart", chart, "--values", values, "--timeout-seconds", "5"})
 			runErr := cmd.Execute()

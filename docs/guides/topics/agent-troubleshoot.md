@@ -148,23 +148,23 @@ original PID 1 start time. If the replacement reports an unverifiable owner,
 follow this procedure.
 
 A dedicated Gateway does not recover a killed container's locks. On
-Kubernetes it stays unready with the failed check `gateway-state-lock`, a
-deployment in progress fails with `RUNTIME_STARTUP_FAILED`, and `occ agent logs
-AGENT_ID --source gateway` quotes the holder. If the holder stops cleanly, the
-Gateway restarts within 5 minutes; otherwise use the same procedure, which stops
-the Agent first.
+Kubernetes it holds unready on `gateway-state-lock`; the deployment fails with
+`RUNTIME_STATE_LOCK_UNVERIFIED` while the Pod waits. `occ agent logs AGENT_ID
+--source gateway` shows `The Gateway cannot start: …` with the holder. If the
+holder stops cleanly, the Gateway restarts after its next 5-minute check;
+otherwise use the same procedure, which stops the Agent first.
 
-A dedicated Harness Pod that stops without a clean shutdown during native setup,
-for example on a node failure, can leave the lock in its workspace node state. Each
-later version then fails the check `workspace-baseline`, and its log says `cannot
-verify Gateway ownership`. This applies to the Harness Deployment that
-Kubernetes Compute creates; a Harness run by a SandboxDriver has no such
-Deployment. Use the same procedure, with these changes:
+A dedicated Harness Pod killed during Doctor or native setup (node failure, or
+an OpenShell Sandbox stopped while still starting) can leave
+its workspace node state locked. Later versions fail with
+`RUNTIME_STATE_LOCK_UNVERIFIED`; until OCE deletes their Pods, `occ agent logs
+AGENT_ID --source agent` shows `The Harness cannot start: …` with the holder. For
+the Harness Deployment that Kubernetes Compute creates, use the same procedure
+with these changes:
 
-- Step 1: The holder is usually an earlier version's Pod that is already
-  deleted. Record the Pod name from the log's `holder N at POD_NAME/pid-ns`
-  text, not the current Pod. Before you stop the Agent (stopping deletes the
-  Harness Deployment), find the Deployment's volume mount at
+- Step 1: The holder is usually an earlier version's deleted Pod. Record the Pod
+  name from the log's `holder N at POD_NAME/pid-ns` text, not the current Pod.
+  Before you stop the Agent (stopping deletes the Harness Deployment), find the Deployment's volume mount at
   `/home/node/.openclaw-node` and record its claim, `workspace-node-…` subPath
   and the Pod's `securityContext`. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
   must list no Pod, including `Terminating` Pods, and the holder Pod must not
@@ -269,12 +269,12 @@ logs](agent-logs.md#sandbox-source) for the cause.
 OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
 restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
 and `occ agent runtime` show `Harness Sandbox: lost (CODE)` (`SANDBOX_FAILED`
-here, `SANDBOX_STOPPED` after a node restart, or `HARNESS_EXITED` for an older
-version whose Harness exited), the Console's **Live serving** shows
-**Sandbox lost**, and the version's diagnostics lead with a
-failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
-(`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
-is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+here, `SANDBOX_STOPPED` after a node restart or supervisor Pod deletion, or
+`HARNESS_EXITED` for an older version whose Harness exited), the Console's
+**Live serving** shows **Sandbox lost**, and the version's diagnostics lead with
+a failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
+(`occ agent deploy AGENT_ID`): the new version replaces the old Sandbox.
+`unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
 
 If a controller upgrade changes an older development Sandbox's immutable
 command, exact-content adoption can fail; deploy the Agent again.

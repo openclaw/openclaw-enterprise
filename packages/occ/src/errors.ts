@@ -173,6 +173,7 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
       | "POLICY_MIDDLEWARE_VALIDATION"
       | "PVC_ADMISSION_LABELS"
       | "CLASS_ADMISSION_LABELS"
+      | "CALLER_DRIVER_CONFIG_DISABLED"
       | "RESOURCE_METADATA_FORBIDDEN"
       | "UNKNOWN";
   };
@@ -186,6 +187,28 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** Credential custody committed, but the selected Proxy did not acknowledge delivery. */
+export class CredentialDeliveryFailedError extends DependencyUnavailableError {
+  constructor() {
+    super("The credential source was updated, but credential delivery failed.");
+    this.name = "CredentialDeliveryFailedError";
+  }
+}
+
+/** The caller cannot determine whether the storage transaction committed. */
+export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
+  constructor() {
+    super("The PostgreSQL transaction commit outcome is unknown.");
+    this.name = "PostgresCommitOutcomeUnknownError";
+  }
+}
+
+export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent audit disclosure record is unavailable.");
   }
 }
 
@@ -403,6 +426,19 @@ export class ScopeViolationError extends Error {
     this.name = "ScopeViolationError";
   }
 }
+
+/** A password proof no longer belongs to the current recovery designation. */
+export class RecoveryPasswordPolicyError extends ScopeViolationError {
+  constructor() {
+    super("The password is not eligible for sign-in.");
+    this.name = "RecoveryPasswordPolicyError";
+  }
+}
+
+/** A submitted source field failed validation by the selected TokenService. */
+export class TokenServiceSourceInputError extends ScopeViolationError {}
+
+/** This registration was refused before the TokenService attempted any material write. */
 
 /** A device login's private binding does not match the admitted request scope. */
 export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
@@ -669,6 +705,22 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
+/** The Channel preview can relay these fixed deployment recovery instructions. */
+export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
+  constructor(reason: "unscoped_history" | "incompatible_compute") {
+    if (reason === "unscoped_history") {
+      super(
+        "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+      );
+    } else {
+      super(
+        "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
+        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+      );
+    }
+  }
+}
+
 /**
  * A Sandbox Driver refuses a network policy rule it names, such as a grant beside its
  * repository route. OCC returns the message; the policy worker fails the application at once.
@@ -682,6 +734,8 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  saveRepository:
+    "Protected execution applies to this Agent. The Credential Proxy governs its egress. To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy.",
   apply:
     "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
   deploy:
@@ -939,6 +993,8 @@ export const DELETED_NAMESPACE_NAME_CONFLICT =
  * A revision admits one installed egress execution (UNIQUE (namespace_id, revision_id)); a
  * second Sandbox for the same revision is refused alike by the memory and PostgreSQL stores.
  */
+export const EGRESS_SANDBOX_INSTALLED_CONFLICT =
+  "Sandbox already has a current egress installation.";
 export const EGRESS_REVISION_INSTALLED_CONFLICT =
   "Egress revision already has an installed execution.";
 
@@ -1114,6 +1170,7 @@ export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableEr
 
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode =
+  | "CREDENTIAL_ACTIVATION_PENDING"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_NODE_BINDING_PENDING"
   | "REPOSITORY_GIT_MATERIAL_PENDING"
@@ -1184,6 +1241,17 @@ export class ComputePreparationFailedError extends Error {
   }
 }
 
+/** The selected Credential Proxy confirmed this deployment cannot become ready. */
+export class CredentialDeploymentFailedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("The Credential Proxy refused the staged deployment.");
+    this.name = "CredentialDeploymentFailedError";
+    this.code = code;
+  }
+}
+
 /**
  * A workload cannot activate under its current configuration or managed policy.
  * Preparation and activation can both discover the refusal. The worker fails
@@ -1226,6 +1294,8 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_RECREATION_REQUIRED"
+    | "SANDBOX_WORKLOAD_IMMUTABLE"
     | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
@@ -1261,6 +1331,19 @@ export class SandboxWorkspaceSetupRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's temporary workspace preparation could not create its Pod because a
+ * Namespace ResourceQuota has no Pods left. Compute keeps the revision pending with its
+ * `NAMESPACE_POD_QUOTA_EXCEEDED` reason, as for its own refused Pods, until a Pod is free or
+ * the convergence deadline passes.
+ */
+export class SandboxPodQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPodQuotaExceededError";
   }
 }
 
