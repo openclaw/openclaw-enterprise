@@ -1052,7 +1052,8 @@
       "expectedTests": [
         "a Source hold bounds its lock wait, its statements and its idle time on the session",
         "a Source hold ends when its session is lost, and confirms only on a live session",
-        "a Source hold is over at its limit even before its timer runs"
+        "a Source hold is over at its limit even before its timer runs",
+        "a Source lock reports an ended lock wait apart from other failures"
       ]
     },
     {

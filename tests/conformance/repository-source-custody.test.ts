@@ -56,7 +56,12 @@ function custody(holdLimitMs?: number) {
     ...(holdLimitMs !== undefined && { holdLimitMs }),
   });
   const ref = { namespaceId: "namespace-a", sourceId: "cs_fixture_token" };
-  return { clients, lock: () => source.lock(ref) };
+  const lock = async () => {
+    const locked = await source.lock(ref);
+    assert.ok(locked, "the row is locked");
+    return locked;
+  };
+  return { clients, lock };
 }
 
 const settings = (client: FakeClient) => {
@@ -149,4 +154,34 @@ test("a Source hold is over at its limit even before its timer runs", async () =
   assert.equal(hold.held(), false);
   assert.equal(await hold.confirm(), false);
   assert.equal(clients[0]!.released, false, "the Worker still commits the hold it ended");
+});
+
+test("a Source lock reports an ended lock wait apart from other failures", async () => {
+  const clients: FakeClient[] = [];
+  const failing = (error: Error) =>
+    createRepositorySourceCustody({
+      lockPool: {
+        async connect() {
+          const client = new FakeClient();
+          client.fail = (text) => (/FOR SHARE/.test(text) ? error : undefined);
+          clients.push(client);
+          return client;
+        },
+        async end() {},
+      },
+      state: {} as never,
+      tokenServiceDriverId: "occ",
+      tokenService: () => assert.fail("not read"),
+      iam: { authorize: async () => assert.fail("not asked") },
+    });
+  const ref = { namespaceId: "namespace-a", sourceId: "cs_fixture_token" };
+  const waited = Object.assign(new Error("canceling statement due to lock timeout"), {
+    code: "55P03",
+  });
+  assert.equal(await failing(waited).lock(ref), undefined);
+  await assert.rejects(failing(new Error("Connection terminated")).lock(ref), /terminated/);
+  for (const client of clients) {
+    assert.equal(client.queries.at(-1)?.text, "ROLLBACK");
+    assert.equal(client.released, true);
+  }
 });
