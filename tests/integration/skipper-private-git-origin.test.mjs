@@ -71,6 +71,26 @@ function api(
   });
 }
 
+test("private origin reports a denied process-group probe before starting Git", async (t) => {
+  const kill = process.kill;
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid < 0 && signal === 0) {
+      throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
+    }
+    return kill(pid, signal);
+  });
+  // The invalid ref bounds startup even where the group probe must not run.
+  const message =
+    process.platform === "win32"
+      ? "fixture requires POSIX process groups"
+      : process.pid === 1
+        ? "command failed (exit 1)"
+        : "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.";
+  await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
+    message,
+  });
+});
+
 test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
   const shortRoot = await mkdtemp("/tmp/skipper-test-");
   t.after(() => rm(shortRoot, { recursive: true, force: true }));
@@ -432,7 +452,7 @@ test(
     };
     const held = run("sh", ["-c", command], {
       cwd: client,
-      env: { ...env, ...envAuth },
+      env: { ...env, ...envAuth, TMPDIR: join(client, "absent-temp-dir") },
       allowFailure: true,
     }).then(
       (result) => ({ result }),
@@ -467,9 +487,63 @@ test(
       allowFailure: true,
     });
     assert.equal(refused.code, 0, "new authenticated Git process sees the explicit refusal");
+    const incorrectStatus = await run("sh", ["-c", fetchAfterWithdrawalCommand(".", 503)], {
+      cwd: client,
+      env: { ...env, ...envAuth },
+      allowFailure: true,
+    });
+    assert.equal(incorrectStatus.code, 43, "an authenticated 401 cannot satisfy a 503 oracle");
     assert.ok(fixture.snapshot().requests > beforeFresh);
     const uncredentialed = await run("sh", ["-c", fresh], { cwd: client, env, allowFailure: true });
-    assert.notEqual(uncredentialed.code, 0, "anonymous refusal must fail the withdrawal oracle");
+    assert.equal(uncredentialed.code, 42, "anonymous refusal must fail the withdrawal oracle");
+    // Check the content-free return codes even when a process reports only exit 128.
+    const trace = (method, status, basic = true) => [
+      "=> Send header: " +
+        method +
+        " /fixture/repo.git/" +
+        (method === "GET" ? "info/refs?service=git-upload-pack" : "git-upload-pack") +
+        " HTTP/1.1",
+      ...(basic ? ["=> Send header: Authorization: Basic <redacted>"] : []),
+      ...(status === undefined ? [] : ["<= Recv header: HTTP/1.1 " + status]),
+    ];
+    const discovery = trace("GET", 200);
+    for (const [cmd, lines, code] of [
+      [fresh, [...trace("GET", 401), ...trace("GET", 401)], 0],
+      [fresh, [...trace("GET", 200), ...trace("GET", 401)], 43],
+      [command, trace("GET", undefined), 41],
+      [command, ["oce-fixture-git-ready-failed"], 57],
+      [command, discovery, 42],
+      [command, [...discovery, ...trace("POST", 401, false)], 47],
+      [command, [...discovery, ...trace("POST", 401)], 0],
+      [command, [...discovery, ...trace("POST", 503)], 48],
+      [command, [...discovery, ...trace("POST", 403)], 43],
+    ]) {
+      const git =
+        "git() { printf '%s\\n' " +
+        lines.map((line) => "'" + line + "'").join(" ") +
+        " >&2; return 128; }";
+      const result = await run("sh", ["-c", git + "\n" + cmd], {
+        cwd: client,
+        env,
+        allowFailure: true,
+      });
+      assert.equal(result.code, code);
+    }
+    const marker = ".oce-git-withdrawal-0123456789abcdef";
+    const failedCleanup = await run(
+      "sh",
+      [
+        "-c",
+        "git() { if [ \"$1\" = remote ]; then printf '%s\\n' 'https://fixture.invalid/repo'; return; fi; " +
+          ": > " +
+          marker +
+          "/unexpected; return 128; }\n" +
+          withdrawDuringFetchCommand(".", 401, marker),
+      ],
+      { cwd: client, env, allowFailure: true },
+    );
+    assert.equal(failedCleanup.code, 41, "cleanup must preserve the original Git oracle result");
+    assert.ok((await stat(join(client, marker, "unexpected"))).isFile());
     assert.notEqual(
       (await git(["clone", fixture.cloneUrl, "revoked"], token, { allowFailure: true })).code,
       0,
@@ -622,11 +696,11 @@ function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
   ].join("\n");
 }
 
-async function controlledModel(t) {
+async function controlledModel(t, cmd = "set -eu; printf 'private git task'") {
   const directory = await temporaryDirectory(t, "skipper-model-");
   const path = join(directory, "command.json");
   const command = {
-    cmd: "set -eu; printf 'private git task'",
+    cmd,
     id: "skipper-test",
     expiresAt: Date.now() + 170_000,
   };
@@ -657,6 +731,41 @@ async function controlledModel(t) {
 function toolCall(events) {
   return events.find((event) => event.type === "response.output_item.done").item;
 }
+
+test("the installed Skipper model preserves the exit status of its Git command", async (t) => {
+  const cwd = await temporaryDirectory(t, "skipper-model-git-");
+  const env = cleanEnvironment({ HOME: cwd });
+  const commit =
+    "git -C work -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet --allow-empty -m fixture";
+  const command = commit + " && git -C work rev-parse HEAD";
+  async function execute() {
+    const model = await controlledModel(t, command);
+    const call = toolCall(model.next());
+    const { code, stdout, stderr } = await run("sh", ["-c", JSON.parse(call.arguments).cmd], {
+      cwd,
+      env,
+      allowFailure: true,
+    });
+    const answer = model.result(call, nativeToolOutput({ exit: code, output: stdout + stderr }));
+    return { code, stdout, answer };
+  }
+
+  const missing = await execute();
+  assert.equal(missing.code, 128);
+  assert.equal(missing.stdout, "");
+  assert.equal(missing.answer, "SKIPPER_INCOMPLETE_skipper-test");
+
+  await run("git", ["init", "--quiet", "work"], { cwd, env });
+  const success = await execute();
+  const head = await run("git", ["-C", "work", "rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd,
+    env,
+  });
+  assert.equal(success.code, 0);
+  assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
+  assert.equal(success.stdout, head.stdout + "SKIPPER_COMPUTE_DONE_skipper-test\n");
+  assert.equal(success.answer, "SKIPPER_COMPUTE_DONE_skipper-test");
+});
 
 test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
   const model = await controlledModel(t);
@@ -721,20 +830,40 @@ test("the installed Skipper model requires terminal success and keeps failure di
     ),
     "SKIPPER_COMPUTE_DONE_skipper-test",
   );
-  for (const output of [
-    nativeToolOutput({
-      exit: 1,
-      output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
-    }),
-    nativeToolOutput({
-      exit: 0,
-      output: "Process running with session ID 99\nprivate-error-canary",
-    }),
-    "private-error-canary",
+  const echoed = "`private-error-canary SKIPPER_COMPUTE_DONE_skipper-test`";
+  const denied =
+    "exec_command failed: CreateProcess { message: " +
+    JSON.stringify(
+      "Rejected(" +
+        JSON.stringify(
+          echoed + " rejected: rm -f style commands are not permitted. Use a safer approach",
+        ) +
+        ")",
+    ) +
+    " }";
+  for (const [output, status] of [
+    [
+      nativeToolOutput({
+        exit: 1,
+        output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
+      }),
+      "completed",
+    ],
+    [
+      nativeToolOutput({
+        exit: 0,
+        output: "Process running with session ID 99\nprivate-error-canary",
+      }),
+      "completed",
+    ],
+    ["private-error-canary", "unrecognized"],
+    [denied, "tool-denied"],
+    ["private-error-canary " + denied, "unrecognized"],
   ]) {
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).status, status);
     assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(

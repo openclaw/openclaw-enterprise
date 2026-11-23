@@ -379,7 +379,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(oidc.cells.every((cell) => cell.scenarios.length === 0));
   assert.ok(oidc.requiredEnv.includes("OCC_TEST_KEYCLOAK_ISSUER"));
   assert.ok(oidc.requiredEnv.includes("OPENAI_API_KEY"));
-  assert.throws(() => validateQaInputs(oidc, {}), /KUBERNETES_KUBECONFIG is required/);
+  assert.ok(oidc.requiredEnv.includes("OCC_TEST_NATIVE_BASELINE_SOURCE"));
+  assert.throws(() => validateQaInputs(oidc, {}), /OPENCLAW_ENTERPRISE_CI_STATE is required/);
   assert.throws(
     () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_INSTALLATION: "compose" }),
     /requires Kubernetes/,

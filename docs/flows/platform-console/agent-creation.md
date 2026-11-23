@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-18
-last_updated_session: authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f
+updated: 2026-11-22
+last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
 ---
 
 # Console Agent creation
@@ -65,6 +65,11 @@ field lists it disabled with its reason and never stages it; the Preset's **Use 
 list does the same, and **Use Preset** refuses it. A permission reread, a refused create or an
 inline Secret create reads the answer again. A failed read keeps the last answer, or marks
 none before any answer.
+
+`secret-picker.mts:bindSecret` waits for the permission answer. During a model Secret
+choice, `renderAgentForm` blocks submission. A provider or authentication method change
+calls `clearModelCredential`, which clears the choice and its hint. A late answer cannot
+restore that choice or replace a newer one. Accepting a choice marks the draft as edited.
 
 ### 2. Choose a model and starter Configuration
 
@@ -175,6 +180,17 @@ it sent, and the Agent name, Namespace and Configuration. Before granting creden
 reads that Agent and confirms its service principal matches the create response. A mismatch
 stops the grant; **Retry credential access** reads the saved Agent again without recreating it.
 An unrecognized success leaves the outcome unknown and blocks another create.
+On an ordinary Agent POST `403`, `create.mts:agentSaveAccessReason` compares
+the complete API denial with the request. It checks Agent create in this Namespace,
+Configuration read on the saved ID, and Configuration update for browser setup.
+It names Secret operate or ServiceAccount read for the selected Harness reference,
+or CredentialSource operate for a submitted source. An unnamed Secret refusal
+identifies the permission alone. Other denials stay generic. Members can ask an
+Installation administrator to check access. Administrators can review grants and
+IAM Restrictions. The alert keeps the request ID. Once access changes, a manual
+**Create Agent** retry in this draft reuses the Configuration.
+**Cancel** warns that the saved Configuration remains and a fresh draft can save
+another. An uncertain Agent write stays locked.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
 After a known registration refusal, empty checks retain the refusal and the saved Secret.
@@ -196,7 +212,7 @@ no IAM request and opens the saved draft: the member's
 After a refused Installation read, **Your access** shows whether Agent `create`
 is allowed, refused, or unchecked. When allowed,
 `create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
-`packages/occ/src/index.ts:getNamespaceAgentCapabilities` checks
+`packages/occ/src/installation-capabilities.ts:getNamespaceAgentCapabilities` checks
 [Agent `create` on the requested collection](../../reference/authorization.md#authorization-decisions)
 before resolving that Namespace by ID. The API returns `403` on denial and `404`
 if an authorized request names a missing Namespace. The lookup needs no
@@ -222,8 +238,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Debugging and Verification
 
-- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.ts`, and
-  `console-agent-repositories.test.ts` exercise the form against the real controller.
+- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.ts`,
+  `console-agent-repositories.test.ts`, and `console-create-agent-member.test.ts`
+  exercise the form against the real controller.
 - A refused write shows the API's reason and a request ID; inspect saved
   Configuration and Agent IDs before retrying.
 
@@ -239,6 +256,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
+- 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 10:15: Preserve authored `plugins.allow`, `plugins.deny` and an explicitly disabled native Codex entry across Harness switches, including unfinished JSON recovery. (authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f - 27aa612d2bafd819c734942d59125084a6c658eb)
 
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)

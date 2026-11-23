@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  type ComputeDriver,
+} from "../../packages/contracts/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { advanceCleanupRetries, completion } from "../helpers/postgres-worker-revision-queue.ts";
+import {
+  advanceCleanupRetries,
+  completion,
+  deferWork,
+  makeWorkDue,
+} from "../helpers/postgres-worker-revision-queue.ts";
 import {
   removeAccessBindings,
   repositoryAttempts,
@@ -31,6 +41,7 @@ const deadlineCases = [
 ] as const satisfies readonly (readonly [string, WithdrawalObservation])[];
 
 export function testDeadlineWithdrawal(setup: RevisionSetup) {
+  testPolicyWithdrawal(setup);
   for (const [scenario, initialObservation] of deadlineCases) {
     test(
       `scheduled maintenance at the admitted Git deadline: ${scenario}`,
@@ -242,5 +253,259 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
         await checkNoNewGit();
       },
     );
+  }
+}
+
+function testPolicyWithdrawal(setup: RevisionSetup) {
+  for (const { name, recovery } of [
+    {
+      name: "finite Git removal survives a restarted Compute refusing the stored repository policy",
+      recovery: "removal",
+    },
+    {
+      name: "the original deployment withdraws finite Git after losing policy-edit authority",
+      recovery: "original-removal",
+    },
+    {
+      name: "the original deployment handles Stop after losing policy-edit authority",
+      recovery: "stop",
+    },
+  ] as const) {
+    test(name, requiresPostgres, async (t) => {
+      const unacknowledged = recovery !== "removal";
+      const repository = repositoryBoundary();
+      const fixture = await setup(t, { repoDriver: repository.driver });
+      const namespaceId = fixture.namespace.id;
+      const owner = await fixture.agent("repository-policy-withdrawal");
+      const binding = required(repository.snapshot.bindings[0], "finite repository binding");
+      const grants = [{ repository: "organization/repository", access: "read" }] as const;
+      // Seed the desired policy and binding in the ordinary, non-Proxy topology.
+      // Protected Proxy deployment currently refuses this policy combination.
+      const desired = await fixture.state.transact(async (unit) => {
+        await unit.namespaces.lockNamespace(namespaceId);
+        await unit.agents.lockAgent(namespaceId, owner.id);
+        const previous = required(
+          await unit.sandboxPolicies.find(namespaceId, owner.id),
+          "initial Sandbox policy",
+        );
+        assert.ok(
+          await unit.agents.updateConfiguration(
+            namespaceId,
+            owner.id,
+            owner.configurationId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+          ),
+        );
+        return required(
+          await unit.sandboxPolicies.save(
+            { ...previous, version: previous.version + 1, repositoryNetworkPolicy: grants },
+            previous.version,
+          ),
+          "saved repository network policy",
+        );
+      });
+      const sandboxDriverId = "repository-policy-test-sandbox";
+      const candidate = await fixture.revision(owner, 1, {
+        sandboxDriverId,
+        sandboxPolicy: {
+          driverId: sandboxDriverId,
+          implementation: "test",
+          version: desired.version,
+          additions: [],
+          defaults: {},
+          repositoryNetworkPolicy: required(
+            admitRepositoryNetworkPolicy(grants, grants),
+            "explicit repository network policy",
+          ),
+        },
+        repositoryCredentials: repository.snapshot,
+      });
+      const removalKey = repositoryRemovalWorkKey(candidate.id);
+      const events: WorkerEvent[] = [];
+      const prepared: string[] = [];
+      const activations: string[] = [];
+      const detached: string[] = [];
+      const stopped: string[] = [];
+      const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
+      async function removeGit() {
+        assert.equal(
+          required(await fixture.currentAgent(owner), "active Agent").activeRevisionId,
+          candidate.id,
+        );
+        await fixture.controller.updateAgent(fixture.actor.id, {
+          namespaceId,
+          agentId: owner.id,
+          configurationId: owner.configurationId,
+          repositoryBindings: [],
+        });
+        assert.equal(
+          await queue.repositoryExpiryState({
+            namespaceId,
+            agentId: owner.id,
+            revisionId: candidate.id,
+          }),
+          "removal",
+        );
+      }
+      const compute: ComputeDriver = {
+        ...fixture.compute,
+        validateRepositoryCredentials(harness, sandbox) {
+          assert.equal(harness.mode, "embedded");
+          assert.equal(sandbox, sandboxDriverId);
+        },
+        validateProtectedRepositoryNetworkPolicy() {},
+        async prepareRevision(revision, context) {
+          prepared.push(revision.id);
+          return fixture.compute.prepareRevision(revision, context);
+        },
+        async activateRevision(revision) {
+          activations.push(revision.id);
+          if (recovery === "original-removal") {
+            await removeGit();
+            // Keep independent cleanup queued so the original deployment claim
+            // must handle the withdrawal after losing its activation reply.
+            assert.equal(
+              (await deferWork(fixture.observerPool, { key: removalKey, state: "queued" }))
+                .rowCount,
+              1,
+            );
+          }
+          if (unacknowledged) {
+            throw new Error("Controlled activation acknowledgment lost");
+          }
+        },
+        async retireExpiredRepositoryAccess(revision, signal) {
+          signal.throwIfAborted();
+          detached.push(revision.id);
+          return "withdrawn";
+        },
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+      };
+      const ended = (key: string) =>
+        completion(
+          events,
+          `completed withdrawal pass for ${key}`,
+          (event) => event.event === "worker.completed" && event.workId === key,
+        );
+      let stoppedAfterLostAck: Promise<void> | undefined;
+      await fixture.start(compute, {
+        emit(event) {
+          const observed = readWorkerEvent(event);
+          events.push(observed);
+          if (
+            unacknowledged &&
+            observed.event === "worker.completed" &&
+            observed.workId === candidate.idempotencyKey &&
+            observed.code === "REVISION_FINALIZATION_INCOMPLETE"
+          ) {
+            stoppedAfterLostAck = fixture.stop();
+          }
+        },
+      });
+      if (unacknowledged) {
+        assert.equal(
+          (await ended(candidate.idempotencyKey)).code,
+          "REVISION_FINALIZATION_INCOMPLETE",
+        );
+        await required(stoppedAfterLostAck, "stopped worker after lost reply");
+      } else {
+        await fixture.work(candidate, "succeeded");
+        await fixture.stop();
+      }
+      const [original] = await repositoryAttempts(fixture, candidate);
+      assert.ok(original?.sessionId, "deployment opened the original finite session");
+      assert.equal(original.phase, recovery === "original-removal" ? "closing" : "open");
+      if (recovery === "stop") {
+        // Let the committed Stop set desired state, but keep its independent
+        // Work queued so it cannot conceal a refusal by the original claim.
+        const stop = await fixture.requestStop(owner);
+        assert.equal(
+          (await deferWork(fixture.observerPool, { key: stop.idempotencyKey, state: "queued" }))
+            .rowCount,
+          1,
+        );
+      }
+      if (unacknowledged) {
+        // Remove only SandboxPolicy edit authority. Deploy, operate, and
+        // the Harness Secret remain authorized.
+        await fixture.observerPool.query(
+          `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespaceId, desired.id],
+        );
+        assert.equal(
+          (
+            await makeWorkDue(fixture.observerPool, {
+              key: candidate.idempotencyKey,
+              state: "queued",
+            })
+          ).rowCount,
+          1,
+        );
+      } else {
+        await removeGit();
+      }
+      events.length = 0;
+      const restarted = unacknowledged
+        ? compute
+        : ({
+            ...compute,
+            async validateProtectedRepositoryNetworkPolicy() {
+              throw new Error("Restarted Compute cannot admit this repository network policy.");
+            },
+          } satisfies ComputeDriver);
+      await fixture.start(restarted, { emit: (event) => events.push(readWorkerEvent(event)) });
+      const withdrawalKey = unacknowledged ? candidate.idempotencyKey : removalKey;
+      const reason = recovery === "stop" ? "REVISION_STOPPED" : "REPOSITORY_ACCESS_WITHDRAWN";
+      assert.equal((await ended(withdrawalKey)).code, reason);
+      await fixture.stop();
+
+      if (recovery === "stop") {
+        assert.deepEqual(stopped, [candidate.id], "the original claim stops the exact runtime");
+        assert.deepEqual(detached, [], "Stop owns retirement of the whole runtime");
+      } else {
+        assert.deepEqual(detached, [candidate.id], "Compute detached Git from the exact recipient");
+        assert.deepEqual(stopped, [], "withdrawal preserves the serving runtime");
+      }
+      assert.deepEqual(prepared, [candidate.id], "withdrawal does not prepare a new revision");
+      assert.deepEqual(activations, [candidate.id], "withdrawal does not replay activation");
+      const active = required(await fixture.currentAgent(owner), "retained Agent");
+      assert.equal(active.desiredRuntimeState, recovery === "stop" ? "stopped" : "running");
+      if (recovery !== "stop") {
+        assert.equal(active.activeRevisionId, candidate.id);
+      }
+      assert.deepEqual(
+        (await repositoryAttempts(fixture, candidate)).map(({ phase, sessionId }) => [
+          phase,
+          sessionId,
+        ]),
+        [["disposed", original.sessionId]],
+      );
+      assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
+      const settled = required(await queue.findWork(withdrawalKey), "settled withdrawal work");
+      assert.equal(settled.state, "succeeded");
+      assert.equal(settled.reasonCode, reason);
+      if (recovery !== "stop") {
+        const deployment = await fixture.deploymentStatus(owner, candidate);
+        assert.equal(deployment.status, unacknowledged ? "failed" : "succeeded");
+        assert.equal(
+          await queue.repositoryExpiryState({
+            namespaceId,
+            agentId: owner.id,
+            revisionId: candidate.id,
+          }),
+          "removal",
+          "withdrawal preserves the removal fence without queuing terminal retirement",
+        );
+      }
+    });
   }
 }

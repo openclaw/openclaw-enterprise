@@ -3,7 +3,7 @@
 import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
@@ -84,13 +84,15 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
     publicOrigin: true,
     workspaceFilesAccess: {
       async read({ revision, filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
-        return {
-          status: "ok",
-          file: {
-            name: filename,
-            content: await readFile(join(root, revision.agentId, filename), "utf8"),
-          },
-        };
+        try {
+          const content = await readFile(join(root, revision.agentId, filename), "utf8");
+          return { status: "ok", file: { name: filename, content } };
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+            return { status: "missing" };
+          }
+          throw error;
+        }
       },
       async write({
         revision,
@@ -124,30 +126,39 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   }
   // Textareas show CRLF as LF; an untouched read must not enable Save or write.
   const original = "# Saved AGENTS.md\r\n# Windows instructions\r\n";
-  await writeFile(join(root, agent.id, "AGENTS.md"), original);
+  const updated = "# Updated AGENTS.md\r\n# Other writer's instructions\r\n";
+  const originalText = original.replaceAll("\r\n", "\n");
+  const draft = "# Unsaved instructions\n";
+  const matchingDraft = "# Shared SOUL.md\n";
+  const agentsFile = join(root, agent.id, "AGENTS.md");
+  const agentsPath = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  await writeFile(agentsFile, original);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace");
   await login(page, fixture, url);
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   const file = page.getByLabel("AGENTS.md", { exact: true });
-  assert.equal(await file.inputValue(), original.replaceAll("\r\n", "\n"));
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Save AGENTS.md", exact: true, includeHidden: true })
-      .isEnabled(),
-    false,
-  );
+  const save = page.getByRole("button", {
+    name: "Save AGENTS.md",
+    exact: true,
+    includeHidden: true,
+  });
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await save.isEnabled(), false);
   assert.equal(
     await page
       .getByRole("button", { name: "Save USER.md", exact: true, includeHidden: true })
       .isEnabled(),
     false,
   );
-  assert.equal(await readFile(join(root, agent.id, "AGENTS.md"), "utf8"), original);
+  assert.equal(await readFile(agentsFile, "utf8"), original);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   await chooseWorkspaceFile(page, "AGENTS.md");
-  await file.fill("# Unsaved instructions\n");
+  await file.fill(draft);
+  await waitForWorkspaceEditors(page, ["SOUL.md"]);
+  await chooseWorkspaceFile(page, "SOUL.md");
+  await page.getByLabel("SOUL.md", { exact: true }).fill(matchingDraft);
   await chooseWorkspaceFile(page, "USER.md");
   await page.getByLabel("USER.md", { exact: true }).fill("");
   await page
@@ -159,12 +170,12 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   await page
     .getByRole("combobox", { name: "Workspace file", exact: true })
     .selectOption("AGENTS.md");
-  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await file.inputValue(), draft);
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
-  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await file.inputValue(), draft);
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
@@ -172,27 +183,96 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   await chooseWorkspaceFile(page, "AGENTS.md");
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor({ state: "attached" });
   assert.equal(await file.inputValue(), "# Saved AGENTS.md\n");
+
+  // Another writer changes two files while the draft owner is away.
+  await writeFile(agentsFile, updated);
+  await writeFile(join(root, agent.id, "SOUL.md"), "# Shared SOUL.md\r\n");
+  const returningRead = await holdRequests(t, page, `${fixture.origin}${agentsPath}`, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByLabel("Search Agents").fill("Workspace draft owner");
   await page.getByRole("link", { name: "Workspace draft owner", exact: true }).click();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  await waitForWorkspaceEditors(page, ["AGENTS.md"]);
-  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal((await returningRead.requested)?.status(), 200);
+  await chooseWorkspaceFile(page, "USER.md");
+  returningRead.release();
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md"]);
+  await chooseWorkspaceFile(page, "AGENTS.md");
+  assert.equal(await file.inputValue(), draft);
+
+  const warning = page.getByText(/AGENTS\.md changed since you started editing/);
+  await file.fill(originalText);
+  assert.equal(await save.isEnabled(), true, "The previous disk content is now a change");
+  assert.equal(await warning.isVisible(), true);
+  async function revisit() {
+    await page.getByRole("link", { name: "← Agents" }).click();
+    await page.getByLabel("Search Agents").waitFor();
+    await page.goBack();
+    await waitForWorkspaceEditors(page, ["AGENTS.md"]);
+    await chooseWorkspaceFile(page, "AGENTS.md");
+  }
+  // Leaving a second time hasn't resolved the conflict or written the draft.
+  await revisit();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(
+    await warning.isVisible(),
+    true,
+    "A second return must still warn about overwriting the changed file",
+  );
+  assert.equal(await readFile(agentsFile, "utf8"), updated);
+
+  // If the other writer removes the file, the old instructions are still a draft.
+  await unlink(agentsFile);
+  await revisit();
+  await page.getByText("AGENTS.md is missing. Save to create it.").waitFor();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(
+    await save.isEnabled(),
+    true,
+    "A missing file must keep the deliberate revert savable",
+  );
+  await writeFile(agentsFile, updated);
+  await revisit();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await warning.isVisible(), true);
+
+  // Matching the new file settles the conflict. A subsequent edit starts from that file.
+  await file.fill(updated.replaceAll("\r\n", "\n"));
+  assert.equal(await save.isDisabled(), true, "Save stays disabled when the editor matches disk");
+  await settlePageRequests(page);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await warning.isVisible(), false);
+  await file.fill(originalText);
+  await revisit();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await warning.isVisible(), false);
+  assert.equal(await save.isEnabled(), true);
+
   const saved = page.waitForResponse(
     (response) =>
-      response.request().method() === "PUT" &&
-      response.url().endsWith("/workspace/files/AGENTS.md"),
+      response.request().method() === "PUT" && response.url() === `${fixture.origin}${agentsPath}`,
   );
-  await chooseWorkspaceFile(page, "AGENTS.md");
-  await page
-    .getByRole("button", { name: "Save AGENTS.md", exact: true, includeHidden: true })
-    .click();
+  await save.click();
   assert.equal((await saved).status(), 200);
+  assert.deepEqual(nonAuthWriteRequests(requests), [
+    { method: "PUT", path: agentsPath, body: { content: originalText } },
+  ]);
+  assert.equal(await readFile(agentsFile, "utf8"), originalText);
+  assert.equal(await readFile(join(root, other.id, "AGENTS.md"), "utf8"), "# Saved AGENTS.md\n");
+  assert.equal(await readFile(join(root, agent.id, "USER.md"), "utf8"), "# Saved USER.md\n");
+
+  // A draft that already matches the new disk content needs no Save or unsaved notice.
+  await chooseWorkspaceFile(page, "SOUL.md");
+  assert.equal(await page.getByLabel("SOUL.md", { exact: true }).inputValue(), matchingDraft);
   assert.equal(
-    await readFile(join(root, agent.id, "AGENTS.md"), "utf8"),
-    "# Unsaved instructions\n",
+    await page.getByRole("button", { name: "Save SOUL.md", exact: true }).isDisabled(),
+    true,
   );
+  await page.getByText("SOUL.md loaded.", { exact: true }).waitFor({ state: "visible" });
   await chooseWorkspaceFile(page, "USER.md");
   await page
     .getByRole("button", { name: "Reload USER.md", exact: true, includeHidden: true })
@@ -204,12 +284,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   await page.goBack();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor({ state: "attached" });
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Save AGENTS.md", exact: true, includeHidden: true })
-      .isDisabled(),
-    true,
-  );
+  assert.equal(await save.isDisabled(), true);
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
 });
 

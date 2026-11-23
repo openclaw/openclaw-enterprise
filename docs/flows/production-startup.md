@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-19"
-last_updated_session: "authoring-run/e7df3cc8-639a-48dc-818c-a5168de86ef1"
+updated: "2026-11-23"
+last_updated_session: "authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476"
 ---
 
 # Production Startup Flow
@@ -137,10 +137,9 @@ and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-val
 
 Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
 (generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap
-and API rollout. The migration container evaluates `files/migrate-selected-image.cjs`,
-which validates the image's `db:migrate:production` entry and forwards mode arguments
-in the same Node process. Modes require the `NODE_ENV=production` declaration
-introduced with strict parsing. Bare legacy entries permit only unflagged apply.
+and API rollout. `files/migrate-selected-image.cjs` validates the image's
+`db:migrate:production` entry and forwards arguments in-process. Flagged modes
+require `NODE_ENV=production`. Bare legacy entries permit only unflagged apply.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -162,19 +161,19 @@ Doctor reports Helm separately; write errors exit `1`.
 
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-After source verification, all modes reject PostgreSQL before 17 with
-`MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access
-([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
-On SIGINT/SIGTERM, a second migrator connection terminates the uniquely named
-session. Cleanup ignores repeated signals and finishes before exit. If the
-connection fails, the command reports `migration.cancellation-failed` and waits
-for migration completion.
-Under the advisory lock, the migration client verifies roles, receipts, catalogs and
-grants against native or reviewed restore digests. Unsupported history fails
-before DDL/bootstrap. After option guards, completed apply skips Drizzle only
-when `SHOW transaction_read_only` returns `off`. Drizzle otherwise retains pending
-migration and read-only refusal. `finally` releases the lock and client
-([history](../reference/settings/operations.md#migration-history)).
+After source verification, [PostgreSQL below 17](../reference/settings/operations.md#postgresql-server-compatibility)
+fails with `MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access.
+On SIGINT/SIGTERM a second connection terminates the uniquely named session.
+If cancellation fails, the migrator logs `migration.cancellation-failed` and
+awaits completion. Cleanup ignores repeated signals.
+
+Under the advisory lock, the migrator verifies [history](../reference/settings/operations.md#migration-history),
+roles, catalogs and grants against native or reviewed restore digests before
+DDL or bootstrap. On 0085, check and apply refuse unfinished managed TokenService
+registrations with `MIGRATION_REGISTRATION_PENDING`.
+The SQL constraint guards later changes. After option checks, completed apply
+skips Drizzle only when `transaction_read_only` is off. Drizzle handles pending migrations
+and read-only refusals. Cleanup releases the lock and client.
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
 Console origin before database access, including during `--verify-existing`.
@@ -336,10 +335,10 @@ The shell initializes the missing annotation, patches with UID and
   mounts; `BOOTSTRAP_INPUT_INVALID` indicates rejected contents.
 - Upgrade Jobs must omit bootstrap projections. Rendering does not prove live
   mounts or authentication.
-- `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
-  should succeed before API and worker rollout checks.
+- If the chart requires initialization, [confirm the recorded Job completed](../guides/deploy/production-handoff.md#resume-an-installation-in-progress)
+  before checking API and worker rollouts.
 - `pnpm db:migrate:production --check` reports the accepted database history
-  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
+  without applying migrations. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
   `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
@@ -353,10 +352,9 @@ The shell initializes the missing annotation, patches with UID and
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
   `apps/controller/src/api-startup.ts:startupFailureFields` passes these diagnostics
   to `server.mjs`.
-- `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
-  failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
-  administrator/IAM mismatch.
+- [Diagnose failures by Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
+  Check for unsafe output storage, existing outputs, database-role failures,
+  `AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID` and administrator/IAM mismatch.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
@@ -382,6 +380,10 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 12:51: Correct Job checks. (authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476 - 7ef4d08319f4ad8dfd1dd52473db764ccad53235)
+
+- 2026-11-21 16:06: Detect unfinished TokenService registrations before shutdown. (authoring-run/5ee5925d-a18c-4ea3-b360-a02c2ad9f162 - 883d6d5cf59ac4184550954f2f8d1625c24164a0)
 
 - 2026-11-19 22:27: Require EKS inventory preferences opt-in. (authoring-run/e7df3cc8-639a-48dc-818c-a5168de86ef1 - 00abb268cdd420d9eed8c3096a15d7f0cdc65934)
 
