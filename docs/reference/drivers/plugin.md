@@ -57,14 +57,17 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values. For Template-backed
-  Sources, OCC also supplies the Template's current approved version in
-  `currentTemplate`. The Driver matches OAuth accounts by the consent issuer
-  and current Template identity, and matches static MCP bearers to the reviewed
-  endpoint's approved POST destination. Generic slot matching does not test
-  granted scopes.
+  Sources, OCC also supplies the Template's current version in
+  `currentTemplate`. The Driver matches OAuth accounts by their original consent
+  issuer and current Template identity. Google destinations must intersect reviewed
+  operations; static MCP requires an allowed POST to the reviewed endpoint. Template
+  edits do not rewrite consent or provider-granted scopes. Generic slot matching
+  does not test scopes.
   `choices(sources)` returns each slot with the attached ready sources that
   match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
-  capabilities. `validate(selections, sources, modelSourceId)` refuses a
+  capabilities. `mcpToolDiscovery(pluginId, slotId, source)` returns the reviewed
+  endpoint and allowed HTTP methods. Discovery sends credentials only on those
+  methods. `validate(selections, sources, modelSourceId)` refuses a
   binding that names no matching attached source, or the source that
   authenticates the model. OCC calls it at Agent create, update, provisioning,
   and deployment.

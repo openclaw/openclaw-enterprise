@@ -129,8 +129,10 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     {
       computeDriver: compute,
       secretDriver,
-      readManagedMcpToolNames(endpoint, accessToken, signal) {
+      readManagedMcpToolNames(endpoint, accessToken, signal, options) {
+        assert(options);
         return listManagedMcpToolNames(endpoint, accessToken, signal, {
+          ...options,
           async resolveHost(host) {
             assert.equal(host, "mcp.slack.com");
             return [{ address: "8.8.8.8", family: 4 }];
@@ -427,8 +429,8 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   ]);
   assert.equal(JSON.stringify(detail.body).includes(token), false);
   assert.deepEqual(
-    upstream.filter(({ method }) => method !== "GET"),
-    ["initialize", "notifications/initialized", "tools/list", "DELETE"].map((method) => ({
+    upstream,
+    ["initialize", "notifications/initialized", "tools/list"].map((method) => ({
       method,
       authenticated: true,
     })),

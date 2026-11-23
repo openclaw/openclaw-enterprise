@@ -57,6 +57,10 @@ export type ManagedMcpToolReader = (
   endpoint: string,
   accessToken: string,
   signal?: AbortSignal,
+  options?: {
+    readonly allowedMethods: readonly ("POST" | "GET" | "DELETE")[];
+    readonly beforeRequest: () => Promise<void>;
+  },
 ) => Promise<ReadonlySet<string>>;
 
 type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
@@ -706,27 +710,42 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       }
       dependencies.validatePluginPlacement(current.driver, selection, current.harness);
     };
-    const result = await invokePluginDiscovery(
-      target.driver,
-      async ({ accessToken }) => {
-        if (!accessToken) {
-          throw new PluginDiscoveryError("credentials_rejected");
-        }
-        const names = await readTools(target.endpoint, accessToken, signal);
-        return {
-          ...entry,
-          tools: [...names].map((name) => ({
-            id: name,
-            name,
-            ownerId: entry.id,
-          })),
-        };
-      },
-      (invoke) =>
-        withResolvedSource(target.source, owner, signal, (accessToken) => invoke({ accessToken })),
-      validateCurrent,
-      signal,
-    );
+    let result: PluginCatalogEntry;
+    try {
+      result = await invokePluginDiscovery(
+        target.driver,
+        async ({ accessToken }) => {
+          if (!accessToken) {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          const names = await readTools(target.endpoint, accessToken, signal, {
+            allowedMethods: target.methods,
+            beforeRequest: validateCurrent,
+          });
+          return {
+            ...entry,
+            tools: [...names].map((name) => ({
+              id: name,
+              name,
+              ownerId: entry.id,
+            })),
+          };
+        },
+        (invoke) =>
+          withResolvedSource(target.source, owner, signal, (accessToken) =>
+            invoke({ accessToken }),
+          ),
+        validateCurrent,
+        signal,
+      );
+    } catch (error) {
+      // A permission or Template change during an SDK request must retain OCC's exact
+      // refusal rather than becoming the reader's sanitized transport error.
+      signal?.throwIfAborted();
+      await validateCurrent();
+      throw error;
+    }
+    signal?.throwIfAborted();
     await validateCurrent();
     return result;
   }

@@ -29,7 +29,7 @@ export interface PluginDiscoveryAuthentication {
   readonly isFedramp?: boolean;
 }
 
-/** OCC supplies authorized Source metadata and the current approved Template, without credential values. */
+/** OCC supplies authorized Source metadata and its current Template, without credential values. */
 export type PluginCredentialSource = CredentialSourceMetadata & {
   readonly currentTemplate?: Readonly<ConnectionTemplateVersion>;
 };
@@ -48,7 +48,9 @@ export interface PluginDriver extends Driver {
       pluginId: string,
       slotId: string,
       source: PluginCredentialSource,
-    ): { readonly endpoint: string } | undefined;
+    ):
+      | { readonly endpoint: string; readonly methods: readonly ("POST" | "GET" | "DELETE")[] }
+      | undefined;
     validate(
       selections: PluginDesiredState,
       sources: readonly PluginCredentialSource[],

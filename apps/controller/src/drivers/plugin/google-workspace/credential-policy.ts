@@ -6,6 +6,7 @@ import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalo
 import {
   googleActionPath,
   googleCatalog,
+  googleDestinationHasOperation,
   googleDiscoveryRoutes,
   googleSourcePathMatches,
 } from "./operations.ts";
@@ -79,14 +80,8 @@ export const googleWorkspaceCredentialPolicy = {
     ) {
       return false;
     }
-    return template.destinations.some((destination) =>
-      googleActions.some(
-        (route) =>
-          destination.host === route.host &&
-          destination.port === 443 &&
-          (googleSourcePathMatches(destination.path, route.path) ||
-            googleSourcePathMatches(route.path, destination.path)),
-      ),
+    return template.destinations.some(
+      ({ host, port, path }) => port === 443 && googleDestinationHasOperation(host, path),
     );
   },
 };

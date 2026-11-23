@@ -13,6 +13,8 @@ import { Agent, fetch as undiciFetch } from "undici";
 interface DiscoveryTransport {
   readonly resolveHost?: (host: string) => Promise<LookupAddress[]>;
   readonly fetch?: FetchLike;
+  readonly allowedMethods?: readonly ("POST" | "GET" | "DELETE")[];
+  readonly beforeRequest?: () => Promise<void>;
 }
 
 /** Reads tool names at the reviewed endpoint selected by the Plugin Driver. */
@@ -20,7 +22,12 @@ export async function listManagedMcpToolNames(
   endpoint: string,
   accessToken: string,
   signal?: AbortSignal,
-  { resolveHost = (host) => lookup(host, { all: true }), fetch }: DiscoveryTransport = {},
+  {
+    resolveHost = (host) => lookup(host, { all: true }),
+    fetch,
+    allowedMethods = ["POST"],
+    beforeRequest,
+  }: DiscoveryTransport = {},
 ): Promise<ReadonlySet<string>> {
   const url = new URL(endpoint);
   if (
@@ -29,7 +36,8 @@ export async function listManagedMcpToolNames(
     url.password ||
     url.search ||
     url.hash ||
-    !/^[a-z0-9._~+/-]+=*$/iu.test(accessToken)
+    !/^[a-z0-9._~+/-]+=*$/iu.test(accessToken) ||
+    !allowedMethods.includes("POST")
   ) {
     throw new PluginDiscoveryError("invalid_response");
   }
@@ -79,14 +87,23 @@ export async function listManagedMcpToolNames(
         if (String(target) !== url.href) {
           throw new PluginDiscoveryError("invalid_response");
         }
+        const method = init?.method ?? "GET";
+        if (!allowedMethods.some((allowed) => method === allowed)) {
+          // Optional SDK session requests must not receive a credential or reach the peer
+          // when the Source's current Template does not permit their method.
+          return new Response(null, { status: 405 });
+        }
+        const requestSignal = init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+        await beforeRequest?.();
+        requestSignal.throwIfAborted();
         const headers = new Headers(init?.headers);
         headers.set("Authorization", `Bearer ${accessToken}`);
         headers.set("Accept-Encoding", "identity");
         const request = {
-          method: init?.method ?? "GET",
+          method,
           ...(typeof init?.body === "string" ? { body: init.body } : {}),
           headers: Object.fromEntries(headers),
-          signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline,
+          signal: requestSignal,
           dispatcher: pinned,
           redirect: "error" as const,
           credentials: "omit" as const,
@@ -127,7 +144,7 @@ export async function listManagedMcpToolNames(
       const { tools } = await client.listTools(undefined, { signal: deadline });
       return new Set(tools.map(({ name }) => name));
     } finally {
-      if (transport.sessionId && !deadline.aborted) {
+      if (transport.sessionId && !deadline.aborted && allowedMethods.includes("DELETE")) {
         await transport.terminateSession().catch(() => {});
       }
     }

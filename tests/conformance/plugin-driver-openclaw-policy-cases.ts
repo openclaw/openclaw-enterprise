@@ -20,6 +20,7 @@ import type {
   PluginApprover,
   PluginApprovers,
   PluginDriver,
+  StaticKeyDestination,
 } from "../../packages/contracts/src/index.ts";
 import { PluginPolicyValidationError } from "../../packages/occ/src/index.ts";
 import {
@@ -205,6 +206,36 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   assert.equal(slackSlot.id, "account");
   assert.equal(slackSlot.label, "Slack user account");
   assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
+  const staticMcp = (destinations: readonly StaticKeyDestination[]) => ({
+    ...source,
+    currentTemplate: { ...source.currentTemplate, destinations },
+  });
+  const mcpDestination = { host: "mcp.slack.com", port: 443, path: "/mcp/**" };
+  const postOnly = staticMcp([{ ...mcpDestination, method: "POST" }]);
+  assert.deepEqual(credentials.mcpToolDiscovery?.(slack.id, "account", postOnly), {
+    endpoint: slackInstall.url,
+    methods: ["POST"],
+  });
+  assert.equal(
+    credentials.mcpToolDiscovery?.(
+      slack.id,
+      "account",
+      staticMcp([{ ...mcpDestination, method: "GET" }]),
+    ),
+    undefined,
+  );
+  assert.deepEqual(
+    credentials.mcpToolDiscovery?.(
+      slack.id,
+      "account",
+      staticMcp([
+        { ...mcpDestination, method: "POST" },
+        { ...mcpDestination, method: "GET", path: "/different" },
+        { ...mcpDestination, method: "DELETE" },
+      ]),
+    ),
+    { endpoint: slackInstall.url, methods: ["POST", "DELETE"] },
+  );
   const oauthId = "cs_00000000-0000-4000-8000-000000000004";
   const slot = slackInstall.credentials[slackInstall.slotId]!;
   const oauth = {
@@ -371,6 +402,51 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     ])
     .find(({ pluginId }) => pluginId === google.id);
   assert.deepEqual(googleSlot?.sources, [{ id: googleSourceId, name: googleSource.name }]);
+  for (const [host, path, accepted] of [
+    ["gmail.googleapis.com", "/gmail/v1/users/me/messages", true],
+    ["gmail.googleapis.com", "/gmail/v1/users/me/messages/**", true],
+    [
+      "admin.googleapis.com",
+      "/admin/directory/v1/customer/my_customer/orgunits/Engineering/Subteam/**",
+      true,
+    ],
+    ["gmail.googleapis.com", "/gmail/v1/users/me/not-a-google-operation", false],
+    ["gmail.googleapis.com", "/gmail/v1/users/me/not-a-google-operation/**", false],
+  ] as const) {
+    const edited = {
+      ...googleSource,
+      currentTemplate: {
+        ...googleSource.currentTemplate,
+        destinations: [{ host, port: 443, path }],
+      },
+    };
+    assert.equal(
+      credentials.choices([edited]).find(({ pluginId }) => pluginId === google.id)?.sources.length,
+      accepted ? 1 : 0,
+      `${host}${path}`,
+    );
+  }
+  // Consent v1 remains tied to Gmail and the provider's actual grant; an admin's current
+  // manual Template v2 can authorize a different reviewed Google destination for that account.
+  const currentAdminDestination = {
+    ...googleSource,
+    consent: {
+      ...googleSource.consent,
+      requestedScopes: ["mail.read"],
+      grantedScopes: ["profile"],
+    },
+    currentTemplate: {
+      ...googleSource.currentTemplate,
+      destinations: [
+        { host: "docs.googleapis.com", port: 443, path: "/v1/documents/document:batchUpdate" },
+      ],
+    },
+  };
+  assert.deepEqual(
+    credentials.choices([currentAdminDestination]).find(({ pluginId }) => pluginId === google.id)
+      ?.sources,
+    [{ id: googleSourceId, name: googleSource.name }],
+  );
   // A provider may grant no known scopes; issuer and approved destination establish slot eligibility.
   await credentials.validate(
     {

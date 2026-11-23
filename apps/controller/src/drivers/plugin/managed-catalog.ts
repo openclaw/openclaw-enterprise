@@ -455,33 +455,48 @@ export function managedMcpInstallForSourceConfig(
   );
 }
 
-export function managedMcpSlotAcceptsSource(
+const mcpTransportMethods = ["POST", "GET", "DELETE"] as const;
+
+function mcpEndpointCovered(path: string, allowedPath: string): boolean {
+  if (path === allowedPath) {
+    return true;
+  }
+  return (
+    allowedPath.endsWith("/**") &&
+    (path === allowedPath.slice(0, -3) || path.startsWith(allowedPath.slice(0, -2)))
+  );
+}
+
+function managedMcpSourceMethods(
   install: ManagedMcpInstall,
   source: PluginCredentialSource,
-): boolean {
+): readonly (typeof mcpTransportMethods)[number][] | undefined {
   const template = source.currentTemplate;
   if (
     source.state !== "ready" ||
     !source.connectionTemplateId ||
     template?.templateId !== source.connectionTemplateId
   ) {
-    return false;
+    return undefined;
   }
   if (source.type === "static") {
-    return (
-      template.mode === "static_bearer" &&
+    if (template.mode !== "static_bearer") {
+      return undefined;
+    }
+    const methods = mcpTransportMethods.filter((method) =>
       template.destinations.some(
-        ({ host, port, path, method }) =>
-          host === install.endpoint.host &&
-          port === install.endpoint.port &&
-          path === install.endpoint.path &&
-          method === "POST",
-      )
+        (destination) =>
+          destination.host === install.endpoint.host &&
+          destination.port === install.endpoint.port &&
+          destination.method === method &&
+          mcpEndpointCovered(install.endpoint.path, destination.path),
+      ),
     );
+    return methods.includes("POST") ? methods : undefined;
   }
   const consent = source.consent;
   const slot = install.credentials[install.slotId]!;
-  return (
+  const accepted =
     consent.kind === "connection_template" &&
     consent.issuer === slot.issuer &&
     consent.resource === slot.mcp.resource &&
@@ -494,12 +509,16 @@ export function managedMcpSlotAcceptsSource(
       ({ host, port, path }) =>
         host === install.endpoint.host &&
         port === install.endpoint.port &&
-        (path === install.endpoint.path ||
-          (path.endsWith("/**") &&
-            (install.endpoint.path === path.slice(0, -3) ||
-              install.endpoint.path.startsWith(path.slice(0, -2))))),
-    )
-  );
+        mcpEndpointCovered(install.endpoint.path, path),
+    );
+  return accepted ? mcpTransportMethods : undefined;
+}
+
+export function managedMcpSlotAcceptsSource(
+  install: ManagedMcpInstall,
+  source: PluginCredentialSource,
+): boolean {
+  return managedMcpSourceMethods(install, source) !== undefined;
 }
 
 function acceptsManagedSource(
@@ -520,10 +539,12 @@ export function managedPluginCredentials(
   return {
     mcpToolDiscovery(pluginId: string, slotId: string, source: PluginCredentialSource) {
       const install = managedMcpInstalls.find(({ id }) => id === pluginId);
-      if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
+      const methods =
+        install && slotId === install.slotId ? managedMcpSourceMethods(install, source) : undefined;
+      if (!install || !methods) {
         return undefined;
       }
-      return { endpoint: install.url };
+      return { endpoint: install.url, methods };
     },
     choices(sources: readonly PluginCredentialSource[]) {
       return managedInstalls.flatMap((install) =>

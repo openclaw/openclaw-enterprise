@@ -177,6 +177,63 @@ export function googleSourcePathMatches(pattern: string, path: string) {
   return path === prefix || path.startsWith(prefix + "/");
 }
 
+function subtreeWitness(route: Route, prefix: string): string | undefined {
+  let supported = true;
+  const template = route.rule.path.replace(/\{\+(\w+)\}/g, (_, name: string) => {
+    const pattern = route.rule.pathParameters?.[name]?.pattern;
+    if (pattern === "^.*$") {
+      return "{value}";
+    }
+    if (!pattern?.startsWith("^") || !pattern.endsWith("$")) {
+      supported = false;
+      return "";
+    }
+    const segments = pattern.slice(1, -1).replaceAll("[^/]+", "{value}").split("/");
+    if (!segments.every((segment) => segment === "{value}" || /^[A-Za-z0-9_-]+$/.test(segment))) {
+      supported = false;
+    }
+    return segments.join("/");
+  });
+  const segments = template.split("/");
+  const selected = prefix.split("/");
+  if (!supported || selected.length > segments.length) {
+    return undefined;
+  }
+  return segments
+    .map((segment, i) => (i < selected.length ? selected[i]! : segment.replace(/\{\w+\}/g, "x")))
+    .join("/");
+}
+
+/** A destination must cover at least one real reviewed operation, rather than only its broad network rule. */
+export function googleDestinationHasOperation(host: string, path: string): boolean {
+  const origin = "https://" + host;
+  const subtree = path.endsWith("/**");
+  const prefix = subtree ? path.slice(0, -3) : path;
+  for (const [key, group] of routes) {
+    if (!key.startsWith(origin + " ")) {
+      continue;
+    }
+    const method = key.slice(origin.length + 1);
+    const matches = (candidate: string) =>
+      googleRouteCandidates(origin, method, candidate).some((route) => route.id && route.supported);
+    if (matches(prefix)) {
+      return true;
+    }
+    if (subtree) {
+      for (const route of group) {
+        if (!route.id || !route.supported) {
+          continue;
+        }
+        const witness = subtreeWitness(route, prefix);
+        if (witness && googleSourcePathMatches(path, witness) && matches(witness)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function eligibleGoogleOperations(scope: GoogleRequestScope) {
   const origin = "https://" + scope.host;
   return Object.entries(googleCatalog.operations).filter(([id, op]) => {

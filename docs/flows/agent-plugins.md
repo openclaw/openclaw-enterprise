@@ -78,8 +78,8 @@ Hosted Codex resolves a ready OAuth Source through TokenService and passes trust
 metadata to the Plugin Driver. OCC rechecks authority, Source, binding and catalog;
 cancellation discards late credentials.
 
-`plugin-discovery.ts:discoverManagedMcpTools` checks the current Template, resolves the
-TokenService bearer and rechecks editor permission and Agent grant around `tools/list`.
+`plugin-discovery.ts:discoverManagedMcpTools` checks Template and Agent authority, resolves
+the TokenService bearer and restricts SDK requests to permitted methods.
 `driverPolicy.toolNames` pins names.
 
 Closing cancels. Account changes clear results. Harness changes clear
