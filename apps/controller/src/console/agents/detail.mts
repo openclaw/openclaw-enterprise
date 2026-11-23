@@ -5306,6 +5306,7 @@ export async function renderAgentDetail(
           () => {},
         );
       }
+      const opener = document.activeElement;
       // Finish the overview layout and the Logs view's first reads before bringing this
       // version's output into view, so nothing above it grows afterwards (finding 1413).
       await Promise.all([details, revealed, logs.firstView]);
@@ -5313,9 +5314,8 @@ export async function renderAgentDetail(
       // frame that scrolls counts as shifted (finding 1413).
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
       // A reader can move to another control while the first Logs read is pending.
-      const logsTab = tabControls.get("logs");
       const focused = document.activeElement;
-      if (activated && focused && focused !== document.body && focused !== logsTab) {
+      if (activated && focused && focused !== document.body && focused !== opener) {
         return;
       }
       if (tabContext.isCurrent() && !deleting) {
@@ -5326,7 +5326,7 @@ export async function renderAgentDetail(
           tabs.getBoundingClientRect().top >= 0 &&
           content.getBoundingClientRect().top < innerHeight - Math.min(200, innerHeight / 3);
         if (stripKept || scrolledOnReveal) {
-          logsTab?.focus({ preventScroll: true });
+          tabControls.get("logs")?.focus({ preventScroll: true });
         } else {
           openVersionDetail({ animate: activated });
         }
