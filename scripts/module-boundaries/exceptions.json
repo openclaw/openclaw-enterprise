@@ -12,7 +12,7 @@
       "owner": "Driver package composition",
       "reason": "The installed Driver loader validates configured package identity, trusted root and entrypoint at runtime; its target is deliberately not a statically enumerable workspace import.",
       "removeWhen": "Remove this exception if the supported installed Driver loader is removed or replaced by static registration.",
-      "loaderIdentity": "loader:sha256:aaf2e17996ad46914de4b676b56f00d3b7630762da0ea93aa5aca4943dc7210b"
+      "loaderIdentity": "loader:sha256:6d4fa66e0139115271d3b6e56a5680b9fb4869153f1bf6ba0e0ca9df52e2e38e"
     },
     {
       "rule": "cross-provider-implementation",
@@ -32,86 +32,15 @@
     },
     {
       "rule": "domain-to-implementation",
-      "from": "packages/occ/src/iam-policy-cleanup.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "./state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:PlatformReadView", "type:PlatformUnitOfWork"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "IAM policy cleanup retains the OCC service's type-only dependency on aggregate repository contracts currently owned by the persistence module.",
-      "removeWhen": "Move the aggregate repository contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
+      "from": "packages/occ/src/controller-composition.ts",
       "to": "packages/occ/src/state/platform-state.ts",
       "specifier": "./state/platform-state.ts",
       "kind": "import",
       "typeOnly": false,
-      "bindings": [
-        "type:PlatformOperation",
-        "type:PlatformReadView",
-        "type:PlatformStateStore",
-        "type:PlatformUnitOfWork",
-        "value:InMemoryPlatformState"
-      ],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The OCC service imports repository contracts and its default in-memory store from the same persistence module.",
-      "removeWhen": "Move repository and transaction contracts into neutral ports, narrow this entry to any remaining store import, and remove it when default store selection moves to composition."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "./state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": [
-        "type:PlatformOperation",
-        "type:PlatformReadView",
-        "type:PlatformStateStore",
-        "type:PlatformUnitOfWork"
-      ],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The OCC service imports repository contracts and its default in-memory store from the same persistence module. This separately tracked edge imports types only.",
-      "removeWhen": "Move repository and transaction contracts into neutral ports, narrow this entry to any remaining store import, and remove it when default store selection moves to composition."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-state.ts",
-      "specifier": "./state/postgres-state.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:PostgresCommitOutcomeUnknownError"],
-      "owner": "Transaction outcomes",
-      "reason": "The OCC resource service imports the shared commit-outcome-unknown error from the PostgreSQL adapter.",
-      "removeWhen": "Move the single commit-outcome-unknown constructor to neutral transaction errors and update all consumers."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/ports/platform-read-view.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "../state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:PlatformReadView"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The explicit repository lifetime projection imports its aggregate contract from the persistence module that currently owns that type.",
-      "removeWhen": "Move the aggregate repository contract into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/ports/platform-unit-of-work.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "../state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:PlatformUnitOfWork"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The explicit repository lifetime projection imports its aggregate contract from the persistence module that currently owns that type.",
-      "removeWhen": "Move the aggregate repository contract into neutral ports and update this type-only import."
+      "bindings": ["value:InMemoryPlatformState"],
+      "owner": "Controller composition",
+      "reason": "Per-controller composition chooses the in-memory adapter when no store is supplied and reads pending operations from that adapter.",
+      "removeWhen": "Callers supply the default store and own pending-operation inspection."
     },
     {
       "rule": "cross-package-source",
@@ -200,18 +129,26 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
-      "to": "packages/contracts/src/runtime-failure.mjs",
-      "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
-      "kind": "import",
+      "to": "packages/contracts/src/runtime-failure.ts",
+      "specifier": "../../../../../../packages/contracts/src/runtime-failure.ts",
+      "kind": "require",
       "typeOnly": false,
-      "bindings": [
-        "value:RUNTIME_DIAGNOSTIC_CHECKS",
-        "value:RUNTIME_DIAGNOSTIC_CODES",
-        "value:RUNTIME_FAILURE_CHECKS"
-      ],
+      "bindings": ["*"],
       "owner": "Kubernetes runtime programs",
-      "reason": "Image builds and the in-image supervisor proof load the runtime programs from a checkout or copy with no workspace packages installed, so they read the shared runtime failure vocabulary from its source.",
-      "removeWhen": "Image builds and the in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+      "reason": "Checkout CI and the in-image supervisor proof load this dependency-free source without workspace packages installed. The renderer reads the three vocabulary arrays and validates them at load time.",
+      "removeWhen": "The checkout and in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+    },
+    {
+      "rule": "unresolved-local-import",
+      "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "to": "packages/contracts/dist/runtime-failure.js",
+      "specifier": "../../../../../../packages/contracts/dist/runtime-failure.js",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Kubernetes runtime programs",
+      "reason": "The compiled renderer loads the emitted vocabulary from the contracts project output. The authored-source graph excludes that output.",
+      "removeWhen": "The compiled renderer uses a package export or build-output resolution is represented in the analyzer."
     },
     {
       "rule": "unresolved-local-import",
@@ -255,18 +192,6 @@
     },
     {
       "rule": "unresolved-local-import",
-      "from": "apps/controller/src/repository-credentials.mjs",
-      "to": "apps/controller/dist/repository-credentials.js",
-      "specifier": "../dist/repository-credentials.js",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:main"],
-      "owner": "Repository credential service packaging",
-      "reason": "The source launcher executes the compiled service entrypoint after the workspace build; generated dist files are intentionally outside the authored-source graph.",
-      "removeWhen": "Remove this exception when the launcher no longer imports the compiled entrypoint or build-output resolution is represented in the analyzer."
-    },
-    {
-      "rule": "unresolved-local-import",
       "from": "apps/controller/src/http/route-compilers.ts",
       "to": "apps/controller/dist/route-compilers.cjs",
       "specifier": "file:apps/controller/dist/route-compilers.cjs",
@@ -274,7 +199,7 @@
       "typeOnly": false,
       "bindings": ["*"],
       "owner": "API route compilers",
-      "reason": "The precompiled route compilers are build output (precompile-route-schemas.mjs writes them at image build and in the CI lanes that build many apps); generated dist files are intentionally outside the authored-source graph, and a missing file means every schema compiles at run time.",
+      "reason": "The precompiled route compilers are build output (precompile-route-schemas.ts writes them at image build and in the CI lanes that build many apps); generated dist files are intentionally outside the authored-source graph, and a missing file means every schema compiles at run time.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer."
     },
     {
@@ -288,7 +213,7 @@
       "owner": "API route compilers",
       "reason": "Precompiled validator and serializer code requires only the runtime helpers of ajv, ajv-formats and fast-json-stringify, resolved from the compiler package that uses them on the run-time path; any other specifier throws.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or they are generated as statically resolvable modules.",
-      "loaderIdentity": "loader:sha256:01a4418d07bf1b49352d6daaa36f0870e11b95909b4a7bdf63bd095337a3aaa3"
+      "loaderIdentity": "loader:sha256:b6cb55a65e9f787736cf2a0890d4a9aedc8b549666b0da11e955d7a0baa6ec4a"
     },
     {
       "rule": "unresolved-dynamic-import",
@@ -301,115 +226,7 @@
       "owner": "API route compilers",
       "reason": "The precompiled route compilers file is loaded only from the fixed build-output path, and only when its fingerprint matches this Node version, lockfile, compiler packages and route-compilers.ts.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer.",
-      "loaderIdentity": "loader:sha256:94107cd2981116074fd1fb7d04cad03adbee3ae72b12c1307cf48b00ac0ca5a6"
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/agent-provisioning.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/agent-provisioning.ts",
-      "to": "packages/occ/src/state/controller-work.ts",
-      "specifier": "./state/controller-work.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:ControllerWork"],
-      "owner": "Work status projection",
-      "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State.",
-      "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/agent-provisioning.ts",
-      "to": "packages/occ/src/state/controller-work.ts",
-      "specifier": "./state/controller-work.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:controllerWorkLeaseActive"],
-      "owner": "Work status projection",
-      "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State. Provisioning shares the claim lease judgement with deployment status.",
-      "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/controller-work.ts",
-      "specifier": "./state/controller-work.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": [
-        "type:DeploymentStatusResult",
-        "value:controllerWorkDeploymentStatus",
-        "value:deploymentErrorForWork",
-        "value:deploymentProgressForWork",
-        "value:deploymentStatusForWork",
-        "value:deploymentWarningsForWork"
-      ],
-      "owner": "Work status projection",
-      "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State.",
-      "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/controller-work.ts",
-      "specifier": "./state/controller-work.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:DeploymentStatusResult"],
-      "owner": "Work status projection",
-      "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State. This separately tracked edge imports types only.",
-      "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/repository-credential-state.ts",
-      "specifier": "./state/repository-credential-state.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": [
-        "value:normalizedRepositoryAccess",
-        "value:validAdmittedRepositoryBindings",
-        "value:validRepositoryAccess",
-        "value:validRepositoryRevisionState"
-      ],
-      "owner": "Repository revision admission",
-      "reason": "OCC admission reuses the canonical material-free repository snapshot and access-intent validators currently located in the State module.",
-      "removeWhen": "Move shared repository snapshot validation into neutral contracts and update admission and State consumers."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningCheckpoint", "type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/provisioning-effects.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
+      "loaderIdentity": "loader:sha256:a2a30ae033a222fdd13bd05455172a06b655d81700c1371d3b085b9fe854e07f"
     }
   ]
 }

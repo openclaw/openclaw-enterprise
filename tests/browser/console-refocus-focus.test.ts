@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Locator, Page } from "playwright";
+import { join } from "node:path";
+import { chromium, type Locator, type Page } from "playwright";
 import { Check } from "typebox/value";
 
 import {
@@ -47,10 +50,10 @@ import {
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { waitForResult, within } from "../helpers/wait-for.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -302,6 +305,166 @@ test("The Namespace selector keeps keyboard focus acquired during Agents list re
         : "the Namespace selector does not take focus from navigation",
     );
   }
+});
+
+test("Namespaces refocus keeps the active row control in view after the list changes", async (t) => {
+  const { fixture } = await createReadyConsoleNamespace(t, "Workshop");
+  for (let index = 0; index < 20; index += 1) {
+    await fixture.createNamespace(`Team ${String(index).padStart(2, "0")}`);
+  }
+
+  for (const width of [1440, 390]) {
+    const target = await fixture.createNamespace(`Team 20 at ${width}`, { ready: true });
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 }, ignoreHTTPSErrors: false },
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, "/console/namespaces");
+    const view = page.locator(settledView);
+    const row = view.getByRole("link", { name: target.name, exact: true });
+    const remove = view.getByRole("button", { name: `Delete ${target.name}`, exact: true });
+    await row.waitFor();
+    await waitForIdleFetches(page);
+    for (const [index, control] of [row, remove].entries()) {
+      await control.focus();
+      const name = `Added ${width} ${index}`;
+      await fixture.createNamespace(name);
+      await refocusHeld(t, page);
+      await view.getByRole("link", { name, exact: true }).waitFor();
+      assert.equal(await hasFocus(control), true, `same control at ${width}px`);
+      const box = await control.boundingBox();
+      assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `visible at ${width}px`);
+    }
+
+    await remove.focus();
+    assert.equal((await fixture.request("DELETE", `/namespaces/${target.id}`)).status, 202);
+    await refocusHeld(t, page);
+    await row.locator("xpath=ancestor::li").getByText("Deleting…", { exact: true }).waitFor();
+    await remove.waitFor({ state: "hidden" });
+    assert.equal(
+      await hasFocus(row),
+      true,
+      `the row link replaces the missing Delete at ${width}px`,
+    );
+    const box = await row.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `row link visible at ${width}px`);
+
+    const tabTarget =
+      width === 1440
+        ? page.getByRole("link", { name: "Agents", exact: true })
+        : page.getByRole("button", { name: "Open navigation", exact: true });
+    for (const changed of [false, true]) {
+      await waitForIdleFetches(page);
+      await tagView(page);
+      await row.focus();
+      if (changed) {
+        await fixture.createNamespace(`Changed ${width}`);
+      }
+      await refocusHeld(t, page, async () => {
+        await page.keyboard.press("Tab");
+        assert.equal(
+          await hasFocus(tabTarget),
+          true,
+          `Tab reaches the shell control at ${width}px`,
+        );
+      });
+      assert.equal(await viewTag(page), changed ? null : "kept");
+      assert.equal(await hasFocus(tabTarget), true, `the shell control keeps focus at ${width}px`);
+    }
+  }
+});
+
+test("Namespaces search uses current readable names and IDs without selecting a Namespace", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Support Operations");
+  const incoming = await fixture.createNamespace("Support Research");
+  const privateNamespace = await fixture.createNamespace("Private Finance");
+  const { credentials, principal } = await fixture.createNamespaceMember(
+    "namespace-search-reader",
+    namespace.id,
+    [["read", "namespace"]],
+  );
+  const { page } = await newPage(t, fixture, { context: { ignoreHTTPSErrors: false } });
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/namespaces", credentials);
+
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Namespaces" });
+  const clear = view.getByRole("button", { name: "Clear search", exact: true });
+  const row = (name: string) => view.getByRole("link", { name, exact: true });
+  const rows = view.getByRole("list", { name: "Namespaces" }).getByRole("listitem");
+  const noMatch = view.getByRole("heading", { name: "No matching Namespaces" });
+  await row(namespace.name).waitFor();
+  await waitForIdleFetches(page);
+  const url = page.url();
+  const requests = apiRequests(page, fixture.origin);
+
+  await search.fill(`  ${namespace.id.toUpperCase()}  `);
+  assert.equal(await rows.count(), 1, "the admitted ID matches case-insensitively");
+  for (const query of [privateNamespace.name, privateNamespace.id]) {
+    await search.fill(query);
+    await noMatch.waitFor();
+    assert.equal(await row(privateNamespace.name).count(), 0);
+    assert.equal(await view.getByText(privateNamespace.id, { exact: true }).count(), 0);
+  }
+  await clear.click();
+  assert.equal(await search.inputValue(), "");
+  assert.equal(await hasFocus(search), true, "clearing returns focus to search");
+
+  await search.fill("sUpPoRt");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  assert.equal(await rows.count(), 1, "only one authorized name matches before the grant");
+  assert.equal(page.url(), url, "Enter in search does not open the only match");
+  assert.deepEqual(requests, [], "typing and clearing search send no API requests");
+
+  grantRole(fixture.policy, principal.id, {
+    id: "read-incoming-namespace",
+    namespaceId: incoming.id,
+    permissions: { namespace: ["read"] },
+  });
+  await refocusHeld(t, page);
+  await row(incoming.name).waitFor();
+  assert.equal(await hasFocus(search), true);
+  assert.equal(await search.inputValue(), "sUpPoRt");
+  assert.equal(await search.evaluate((input: HTMLInputElement) => input.selectionStart), 1);
+  assert.equal(await rows.count(), 2, "the new grant is reflected under the existing query");
+  assert.equal(
+    await row(incoming.name).locator("xpath=ancestor::li").getByText("Provisioning").count(),
+    1,
+  );
+
+  await row(incoming.name).focus();
+  restrict(fixture.policy, "read", "namespace", { namespaceId: incoming.id });
+  await refocusHeld(t, page);
+  assert.equal(await row(incoming.name).count(), 0);
+  assert.equal(
+    await hasFocus(page.getByRole("heading", { name: "Namespaces", exact: true })),
+    true,
+  );
+  assert.equal(await search.inputValue(), "sUpPoRt");
+
+  await fulfillMethod(
+    page,
+    `${fixture.origin}/namespaces`,
+    "GET",
+    apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+  );
+  await refocus(page);
+  const retry = page.getByRole("button", { name: "Retry", exact: true });
+  await retry.waitFor();
+  assert.equal(await page.getByRole("searchbox", { name: "Search Namespaces" }).count(), 0);
+  await page.unroute(`${fixture.origin}/namespaces`);
+  await retry.click();
+  await search.waitFor();
+  assert.equal(await search.inputValue(), "", "retry cannot recover query from a discarded view");
+
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
+  await refocusHeld(t, page);
+  await view.getByRole("heading", { name: "No readable Namespaces" }).waitFor();
+  assert.equal(await search.count(), 0);
+  assert.equal(await noMatch.count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 const deploymentsRead = (namespace: NamespaceWire) =>
@@ -962,10 +1125,14 @@ test("mounted Agent refocus cannot infer revision omission from a malformed page
   );
 });
 
-async function openRefocusDraft(t: TestContext) {
+async function openRefocusDraft(
+  t: TestContext,
+  openPage = (context: TestContext, fixture: Parameters<typeof newPage>[1]) =>
+    newPage(context, fixture, { browser }),
+) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus recovery");
   const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
-  const { page, artifacts } = await newPage(t, fixture, { browser });
+  const { page, artifacts } = await openPage(t, fixture);
   await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
@@ -1727,5 +1894,281 @@ for (const revoked of ["configuration", "agent"] as const) {
     await page.goBack();
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     await assertScrubbed();
+  });
+}
+
+async function openNativeTabBrowser(t: TestContext, fixture: Parameters<typeof newPage>[1]) {
+  // Prefer full Chromium for tabs in one window. CI installs the headless shell,
+  // which assigns each page its own window.
+  const fullBrowser = chromium.executablePath();
+  const executablePath =
+    process.env.OCC_TEST_BROWSER_EXECUTABLE || (existsSync(fullBrowser) ? fullBrowser : undefined);
+  const server = await chromium.launchServer({
+    host: "127.0.0.1",
+    headless: true,
+    ...(executablePath ? { executablePath } : {}),
+    args: [
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=0",
+      ...(fixture.browserArgs ?? []),
+    ],
+    env: { PATH: process.env.PATH },
+  });
+  t.after(() => server.close());
+  const prefix = "--user-data-dir=";
+  const profile = server
+    .process()
+    .spawnargs.find((arg) => arg.startsWith(prefix))
+    ?.slice(prefix.length);
+  assert.ok(profile, "Playwright launched Chromium with a disposable profile");
+  const port = await waitForResult("Chromium's loopback debugging port", async () => {
+    const address = await readFile(join(profile, "DevToolsActivePort"), "utf8").catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      return "";
+    });
+    return address.split("\n")[0] || false;
+  });
+
+  // Use the browser's own focus and visibility instead of Playwright's default focus emulation.
+  const connection = await chromium.connectOverCDP({
+    endpointURL: `http://127.0.0.1:${port}`,
+    noDefaults: true,
+    timeout: 10_000,
+  });
+  const context = connection.contexts()[0];
+  assert.ok(context);
+  const page = await context.newPage();
+  page.setDefaultTimeout(10_000);
+  return { page, artifacts: process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR || profile };
+}
+
+async function windowFor(page: Page) {
+  const session = await page.context().newCDPSession(page);
+  const { windowId } = await session.send("Browser.getWindowForTarget");
+  return {
+    page,
+    windowId,
+    setState: (windowState: "minimized" | "normal") =>
+      session.send("Browser.setWindowBounds", { windowId, bounds: { windowState } }),
+  };
+}
+
+type BrowserWindow = Awaited<ReturnType<typeof windowFor>>;
+
+async function activate(foreground: BrowserWindow, background: BrowserWindow) {
+  if (foreground.windowId !== background.windowId) {
+    // Minimize the outgoing shell window so Chromium itself hides and blurs the page.
+    await background.setState("minimized");
+    await foreground.setState("normal");
+  }
+  await foreground.page.bringToFront();
+  // Chromium stops animation frames in a hidden tab. Poll the browser state in timer tasks.
+  await Promise.all([
+    foreground.page.waitForFunction(() => !document.hidden && document.hasFocus(), null, {
+      polling: 25,
+    }),
+    background.page.waitForFunction(() => document.hidden && !document.hasFocus(), null, {
+      polling: 25,
+    }),
+  ]);
+}
+
+async function selectedAgentId(page: Page) {
+  return page.locator(".page-meta-id .resource-id").evaluate((id) => {
+    const selection = document.getSelection();
+    return selection && id.contains(selection.anchorNode) && id.contains(selection.focusNode)
+      ? selection.toString()
+      : "";
+  });
+}
+
+for (const scenario of [
+  "foreground completion",
+  "second return",
+  "moved focus",
+  "selected Agent ID",
+  "revoked access",
+  "expired session",
+  "navigation",
+] as const) {
+  test(`Configuration draft focus on browser activation (${scenario})`, async (t) => {
+    const { fixture, namespace, agent, page, editor, draft, requests, readCount, agentPath, url } =
+      await openRefocusDraft(t, openNativeTabBrowser);
+    let selectedId = "";
+    const backward = scenario === "foreground completion" || scenario === "second return";
+    const original = await editor.evaluateHandle((node, backward) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected the Advanced Configuration textarea");
+      }
+      if (backward) {
+        node.setSelectionRange(3, 7, "backward");
+      }
+      return { node, view: node.closest('.content [aria-live="polite"]') };
+    }, backward);
+    const editorState = () =>
+      original.evaluate(({ node, view }) => ({
+        connected: node.isConnected,
+        sameEditor: document.getElementById(node.id) === node,
+        sameView: document.querySelector('.content [aria-live="polite"]') === view,
+        focused: document.activeElement === node,
+        value: node.value,
+        range: [node.selectionStart, node.selectionEnd],
+        direction: node.selectionDirection,
+      }));
+    const selected = {
+      connected: true,
+      sameEditor: true,
+      sameView: true,
+      focused: true,
+      value: draft,
+      range: [3, 7],
+      direction: backward ? "backward" : (await editorState()).direction,
+    };
+    assert.deepEqual(await editorState(), selected);
+
+    const agentUrl = fixture.origin + agentPath;
+    const firstCheck = await holdRequests(t, page, agentUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    const popup = page.waitForEvent("popup");
+    await page.evaluate(() => {
+      window.open("about:blank", "_blank");
+    });
+    const other = await windowFor(await popup);
+    const draftTab = await windowFor(page);
+    t.diagnostic(
+      draftTab.windowId === other.windowId ? "two tabs in one window" : "two browser windows",
+    );
+    await activate(other, draftTab);
+
+    const firstResponse = responseTo(page, "GET", agentUrl);
+    await activate(draftTab, other);
+    assert.equal((await firstCheck.requested)?.status(), 200);
+    await page.locator(heldView).waitFor();
+    const repeat = scenario !== "foreground completion";
+    if (repeat) {
+      // Leave again before access is confirmed. Let the genuine reply settle in the hidden tab.
+      await activate(other, draftTab);
+    }
+    firstCheck.release();
+    assert.equal((await firstResponse).status(), 200);
+    await page.waitForFunction(
+      (selector) => globalThis.inFlightFetchCount?.() === 0 && !document.querySelector(selector),
+      heldView,
+      { polling: 25 },
+    );
+    if (repeat) {
+      assert.deepEqual(await page.evaluate(() => [document.visibilityState, document.hasFocus()]), [
+        "hidden",
+        false,
+      ]);
+      assert.deepEqual(await editorState(), { ...selected, focused: false });
+
+      const secondCheck = await holdRequests(t, page, agentUrl, {
+        once: true,
+        method: "GET",
+        afterServer: scenario !== "expired session",
+      });
+      if (scenario === "revoked access") {
+        restrict(fixture.policy, "read", "agent", {
+          namespaceId: namespace.id,
+          resourceId: agent.id,
+        });
+      }
+      const otherNamespace =
+        scenario === "navigation"
+          ? await fixture.createNamespace("Other workspace", { ready: true })
+          : null;
+      const secondResponse = otherNamespace ? null : responseTo(page, "GET", agentUrl);
+      await activate(draftTab, other);
+      const upstream = await secondCheck.requested;
+      await page.locator(heldView).waitFor();
+      if (otherNamespace) {
+        // Navigation must invalidate the target even though the old Agent read succeeded.
+        assert.equal(upstream?.status(), 200);
+        await page
+          .getByRole("combobox", { name: "Namespace", exact: true })
+          .selectOption(otherNamespace.id);
+        await page.waitForURL(`**/console/agents?namespace=${otherNamespace.id}`);
+        secondCheck.release();
+        await page.locator(settledView).waitFor();
+        await waitForIdleFetches(page);
+        assert.equal(await editor.count(), 0);
+        const afterNavigation = await editorState();
+        assert.equal(afterNavigation.connected, false);
+        assert.equal(afterNavigation.sameView, false);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+        return;
+      }
+
+      if (scenario === "expired session") {
+        // Expire the actual session after its read passed, before the pending Agent GET reaches the Controller.
+        expireSessions(fixture);
+      } else {
+        assert.equal(upstream?.status(), scenario === "revoked access" ? 403 : 200);
+      }
+      if (scenario === "moved focus") {
+        // Once the reader uses the keyboard elsewhere, returning to BODY must not reclaim focus.
+        const account = page.locator(".account-toggle");
+        await account.click();
+        await page.keyboard.press("Escape");
+        assert.equal(await hasFocus(account), true);
+        await account.evaluate((node: HTMLElement) => node.blur());
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      }
+      if (scenario === "selected Agent ID") {
+        // Selecting an ID to copy keeps keyboard focus on the body throughout the recheck.
+        await page.locator(".page-meta-id .resource-id").dblclick();
+        selectedId = await selectedAgentId(page);
+        assert.ok(selectedId);
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      }
+      secondCheck.release();
+      assert.equal(
+        (await secondResponse)?.status(),
+        scenario === "expired session" ? 401 : scenario === "revoked access" ? 403 : 200,
+      );
+      if (scenario === "expired session" || scenario === "revoked access") {
+        if (scenario === "expired session") {
+          await page.getByText("Your session has expired.", { exact: true }).waitFor();
+        } else {
+          await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+        }
+        assert.equal(await editor.count(), 0);
+        const refused = await editorState();
+        assert.equal(refused.connected, false);
+        assert.equal(refused.focused, false);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+        return;
+      }
+    }
+
+    await page.locator(settledView).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), url.href);
+    assert.equal(readCount(agentPath), repeat ? 2 : 1);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    const restored = await editorState();
+    if (scenario === "selected Agent ID") {
+      assert.equal(
+        await selectedAgentId(page),
+        selectedId,
+        "the selected ID is still ready to copy",
+      );
+    }
+    assert.equal(
+      restored.focused,
+      scenario !== "moved focus" && scenario !== "selected Agent ID",
+      "keyboard focus after admission",
+    );
+    if (scenario === "foreground completion") {
+      await page.keyboard.press("Shift+ArrowLeft");
+      assert.deepEqual((await editorState()).range, [2, 7], "extend from the original anchor");
+    }
+    assert.deepEqual(restored, { ...selected, focused: restored.focused });
   });
 }

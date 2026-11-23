@@ -126,11 +126,6 @@ function logLine(record: RuntimeLogRecord): Extract<RuntimeLogRecord, { type: "l
   return record;
 }
 
-function logs(result: LogReplay | EventReplay | undefined): LogReplay {
-  assert.ok(result && "records" in result);
-  return result;
-}
-
 function kubeletLines(text: string) {
   const lines = text.split("\n");
   if (lines.at(-1) === "") {
@@ -311,11 +306,13 @@ test("replayed runtime output matches the committed goldens", async (t) => {
 
 test("real Gateway, wrapper and Codex output is classified, not withheld", async () => {
   const { fixtures } = await manifest();
-  const byFile = new Map(
-    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)] as const)),
+  const wrapper = await replay(
+    findFixture(
+      fixtures,
+      "kubelet-container",
+      ({ file }) => file === "gateway-wrapper-probe-failed.kubelet.txt",
+    ),
   );
-
-  const wrapper = logs(byFile.get("gateway-wrapper-probe-failed.kubelet.txt"));
   assert.deepEqual(
     wrapper.records.map(logLine).map(({ kind, level, message }) => [kind, level, message]),
     [
@@ -328,7 +325,13 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
   assert.ok(firstWrapper);
   assert.equal(logLine(firstWrapper).fields?.code, "AUTHENTICATION_FAILED");
 
-  const gateway = logs(byFile.get("gateway-console-startup.kubelet.txt"));
+  const gateway = await replay(
+    findFixture(
+      fixtures,
+      "kubelet-container",
+      ({ file }) => file === "gateway-console-startup.kubelet.txt",
+    ),
+  );
   assert.equal(gateway.withheld, 0);
   assert.equal(gateway.records.length, gateway.input);
   const gatewayLines = gateway.records.map(logLine);
@@ -340,7 +343,13 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
 
   // The Harness prints its node setup result as pretty-printed JSON; the whole value is
   // one withheld run, and the wrapper events after it are still classified.
-  const harness = logs(byFile.get("agent-harness-startup.kubelet.txt"));
+  const harness = await replay(
+    findFixture(
+      fixtures,
+      "kubelet-container",
+      ({ file }) => file === "agent-harness-startup.kubelet.txt",
+    ),
+  );
   assert.deepEqual(
     harness.records
       .slice(0, 2)
@@ -361,7 +370,13 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
     ),
   );
 
-  const codex = logs(byFile.get("codex-app-server-startup.kubelet.txt"));
+  const codex = await replay(
+    findFixture(
+      fixtures,
+      "kubelet-container",
+      ({ file }) => file === "codex-app-server-startup.kubelet.txt",
+    ),
+  );
   assert.equal(codex.withheld, 0);
   const codexLines = codex.records.filter(isLogLine);
   const tracing = codexLines.filter(({ kind }) => kind === "codex");
@@ -392,14 +407,18 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
 
 test("Codex model connection and network proxy diagnostics keep their text; payload formats stay withheld", async () => {
   const { fixtures } = await manifest();
-  const byFile = new Map(
-    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)] as const)),
-  );
   const summary = ({ records }: LogReplay) =>
     records.map(logLine).map(({ level, subsystem, message }) => [level, subsystem, message]);
 
   // Captured: a turn's first model connection on a dedicated Codex Agent.
-  assert.deepEqual(summary(logs(byFile.get("codex-model-connection.kubelet.txt"))), [
+  const connection = await replay(
+    findFixture(
+      fixtures,
+      "kubelet-container",
+      ({ file }) => file === "codex-model-connection.kubelet.txt",
+    ),
+  );
+  assert.deepEqual(summary(connection), [
     ["info", "codex_network_proxy::certs", "generated process-local MITM CA"],
     [
       "warn",
@@ -421,7 +440,13 @@ test("Codex model connection and network proxy diagnostics keep their text; payl
 
   // Upstream formats for a turn that cannot reach the model, then payload-carrying
   // formats from the same targets.
-  const failures = logs(byFile.get("codex-model-connection-failures.kubelet.txt"));
+  const failures = await replay(
+    findFixture(
+      fixtures,
+      "kubelet-container",
+      ({ file }) => file === "codex-model-connection-failures.kubelet.txt",
+    ),
+  );
   const url = "wss://api.openai.com/v1/responses";
   const withheld = "Codex message withheld";
   assert.deepEqual(summary(failures), [

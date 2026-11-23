@@ -1,7 +1,7 @@
 ---
 created: "2026-11-11"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/ac4e2468-e42e-4789-abc3-09c92e35b753"
 ---
 
 # Interrupted preflight cleanup flow
@@ -82,8 +82,10 @@ remains the operator's prerequisite.
 
 `scripts/upgrade-preflight-state.py:inspect` binds the original physical evidence
 directory, kubeconfig path/bytes, context, namespace, release and cleanup source
-hashes. It validates every registered attempt, its complete plan, started markers
-and acknowledgements. Visible create records outside the attempt index also
+hashes. These include the startup preflight’s selected-image migration helper and
+the chart program that helper reads. The inspector refuses changed source before
+Kubernetes access. It validates every registered attempt, its complete plan,
+started markers and acknowledgements. Visible create records outside the attempt index also
 refuse cleanup; an unregistered plan alone can precede a create. Files must be
 private regular files owned by the operator;
 symlinks, conflicting records, changed plans and unsupported journals refuse.
@@ -104,7 +106,7 @@ but uncertain creation history permits only the cleanup described below.
 `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` runs with a new
 `preflight-cleanup.XXXXXXXX` evidence directory. It sends foreground Job deletes
 with original UID preconditions, then checks the Job, namespace Pod ownership and
-any recorded child. `scripts/upgrade-startup-preflight.mjs:remaining` checks
+any recorded child. `scripts/upgrade-startup-preflight.ts:remaining` checks
 whether original consumers remain. Pod labels are not the ownership authority.
 
 A failed DELETE requires a successful absence read before cleanup can proceed.
@@ -119,9 +121,10 @@ Readbacks retain resource identity rather than Secret or Job contents.
 
 ### 4. Report cleanup without resuming an upgrade
 
-`scripts/upgrade-production-images:553` writes a version `1`
-`preflight-cleanup-result.json` containing `complete` and `unknown` in the new
-invocation directory. Any uncertain create or unconfirmed deletion makes
+The `--cleanup-preflight` branch in `scripts/upgrade-production-images` calls
+`scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight`. The branch then writes
+a version `1` `preflight-cleanup-result.json` containing `complete` and `unknown`
+in the new invocation directory. Any uncertain create or unconfirmed deletion makes
 `complete` false and exits `1`; confirmed cleanup exits `0`. Invalid evidence
 exits `2` before this directory or Kubernetes operations are created. Interruption
 before a result does not establish completion.
@@ -155,6 +158,10 @@ reconciling database, release and workload state. Cleanup never authorizes resum
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 20:10: Correct the cleanup result source pointer. (authoring-run/ac4e2468-e42e-4789-abc3-09c92e35b753 - bc82a1499fa335fa57e96634a0ff64ff5b82fede)
+
+- 2026-11-18 03:25: Bind cleanup to the selected-image migration helper and chart program. (authoring-run/94311d6d-595a-410d-8621-eb947450804f - 6a4fb6e566fe01b6d5088618531299e02d1686cc)
 
 - 2026-11-12 07:07: Register three-Job resume attempts and retain historical migration-only cleanup. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
 

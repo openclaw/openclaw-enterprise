@@ -1,18 +1,14 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { goToolEnvironment, renderProductionChart } from "./production-chart.mjs";
+import {
+  goToolEnvironment,
+  renderProductionChart,
+  type ChartRenderOptions,
+  type ChartValues,
+} from "./production-chart.ts";
 
-export type ChartValues = Readonly<Record<string, string | number | boolean>>;
-
-export type ChartRenderOptions = {
-  release?: string;
-  namespace?: string;
-  isUpgrade?: boolean;
-  valuesFiles?: readonly string[];
-  omit?: readonly string[];
-  strings?: ChartValues;
-};
+export type { ChartRenderOptions, ChartValues } from "./production-chart.ts";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -60,10 +56,7 @@ export const gatewaySandboxValues = {
 export const stringNameMessage =
   "must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string";
 
-export const render = (
-  overrides: ChartValues = {},
-  options: ChartRenderOptions = {},
-): Promise<{ stdout: string; stderr: string }> =>
+export const render = (overrides: ChartValues = {}, options: ChartRenderOptions = {}) =>
   renderProductionChart(
     {
       "database.cidrs[1]": "10.45.0.13/32",

@@ -107,6 +107,7 @@ let receiptServer;
 let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
+let protectedDriver;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -170,6 +171,7 @@ try {
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
+  protectedDriver = drivers?.protectedDriver;
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -249,7 +251,10 @@ try {
     // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
     ...(preparedRepositoryGit?.revisionMaterial === undefined
       ? {}
-      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
+      : {
+          repositoryGitMaterial: preparedRepositoryGit.revisionMaterial,
+          observeNativeRepositoryWithdrawal: preparedRepositoryGit.observeNativeWithdrawal,
+        }),
     ...(readinessPath === undefined
       ? {}
       : {
@@ -304,9 +309,11 @@ try {
     await unlink(readinessPath).catch(() => {});
   }
   if (worker !== undefined) {
+    // The worker closes its protected Driver; before it exists, close the loaded registration.
     await worker.stop().catch(() => {});
-  } else if (pool !== undefined) {
-    await pool.end();
+  } else {
+    await protectedDriver?.close().catch(() => {});
+    await pool?.end();
   }
   try {
     const mode = process.env.NODE_ENV === "production" ? "production" : "development";

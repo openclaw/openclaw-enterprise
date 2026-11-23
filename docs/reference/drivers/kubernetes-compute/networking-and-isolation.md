@@ -22,7 +22,9 @@ Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
 and cloud metadata access remain denied where those addresses fall inside the
 model egress exclusions below.
 
-A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
+For a same-cluster provider with revision-specific Harness Pods, set `network.providerHarness` to `{ "mode": "namespace", "port": 8080 }` with the actual transport port. `harnessPeerLabels` returns the Pod labels for the requested Namespace, Agent, revision, and agent workload role, or `undefined` until that Pod exists. Compute limits Gateway egress to that peer. An outbound-only OpenClaw worker needs no inbound peer. If a predecessor still serves during preparation, its grant stays available. Dedicated Kubernetes replacement stops the predecessor before preparing the candidate. A missing candidate gets no Harness route. Activation admits only the candidate.
+
+For a fixed provider endpoint, configure
 `network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
 `address`, and `port`. Compute maps the hostname to that address,
 limits Gateway egress to the peer, and disables its direct Harness route.
@@ -104,17 +106,26 @@ Codex separately requires HTTPS interception, it retains platform and startup
 roots upstream and supplies child tools with its managed CA bundle. Preserve
 inherited `GIT_SSL_CAINFO`; TLS verification remains enabled in both paths.
 
-Model access uses TCP/443 egress to any address outside `10.0.0.0/8`,
-`100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16` and `169.254.0.0/16`; a
-restricted model proxy is not yet available. Confirm that your API server
-endpoint, Pod and Service CIDRs, and metadata endpoint fall inside them. A
-dedicated Agent has one authentication-only egress policy, pinned to its latest
-prepared Agent revision ID. Stop leaves it and the Agent's runtime and plugin-status
-policies, selecting no Pod, until the next preparation or Agent deletion.
-Channels require an approved HTTP(S) proxy in `runtime.channels`: a literal IP
-endpoint, or the exact
-Helm-managed proxy Service URL paired with `runtime.channels.managedProxy`.
-Direct public channel-provider access is denied.
+The model egress rule allows TCP/443 to any IPv4 address outside
+`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16` and
+`169.254.0.0/16`. The rule selects the shared Gateway and Harness Pod in embedded
+mode or an ordinary Harness Pod in dedicated mode. The Sandbox provider controls
+egress for Harness Pods it provisions. A restricted model proxy is not yet
+available. Confirm that your API server endpoint, Pod and Service CIDRs, and
+metadata endpoint fall inside the excluded ranges.
+
+For an ordinary dedicated
+Harness, Compute pins the Agent's authentication egress policy to the prepared
+Agent revision ID. After stop, that policy and the Agent's runtime and
+plugin-status policies can remain without a matching Pod. Retiring the last
+revision removes the authentication policy when cleanup succeeds.
+
+Enabled channels require dedicated mode and
+[managed channel egress](channel-egress.md) in `runtime.channelEgress`.
+Each channel-enabled Gateway uses its assigned Envoy listener. NetworkPolicies
+select its Agent revision and binding. These policies grant the dedicated
+Gateway no direct access to public channel providers. OCC uses a separate
+provider listener.
 
 ## Explicit network profiles
 
@@ -145,9 +156,12 @@ retain their templates until Compute prepares a version for their Agent:
 - Preparing a version re-renders that Agent's grants and templates with the
   profile; other Agents are untouched. Preparing the selected version again (as
   repository-credential maintenance does) rolls its Pods once.
-- An unprofiled embedded or dedicated Gateway keeps serving with its Gateway
-  grants during the next preparation, exempt from the profile check. The stable
-  Agent Service stays unchanged. Activation replaces the predecessor.
+- When preparation finds an older Gateway Deployment with an unprofiled
+  template, Compute preserves its Gateway grants and skips the profile check
+  for that Gateway. The stable Agent Service, if present, keeps its selector
+  during this preparation. For a
+  dedicated replacement, the worker stops predecessors before preparing the
+  candidate.
 
 Existing OpenShell Sandboxes are not relabeled because Sandbox names use the
 Agent revision ID: redeploy the Agent. For development, follow the

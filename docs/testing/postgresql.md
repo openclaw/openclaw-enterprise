@@ -26,6 +26,12 @@ are preserved and reported as a cleanup failure. If directory or SQL creation wa
 not durably confirmed, cleanup preserves any unconfirmed contents and state.
 Inspect their ownership before manual removal; a competing process may own the directory.
 
+Install dependencies in the same checkout and with the same pnpm settings used
+to run preparation. This includes the `CI` environment setting. Before creating
+a disposable PostgreSQL server, preparation runs pnpm's dependency check in that
+checkout. If pnpm reports an incompatible install, run `pnpm install` with the
+settings for the intended test run.
+
 Use Docker Compose, or set `OCC_DOCKER_BIN` to the `podman` executable and
 configure its Compose provider. If you use standalone `podman-compose`, use a
 release that accepts `up --wait`, such as 1.6.0. Then run:
@@ -36,10 +42,10 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
   umask 077
   PG_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres.XXXXXX")"
   printf 'Run directory: %s\n' "$PG_RUN_DIR"
-  trap 'status=$?; node scripts/ci/cleanup.mjs --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
-  node scripts/ci/prepare.mjs --lane postgres-application \
+  trap 'status=$?; node scripts/ci/cleanup.ts --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
+  node scripts/ci/prepare.ts --lane postgres-application \
     --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/owner.env"
-  node scripts/ci/run-tests.mjs run postgres-application \
+  node scripts/ci/run-tests.ts run postgres-application \
     --state "$PG_RUN_DIR/state.json" --results "$PG_RUN_DIR/results.json"
 )
 ```
@@ -47,7 +53,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
 For one Agent revision worker file, replace the `run-tests` command above with:
 
 ```sh
-node scripts/ci/prepare.mjs --lane postgres-application \
+node scripts/ci/prepare.ts --lane postgres-application \
   --file tests/integration/postgres-worker-agent-revision.test.mjs \
   --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
@@ -58,7 +64,7 @@ env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
 Preparation must run first. Do not connect other clients to the prepared
 file database: the suite copies it. The suite rejects a standalone
 `OCC_TEST_DATABASE_URL` without prepared ownership. If interrupted, run
-`node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json` and
+`node scripts/ci/cleanup.ts --state /printed/run/directory/state.json` and
 retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
@@ -90,13 +96,15 @@ fresh private paths and an after-hook with the same Docker prerequisites.
 
 ## Subnet pool exhaustion
 
+Complete lifecycle results record `docker-subnet-exhausted` in `lifecycle.phases.prepare.error.reason`.
+
 If Compose reports `all predefined address pools have been fully subnetted`,
 Docker could not allocate a subnet for the project network. Stop the run if it
 is still active. If its cleanup did not finish, run the printed command from the
 original checkout:
 
 ```sh
-node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json
+node scripts/ci/cleanup.ts --state /printed/run/directory/state.json
 ```
 
 Cleanup uses the recorded Compose project, port, and bootstrap file. It tears
@@ -142,7 +150,7 @@ done
 
 ```sh
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
-  node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.mjs
+  node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.ts
 OCC_PRODUCTION_WIREUP_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_bootstrap_local \
   node --test --test-concurrency=1 tests/integration/postgres-production-wireup.test.ts
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_singleton_local \
@@ -157,16 +165,16 @@ version-worker tests and therefore require prepared ownership.
 
 ## OIDC human sign-in
 
-With a fresh migrated `OCC_TEST_DATABASE_URL` and the
-[Playwright browser](local.md#console-browser-checks), run:
+Set `OCC_TEST_DATABASE_URL` to a fresh migrated database and run:
 
 ```sh
-node --test tests/integration/postgres-oidc-sign-in.test.mjs
+node --test tests/integration/postgres-oidc-sign-in.test.ts
 ```
 
-The database case skips without the URL and fails without the browser. Provider
-responses are fixtures; a pass does not prove live IdP registration or HTTPS
-cookies. Password and other provider scenarios are in the `postgres-auth` lane.
+The test skips without the database URL. It sends requests directly to Fastify
+and uses fixture identity provider responses. Use the
+[Playwright browser](local.md#console-browser-checks) for the browser tests in
+the `postgres-auth` lane.
 
 ## PostgreSQL test environment
 
@@ -179,6 +187,12 @@ loopback database named `openclaw_failures_*` via
 `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`; their reset changes its tables. See
 [the test](../../tests/integration/postgres-bootstrap-failures.test.ts) for
 its optional migration URL. Do not share that database with another process.
+
+The [internal static TokenService lifecycle test](../../tests/integration/postgres-static-token-service-lifecycle.test.ts) also needs
+`OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL` for the migrator role on
+the same disposable database as `OCC_TEST_DATABASE_URL`. It uses that role to
+install temporary audit-rejection constraints; application operations use the
+limited application role.
 
 ## Canonical migration compatibility
 
@@ -232,7 +246,7 @@ OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
 
 For native runner receipts, use the prepare/run/cleanup pattern above with lane
 `postgres`. Prepare the lane without `--file`, then supply the same four inputs
-to `node scripts/ci/run-tests.mjs run postgres` with
+to `node scripts/ci/run-tests.ts run postgres` with
 `--file tests/integration/postgres-migration-compatibility.test.mjs`.
 This runs the whole migration file, including both selected compatibility cases.
 Require both selected cases to pass and inspect `releasedController` and `candidateController`
@@ -291,7 +305,7 @@ umask 077
 TEST_ENV_FILE=/absolute/path/to/private/postgres-azure-test.env
 chmod 600 "$TEST_ENV_FILE"
 PG_AZURE_DIR="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run postgres-azure-workload-identity \
+node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run postgres-azure-workload-identity \
   --state "$PG_AZURE_DIR/state.json" --results "$PG_AZURE_DIR/results.json"
 ```
 

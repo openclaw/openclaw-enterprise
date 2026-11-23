@@ -31,15 +31,16 @@ import {
 } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { deferred } from "../helpers/deferred.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import {
-  authorizedPrincipal,
   createBackendWorkerDrivers,
   ensureInstallation,
 } from "../helpers/postgres-backend-state.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { observePluginTerminalRow } from "./postgres-worker-agent-revision-plugin-cases.ts";
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 
@@ -63,15 +64,9 @@ interface WorkResultRow {
 
 async function bootstrapWorkerActor(state: PostgresPlatformState) {
   await ensureInstallation(state, "worker-stale-claim");
-  const actor: unknown = authorizedPrincipal(await state.loadNativeIAMState(), [
-    ["create", "namespace"],
-  ]);
-  const actorId = asRecord(actor)?.id;
-  assert.ok(
-    typeof actorId === "string",
-    "persisted IAM must contain an unrestricted Namespace-create Principal",
-  );
-  return actorId;
+  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
+  assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
+  return actor.id;
 }
 
 function namespaceWork(name: string) {
@@ -993,11 +988,7 @@ test(
     await worker.start();
 
     const terminal = await waitFor("recovered worker successful plugin warning", async () => {
-      const rows = await observerPool.query<WorkResultRow>(
-        `SELECT state, reason_code, result_data
-         FROM occ.controller_work WHERE idempotency_key = $1`,
-        [idempotencyKey],
-      );
+      const rows = await observePluginTerminalRow(observerPool, idempotencyKey);
       return rows.rows[0]?.state === "succeeded" ? rows.rows[0] : undefined;
     });
     assert.deepEqual(terminal, {

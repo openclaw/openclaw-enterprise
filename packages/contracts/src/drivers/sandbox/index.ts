@@ -1,5 +1,10 @@
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type {
+  CredentialDeploymentTarget,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
 import type { Driver } from "../index.ts";
 import type {
@@ -21,6 +26,8 @@ import type {
   SandboxPolicyRecommendations,
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
+
+export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
@@ -60,13 +67,22 @@ export interface SandboxWorkloadIdentity {
   };
 }
 
-export interface HarnessWorkloadRequirements {
+/** Durable data intent, before a Compute or Sandbox implementation selects storage. */
+export interface HarnessRetainedDirectory {
+  readonly purpose: "workspace" | "generated-images" | "sessions" | "node-state";
+  readonly name: string;
+  readonly path: string;
+  /** The workload reads this directory through this variable, when present. */
+  readonly environment?: string;
+}
+
+export interface HarnessLaunchDescription {
   readonly loginMode: HarnessAuthBinding["method"] | CredentialSourceLoginMode;
   readonly image: string;
   readonly command: readonly string[];
   /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
   readonly workloadIdentity?: SandboxWorkloadIdentity;
-  readonly workspaceMounts: readonly SandboxWorkspaceMount[];
+  readonly retainedDirectories: readonly HarnessRetainedDirectory[];
   /** Initialize the mounted workspace privately before starting the Harness; never copy file contents here. */
   readonly workspaceSetup?: {
     readonly id: string;
@@ -80,6 +96,11 @@ export interface HarnessWorkloadRequirements {
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
   readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
+}
+
+export interface HarnessWorkloadRequirements extends HarnessLaunchDescription {
+  /** Compute-owned storage only. Empty when the provider owns retained storage. */
+  readonly workspaceMounts: readonly SandboxWorkspaceMount[];
 }
 
 export interface SandboxResourceRef {
@@ -99,6 +120,8 @@ export interface SandboxHarnessEndpoint {
     /** Certificate bytes only, never a source path, private key or client credential. */
     readonly caBundle: string;
   };
+  /** Exact PEM leaf for the admitted execution. The Gateway must pin it on its WSS connection. */
+  readonly tlsPeerCertificate?: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
@@ -114,6 +137,8 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /** Refuse a missing workload before creating resources or reading enrollment credentials. */
+  readonly existingHarnessOnly?: true;
   /**
    * True once the revision's workspace node has enrolled with its Agent Gateway. A dedicated
    * OpenClaw worker's Harness exposure serves Compute's status read only before that: a Driver
@@ -202,6 +227,9 @@ export interface SandboxDriver extends Driver {
     readonly openclaw: Readonly<Record<HarnessExecutionMode, HarnessExecutionModeSupport>>;
   };
   readonly repositoryAccess?: SandboxRepositoryAccess;
+  /** Provider owns durable Harness storage and reports lifecycle through observeHarness. */
+  readonly workspaceStorage?: "provider";
+
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;
@@ -219,6 +247,20 @@ export interface SandboxDriver extends Driver {
     defaults?: SandboxPolicySnapshot["defaults"],
     scope?: { readonly repositoryCredentials?: boolean },
   ): SandboxPolicySnapshot;
+  /**
+   * Side-effect-free admission of the exact ACL against the base network snapshot.
+   * Return the opaque effective policy document with inspected HTTPS, additive ENFORCE and
+   * default deny. Refuse conflicts with these requirements or protected execution.
+   * Omission refuses even an empty ACL.
+   */
+  admitRepositoryNetworkPolicy?(
+    policy: RepositoryNetworkPolicy,
+    network: SandboxPolicySnapshot,
+  ): SandboxPolicySnapshot["defaults"];
+  /** Revalidate effective policy and the current credential scope on the frozen revision. */
+  validateProtectedRepositoryNetworkPolicy?(
+    revision: ProtectedRepositoryNetworkPolicyContext,
+  ): void;
   /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
@@ -244,6 +286,8 @@ export interface SandboxDriver extends Driver {
   ): Promise<SandboxPolicyRecommendations>;
 
   readonly capability: "sandbox";
+  /** Request periodic maintenance of active revisions bound to this Sandbox. */
+  readonly maintenanceIntervalMs?: number;
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
   /**
@@ -270,6 +314,17 @@ export interface SandboxDriver extends Driver {
     harness: Readonly<RevisionHarnessDescriptor>,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
+  /** Provision the revision's Sandbox without starting its credential-using Harness. */
+  provisionStagedHarness?(context: SandboxHarnessContext): Promise<CredentialDeploymentTarget>;
+  /** Prepare a fresh launch after the revision's network and credential route are ready. */
+  prepareStagedHarness?(
+    context: SandboxHarnessContext,
+    projections: readonly CredentialProjection[],
+  ): Promise<void>;
+  /** Start the prepared Harness during authorized revision activation. */
+  activateStagedHarness?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
   /** The launcher stays held while the Driver observes its request challenge.
    * A denial observed here can select material, never release work. */
@@ -326,6 +381,10 @@ export interface SandboxDriver extends Driver {
    * revision's Sandbox alone, never another Sandbox in the namespace.
    */
   workspaceNodePeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
+  /** Exact labels of this prepared revision's Harness, used for Gateway egress. */
+  harnessPeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */

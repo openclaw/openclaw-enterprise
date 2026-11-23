@@ -19,71 +19,132 @@ or build these images for your registry:
 | Controller | Root [`Dockerfile`](../../../Dockerfile), target `runtime`                                                     | API, worker, migration, and bootstrap       |
 | Runtime    | [`deploy/runtime/Dockerfile`](../../../deploy/runtime/Dockerfile), assembling pinned OpenClaw source and Codex | Gateways and Agents (one image serves both) |
 
-Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
-
-Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
+Build the runtime first. For native Git, skip to the [pinned controller](#build-a-controller-for-native-git).
+Authenticate with `docker login <registry-host>` and approved credentials; for
+private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
-Stop on failure; retain metadata.
-Use the standard Slack/Codex runtime for both slots unless you separately verified
-another gateway/Codex pair. Installing packages at gateway
-startup is unsupported.
+Stop on failure; retain metadata. Use the standard Slack/Codex runtime for both
+roles unless you verified a distinct pair. Gateway startup cannot install packages.
+
+If package downloads require an HTTPS proxy or private registry CA, add
+`--secret "id=build-ca,src=$CA_BUNDLE"` to each image build. Set `CA_BUNDLE` to
+a PEM file containing the public trust roots and approved CA certificate. The
+Dockerfiles mount it only during downloads. Keep TLS verification enabled; image
+registry TLS uses the builder's trust configuration.
 
 ```bash
-# Build from a clean checkout.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
+if unset CONTROLLER_IMAGE RUNTIME_IMAGE RUNTIME_DIGEST OCC_IMAGE_METADATA &&
   NODE_BASE_IMAGE="$(yq -p=json -e -r '.prepare.defaultEnv.NODE_BASE_IMAGE' scripts/ci/test-suites/images-packaging.json)" &&
-  OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
+  OCC_SOURCE_SHA="$(git rev-parse HEAD)" &&
+  OCC_IMAGE_TAG="$OCC_SOURCE_SHA-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
-  export OCC_IMAGE_TAG &&
-  docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" --target runtime \
-    --metadata-file "$OCC_IMAGE_METADATA/controller.json" \
-    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
-    --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \
-    --label "org.opencontainers.image.revision=$OCC_IMAGE_TAG" \
-    -t "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" . &&
   docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" \
     "${openclaw_build_args[@]}" \
     --metadata-file "$OCC_IMAGE_METADATA/runtime.json" \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
-    --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \
+    --build-arg OCC_BUILD_REVISION="$OCC_SOURCE_SHA" \
+    --label "org.opencontainers.image.revision=$OCC_SOURCE_SHA" \
     -f deploy/runtime/Dockerfile \
     -t "$OCC_IMAGE_REPOSITORY/runtime:$OCC_IMAGE_TAG" . &&
-  CONTROLLER_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/controller.json")" &&
   RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")" &&
-  [[ "$CONTROLLER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] &&
   [[ "$RUNTIME_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@$CONTROLLER_DIGEST"
   export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
 else
-  printf 'Build or digest extraction failed; stop. Metadata: %s\n' "${OCC_IMAGE_METADATA:-unavailable}" >&2
+  unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE
+  printf 'Runtime build or digest extraction failed; stop. Metadata: %s\n' "${OCC_IMAGE_METADATA:-unavailable}" >&2
   false
 fi
 ```
 
-The runtime build sizes its Node.js compile to the builder with
-[`NODE_BUILD_JOBS=auto`](../../../deploy/runtime/node/README.md). It reads only
-the build step's own CPU and memory limits; limits set on a parent cgroup are
-invisible to it. On a builder host where a parent cgroup caps CPU or memory,
-add `--build-arg NODE_BUILD_JOBS=<n>` to the runtime `docker buildx build`
-command, sized to those limits.
-
-If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
-
-Before installation, [check each digest](../../testing/docker.md#check-published-images)
+Before installation, [check both published digests](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
-credentials only when the selected registry requires them.
+credentials only when required.
+
+### Build a standard controller
+
+Skip this step for native Git. Otherwise, publish the standard controller:
+
+```bash
+if unset CONTROLLER_IMAGE CONTROLLER_DIGEST &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  [[ "$(git rev-parse HEAD)" == "$OCC_SOURCE_SHA" ]] &&
+  CONTROLLER_ATTEMPT_TAG="$OCC_SOURCE_SHA-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" &&
+  docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" --target runtime \
+    --metadata-file "$OCC_IMAGE_METADATA/controller.json" \
+    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+    --build-arg OCC_BUILD_REVISION="$OCC_SOURCE_SHA" \
+    --label "org.opencontainers.image.revision=$OCC_SOURCE_SHA" \
+    -t "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG" . &&
+  CONTROLLER_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/controller.json")" &&
+  [[ "$CONTROLLER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@$CONTROLLER_DIGEST"
+else
+  unset CONTROLLER_IMAGE CONTROLLER_DIGEST
+  printf 'Controller build or digest extraction failed; stop. Metadata: %s\n' "${OCC_IMAGE_METADATA:-unavailable}" >&2
+  false
+fi
+```
+
+### Build a controller for native Git
+
+The GHCR controller lacks native Git pins. Qualify the runtime with the lane's
+[prepared dependencies](../../testing/docker.md#check-published-images), overriding its
+runtime image. Publish the pinned controller only after smoke, preparation, suite
+and cleanup succeed:
+
+```bash
+RUNTIME_CHECK_STATUS=0
+[[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version &&
+  node scripts/ci/prepare.ts --lane images-runtime-startup \
+    --state "$OCC_IMAGE_METADATA/runtime-check.json" --github-env "$OCC_IMAGE_METADATA/runtime-check.env" &&
+  (
+    set -a &&
+      . "$OCC_IMAGE_METADATA/runtime-check.env" &&
+      set +a &&
+      DOCKER_DEFAULT_PLATFORM="$OCC_IMAGE_PLATFORM" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+        OPENCLAW_ENTERPRISE_CI_STATE="$OCC_IMAGE_METADATA/runtime-check.json" \
+        node --test tests/integration/runtime-image-startup.test.ts \
+          tests/integration/runtime-image-gateway-workspace.test.ts
+  ) || RUNTIME_CHECK_STATUS=$?
+[[ -f "$OCC_IMAGE_METADATA/runtime-check.json" ]] &&
+  node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json" || RUNTIME_CHECK_STATUS=1
+CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
+if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
+  (( RUNTIME_CHECK_STATUS == 0 )) &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  [[ "$(git rev-parse HEAD)" == "$OCC_SOURCE_SHA" ]] &&
+  CONTROLLER_ATTEMPT_TAG="$OCC_SOURCE_SHA-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" &&
+  node scripts/build-controller.ts docker --platform "$OCC_IMAGE_PLATFORM" --target runtime \
+    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+    --build-arg OCC_BUILD_REVISION="$OCC_SOURCE_SHA" \
+    --label "org.opencontainers.image.revision=$OCC_SOURCE_SHA" \
+    --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
+    --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
+    --tag "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG" &&
+  CONTROLLER_PUSH_OUTPUT="$(docker push "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG")" &&
+  [[ "$CONTROLLER_PUSH_OUTPUT" =~ $CONTROLLER_PUSH_DIGEST_PATTERN ]]; then
+  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@${BASH_REMATCH[1]}"
+else
+  unset RUNTIME_DIGEST RUNTIME_IMAGE CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT
+  printf '%s\n' 'Runtime qualification or controller publication failed.' >&2
+  false
+fi
+```
+
+For distinct qualified images, pass each role's same-source manifest digest and
+configure Gateway and Agent with the matching immutable references.
 
 ### Build through a package registry mirror
 
 When building either image from source, Corepack downloads the pinned pnpm
 version, then pnpm installs dependencies. Corepack does not read npmrc. To
 route both downloads through a mirror, supply the secrets for their respective
-steps to each `docker buildx build` command:
+steps to each image build command:
 
 ```bash
 --secret "id=corepack-env,src=$COREPACK_ENV_FILE" \
@@ -105,11 +166,45 @@ The build mounts it only during dependency installation and mounts
 `corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
 default registry selection.
 
+## Use a Terraform-managed EKS cluster
+
+For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, complete the
+[AWS EKS Terraform target](https://github.com/freeqaz-openai/oce-terraform/tree/main/targets/aws-eks)
+through its foundation check and kubeconfig staging. Continue in the same Bash
+session from the matching OCE checkout. Keep the checked `KUBECONFIG_FILE`,
+`OCC_INPUT_DIRECTORY`, `CONTEXT`, and `TF_TARGET_DIR` values from that handoff. `TF_TARGET_DIR` must identify the
+`targets/aws-eks` directory in the Terraform checkout.
+
+Use the checked kubeconfig for the linked EKS commands, then refresh the
+[API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join):
+
+```bash
+export KUBECONFIG="${KUBECONFIG_FILE:?Use the checked Terraform kubeconfig}"
+: "${CONTEXT:?Use the Terraform context}"
+cluster=$(terraform -chdir="${TF_TARGET_DIR:?Use the AWS EKS Terraform target directory}" output -json oce_cluster)
+EKS_CLUSTER_ARN=$(jq -er '.arn' <<<"$cluster")
+AWS_REGION=$(jq -er '.region' <<<"$cluster")
+EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
+export EKS_CLUSTER_ARN AWS_REGION EKS_CLUSTER
+```
+
+Inspect the target's placement fields, then use them when generating the profile.
+Set `controlPlane.clusterCidrs` separately from the refreshed `API_CIDRS`.
+
+```bash
+terraform -chdir="$TF_TARGET_DIR" output -json oce_placement
+```
+
+Continue with [configuration](#configure-the-installation).
+Run prerequisite diagnosis after [creating the controller Namespace](#prepare-workspace-access).
+
 ## Configure the Installation
+
+If you use a Terraform-managed EKS cluster, complete [the EKS setup](#use-a-terraform-managed-eks-cluster) before configuring the Installation.
 
 This runbook uses Helm
 release `oce` in Namespace `openclaw-system`. Keep configuration and
-bootstrap PVC YAML in the protected `OCC_INPUT_DIRECTORY`; Secret inputs stay
+Installation YAML in the protected `OCC_INPUT_DIRECTORY`; Secret inputs stay
 under `/secure/occ`.
 
 To reuse profile output or verified YAML from
@@ -150,12 +245,11 @@ export OCC_PROFILE="${OCC_PROFILE:-codex}"
 export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-input.json}"
 (
   set -e
-  : "${CONTROLLER_IMAGE:?Set the controller digest reference}"
   : "${RUNTIME_IMAGE:?Set the runtime digest reference}"
   test -s "$OCC_PROFILE_INPUT"
   yq -e '.controlPlane.releaseName == "oce" and .controlPlane.namespace == "openclaw-system"' \
     "$OCC_PROFILE_INPUT" >/dev/null
-  node scripts/render-installation-profile.mjs \
+  node scripts/render-installation-profile.ts \
     --profile "$OCC_PROFILE" \
     --input "$OCC_PROFILE_INPUT" \
     --out-dir "$OCC_INPUT_DIRECTORY"
@@ -166,6 +260,8 @@ export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-inpu
 
 If rendering fails, stop, fix the input, and rerender; do not substitute example
 or manual YAML. Keep `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` paired.
+Fix failed checks. Rerender changed profile inputs. Rerun shared checks to
+restore exports.
 
 ### Advanced: copy manual YAML examples
 
@@ -194,17 +290,17 @@ the startup Secret alone grants none.
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
 [Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
+For changed registry digests, reverify and compare against independently checked
+references before shared checks.
 
-### Shared bootstrap PVC and configuration checks
+<a id="shared-bootstrap-pvc-and-configuration-checks"></a>
 
-Create the bootstrap PVC manifest if it is absent:
+### Shared credential and configuration checks
+
+Protect both configuration files:
 
 ```bash
-test -e "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" || \
-  install -m 600 deploy/examples/production/bootstrap-pvc.yaml "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
-chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" \
-  "$OCC_INPUT_DIRECTORY/installation.yaml" \
-  "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" "$OCC_INPUT_DIRECTORY/installation.yaml"
 ```
 
 For profiles, change `$OCC_PROFILE_INPUT` and rerender instead of editing
@@ -213,8 +309,8 @@ before the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
-  password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
-  refuses relative paths. Keep native admin enabled for the password profile, and gateway
+  credential Secret name (`bootstrap.credentials.secretName`). The keys default
+  to `admin-password` and `admin-service-key`. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
@@ -235,38 +331,36 @@ before the checks:
   `presets.includeDefaults: false` disables the
   [bundled Presets](../../reference/presets.md#installation-defaults).
 
-Set `bootstrap-pvc.yaml` name, namespace, size, and protected `storageClassName`.
-
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
 [Configure native admin domains](native-admin.md#steps).
-For Slack Agents, configure both proxy paths in the
-[Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
+For Slack Agents, prepare the [managed channel egress fleet](channel-egress.md)
+and matching Helm and Installation settings before deployment. For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
-`images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
+`images.controller` must be an approved immutable image reference with a lowercase
+`sha256` digest.
 
 Before running this block, confirm that `OCC_INPUT_DIRECTORY` points to the
-intended protected directory containing your prepared `values.yaml`,
-`installation.yaml`, and `bootstrap-pvc.yaml`. In a new shell, restore that
+intended protected directory containing your prepared `values.yaml`
+and `installation.yaml`. In a new shell, restore that
 [setup](#configure-the-installation) first.
 
 Run this block before provisioning the password profile. If it fails, correct the
 named check before continuing. After the directory check, each run invalidates
-the previous render. Image, claim, database CA, and manifest-path exports are set
+the previous render. Image, credential Secret, database CA, and manifest-path exports are set
 only after every check succeeds:
 
 ```bash
 {
-  unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+  unset CONTROLLER_IMAGE BOOTSTRAP_SECRET BOOTSTRAP_PASSWORD_KEY BOOTSTRAP_SERVICE_KEY_KEY OCC_RENDERED_MANIFEST
   unset DATABASE_CA_SECRET DATABASE_CA_KEY
   OCC_RENDER_TEMP=
   if
-    OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with all three prepared YAML files' &&
+    OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with both prepared YAML files' &&
     test -n "${OCC_INPUT_DIRECTORY:-}" &&
     test -d "$OCC_INPUT_DIRECTORY" &&
     test -f "$OCC_INPUT_DIRECTORY/values.yaml" &&
     test -f "$OCC_INPUT_DIRECTORY/installation.yaml" &&
-    test -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" &&
     OCC_VALIDATION_STEP='previous render invalidation' &&
     rm -f -- "$OCC_INPUT_DIRECTORY/rendered.yaml" &&
     OCC_VALIDATION_STEP='controller image digest' &&
@@ -290,9 +384,6 @@ only after every check succeeds:
       (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
       (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
       "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null &&
-    OCC_VALIDATION_STEP='bootstrap PVC' &&
-    yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
-      "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null &&
     OCC_VALIDATION_STEP='render temporary file' &&
     OCC_RENDER_TEMP="$(mktemp "$OCC_INPUT_DIRECTORY/.rendered.XXXXXXXX")" &&
     OCC_VALIDATION_STEP='Helm render' &&
@@ -305,28 +396,23 @@ only after every check succeeds:
     DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='database CA key extraction' &&
     DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
-    OCC_VALIDATION_STEP='bootstrap claim extraction' &&
-    OCC_BOOTSTRAP_CLAIM_JSON="$(yq e -e -o=json -I=0 '.bootstrap.password.claimName | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
-    OCC_VALIDATION_STEP='bootstrap claim match' &&
-    OCC_EXPECTED_BOOTSTRAP_CLAIM="$(yq e -e -o=json -I=0 '.metadata.name | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")" &&
-    test "$OCC_BOOTSTRAP_CLAIM_JSON" = "$OCC_EXPECTED_BOOTSTRAP_CLAIM" &&
-    OCC_VALIDATION_STEP='bootstrap claim export' &&
-    BOOTSTRAP_CLAIM="$(yq e -e -r '.bootstrap.password.claimName + "."' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
-    BOOTSTRAP_CLAIM="${BOOTSTRAP_CLAIM%.}" &&
-    test "$(BOOTSTRAP_CLAIM="$BOOTSTRAP_CLAIM" yq e -n -o=json -I=0 'strenv(BOOTSTRAP_CLAIM)')" = "$OCC_BOOTSTRAP_CLAIM_JSON" &&
+    OCC_VALIDATION_STEP='bootstrap credential Secret selection' &&
+    BOOTSTRAP_SECRET="$(yq e -e -r '.bootstrap.credentials.secretName' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    BOOTSTRAP_PASSWORD_KEY="$(yq e -r '.bootstrap.credentials.passwordKey // "admin-password"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    BOOTSTRAP_SERVICE_KEY_KEY="$(yq e -r '.bootstrap.credentials.serviceKeyKey // "admin-service-key"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='validated render publication' &&
     mv -- "$OCC_RENDER_TEMP" "$OCC_INPUT_DIRECTORY/rendered.yaml"
   then
     OCC_RENDERED_MANIFEST="$OCC_INPUT_DIRECTORY/rendered.yaml"
-    export CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    export CONTROLLER_IMAGE BOOTSTRAP_SECRET BOOTSTRAP_PASSWORD_KEY BOOTSTRAP_SERVICE_KEY_KEY OCC_RENDERED_MANIFEST
     export DATABASE_CA_SECRET DATABASE_CA_KEY
-    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+    unset OCC_VALIDATION_STEP OCC_RENDER_TEMP
   else
-    unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    unset CONTROLLER_IMAGE BOOTSTRAP_SECRET BOOTSTRAP_PASSWORD_KEY BOOTSTRAP_SERVICE_KEY_KEY OCC_RENDERED_MANIFEST
     unset DATABASE_CA_SECRET DATABASE_CA_KEY
     if [ -n "$OCC_RENDER_TEMP" ]; then rm -f -- "$OCC_RENDER_TEMP"; fi
     printf 'Installation check failed: %s; stop before provisioning.\n' "$OCC_VALIDATION_STEP" >&2
-    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+    unset OCC_VALIDATION_STEP OCC_RENDER_TEMP
     false
   fi
 }
@@ -334,7 +420,35 @@ only after every check succeeds:
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
 
-Prepare these Secret input files under `/secure/occ`, each holding one raw value
+`occ installation install` generates and retains private administrator inputs
+and creates the bootstrap Secret automatically. No external secret manager or
+separate generation command is required. Keep `XDG_STATE_HOME`, if set, absolute
+and outside the checkout; its default is `$HOME/.local/state`.
+
+### Optional: supply bootstrap credentials
+
+Automatic setup refuses a pre-existing bootstrap credential Secret. Skip this
+section for automatic setup. Reuse a deliberately provisioned Secret. Otherwise,
+generate once with Node.js from the matching checkout. Existing files stay intact.
+
+```bash
+node --input-type=module <<'JS'
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+writeFileSync('/secure/occ/admin-password', randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+writeFileSync('/secure/occ/admin-service-key', `occ_${randomBytes(32).toString('base64url')}`, { mode: 0o600, flag: 'wx' });
+JS
+```
+
+Retain these files outside the checkout. The password is for human sign-in; the
+service key authenticates automation and expires 30 days after registration.
+See the [input contract](../../reference/authentication.md#installation-and-account-ownership)
+for file validation and retention. An external secret manager can supply the same
+values. [Create the Secret after workspace setup](#prepare-workspace-access).
+
+### Prepare other Secret inputs
+
+Prepare these other Secret input files under `/secure/occ`, each holding one raw value
 without quotes or assignment.
 
 | File                  | Contents and source                                                                                                                                                                                                                       |
@@ -374,11 +488,19 @@ history, and the repository.
 
 ## Prepare workspace access
 
-Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 characters):
+With the selected kubeconfig and context, confirm `openclaw-system` is the
+intended active Namespace. Create only on confirmed absence. Stop and reconcile
+lookup or creation errors. `--namespace` accepts a DNS-1123 label up to 63 characters.
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
 ```
+
+For EKS, run [prerequisite diagnosis](prerequisite-diagnosis.md) now. Set the plan's
+`namespace` to `openclaw-system`, select the same kubeconfig and context, use
+`EKS_CLUSTER_ARN` for `eks.clusterArn`, and set `peakAdditional` from the
+candidate chart and concurrent rollouts. Use the reviewed API and webhook CIDRs.
+Resolve failed or unknown checks before installing.
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing
@@ -392,6 +514,20 @@ chart's private Gateway. A mismatch reports
 `CHART_LISTENER_MISMATCH`. Correct the profile input and rerender, or align the
 manual Installation and Helm values, before retrying. Leave `hostname` unset in
 both files to use the generated Service DNS name.
+
+For direct Helm or `--bootstrap-credentials=existing`, create the Secret only if
+needed with validated keys.
+
+```bash
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic "$BOOTSTRAP_SECRET" \
+  --from-file="$BOOTSTRAP_PASSWORD_KEY=/secure/occ/admin-password" \
+  --from-file="$BOOTSTRAP_SERVICE_KEY_KEY=/secure/occ/admin-service-key"
+```
+
+With a supplied Secret, use `--bootstrap-credentials=existing` for the CLI install.
+After a failed or uncertain create, preserve inputs and reconcile before retrying.
+Do not put plaintext credentials in Helm values or shell arguments.
 
 After completing workspace access and validating any changed inputs, return to
 [Provision system Secrets and install](production-installation.md#provision-system-secrets-and-install)

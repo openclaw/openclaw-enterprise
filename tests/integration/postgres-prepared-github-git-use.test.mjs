@@ -17,7 +17,7 @@ import {
 import {
   fixtureInstallationId,
   fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 import { clockBehind } from "../helpers/prepared-standing-git-peer.ts";
 
 // Refusal must come from the durable admission guard, before any issuer or retirement call.

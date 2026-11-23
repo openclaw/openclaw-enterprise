@@ -8,17 +8,16 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { API_REQUEST_AUDIT_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type { AuditEvent, ResourceRef } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.mjs";
+} from "../helpers/device-credential-gateway.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const reasonCode = "DEVICE_AUTHORIZATION_SCOPE_MISMATCH";
 const genericNotFound = {
@@ -96,7 +95,6 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
 
   const auditSink = new DenialAuditSink();
   const clock = createControlledClock();
-  const secretDriver = createTestSecretDriver();
   const { gateway, refresh } = createDeviceCredentialDrivers({
     now: () => clock.wallNow(),
     approve: async () => false,
@@ -104,7 +102,6 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     ...(requestAudit ? { durableRequestAuditSink: auditSink } : {}),
-    secretDriver,
     credentialGatewayDriver: gateway,
     now: () => new Date(clock.wallNow()),
     // Admission-only Sandbox: the real Controller still creates and validates the Agents.
@@ -127,7 +124,7 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   controller.selectDriver("credential_refresh", refresh.id);
   const basePath = `/namespaces/${namespace.id}/agents`;
   const unsaved: Target = { path: `${basePath}/device-authorizations` };
-  async function savedTarget(name: string): Promise<Target> {
+  async function savedTarget(name: string) {
     const agent = await fixture.createAgent(
       namespace.id,
       name,
@@ -159,15 +156,13 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   }
   async function snapshot(login: Login) {
     return controller.transact(async (unit: PlatformUnitOfWork) => {
-      const secret = await unit.secrets.findSecret(namespace.id, login.id);
-      assert.ok(secret, "the actual start must own a Secret");
-      const bytes = secretDriver.valueFor(secret);
-      assert.ok(bytes);
-      const session = object(JSON.parse(bytes));
+      const record = await unit.authenticationStates.findDevice(namespace.id, login.id);
+      assert.ok(record, "the actual start must own a session");
+      const { version, ...session } = record;
       const sourceId = string(session.sourceId);
       const source = await unit.credentialSources.findCredentialSource(namespace.id, sourceId);
       assert.ok(source, "the actual start must own a source");
-      return { secret, bytes, session, source };
+      return { version, session, source };
     });
   }
   const resource = (target: Target): ResourceRef => ({
@@ -182,7 +177,6 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
     namespace,
     auditSink,
     clock,
-    secretDriver,
     gateway,
     unsaved,
     savedTarget,
@@ -204,18 +198,16 @@ test("device login binding denials retain generic 404 and attributable fail-clos
 
   const other = await fixture.createAccountWithPolicy("device-denial-caller", () => {});
   const otherSession = await fixture.signIn(other.credentials);
-  const targets = [fixture.unsaved, saved, otherAgent];
   const role = grantRole(fixture.policy, other.principal.id, {
     id: "device-denial-exact-operations",
     namespaceId: undefined,
     permissions: {
       agent: ["create", "read", "update"],
-      secret: ["operate"],
       credential_source: ["operate"],
     },
     resource: { kind: "agent", id: fixture.namespace.id },
   });
-  for (const target of targets.slice(1)) {
+  for (const target of [saved, otherAgent]) {
     bindRole(fixture.policy, other.principal.id, {
       id: `device-denial-agent-${target.agentId}`,
       roleId: role.role.id,
@@ -225,17 +217,13 @@ test("device login binding denials retain generic 404 and attributable fail-clos
   }
   for (const login of [unsavedLogin, savedLogin]) {
     const stored = await fixture.snapshot(login);
-    for (const resource of [
-      { kind: "secret", id: login.id },
-      { kind: "credential_source", id: string(stored.session.sourceId) },
-    ]) {
-      bindRole(fixture.policy, other.principal.id, {
-        id: `device-denial-${resource.id}`,
-        roleId: role.role.id,
-        namespaceId: fixture.namespace.id,
-        resource,
-      });
-    }
+    const resource = { kind: "credential_source" as const, id: string(stored.session.sourceId) };
+    bindRole(fixture.policy, other.principal.id, {
+      id: `device-denial-${resource.id}`,
+      roleId: role.role.id,
+      namespaceId: fixture.namespace.id,
+      resource,
+    });
   }
 
   const control: Refusal = {
@@ -322,9 +310,6 @@ test("device login binding denials retain generic 404 and attributable fail-clos
       assert.ok(Date.parse(string(before.session.nextPollAt)) <= fixture.clock.wallNow());
       assert.ok(Date.parse(string(before.session.expiresAt)) > fixture.clock.wallNow());
       const operations = fixture.gateway.operations.length;
-      const secretWrites = fixture.secretDriver.calls.filter(
-        (call) => call.operation !== "withValue" && call.operation !== "resolve",
-      ).length;
       const absent = await fixture.send(operation, {
         label: "absent handle",
         target: item.target,
@@ -339,13 +324,6 @@ test("device login binding denials retain generic 404 and attributable fail-clos
       assert.ok(
         isDeepStrictEqual(await fixture.snapshot(item.login), before),
         "binding refusal changed the saved session or source",
-      );
-      assert.equal(
-        fixture.secretDriver.calls.filter(
-          (call) => call.operation !== "withValue" && call.operation !== "resolve",
-        ).length,
-        secretWrites,
-        "binding refusal wrote Secret state",
       );
       assert.equal(
         fixture.gateway.operations.length,
@@ -363,7 +341,6 @@ test("device login binding denials retain generic 404 and attributable fail-clos
         item.login.userCode,
         string(before.session.privateState),
         string(before.session.sourceId),
-        before.bytes,
         DEVICE_ACCESS_TOKEN,
         DEVICE_ACCOUNT_ID,
         ...(item.actorId === owner ? [] : [owner]),

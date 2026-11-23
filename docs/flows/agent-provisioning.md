@@ -1,24 +1,21 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-13
-last_updated_session: authoring-run/6f9b8960-1432-46e9-97af-330142c01422
+updated: 2026-11-22
+last_updated_session: authoring-run/826943be-2c00-410c-8d78-b6eff00ea692
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves Slack/model Secrets and submits inline Configuration, credential references
-and retained Preset bindings. OCC queues setup without placeholders. The worker creates
-Configuration/Agent, grants exact credential access and admits the first deployment.
-Its handle follows activation or failure; later deployments use separate handles.
+Console saves Slack/model Secrets and submits Configuration, credential references, and retained Preset bindings. OCC queues setup without placeholders. The worker creates Configuration and Agent, grants credential access, and admits deployment. Its handle tracks activation or failure; later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
 
-- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
-- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
-- Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
+- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mts`.
+- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/agent-provisioning-requests.ts:provisionAgent`.
+- Preconditions: ready Namespace, Dedicated runtime, selected Drivers, PostgreSQL work storage, Agent/Configuration/deploy permissions, exact Secret access and transactional IAM authority. No provisioning-input keyring required.
 
 ## Flow
 
@@ -26,7 +23,8 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 graph TD
   Console["<b>Console</b><br/>Save entered Secrets"] --> Secrets["<b>Existing Secrets API</b><br/>Return ordinary references"]
   Secrets --> API["<b>Provision API</b><br/>Inline config and references"]
-  API --> Queue["<b>Existing work queue</b><br/>Return job handle"]
+  API -->|Supported request| Queue["<b>Existing work queue</b><br/>Return job handle"]
+  API -->|Managed credential Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
   Claim --> Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
   Config -->|Repository selections still valid| Agent["<b>Create Agent</b><br/>Grant exact credential access"]
@@ -48,7 +46,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
-  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown condition
+  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown,Gap condition
 ```
 
 ## Execution Trace
@@ -60,44 +58,39 @@ graph TD
 Console keeps the configured Harness separate from execution mode: dedicated
 OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
-policy through `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
+policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
-The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
+The Slack modal saves tokens through `POST /namespaces/:namespaceId/secrets` before Agent creation, then clears them. Apply stages references and environment bindings; Cancel retains created Secrets. Model discovery does not save its API key or service account token. After preflight, Create Agent saves the credential as a Namespace Secret, clears the input, and reuses its reference on retries. Bound Presets retain their credential/provider. Recover a lost Secret-save response before retrying.
 
-A selected Credential Gateway's catalog directs Console to register the model
-Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
-reuses confirmed sources and safely retries uncertain registration.
-Installation discovery preserves catalog metadata.
+Console registers the model Secret as directed by the Credential Gateway catalog before provisioning. [Recovery](../reference/console/create-and-deploy.md) reuses confirmed sources or retries uncertain registration. Installation discovery preserves catalog metadata.
 
 Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 
-For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
+For drafts, Console creates the Configuration and Agent, then grants Slack Secret access. Credential-access retry keeps the Agent.
 
 ### 2. OCC admits one job
 
-`packages/occ/src/index.ts:OpenClawController.provisionAgent`
+`packages/occ/src/agent-provisioning-requests.ts:provisionAgent`
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-For Harness authentication from a credential source, OCC reads the catalog entry
-from the recorded Gateway. Compute validates that same entry and its login mode
-for this admission. A later provisioning request reads the catalog again.
+OCC authorizes the exact Credential Source. Guided Create Agent returns `409` for TokenService-owned Sources before queueing; see the [implementation gap](../reference/credential-sources.md#implementation-status). Compute validates the catalog entry and login mode for Gateway-owned Sources.
 
-OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
+OCC requires Agent `create`, Configuration `create`, and Installation `administer` for the Namespace; status and retry require the same grants or return `403`. It validates Configuration, references, workspace inputs, execution mode, and authority. A taken Agent name returns `409`; reserved Secret destinations, cross-Namespace references, or missing/`runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule. An absent Secret returns `404`. Before Compute planning, Secret bindings receive Agent save’s Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
-After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
+After a Secret Driver change, authorized request, status, and retry return `503` for Secrets owned by the previous Driver and ask for replacement Secrets and a new request. The worker fails with `PROVISIONING_REJECTED`; an unavailable Driver still retries.
 
 OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
-OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
+OCC stores the request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. The same actor, Namespace, and request ID return existing work; changed input conflicts. Configuration and Agent creation follow.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
 ### 3. The worker creates resources and credentials
 
-`packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
+`packages/occ/src/agent-provisioning-worker.ts:processAgentProvisioning`
 
 Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
 effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
@@ -130,9 +123,9 @@ Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
-`packages/occ/src/index.ts:observeProvisioningDeployment`
+`packages/occ/src/agent-provisioning-worker.ts:observeProvisioningDeployment`
 
-At handoff, provisioning saves the first Agent revision ID and stays `running`.
+Handoff records the first revision in its Read Committed admission transaction.
 Provisioning waits without using attempts. On success, PostgreSQL
 marks provisioning `succeeded`.
 If the claim has an audit attempt ID, PostgreSQL saves `openclaw.controller_work.completed`
@@ -168,7 +161,7 @@ Console parses each reply in
 recovery. A malformed present `agentId` or `revisionId` makes even a terminal
 `failed` reply unknown. The form keeps the accepted job URL and original request,
 disables Create, and offers Retry without a recovery link. Retry posts to the same
-job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
+job's `/retry`. `packages/occ/src/agent-provisioning-requests.ts:retryAgentProvisioning` refuses a changed
 Agent lifecycle or an existing deployment handoff with `409`. After refusal during
 unknown-outcome recovery, the form enables a resend of the original request ID.
 
@@ -181,7 +174,7 @@ Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
 custom images still require an operator declaration in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
-`packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
+`packages/occ/src/agent-harness-topology.ts:requireDedicatedNativeSupport` enforces them.
 Admission does not prove workload delivery. Sandbox receives the setup identity and Secret
 reference through `HarnessWorkloadRequirements.workspaceSetup`; OpenShell runs
 [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution)
@@ -220,7 +213,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
 - Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. For source-backed Harness authentication, it omits the Gateway catalog lookup but still requires a ready source, its original Gateway owner, a Sandbox, current operator grants and the Agent grant when the Agent exists. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
-- Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
+- Use `tests/integration/postgres-agent-provisioning.test.ts` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
 
 ## Related docs
@@ -238,6 +231,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)

@@ -15,14 +15,15 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import {
+  runPollTick,
   settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
@@ -164,9 +165,7 @@ async function openGatedForm(
   // returns once the page has read the answer, so the next tick is already scheduled.
   const poll = async () => {
     const before = namespaces.reads;
-    const answered = await settledNamespaceReads(page);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, "/namespaces", answered + 1);
+    await runPollTick(page, "/namespaces", 10_000);
     assert.equal(namespaces.reads, before + 1);
   };
   // Ticks that must start no read.

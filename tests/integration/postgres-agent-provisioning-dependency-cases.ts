@@ -1,23 +1,24 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { Check } from "typebox/value";
+import {
+  AgentProvisioningResponse,
+  AgentProvisioningStatusResponse,
+  InstallationResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+import { provisioningError } from "./postgres-agent-provisioning-setup.ts";
 
 import {
-  ErrorResponse,
-  type AgentProvisioningResponse,
-  type AgentProvisioningStatusWire,
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
   type AuditEvent,
   type ConfigurationDriver,
-  type InstallationWire,
   type OpenClawConfigurationDocument,
   type ProvisionAgentBody,
   type SandboxDriver,
   type SecretWire,
 } from "../../packages/contracts/src/index.ts";
-import {
-  CodexPluginDriver,
-  OCCPluginDriver,
-} from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   ProvisioningSecretDriverError,
   type AgentProvisioningProgress,
@@ -26,25 +27,27 @@ import {
   type ProvisioningPendingEffect,
   type WorkClaim,
 } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
-  CODEX_MODEL_ONLY,
   codexRuntimeOffProvider,
-  DEPENDENCY_UNAVAILABLE,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   dedicatedOpenClawSandboxRefusal,
+  DEPENDENCY_UNAVAILABLE,
   keepRuntime,
   PROVISIONING_NOT_COMPLETED,
   runtimeIdRequired,
   runtimePoliciesConflict,
-  selectablePrimaryRuntimeRequired,
 } from "../helpers/refusal-text.mjs";
+import {
+  CODEX_MODEL_ONLY,
+  selectablePrimaryRuntimeRequired,
+} from "../helpers/refusal-configuration-runtime.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
@@ -83,7 +86,7 @@ interface ProvisioningRow {
   configuration_id: string | null;
   progress: {
     error?: AgentProvisioningProgress["error"];
-    pendingEffect?: ProvisioningPendingEffect;
+    pendingEffect?: Pick<ProvisioningPendingEffect, "kind" | "owner" | "targetId">;
   };
 }
 
@@ -128,11 +131,6 @@ function dedicatedOpenClawDefaults() {
     model: "openai/gpt-5",
     models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
   };
-}
-
-function provisioningError(response: { body: unknown }): ErrorResponse["error"] {
-  assert.ok(Check(ErrorResponse, response.body), JSON.stringify(response.body));
-  return response.body.error;
 }
 
 function observeProvisioningRetry() {
@@ -183,7 +181,8 @@ export function registerProvisioningDependencyCases({
     const body = provisioningBody(namespaceId, secrets);
     configure?.(body);
     const provisionPath = `/namespaces/${namespaceId}/agents/provision`;
-    const admitted = await fixture.request<AgentProvisioningResponse["data"]>(
+    const admitted = await fixture.requestChecked(
+      AgentProvisioningResponse,
       "POST",
       provisionPath,
       { body },
@@ -247,7 +246,11 @@ export function registerProvisioningDependencyCases({
       const failed = await waitFor(
         "Agent provisioning to fail before its Configuration",
         async () => {
-          const observed = await fixture.request<AgentProvisioningStatusWire>("GET", url);
+          const observed = await fixture.requestChecked(
+            AgentProvisioningStatusResponse,
+            "GET",
+            url,
+          );
           assert.equal(observed.status, 200, JSON.stringify(observed.body));
           assert.ok(observed.data);
           return observed.data.status === "failed" ? observed.data : undefined;
@@ -259,7 +262,7 @@ export function registerProvisioningDependencyCases({
 
       // Restart with only the OpenClaw catalog. Status still returns the persisted failure.
       const switched = await switchPluginDriver();
-      const status = await switched.request<AgentProvisioningStatusWire>("GET", url);
+      const status = await switched.requestChecked(AgentProvisioningStatusResponse, "GET", url);
       assert.equal(status.status, 200, JSON.stringify(status.body));
       assert.ok(status.data);
       assert.deepEqual(status.data, failed);
@@ -303,13 +306,13 @@ export function registerProvisioningDependencyCases({
       const switched = await switchPluginDriver();
       await switched.startWorker();
       await waitFor("the switched worker to reject the provisioning work", async () => {
-        const observed = await switched.request<AgentProvisioningStatusWire>("GET", url);
+        const observed = await switched.requestChecked(AgentProvisioningStatusResponse, "GET", url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
         assert.ok(observed.data);
         return observed.data.status === "failed" ? observed.data : undefined;
       });
       await switched.stopWorker();
-      const failed = await switched.request<AgentProvisioningStatusWire>("GET", url);
+      const failed = await switched.requestChecked(AgentProvisioningStatusResponse, "GET", url);
       assert.equal(failed.status, 200, JSON.stringify(failed.body));
       assert.ok(failed.data);
       assert.ok(failed.data.error);
@@ -338,7 +341,11 @@ export function registerProvisioningDependencyCases({
       });
       const namespace = await fixture.bootstrapNamespace();
       // The Installation cannot admit dedicated OpenClaw, so it does not report native workers.
-      const installation = await fixture.request<InstallationWire>("GET", "/installation");
+      const installation = await fixture.requestChecked(
+        InstallationResponse,
+        "GET",
+        "/installation",
+      );
       assert.equal(installation.status, 200, JSON.stringify(installation.body));
       assert.ok(installation.data);
       assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
@@ -463,11 +470,7 @@ export function registerProvisioningDependencyCases({
       const provision = () => {
         const body = provisioningBody(namespace.id, secrets);
         body.configuration.values.agents.defaults = dedicatedOpenClawDefaults();
-        return fixture.request<AgentProvisioningResponse["data"]>(
-          "POST",
-          `/namespaces/${namespace.id}/agents/provision`,
-          { body },
-        );
+        return fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, { body });
       };
 
       const refused = await provision();
@@ -485,7 +488,7 @@ export function registerProvisioningDependencyCases({
       // Admitted while the setting is off. After an operator turns it back on, a status read
       // still reports the stored work; only writes go through the Sandbox view again.
       fixture = await compose(false);
-      const admitted = await provision();
+      const admitted = fixture.readResponse(AgentProvisioningResponse, await provision());
       assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
       assert.ok(admitted.data);
       // No worker runs here; a later test's worker must not run this job with its Drivers.
@@ -494,7 +497,8 @@ export function registerProvisioningDependencyCases({
         "OpenShell admission case ends at the status read",
       );
       fixture = await compose(true);
-      const status = await fixture.request<AgentProvisioningStatusWire>(
+      const status = await fixture.requestChecked(
+        AgentProvisioningStatusResponse,
         "GET",
         admitted.data.provisioning.url,
       );
@@ -578,13 +582,18 @@ export function registerProvisioningDependencyCases({
       const replayed = await switched.request("POST", provisionPath, { body });
       assert.equal(replayed.status, 503, JSON.stringify(replayed.body));
       assert.equal(provisioningError(replayed).message, message);
-      const restoredStatus = await fixture.request<AgentProvisioningStatusWire>("GET", url);
+      const restoredStatus = await fixture.requestChecked(
+        AgentProvisioningStatusResponse,
+        "GET",
+        url,
+      );
       assert.equal(restoredStatus.status, 200, JSON.stringify(restoredStatus.body));
       assert.ok(restoredStatus.data);
       assert.equal(restoredStatus.data.status, "queued");
       assert.equal(restoredStatus.data.attemptCount, 1);
       assert.equal(restoredStatus.data.error, undefined);
-      const restoredRetry = await fixture.request<AgentProvisioningStatusWire>(
+      const restoredRetry = await fixture.requestChecked(
+        AgentProvisioningStatusResponse,
         "POST",
         `${url}/retry`,
       );
@@ -748,7 +757,8 @@ export function registerProvisioningComputeGatewayCase({
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
       const body = provisioningBody(namespace.id, secrets);
-      const admitted = await fixture.request<AgentProvisioningResponse["data"]>(
+      const admitted = await fixture.requestChecked(
+        AgentProvisioningResponse,
         "POST",
         `/namespaces/${namespace.id}/agents/provision`,
         {
@@ -794,7 +804,8 @@ export function registerProvisioningComputeGatewayCase({
       );
 
       // Reading status reports the stored failure rather than a 500 or a fresh refusal.
-      const status = await fixture.request<AgentProvisioningStatusWire>(
+      const status = await fixture.requestChecked(
+        AgentProvisioningStatusResponse,
         "GET",
         admitted.data.provisioning.url,
       );
@@ -815,7 +826,8 @@ export function registerProvisioningComputeGatewayCase({
       const matching = createTestKubernetesComputeDriver("compute-provisioning-loopback-proxy");
       computeDriver.validateAgentProvisioning = (input) =>
         matching.validateAgentProvisioning(input);
-      const admittedProxy = await fixture.request<AgentProvisioningResponse["data"]>(
+      const admittedProxy = await fixture.requestChecked(
+        AgentProvisioningResponse,
         "POST",
         `/namespaces/${namespace.id}/agents/provision`,
         { body: proxied },

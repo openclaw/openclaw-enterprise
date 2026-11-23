@@ -3,7 +3,7 @@ import test from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import type { Fixtures } from "./sandbox-driver-workspace-expiry-cases.ts";
-import { overrideWorkspaceSetupSecretRead } from "./sandbox-driver-workspace-expiry-fixture.ts";
+import { overrideWorkspaceSetupSecretRead } from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 type SetupScenario = {

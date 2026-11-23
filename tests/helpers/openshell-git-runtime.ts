@@ -12,7 +12,7 @@ import {
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import type { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { unloggedFields } from "./occ-log-line.ts";
 
 // The worker logs the runtime's events through the production logger (worker.mjs), which keeps
@@ -171,7 +171,7 @@ export function openShellGitRuntimeFixture({
     workspace: "team-workspace",
     phase: "SANDBOX_PHASE_READY",
     restartCount: 0,
-    spec: { restart_policy: "SANDBOX_RESTART_POLICY_NEVER" },
+    spec: { restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS" },
   };
   const supervisor = world?.supervisor ?? {
     supervisorSessionId: "session-one",
@@ -188,9 +188,9 @@ export function openShellGitRuntimeFixture({
     observedWith: [] as (Entry["installed"] | undefined)[],
   };
   const faults: Faults = world?.faults ?? {};
-  // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
-  // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
-  const prepared = /^oce-git-[0-9a-f]{32}$/;
+  // Bootstrap writes prepared Git profiles and providers under these prefixes.
+  // Any other name belongs to the Agent's model provider.
+  const prepared = /^oce-(?:git|github-installation)-[0-9a-f]{32}$/;
   const profiles = new Map<string, Record<string, unknown>>();
   const providers = new Map<string, FixtureProvider>();
   const answer = (method: string, name?: string) => {
@@ -294,6 +294,9 @@ export function openShellGitRuntimeFixture({
     },
   };
   const provider = {
+    // The seeded Provider can only model legacy observations. Repository network
+    // policy cases use the real Provider, which establishes its own lease.
+    repositoryPolicyIsFresh: () => entry.authorization.repositoryNetworkPolicy === undefined,
     observe: async (
       binding: Entry["binding"],
       sandboxId: string,
@@ -436,7 +439,7 @@ export function openShellGitRuntimeFixture({
     logRuntimeEvent(event);
     onEvent?.(event);
   };
-  runtime["routes"] = store as unknown as OpenShellGitRuntime["routes"];
+  runtime["routes"] = store;
   if (store !== undefined && !store.rows.has(revision.id)) {
     // The row this worker's own bootstrap left: fence 1, the bootstrap generation written.
     store.rows.set(revision.id, {

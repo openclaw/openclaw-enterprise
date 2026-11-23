@@ -421,7 +421,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		gatewayClientNamespace = s.PlatformNamespace
 	}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
-	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
+	// Memory matches the installation profiles (scripts/render-installation-profile.ts):
 	// requests cover measured use between turns and limits cover measured peaks.
 	// Gateways hold 2.3-2.4 GiB and peak at 2.8 GiB on their first turn; a dedicated
 	// Codex Gateway with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
@@ -438,7 +438,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"secret":        map[string]any{"id": "secret-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"compute": map[string]any{"id": "compute-kubernetes", "configuration": map[string]any{
 				"authentication": auth, "images": map[string]any{"gateway": reference, "agent": reference, "requireImmutableDigest": true},
-				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
+				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "20"}, "containerDefaults": resources}},
 				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "pluginStatusProxySourceCidrs": []string{statusProxySource}, "gatewayClients": []any{map[string]any{"namespace": gatewayClientNamespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
@@ -554,8 +554,8 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
+			"integrationMode": "legacy",
 			"gateway": map[string]any{
-				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},
@@ -579,8 +579,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 				},
 			},
 			"kubernetes": map[string]any{
-				"runtimeClassName": openShellRuntimeClass,
-				"userNamespaces":   false,
+				"userNamespaces": false,
 				// Provider-owned Harness Pods need the same budget as Compute-owned
 				// Harnesses; otherwise the namespace's smaller default applies.
 				"agentResources":   harnessResources,
@@ -600,9 +599,13 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	}
 }
 
-// prepareDevelopmentCodexSandbox verifies the owned node before either local
-// control-plane profile selects a dedicated Codex runtime.
+// prepareDevelopmentCodexSandbox verifies workspace-write confinement unless the
+// caller explicitly selects full-access development verification.
 func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *developmentState, runtimeImage string, timeoutSeconds int) (string, error) {
+	if r.env["OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE"] == "danger-full-access" {
+		fmt.Fprintln(r.opts.Out, "Workspace-write sandbox proof is not applicable and was not performed: danger-full-access was explicitly selected.")
+		return "", nil
+	}
 	fmt.Fprintln(r.opts.Out, "Verifying the dedicated Codex sandbox on the owned k3d node...")
 	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.ts", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
 	command.Stderr = r.opts.Err

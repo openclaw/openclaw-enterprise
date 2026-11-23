@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import * as path from "node:path";
 import { join } from "node:path";
-import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -101,7 +99,7 @@ test("publication workflow requires explicit chart opt-in and a successful image
   assert.equal(record(downloaded.with).pattern, undefined);
   const verified = record(smokeSteps.find((step) => step.id === "verified"));
   const smoke = record(
-    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.mjs smoke")),
+    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.ts smoke")),
   );
   const qualified = record(
     smokeSteps.find((step) =>
@@ -114,9 +112,13 @@ test("publication workflow requires explicit chart opt-in and a successful image
   assert.equal(record(smoke.env).IMAGE_DIGEST, "${{ steps.verified.outputs.digest }}");
   assert.equal(smoke["continue-on-error"], undefined);
   assert.equal(qualified.if, undefined);
+  const cleanup = record(
+    smokeSteps.find((step) => optionalText(step.run)?.startsWith("node scripts/ci/cleanup.ts ")),
+  );
+  assert.equal(cleanup.if, "always()");
   assert.equal(
-    record(smokeSteps.find((step) => optionalText(step.run)?.includes("cleanup.mjs"))).if,
-    "always()",
+    cleanup.run,
+    'node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"',
   );
   const controllerUpload = record(
     steps.find((step) => optionalText(optionalRecord(step.with)?.name)?.startsWith("platform-")),
@@ -213,133 +215,4 @@ test("publication keeps its lock across jobs and reports image success after cha
       ),
     );
   }
-});
-
-test("native runtime compilation uses spare capacity without overruling runner selection", () => {
-  const check: unknown = JSON.parse(
-    execFileSync(
-      process.env.OCC_YQ_BIN ?? "yq",
-      ["-o=json", ".", join(root, ".github/workflows/container-check.yml")],
-      { encoding: "utf8" },
-    ),
-  );
-  const prepare = record(check, "jobs", "prepare");
-  const matrix = records(record(prepare, "strategy", "matrix").include);
-  const prepareSteps = records(prepare.steps);
-  const armRuntime = record(matrix.find((row) => row.image === "runtime" && row.arch === "arm64"));
-  assert.equal(
-    armRuntime.runner,
-    "${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}",
-  );
-  assert.equal(
-    record(matrix.find((row) => row.arch === "arm64" && !row.image)).runner,
-    "${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-8vcpu-ubuntu-2404-arm' }}",
-  );
-  const report = record(prepareSteps.find((step) => step.id === "resources"));
-  const script = text(text(report.run).match(/node <<'NODE'\n([\s\S]*?)\nNODE/)?.[1]);
-  const GiB = 1024 ** 3;
-  // Execute the shipped reporting step against kernel/API observations. This
-  // checks admission and output wiring, not scheduler capacity or build success.
-  for (const scenario of [
-    { name: "spare ARM capacity", expected: 8 },
-    { name: "visible root memory pressure", rootHigh: 40 * GiB, rootUsed: 12 * GiB, expected: 4 },
-    { name: "visible root CPU quota", rootQuota: "800000 100000", expected: 4 },
-    { name: "blank root memory usage", rootHigh: 40 * GiB, rootUsed: " \t", expected: 4 },
-    { name: "valid zero root memory usage", rootHigh: 40 * GiB, rootUsed: 0, expected: 8 },
-    {
-      name: "delegated root is current cgroup",
-      cgroup: "0::/",
-      rootHigh: 40 * GiB,
-      rootUsed: 12 * GiB,
-      expected: 4,
-    },
-    { name: "partial root observations", partialRoot: true, expected: 4 },
-    { name: "unreadable root", deniedRoot: true, expected: 4 },
-    { name: "smaller override", cpus: 8, expected: 4 },
-    { name: "busy host", free: 39 * GiB, expected: 4 },
-    { name: "process memory limit", constrained: 24 * GiB, expected: 4 },
-    { name: "ancestor memory limit", max: 32 * GiB, expected: 4 },
-    { name: "ancestor memory pressure", high: 48 * GiB, used: 9 * GiB, expected: 4 },
-    { name: "ancestor CPU quota", quota: "800000 100000", expected: 4 },
-    { name: "fractional CPU quota", quota: "50000 100000", expected: 4 },
-    { name: "unknown controllers", missing: true, expected: 4 },
-    { name: "legacy cgroup", cgroup: "2:cpu:/slice/leaf", expected: 4 },
-    { name: "controller remains unchanged", image: "controller", expected: 4 },
-    { name: "AMD64 remains unchanged", arch: "x64", expected: 4 },
-  ]) {
-    const arch = scenario.arch ?? "arm64";
-    const output: unknown[] = [];
-    const observed: unknown[] = [];
-    const files: Record<string, string> = {
-      "/proc/self/cgroup": scenario.cgroup ?? "0::/slice/leaf\n",
-      "/sys/fs/cgroup/cgroup.controllers": "cpu memory",
-      "/sys/fs/cgroup/slice/leaf/cpu.max": "max 100000",
-      "/sys/fs/cgroup/slice/leaf/memory.max": "max",
-      "/sys/fs/cgroup/slice/leaf/memory.high": "max",
-      "/sys/fs/cgroup/slice/leaf/memory.current": "0",
-      "/sys/fs/cgroup/slice/cpu.max": scenario.quota ?? "max 100000",
-      "/sys/fs/cgroup/slice/memory.max": String(scenario.max ?? "max"),
-      "/sys/fs/cgroup/slice/memory.high": String(scenario.high ?? "max"),
-      "/sys/fs/cgroup/slice/memory.current": String(scenario.used ?? 0),
-    };
-    if (scenario.rootHigh !== undefined || scenario.rootQuota !== undefined) {
-      Object.assign(files, {
-        "/sys/fs/cgroup/cpu.max": scenario.rootQuota ?? "max 100000",
-        "/sys/fs/cgroup/memory.max": "max",
-        "/sys/fs/cgroup/memory.high": String(scenario.rootHigh ?? "max"),
-        "/sys/fs/cgroup/memory.current": String(scenario.rootUsed ?? 0),
-      });
-    }
-    if (scenario.partialRoot) {
-      files["/sys/fs/cgroup/cpu.max"] = "max 100000";
-    }
-    const modules = {
-      "node:path": path,
-      "node:os": {
-        availableParallelism: () => scenario.cpus ?? 16,
-        totalmem: () => 48 * GiB,
-        freemem: () => scenario.free ?? 44 * GiB,
-      },
-      "node:fs": {
-        readFileSync: (name: string) => {
-          if (scenario.missing || (scenario.deniedRoot && name === "/sys/fs/cgroup/cpu.max")) {
-            throw Object.assign(new Error("unavailable"), { code: "EACCES" });
-          }
-          if (!(name in files)) {
-            throw Object.assign(new Error("absent"), { code: "ENOENT" });
-          }
-          return files[name];
-        },
-        appendFileSync: (name: string, value: unknown) => {
-          assert.equal(name, "output");
-          output.push(value);
-        },
-      },
-    };
-    runInNewContext(script, {
-      require: (name: string) => {
-        assert.ok(name in modules);
-        return record(modules)[name];
-      },
-      process: {
-        arch,
-        env: {
-          IMAGE: scenario.image ?? "runtime",
-          PLATFORM: `linux/${arch === "x64" ? "amd64" : arch}`,
-          GITHUB_OUTPUT: "output",
-        },
-        constrainedMemory: () => scenario.constrained ?? 0,
-        availableMemory: () => 44 * GiB,
-      },
-      console: { log: (value: unknown) => observed.push(value) },
-    });
-    assert.deepEqual(output, [`node_build_jobs=${scenario.expected}\n`], scenario.name);
-    assert.equal(record(observed[0]).nodeBuildJobs, scenario.expected, scenario.name);
-  }
-  const assembly = record(prepareSteps.find((step) => step.id === "build"));
-  assert.ok(
-    text(record(assembly.with)["build-args"]).includes(
-      "format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs)",
-    ),
-  );
 });

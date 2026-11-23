@@ -4,29 +4,18 @@ import { request } from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
-import type {
-  ClientCommand,
-  CredentialClientFixture,
-  StartCredentialClientFixture,
-} from "../fixtures/repository-credentials/clients.ts";
+import type { CredentialClientFixture } from "../fixtures/repository-credentials/clients.ts";
 import { runPinnedClients } from "../fixtures/repository-credentials/clients.ts";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
-import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import {
-  gatewayRequest as requestGateway,
-  startCredentialServiceFixture as startService,
-} from "../fixtures/repository-credentials/service.mjs";
+  gatewayRequest,
+  startCredentialServiceFixture,
+} from "../fixtures/repository-credentials/service-fixture.ts";
 
-const run = runProcess as ClientCommand;
-const startCredentialServiceFixture = startService as StartCredentialClientFixture;
-const gatewayRequest: (
-  fixture: CredentialClientFixture,
-  target: string,
-) => Promise<{ status: number; body: string }> = requestGateway;
 type RawRequestOptions = { method?: string; headers?: Record<string, string> };
 
-// Passing path separately preserves escapes and dot segments for the real listener.
-// This client sends no invented Git wire body; stock Git owns every allowed RPC.
+// Stock Git owns the wire body for allowed requests.
 function rawRequest(
   fixture: CredentialClientFixture,
   path: string,
@@ -91,7 +80,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
         profile: "git-write",
         configuration: { pushRefAllowlist: ["refs/heads/native-path"] },
       });
-      assert.ok(fixture);
       // Both unauthenticated discovery shapes must challenge before any upstream dispatch.
       for (const service of ["git-upload-pack", "git-receive-pack"]) {
         const response = await rawRequest(fixture, `${spelling}/info/refs?service=${service}`);
@@ -189,7 +177,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
 
     test(`cold git-read denies receive-pack through ${spelling}`, async (t) => {
       const fixture = await startCredentialServiceFixture(t, { profile: "git-read" });
-      assert.ok(fixture);
       const authorization = gitAuthorization(fixture);
       const refs = () =>
         run("/usr/bin/git", ["for-each-ref", "--format=%(refname) %(objectname)"], {
@@ -220,7 +207,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
 
   test("native path normalization preserves raw-target denials and exact API routes", async (t) => {
     const fixture = await startCredentialServiceFixture(t, { profile: "git-full" });
-    assert.ok(fixture);
     const authorization = `Bearer ${fixture.opened.bearer}`;
     // Non-Git shapes use the API authentication scheme; the real planner must still deny them.
     for (const [path, options] of [

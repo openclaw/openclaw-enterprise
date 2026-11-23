@@ -137,6 +137,19 @@ including `ci-results` artifacts. A queued job has not necessarily acquired a
 runner. Use the job summary's phase timings to distinguish queue time, execution,
 and result publication. A skipped lane does not verify access to its model provider.
 
+In the Production Observability job, find `lane=k3d-observability` in the
+**Prepare lane** and **Cleanup lane** step logs. The check annotation title is
+`Production Observability timing`. Match the run ID, attempt, and tested SHA.
+Pair one start with one finish for each phase in order. `cluster-build-pull`
+covers concurrent cluster preparation and image builds and pulls.
+`workload-image-imports` covers serial workload image imports into the cluster.
+`lane-cleanup` covers resource cleanup through the lane result update. A finish
+reports success or failure with elapsed milliseconds. Cleanup reports a skip
+without a duration when it processes no resource journal and finalization
+succeeds. A missing, unmatched, malformed, duplicate, or overlapping record
+leaves the measurement unavailable. Use the lane result for test and cleanup
+disposition.
+
 [First Agent Smoke](first-agent-smoke.md) is a separate job and is not a
 `CI Required` dependency. A green merge gate does not establish that smoke passed.
 The [CI flow](../../flows/github-actions-testing.md) describes result accounting.
@@ -146,4 +159,4 @@ The [CI flow](../../flows/github-actions-testing.md) describes result accounting
 - [CI workflow](../../../.github/workflows/ci.yml): selection, jobs, and merge gate.
 - [Suite index](../../../scripts/ci/test-suites.json): lane groups; individual manifests are linked above.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation, execution, artifacts, and cleanup.
-- [Test runner](../../../scripts/ci/run-tests.mjs): inventory checks, execution, and aggregation.
+- [Test runner](../../../scripts/ci/run-tests.ts): inventory checks, execution, and aggregation.

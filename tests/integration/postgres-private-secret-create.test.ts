@@ -14,7 +14,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const origin = "https://console.oce.localhost";
 const authSecret = "private-test-auth-" + randomUUID();
@@ -464,6 +464,13 @@ test(
           };
           s.after(close);
           const f = await fixture(s, proxy.url);
+          // The recovered controller skips rows another transaction holds, so it acts only
+          // after PostgreSQL has ended the session of the abandoned COMMIT.
+          const abandonHeldCommit = async (step: string) => {
+            await waitFor(step + " COMMIT is held", async () => proxy.commitPaused || undefined);
+            await close();
+            await proxy.waitForHeldSessionEnd(f.pool);
+          };
           const input = f.input(await f.draft());
           const create = f.core.createNamespacedSecret.bind(f.core);
           const remove = f.core.deleteNamespacedSecret.bind(f.core);
@@ -486,11 +493,7 @@ test(
           if (phase === "publication") {
             const pending = f.inject("POST", "/oauth-clients", input);
             if (mode === "not-forwarded") {
-              await waitFor(
-                "publication COMMIT is held",
-                async () => proxy.commitPaused || undefined,
-              );
-              await close();
+              await abandonHeldCommit("publication");
             }
             const result = await pending;
             assert.equal(result.statusCode, 503);
@@ -563,8 +566,7 @@ test(
               () => true,
             );
             if (mode === "not-forwarded") {
-              await waitFor("cleanup COMMIT is held", async () => proxy.commitPaused || undefined);
-              await close();
+              await abandonHeldCommit("cleanup");
             }
             assert.equal(await settled, true, "unknown cleanup COMMIT must propagate");
             assert.ok(proxy.observedCommit);
