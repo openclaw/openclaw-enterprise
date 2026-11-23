@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { isName, SecretValue } from "@openclaw-enterprise/contracts";
+import { isName, isRepositoryTokenSource, SecretValue } from "@openclaw-enterprise/contracts";
 import type {
   AccessBinding,
   CredentialRefreshStatus,
@@ -30,6 +30,7 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
+import { isOpenShellGitCredential } from "../egress-proxy/openshell-prepared-git-provider.ts";
 
 const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
 
@@ -63,6 +64,19 @@ function encodeCredential(secret: SourceRegistrationInput["secret"]): {
     );
   }
   return { stored: encoded, version };
+}
+
+// A repository token is held only for the native Git Provider. Refuse what it cannot install
+// before custody, so a replacement never displaces a usable value with an unusable one.
+function checkRepositoryTokenMaterial(
+  source: { readonly config: Readonly<Record<string, string>> },
+  secret: SourceRegistrationInput["secret"],
+): void {
+  if (isRepositoryTokenSource(source) && !Object.values(secret).every(isOpenShellGitCredential)) {
+    throw new TokenServiceSourceInputError(
+      "The native Git Provider cannot install this credential.",
+    );
+  }
 }
 
 function decodeCredential(value: string): ResolvedCredential {
@@ -166,6 +180,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       throw new ScopeViolationError("The credential source identity is invalid.");
     }
     checkLifecycle(input.lifecycleConfig);
+    checkRepositoryTokenMaterial(input, input.secret);
     const stored = encodeCredential(input.secret);
     const id = `cs_${randomUUID()}`;
     const ref: CredentialSourceReference = {
@@ -221,6 +236,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         throw new ResourceStateConflictError("The credential source is unavailable.");
       }
       if (update.secret) {
+        checkRepositoryTokenMaterial(found, update.secret);
         const stored = encodeCredential(update.secret);
         await withComputeAbortSignal(signal, () =>
           this.store.update(this.storageRef(ref), stored.stored),
@@ -234,7 +250,9 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       signal.throwIfAborted();
       return found;
     });
-    if (version && this.credentialProxy) {
+    // A repository token never has a model Provider copy, so there is nothing to deliver: a
+    // committed Git-only replacement does not depend on the model delivery Gateway.
+    if (version && this.credentialProxy && !isRepositoryTokenSource(updated)) {
       if (!this.credentialProxy.notifyCredentialUpdated) {
         throw new CredentialDeliveryFailedError();
       }

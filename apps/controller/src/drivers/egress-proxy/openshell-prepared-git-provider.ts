@@ -150,6 +150,14 @@ function refuse(): never {
 }
 
 /**
+ * Whether this Provider can install the value as its bearer credential: GitHub wire syntax within
+ * the wire limit, with no text OpenShell would read as a placeholder to resolve.
+ */
+export function isOpenShellGitCredential(value: unknown): value is string {
+  return isGitHubWireCredential(value) && !value.includes("openshell:resolve:");
+}
+
+/**
  * How long a provider write may run once it is sent. The caller's signal bounds the reads
  * before it and decides whether the write starts; it never abandons a write in flight, which
  * would leave its outcome unknown and close the route for good (finding 2211). The gateway
@@ -332,8 +340,7 @@ export class OpenShellPreparedGitProvider {
     const expires = Date.parse(token.expiresAt);
     const remaining = expires - Date.now();
     if (
-      !isGitHubWireCredential(token.value) ||
-      token.value.includes("openshell:resolve:") ||
+      !isOpenShellGitCredential(token.value) ||
       !Number.isFinite(expires) ||
       remaining <= 0 ||
       // A Source's loan is the revocation bound, so it is shorter than an App token's hour.

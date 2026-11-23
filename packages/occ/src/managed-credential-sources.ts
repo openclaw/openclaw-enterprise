@@ -1,9 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import { driverOperation } from "./driver-operation.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   canonicalSourceRepositoryCeiling,
   GITHUB_SOURCE_PRESET_ID,
   isGitHubFineGrainedToken,
+  isRepositoryTokenSource,
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   SOURCE_REPOSITORIES_CONFIG_KEY,
@@ -55,7 +57,7 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
-/** `repositoryCeiling` applies to a `github` Source only; null clears it. */
+/** A github Source must keep its preset and a nonempty repository ceiling. */
 export type UpdateManagedCredentialSourceInput =
   | (SourceUpdate & {
       readonly providerPreset?: SourceProviderPresetId | null;
@@ -114,13 +116,29 @@ function sourceRepositoryCeilingConfig(
   }
 }
 
+function validGitHubSourceConfig(config: Readonly<Record<string, string>>): boolean {
+  const repositories = config[SOURCE_REPOSITORIES_CONFIG_KEY];
+  if (
+    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== GITHUB_SOURCE_PRESET_ID ||
+    typeof repositories !== "string" ||
+    Object.keys(config).length !== 2
+  ) {
+    return false;
+  }
+  try {
+    return canonicalSourceRepositoryCeiling(repositories) === repositories;
+  } catch {
+    return false;
+  }
+}
+
 /** Refused before custody; the message names the accepted class and never the value. */
 function assertGitHubSourceMaterial(secret: Readonly<Record<string, string>>): void {
-  for (const [field, value] of Object.entries(secret)) {
+  for (const value of Object.values(secret)) {
     // GitHub tokens are printable ASCII; a pasted newline or space would fail only at use.
     if (!isGitHubFineGrainedToken(value) || !/^[\x21-\x7e]+$/.test(value)) {
       throw new CredentialSourceConfigError(
-        field,
+        "secret",
         "A github credential source accepts only a fine-grained personal access token.",
         "secret",
       );
@@ -289,7 +307,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       created.type !== input.lifecycleConfig.type ||
       created.name !== input.name ||
       Object.keys(created.secrets).length !== 0 ||
-      JSON.stringify(created.config) !== JSON.stringify(config)
+      !isDeepStrictEqual(created.config, config, { skipPrototype: true })
     ) {
       throw new ResourceStateConflictError(
         "The TokenService returned an invalid credential source.",
@@ -411,24 +429,33 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       }
       return source;
     };
-    // The ceiling is not secret: the audit shows who changed a github Source's repository scope.
-    const completedAudit = (source: Readonly<CredentialSource>) => {
+    const completedAudit = (
+      source: Readonly<CredentialSource>,
+      updated?: Readonly<CredentialSource>,
+    ) => {
       const completed = audit(resource);
-      const repositories = ceiling?.[SOURCE_REPOSITORIES_CONFIG_KEY];
-      const previousRepositories = source.config[SOURCE_REPOSITORIES_CONFIG_KEY];
+      if (source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID) {
+        const previousRepositories = source.config[SOURCE_REPOSITORIES_CONFIG_KEY];
+        // Replacement releases the lock. Only the owner receipt confirms the committed ceiling.
+        const repositories = updated?.config[SOURCE_REPOSITORIES_CONFIG_KEY];
+        if (updated && !validGitHubSourceConfig(updated.config)) {
+          throw new ResourceStateConflictError("The updated credential source is invalid.");
+        }
+        return {
+          ...completed,
+          details: {
+            ...completed.details,
+            providerPreset: GITHUB_SOURCE_PRESET_ID,
+            ...(updated ? { repositories } : { repositoriesAtAdmission: previousRepositories }),
+            ...(!changesCredential && repositories !== previousRepositories
+              ? { previousRepositories }
+              : {}),
+          },
+        };
+      }
       return input.providerPreset === undefined
         ? completed
-        : {
-            ...completed,
-            details: {
-              ...completed.details,
-              providerPreset: input.providerPreset,
-              ...(repositories === undefined ? {} : { repositories }),
-              ...(repositories === undefined || repositories === previousRepositories
-                ? {}
-                : { previousRepositories }),
-            },
-          };
+        : { ...completed, details: { ...completed.details, providerPreset: input.providerPreset } };
     };
     if (!changesCredential) {
       return dependencies.transactions.transact(async (state) => {
@@ -441,7 +468,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         if (!updated) {
           throw new ResourceStateConflictError("The credential source changed during update.");
         }
-        await state.audit.append(completedAudit(source));
+        await state.audit.append(completedAudit(source, updated));
         return credentialSourceMetadata(updated);
       });
     }
@@ -485,7 +512,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         );
       }
       await dependencies.transactions.transact((state) =>
-        state.audit.append(completedAudit(source)),
+        state.audit.append(completedAudit(source, updated)),
       );
       return credentialSourceMetadata(updated);
     } catch (error) {
@@ -620,15 +647,18 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
-      try {
-        await dependencies.retireDelivery(
-          namespace,
-          identity.sourceRef,
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-        );
-      } catch {
-        // Native errors can contain credential or Workspace details.
-        throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+      // A repository token never has a model Provider copy, so retiring it waits on no Gateway.
+      if (!isRepositoryTokenSource(source)) {
+        try {
+          await dependencies.retireDelivery(
+            namespace,
+            identity.sourceRef,
+            AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+          );
+        } catch {
+          // Native errors can contain credential or Workspace details.
+          throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+        }
       }
       const removed = await driverOperation(
         () => owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
