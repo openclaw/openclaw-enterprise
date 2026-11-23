@@ -642,7 +642,7 @@ def preview_target(parser, profile, resolve_path):
     return paths, digests, trust
 
 
-def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, validate_candidate):
+def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, operation):
     directory = Path(resolve_path(profile["installationDirectory"]))
     paths.update({
         "baseline Helm values": str(directory / "values.yaml"),
@@ -655,6 +655,11 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, va
     ):
         if flag in options:
             paths[role] = options[flag]
+    check_compatibility = operation in ("plan", "apply") and COMPATIBILITY_RECEIPT in paths
+    if check_compatibility:
+        controller = profile.get("images", {}).get("controller")
+        if controller is None:
+            parser.error("--controller-compatibility-results requires a selected controller image")
     mappings = {}
     for role, filename in paths.items():
         if role in digests:
@@ -663,11 +668,19 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, va
         digests[role] = hashlib.sha256(content).hexdigest()
         if role != COMPATIBILITY_RECEIPT:
             mappings[role] = preview_mapping(parser, role, content)
+        elif check_compatibility:
+            try:
+                evidence = runpy.run_path("scripts/upgrade-evidence.py")
+                evidence["validate_compatibility_preview"](content, controller)
+            except (OSError, AttributeError, TypeError, ValueError, RecursionError):
+                parser.error(
+                    "Supply a passing PostgreSQL compatibility report for the selected controller and retry."
+                )
     before_values = mappings["baseline Helm values"]
     values = mappings.get("candidate Helm values", before_values)
     before_installation = mappings["baseline Installation"]
     installation = mappings.get("candidate Installation", before_installation)
-    if validate_candidate:
+    if operation not in ("resume", "migration-apply"):
         validate_candidate_inputs(parser, before_values, values, before_installation, installation)
 
     migration = setting(values, "database", "upgradeMigration")
@@ -768,6 +781,10 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, oper
     else:
         print("  Agents: keep current revisions")
     for name in input_names:
+        if name == COMPATIBILITY_RECEIPT and operation in ("plan", "apply"):
+            print("  The controller compatibility receipt matches the selected controller.")
+            print("  The installed controller digest requires live preflight. Qualify rollback separately.")
+            continue
         if name not in ("kubeconfig", KUBECONFIG_SERVER_CA, "baseline Helm values", "baseline Installation"):
             print(f"  {name}: supplied")
     for effect in effects:
@@ -983,7 +1000,7 @@ def main():
     paths, digests, trust = preview_target(parser, profile, path)
     if args.operation in ("plan", "preflight", *APPROVED_OPERATIONS):
         effects = preview_inputs(
-            parser, profile, path, options, paths, digests, validate_candidate=args.operation not in ("resume", "migration-apply"),
+            parser, profile, path, options, paths, digests, operation=args.operation,
         )
     if args.operation in ("plan", *APPROVED_OPERATIONS):
         original_run = args.evidence_dir if args.operation in ("resume", "migration-apply") else None

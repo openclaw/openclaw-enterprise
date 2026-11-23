@@ -1,5 +1,7 @@
 # Why an Agent needs a Credential Proxy
 
+This chapter uses a protected GitHub request to explain a trusted sender. For the broader proposed model and plugin credential flow, start with [credential sources](../reference/credential-sources.md#intended-credential-flow) and its [implementation status](../reference/credential-sources.md#implementation-status).
+
 An Agent needs to confirm that a private GitHub repository is the one its
 operator approved. Giving the Agent an installation token would also give
 any script it runs a credential it could copy and use elsewhere. A proxy that
@@ -74,7 +76,7 @@ on the same host, the adapter refuses the request before OCC selects a token.
 
 ## Follow the credential through the system
 
-1. [Register the metadata source](../reference/credential-sources.md#register-a-source) and [bind it to the Agent](../reference/credential-sources.md#bind-a-source-to-an-agent).
+1. [Register the metadata source](../reference/credential-sources/other-delivery-modes.md#register-a-source) and [bind it to the Agent](../reference/credential-sources/other-delivery-modes.md#bind-a-source-to-an-agent).
 2. [Follow the GET and its reply](../flows/credential-source-egress.md#follow-the-metadata-get). See [what a child process can do](../reference/security/credential-proxy.md#what-can-a-process-inside-the-execution-do) with the same grant.
 3. [Trace GitHub token issuance and renewal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token). The [repository credential reference](../reference/repository-credentials.md#token-service-lifecycle) distinguishes metadata access from Git access.
 4. [Follow a placeholder through the ordinary Gateway](../reference/drivers/openshell-credential-gateway.md#follow-a-codex-request-through-openshell) or inspect the [installation-wide GitHub preview](../reference/repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation).
