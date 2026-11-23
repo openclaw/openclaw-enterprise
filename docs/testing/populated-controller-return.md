@@ -52,6 +52,15 @@ transport changes or loses the expected identity; do not assign a published
 name to an unverified local image. Keep one approved runtime image fixed across
 both controllers.
 
+Before rehearsing a return, run [released controller compatibility](postgresql.md#released-controller-compatibility).
+After candidate writes, the test runs the released image’s migrator with
+`--require-current` against the disposable database. In the migration file’s
+`measurements`, find `kind: "released-controller-history"`. Only `status: "current"`
+confirms that the image accepts the upgraded history. `unsupported` means the
+image rejected that history, even if forward compatibility passed. A missing
+or `unconfirmed` result leaves the question open. With current history, still
+verify the return and read back the acknowledged write.
+
 In a private environment file, set the values below. Run from a local shell
 without model or Git credentials. Release checkouts must
 contain only their committed files, with no ignored build artifacts, hidden
