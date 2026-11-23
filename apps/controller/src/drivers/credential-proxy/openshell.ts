@@ -24,12 +24,12 @@ import {
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { failureAfterCleanup } from "../compute/cleanup-failure.ts";
-import { compileOpenShellCredentialPolicy } from "../sandbox/openshell-credential-policy.ts";
 import {
-  openShellProviderName,
-  openShellWorkspaceName,
-  type OpenShellGateway,
-} from "../../backends/openshell.ts";
+  compileOpenShellCredentialPolicy,
+  openShellCredentialProviderName,
+} from "../sandbox/openshell-credential-policy.ts";
+import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
+import type { OpenShellGatewayClient } from "../sandbox/openshell-gateway-client.ts";
 import {
   confirmSandboxAbsent,
   gatewayIdentityRefusal,
@@ -43,6 +43,7 @@ import {
   assertOpenShellPushedBinding,
   assertOpenShellPushedTarget,
   OpenShellCredentialDeliveryRefusedError,
+  openShellDeliveryProviderNames,
   openShellPushedPolicyMatches,
   prepareOccTokenServiceProviderCopy,
   readOwnedOpenShellPushedProvider,
@@ -99,12 +100,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
     const workspace = openShellWorkspaceName(namespace);
-    await retireOccTokenServiceProviderCopy({
-      client: this.backend.client.clientForNamespace(namespace.name),
-      workspace,
-      source,
-      signal,
-    });
+    const client = this.backend.client.clientForNamespace(namespace.name);
+    if ((await client.getWorkspace(workspace, signal)) === undefined) {
+      return;
+    }
+    const [providers, profiles] = await Promise.all([
+      client.listProviders(workspace, signal),
+      client.listProviderProfiles(workspace, signal),
+    ]);
+    for (const name of openShellDeliveryProviderNames(source, providers, profiles)) {
+      await retireOccTokenServiceProviderCopy({ client, workspace, source, name, signal });
+    }
   }
 
   /** Bind server-owned Source placement after platform state and Compute are available. */
@@ -138,14 +144,33 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     const workspace = openShellWorkspaceName(namespace);
     const client = this.backend.client.clientForNamespace(namespace.name);
-    const result = await updateOccTokenServiceProviderCopy({
-      client,
-      workspace,
+    const names = openShellDeliveryProviderNames(
       sourceRef,
-      ...(notification.version === undefined ? {} : { version: notification.version }),
-      resolveCredential,
-      signal,
-    });
+      await client.listProviders(workspace, signal),
+    );
+    let resolved: Promise<ResolvedCredential> | undefined;
+    // A Sandbox can attach several projections of this Source. Observe each update before the next
+    // changes the Sandbox's Provider environment revision.
+    for (const name of names) {
+      await this.pushCredentialUpdate({
+        client,
+        workspace,
+        sourceRef,
+        name,
+        ...(notification.version === undefined ? {} : { version: notification.version }),
+        resolveCredential: () => (resolved ??= resolveCredential()),
+        signal,
+      });
+    }
+  }
+
+  private async pushCredentialUpdate(
+    input: Parameters<typeof updateOccTokenServiceProviderCopy>[0] & {
+      readonly client: OpenShellGatewayClient;
+    },
+  ): Promise<void> {
+    const { client, workspace, signal } = input;
+    const result = await updateOccTokenServiceProviderCopy(input);
     if (!result) {
       return;
     }
@@ -391,6 +416,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               client: initialTarget.client,
               workspace: initialTarget.workspace,
               source: binding.sourceRef,
+              name: openShellCredentialProviderName(binding),
               signal: context.signal,
               retainIfAttached: true,
             }),
@@ -615,7 +641,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           if (!sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
             throw new OpenShellCredentialDeliveryRefusedError();
           }
-          if (providers?.includes(openShellProviderName(binding.sourceRef.id))) {
+          if (providers?.includes(openShellCredentialProviderName(binding))) {
             const provider = await refused(() =>
               readOwnedOpenShellPushedProvider({
                 client: scope.client,
@@ -653,6 +679,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             client: scope.client,
             workspace: scope.workspace,
             source: binding.sourceRef,
+            name: openShellCredentialProviderName(binding),
             signal: context.signal,
             retainIfAttached: true,
           }),

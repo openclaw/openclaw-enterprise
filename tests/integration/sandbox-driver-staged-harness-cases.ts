@@ -7,7 +7,10 @@ import type { TestContext } from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
-import { compileOpenShellCredentialPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
+import {
+  compileOpenShellCredentialPolicy,
+  openShellCredentialProviderName,
+} from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import {
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -200,8 +203,8 @@ ${NATIVE_WORKER_ENTRYPOINT}
     consumer: { kind: "model" as const, providerId: "openai" },
     projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
   };
-  // The Plugin shares the model's HTTPS host and port, but its Source is authorized only
-  // for a disjoint path. Its reviewed route does not need a duplicate saved Agent grant.
+  // The Plugin uses the same Source and HTTPS destination as the model, but has a
+  // separate projection and disjoint reviewed routes.
   const pluginRequest = {
     binary: "/app/bin/plugin-client",
     host: grant.host,
@@ -218,7 +221,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
   };
   const pluginBinding = {
     bindingRef: "plugin-account",
-    sourceRef: { ...binding.sourceRef, id: "cs_plugin" },
+    sourceRef: binding.sourceRef,
     consumer: {
       kind: "plugin" as const,
       pluginId: "example",
@@ -442,27 +445,32 @@ ${NATIVE_WORKER_ENTRYPOINT}
   const unsafeRevisions: readonly { readonly reason: string; readonly revision: AgentRevision }[] =
     [
       ...[
-        sharedBinding,
         {
-          ...sharedBinding,
-          projection: { ...sharedBinding.projection, environment: "PLUGIN_OTHER_API_KEY" },
+          binding: sharedBinding,
+          request: otherPluginRequest,
+          reason: "two bindings cannot share one credential environment",
         },
-      ].map((binding) => ({
-        reason: `a Source cannot be reused for disjoint routes with environment ${binding.projection.environment}`,
+        {
+          binding: {
+            ...sharedBinding,
+            projection: { ...sharedBinding.projection, environment: "PLUGIN_OTHER_API_KEY" },
+          },
+          request: pluginRequest,
+          reason: "distinct projections cannot share an overlapping credential path",
+        },
+      ].map(({ binding, request, reason }) => ({
+        reason,
         revision: {
           ...revision,
           credentialDeployment: {
             ...revision.credentialDeployment!,
             networkAccessPolicy: {
-              allowed: [
-                ...revision.credentialDeployment!.networkAccessPolicy.allowed,
-                otherPluginRequest,
-              ],
+              allowed: [...revision.credentialDeployment!.networkAccessPolicy.allowed, request],
             },
             bindings: [...revision.credentialDeployment!.bindings, binding],
             injectionPolicies: [
               ...revision.credentialDeployment!.injectionPolicies,
-              { bindingRef: binding.bindingRef, allowedRequests: [otherPluginRequest] },
+              { bindingRef: binding.bindingRef, allowedRequests: [request] },
             ],
           },
         },
@@ -547,7 +555,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
     );
     assert.deepEqual(events, [], "unsupported policy must not mutate the native runtime");
   }
-  // Plugin-only staging needs a separate model API key; OpenShell cannot project that Secret.
+  // The delivery pair qualifies policies independently of the launcher's Secret support.
   const pluginOnly = {
     ...revision.credentialDeployment!,
     networkAccessPolicy: { allowed: [pluginRequest, profileRequest] },
@@ -556,7 +564,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
   };
   assert.equal(
     supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: pluginOnly }),
-    false,
+    true,
   );
   await assert.rejects(
     driver.provisionStagedHarness({
@@ -654,7 +662,12 @@ ${NATIVE_WORKER_ENTRYPOINT}
     config: {},
     resourceVersion: "1",
   });
-  const pluginProvider = openShellProviderName(pluginBinding.sourceRef.id);
+  const pluginProvider = openShellCredentialProviderName(pluginBinding);
+  assert.notEqual(
+    pluginProvider,
+    provider,
+    "same-Source projections need separate Provider identities",
+  );
   gateway.providers.set(pluginProvider, {
     name: pluginProvider,
     type: "openai",

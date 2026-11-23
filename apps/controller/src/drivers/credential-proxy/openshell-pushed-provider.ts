@@ -31,7 +31,9 @@ import {
 } from "../sandbox/openshell-policy.ts";
 import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
 import {
+  openShellCredentialProviderName,
   openShellCredentialPathsOverlap,
+  openShellProjectedCredentialProviderName,
   type OpenShellCredentialRoute,
 } from "../sandbox/openshell-credential-policy.ts";
 
@@ -80,15 +82,20 @@ function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProf
   ) {
     refuse();
   }
-  return profileForSource(binding.sourceRef, binding.projection.environment);
+  return profileForSource(
+    binding.sourceRef,
+    binding.projection.environment,
+    openShellCredentialProviderName(binding),
+  );
 }
 
 function profileForSource(
   sourceRef: CredentialSourceReference,
   environment: string,
+  name: string,
 ): OpenShellProviderProfile {
   return {
-    id: openShellProviderName(sourceRef.id),
+    id: name,
     displayName: "OCC credential delivery",
     category: "PROVIDER_PROFILE_CATEGORY_OTHER",
     credentials: [
@@ -145,10 +152,11 @@ function ownsDeliveryProvider(
   provider: OpenShellProviderResponse | undefined,
   sourceRef: CredentialSourceReference,
   workspace: string,
+  name: string,
 ): provider is OpenShellProviderResponse {
   return (
     !!provider &&
-    provider.name === openShellProviderName(sourceRef.id) &&
+    provider.name === name &&
     provider.workspace === workspace &&
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
     provider.labels[SOURCE_ID_LABEL] === sourceRef.id &&
@@ -158,9 +166,27 @@ function ownsDeliveryProvider(
   );
 }
 
+/** Source lifecycle operations include all owned projection copies and the retained model name. */
+export function openShellDeliveryProviderNames(
+  source: CredentialSourceReference,
+  providers: readonly OpenShellProviderResponse[],
+  profiles: readonly OpenShellStoredProviderProfile[] = [],
+): readonly string[] {
+  const legacy = openShellProviderName(source.id);
+  const projected = new RegExp(`^${legacy}-[a-f0-9]{24}$`);
+  return [
+    ...new Set([
+      legacy,
+      ...providers.map(({ name }) => name).filter((name) => projected.test(name)),
+      ...profiles.map(({ id }) => id).filter((name) => projected.test(name)),
+    ]),
+  ];
+}
+
 function checkProvider(
   provider: OpenShellProviderResponse | undefined,
   sourceRef: CredentialSourceReference,
+  name: string,
   workspace: string,
   workspaceId: string,
   profileVersion: string,
@@ -168,8 +194,8 @@ function checkProvider(
   const version = provider?.config[SOURCE_VERSION];
   // Native TokenService sources can use the same source-derived name. Mixed ownership is unsafe.
   if (
-    !ownsDeliveryProvider(provider, sourceRef, workspace) ||
-    provider.type !== openShellProviderName(sourceRef.id) ||
+    !ownsDeliveryProvider(provider, sourceRef, workspace, name) ||
+    provider.type !== name ||
     provider.profileWorkspace !== workspace ||
     !provider.id ||
     !/^[1-9]\d*$/.test(provider.resourceVersion) ||
@@ -196,12 +222,9 @@ export async function readOwnedOpenShellPushedProvider(input: {
   readonly binding: DeploymentCredentialBinding;
   readonly signal: AbortSignal;
 }): Promise<OpenShellProviderResponse> {
-  const provider = await input.client.getProvider(
-    input.workspace,
-    openShellProviderName(input.binding.sourceRef.id),
-    input.signal,
-  );
-  if (!ownsDeliveryProvider(provider, input.binding.sourceRef, input.workspace)) {
+  const name = openShellCredentialProviderName(input.binding);
+  const provider = await input.client.getProvider(input.workspace, name, input.signal);
+  if (!ownsDeliveryProvider(provider, input.binding.sourceRef, input.workspace, name)) {
     refuse();
   }
   return provider;
@@ -219,10 +242,11 @@ export async function retireOccTokenServiceProviderCopy(input: {
   >;
   readonly workspace: string;
   readonly source: CredentialSourceReference;
+  readonly name: string;
   readonly signal: AbortSignal;
   readonly retainIfAttached?: boolean;
 }): Promise<void> {
-  const { client, workspace, source, signal } = input;
+  const { client, workspace, source, name, signal } = input;
   const owner = await client.getWorkspace(workspace, signal);
   if (!owner) {
     return;
@@ -235,11 +259,10 @@ export async function retireOccTokenServiceProviderCopy(input: {
   ) {
     refuse();
   }
-  const name = openShellProviderName(source.id);
   const provider = await client.getProvider(workspace, name, signal);
   const profile = await client.getProviderProfile(workspace, name, signal);
   if (
-    (provider && !ownsDeliveryProvider(provider, source, workspace)) ||
+    (provider && !ownsDeliveryProvider(provider, source, workspace, name)) ||
     (profile &&
       (profile.id !== name || !isDeepStrictEqual(profile.annotations, deliveryOwnership(source))))
   ) {
@@ -319,7 +342,7 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   // Another deployment may have completed initialization while the profile was being imported.
   const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
   if (prior) {
-    return checkProvider(prior, binding.sourceRef, workspace, owner.id, profileVersion);
+    return checkProvider(prior, binding.sourceRef, profile.id, workspace, owner.id, profileVersion);
   }
   let resolved: ResolvedCredential;
   try {
@@ -353,7 +376,14 @@ export async function prepareOccTokenServiceProviderCopy(input: {
     }
     provider = await client.getProvider(workspace, profile.id, signal);
   }
-  const prepared = checkProvider(provider, binding.sourceRef, workspace, owner.id, profileVersion);
+  const prepared = checkProvider(
+    provider,
+    binding.sourceRef,
+    profile.id,
+    workspace,
+    owner.id,
+    profileVersion,
+  );
   if (prepared.sourceVersion !== resolved.version) {
     refuse();
   }
@@ -368,6 +398,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
   >;
   readonly workspace: string;
   readonly sourceRef: CredentialSourceReference;
+  readonly name: string;
   readonly version?: string;
   readonly resolveCredential: () => Promise<ResolvedCredential>;
   readonly signal: AbortSignal;
@@ -378,7 +409,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
     }
   | undefined
 > {
-  const { client, workspace, sourceRef, signal } = input;
+  const { client, workspace, sourceRef, name, signal } = input;
   signal.throwIfAborted();
   const owner = await client.getWorkspace(workspace, signal);
   if (
@@ -389,23 +420,27 @@ export async function updateOccTokenServiceProviderCopy(input: {
   ) {
     refuse();
   }
-  const name = openShellProviderName(sourceRef.id);
   const existing = await client.getProvider(workspace, name, signal);
   if (!existing) {
     return undefined;
   }
-  if (!ownsDeliveryProvider(existing, sourceRef, workspace)) {
+  if (!ownsDeliveryProvider(existing, sourceRef, workspace, name)) {
     refuse();
   }
   const stored = await client.getProviderProfile(workspace, name, signal);
   const credentials = stored?.definition?.credentials;
   const credential = Array.isArray(credentials) ? asRecord(credentials[0]) : undefined;
   const environment = credential?.name;
-  if (typeof environment !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(environment)) {
+  if (
+    typeof environment !== "string" ||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(environment) ||
+    (name !== openShellProviderName(sourceRef.id) &&
+      name !== openShellProjectedCredentialProviderName(sourceRef.id, environment))
+  ) {
     refuse();
   }
-  const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment));
-  const current = checkProvider(existing, sourceRef, workspace, owner.id, profileVersion);
+  const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment, name));
+  const current = checkProvider(existing, sourceRef, name, workspace, owner.id, profileVersion);
   if (input.version === current.sourceVersion) {
     // TODO(manual retry): observe a persisted push without retransferring credential material.
     refuse();
@@ -436,7 +471,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
     current.resourceVersion,
     signal,
   );
-  const provider = checkProvider(updated, sourceRef, workspace, owner.id, profileVersion);
+  const provider = checkProvider(updated, sourceRef, name, workspace, owner.id, profileVersion);
   if (
     provider.id !== current.id ||
     BigInt(provider.resourceVersion) <= BigInt(current.resourceVersion) ||
@@ -666,6 +701,7 @@ export async function readOpenShellPushedProvider(input: {
   return checkProvider(
     await input.client.getProvider(input.workspace, profile.id, input.signal),
     input.binding.sourceRef,
+    profile.id,
     input.workspace,
     owner.id,
     version,

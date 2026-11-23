@@ -3888,20 +3888,27 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    const plugin = openShellPluginPolicy(
-      context.revision,
-      context.requirements,
-      this.options.gateway.managedPluginMiddleware,
-      this.options.providers ?? [],
-    );
+    if (staged && context.requirements.credentialAttachments.length > 0) {
+      credentialPolicyFailure();
+    }
+    const plugin = staged
+      ? undefined
+      : openShellPluginPolicy(
+          context.revision,
+          context.requirements,
+          this.options.gateway.managedPluginMiddleware,
+          this.options.providers ?? [],
+        );
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
-    const mcpPolicies = openShellManagedMcpPolicies(
-      context.revision,
-      context.requirements,
-      this.options.providers ?? [],
-    );
+    const mcpPolicies = staged
+      ? []
+      : openShellManagedMcpPolicies(
+          context.revision,
+          context.requirements,
+          this.options.providers ?? [],
+        );
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
@@ -4367,7 +4374,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
     let expectedSpec = create.spec;
+    const staged =
+      context.revision.executionAdmission.mode === "standalone" &&
+      context.revision.credentialDeployment !== undefined;
     if (
+      !staged &&
       !plugin &&
       managedCredentialBinding(context.revision.plugins?.plugins, managedGoogleInstall)
     ) {
@@ -4388,7 +4399,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     const previousMcpRules = asRecord(asRecord(existing.spec?.policy)?.network_policies);
-    for (const install of managedMcpInstalls) {
+    for (const install of staged ? [] : managedMcpInstalls) {
       // Native detach preserves the original launch policy. Reconstruct it from the revision.
       const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
       const network = managedMcpNetwork(install, binding?.toolNames ?? []);
@@ -5502,38 +5513,41 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const candidate = staged
       ? stagedCredentialPolicies(baseline, context.revision, input.snapshot).admitted
       : openShellPolicyCandidate(baseline, input.snapshot);
-    const plugin = googleRequestPolicyFromSandbox(baseline);
-    if (plugin) {
-      assertPluginRequestPolicy(candidate, plugin);
-    } else {
-      const binding = managedCredentialBinding(
-        context.revision.plugins?.plugins,
-        managedGoogleInstall,
-      );
-      if (
-        binding &&
-        Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
-      ) {
-        throw new SandboxNetworkPolicyConflictError(
-          "The attached Google account requires its admitted request guard.",
+    // Staged routes come from the frozen bindings, independent of legacy Plugin guards.
+    if (!staged) {
+      const plugin = googleRequestPolicyFromSandbox(baseline);
+      if (plugin) {
+        assertPluginRequestPolicy(candidate, plugin);
+      } else {
+        const binding = managedCredentialBinding(
+          context.revision.plugins?.plugins,
+          managedGoogleInstall,
         );
+        if (
+          binding &&
+          Array.isArray(sandbox.spec?.providers) &&
+          sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        ) {
+          throw new SandboxNetworkPolicyConflictError(
+            "The attached Google account requires its admitted request guard.",
+          );
+        }
       }
-    }
-    const baselineRules = asRecord(baseline.network_policies);
-    for (const install of managedMcpInstalls) {
-      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
-      const expected = managedMcpNetwork(install, binding?.toolNames ?? []);
-      if (sameOpenShellPolicy(baselineRules?.[expected.name], expected)) {
-        assertNoManagedMcpRouteOverlap(candidate.network_policies, install, [expected.name]);
-      } else if (
-        binding &&
-        Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
-      ) {
-        throw new SandboxNetworkPolicyConflictError(
-          "The managed MCP route differs from the admitted revision.",
-        );
+      const baselineRules = asRecord(baseline.network_policies);
+      for (const install of managedMcpInstalls) {
+        const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+        const expected = managedMcpNetwork(install, binding?.toolNames ?? []);
+        if (sameOpenShellPolicy(baselineRules?.[expected.name], expected)) {
+          assertNoManagedMcpRouteOverlap(candidate.network_policies, install, [expected.name]);
+        } else if (
+          binding &&
+          Array.isArray(sandbox.spec?.providers) &&
+          sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        ) {
+          throw new SandboxNetworkPolicyConflictError(
+            "The managed MCP route differs from the admitted revision.",
+          );
+        }
       }
     }
     await client.updatePolicy(

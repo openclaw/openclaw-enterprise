@@ -1,13 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { match } from "ts-pattern";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { hasOnlyScopedRepositoryRevisions, reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
-  isSourceProviderPresetId,
-  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type {
   CredentialDeploymentContext,
@@ -6217,30 +6214,6 @@ export class ControllerWorker {
         source.tokenServiceInstanceId !== instanceId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
-      }
-      const supportedConsumer = match(binding.consumer)
-        .with(
-          { kind: "model" },
-          ({ providerId }) =>
-            source.type === "static" &&
-            isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) &&
-            source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === providerId,
-        )
-        .with({ kind: "plugin" }, ({ pluginId }) => {
-          const injection = policy.injectionPolicies.find(
-            ({ bindingRef }) => bindingRef === binding.bindingRef,
-          );
-          return (
-            revision.plugins?.plugins[pluginId]?.enabled === true &&
-            injection !== undefined &&
-            injection.allowedRequests.length > 0 &&
-            injection.allowedRequests.every(({ requestPolicy }) => requestPolicy?.type === "http")
-          );
-        })
-        .with({ kind: "repository" }, () => false)
-        .exhaustive();
-      if (!supportedConsumer) {
-        throw new DependencyUnavailableError("The staged credential consumer is unavailable.");
       }
       sources.set(source.id, source);
     }

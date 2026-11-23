@@ -17,9 +17,7 @@ export const supportsOpenShellCredentialDeployment: NonNullable<
     typeof sandbox.prepareStagedHarness !== "function" ||
     typeof sandbox.activateStagedHarness !== "function" ||
     typeof sandbox.applyNetworkPolicy !== "function" ||
-    typeof sandbox.observeNetworkPolicy !== "function" ||
-    // OpenShell cannot project a separate model Secret into a staged Harness.
-    policy.bindings.filter(({ consumer }) => consumer.kind === "model").length !== 1
+    typeof sandbox.observeNetworkPolicy !== "function"
   ) {
     return false;
   }

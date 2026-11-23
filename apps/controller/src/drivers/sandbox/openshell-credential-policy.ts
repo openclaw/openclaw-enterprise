@@ -3,6 +3,7 @@ import type {
   DeploymentPolicy,
   DeploymentRequestMatch,
 } from "@openclaw-enterprise/contracts";
+import { sha256Hex } from "@openclaw-enterprise/utils";
 
 import { openShellProviderName } from "../../backends/openshell.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
@@ -16,6 +17,21 @@ export interface OpenShellCredentialRoute {
   readonly path: string;
   readonly endpointPath?: string;
   readonly rules: readonly { readonly allow: { readonly method: string; readonly path: string } }[];
+}
+
+export function openShellProjectedCredentialProviderName(sourceId: string, environment: string) {
+  return `${openShellProviderName(sourceId)}-${sha256Hex(environment, 24)}`;
+}
+
+export function openShellCredentialProviderName(binding: DeploymentCredentialBinding): string {
+  // Keep the deployed model Provider identity so retained revisions can still be observed and removed.
+  if (binding.consumer.kind === "model" && binding.bindingRef === "model") {
+    return openShellProviderName(binding.sourceRef.id);
+  }
+  return openShellProjectedCredentialProviderName(
+    binding.sourceRef.id,
+    binding.projection.environment,
+  );
 }
 
 export function credentialPolicyFailure(): never {
@@ -164,9 +180,7 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
     credentialPolicyFailure();
   }
   const refs = new Set<string>();
-  // OpenShell exposes one placeholder per Source profile; it cannot isolate repeated bindings.
   const environments = new Set<string>();
-  const sources = new Set<string>();
   const routes = new Map<
     string,
     {
@@ -186,21 +200,22 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
   }
   for (const binding of policy.bindings) {
     const environment = binding.projection.environment;
-    const source = `${binding.sourceRef.namespaceId}/${binding.sourceRef.id}`;
     if (
       !binding.bindingRef ||
       refs.has(binding.bindingRef) ||
       (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
+      binding.sourceRef.kind !== "credential_source" ||
+      !binding.sourceRef.id ||
+      !binding.sourceRef.namespaceId ||
       binding.projection.presentation !== "bearer" ||
       !/^[A-Z][A-Z0-9_]*$/.test(environment) ||
-      environments.has(environment) ||
-      sources.has(source)
+      environments.has(environment)
     ) {
       credentialPolicyFailure();
     }
     refs.add(binding.bindingRef);
     environments.add(environment);
-    sources.add(source);
+    const provider = openShellCredentialProviderName(binding);
     const injections = policy.injectionPolicies.filter(
       (value) => value.bindingRef === binding.bindingRef,
     );
@@ -220,21 +235,25 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
         if (
           route.host.toLowerCase() === request.host.toLowerCase() &&
           route.port === port &&
-          (route.binding.sourceRef.namespaceId !== binding.sourceRef.namespaceId ||
-            route.binding.sourceRef.id !== binding.sourceRef.id ||
-            route.binary !== request.binary) &&
+          (route.binding.bindingRef !== binding.bindingRef || route.binary !== request.binary) &&
           openShellCredentialPathsOverlap(route.path, path)
         ) {
           // OpenShell's Source resolver distinguishes endpoint paths, but not HTTP methods or executables.
           credentialPolicyFailure();
         }
       }
-      const key = JSON.stringify([source, request.binary, request.host.toLowerCase(), port, path]);
+      const key = JSON.stringify([
+        binding.bindingRef,
+        request.binary,
+        request.host.toLowerCase(),
+        port,
+        path,
+      ]);
       let route = routes.get(key);
       if (!route) {
         route = {
           binding,
-          provider: openShellProviderName(binding.sourceRef.id),
+          provider,
           binary: request.binary,
           host: request.host,
           port,

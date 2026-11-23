@@ -54,7 +54,7 @@ const binding = {
     id: "source-1",
     namespaceId: namespace.id,
   },
-  bindingRef: "model-credential",
+  bindingRef: "model",
   consumer: { kind: "model", providerId: "openai" },
   projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
 } as const;
@@ -185,13 +185,16 @@ async function fixture(t: TestContext) {
     state.provider?.metadata.name === name ? state.provider : state.additionalProviders.get(name);
   const profileFor = (name: string) =>
     state.profile?.id === name ? state.profile : state.additionalProfiles.get(name);
+  const providerStatusFor = (name: string) =>
+    state.provider?.metadata.name === name
+      ? state.providerStatus
+      : state.additionalProviderStatuses.get(name);
   const liveSandbox = (name: string) =>
     sandboxes.find(
       (candidate) =>
         candidate.metadata.name === name && (candidate !== sandbox || state.sandboxPresent),
     );
-  const advanceProviderEnvironment = () => {
-    const status = state.providerStatus!;
+  const advanceProviderEnvironment = (status: Wire) => {
     const desired = record(record(status.receipt).desired);
     const observed = record(status.observed);
     Object.assign(record(sandbox.status.configuration_admission), {
@@ -246,6 +249,15 @@ async function fixture(t: TestContext) {
       }
       const provider = providerFor(String(input.name));
       return provider && { provider };
+    },
+    ListProviders: (input) => {
+      assert.equal(record(input.workspace_scope).workspace, namespace.name);
+      return {
+        providers: [
+          ...(state.provider ? [state.provider] : []),
+          ...state.additionalProviders.values(),
+        ],
+      };
     },
     DetachSandboxProvider: (input) => {
       state.detaches.push(input);
@@ -345,14 +357,17 @@ async function fixture(t: TestContext) {
       const profile = profileFor(String(input.id));
       return profile && { profile };
     },
+    ListProviderProfiles: (input) => {
+      assert.equal(record(input.workspace_scope).workspace, namespace.name);
+      return {
+        profiles: [...(state.profile ? [state.profile] : []), ...state.additionalProfiles.values()],
+      };
+    },
     GetSandboxConfig: () => state.config,
     GetSandboxPolicyStatus: () => state.policyStatus,
     GetSandboxProviderStatus: (input) => {
       state.statusReads.push(input);
-      const status =
-        input.provider === state.provider?.metadata.name
-          ? state.providerStatus
-          : state.additionalProviderStatuses.get(String(input.provider));
+      const status = providerStatusFor(String(input.provider));
       if (!status) {
         return undefined;
       }
@@ -364,7 +379,7 @@ async function fixture(t: TestContext) {
         if (received.state === "PROVIDER_READINESS_STATE_PENDING") {
           if (state.updateReadiness === "converge") {
             // The Gateway first reports PENDING; the controlled supervisor then installs v2.
-            advanceProviderEnvironment();
+            advanceProviderEnvironment(status);
           } else if (state.updateReadiness === "cancel-pending") {
             setImmediate(() => state.abortOnPending?.());
           }
@@ -384,7 +399,11 @@ async function fixture(t: TestContext) {
     },
     ImportProviderProfiles: (input) => {
       const profiles = input.profiles as Wire[];
-      const profile: Wire = { ...record(profiles[0]?.profile), resource_version: "1" };
+      const profile: Wire = {
+        ...record(profiles[0]?.profile),
+        resource_version: "1",
+        scope: "workspace",
+      };
       if (!state.profile) {
         state.profile = profile;
       } else {
@@ -424,26 +443,22 @@ async function fixture(t: TestContext) {
       state.updates.push(input);
       const supplied = record(input.provider);
       const metadata = record(supplied.metadata);
-      if (
-        !state.provider ||
-        metadata.name !== state.provider.metadata.name ||
-        metadata.resource_version !== state.provider.metadata.resource_version
-      ) {
+      const name = String(metadata.name);
+      const provider = providerFor(name);
+      if (!provider || metadata.resource_version !== provider.metadata.resource_version) {
         throw Object.assign(new Error("Provider resource version changed"), {
           code: grpc.status.ABORTED,
         });
       }
-      state.provider.config = {
-        ...state.provider.config,
+      provider.config = {
+        ...provider.config,
         ...(supplied.config as Record<string, string> | undefined),
       };
-      state.provider.metadata.resource_version = String(
-        BigInt(state.provider.metadata.resource_version) + 1n,
-      );
+      provider.metadata.resource_version = String(BigInt(provider.metadata.resource_version) + 1n);
       const mutationId = randomUUID();
       const receipts: Wire[] = [];
-      if (sandbox.spec.providers.includes(state.provider.metadata.name)) {
-        const prior = state.providerStatus;
+      if (sandbox.spec.providers.includes(name)) {
+        const prior = providerStatusFor(name);
         assert.ok(
           prior || sandbox.status.configuration_activated === false,
           "An attached Provider update needs either an idle target or simulated supervisor evidence.",
@@ -456,17 +471,17 @@ async function fixture(t: TestContext) {
             sandbox_id: sandbox.metadata.id,
             sandbox: sandbox.metadata.name,
             attachment_epoch: sandbox.spec.provider_attachment_epoch,
-            provider_id: state.provider.metadata.id,
+            provider_id: provider.metadata.id,
           }),
-          provider_resource_version: state.provider.metadata.resource_version,
+          provider_resource_version: provider.metadata.resource_version,
           ...(priorDesired && {
-            provider_env_revision: String(BigInt(String(priorDesired.provider_env_revision)) + 1n),
+            provider_env_revision: String(BigInt(String(state.config!.provider_env_revision)) + 1n),
           }),
         };
         const receipt = {
           receipt_id: receiptId,
           mutation_id: mutationId,
-          provider: state.provider.metadata.name,
+          provider: name,
           workspace: namespace.name,
           kind: "PROVIDER_MUTATION_KIND_UPDATE",
           desired,
@@ -476,7 +491,7 @@ async function fixture(t: TestContext) {
         if (prior) {
           const observed = { ...record(prior.observed) };
           // Controlled Gateway admission and supervisor evidence advance only when v2 serves.
-          state.providerStatus = {
+          const updated = {
             ...prior,
             state:
               state.updateReadiness === "stale-ready"
@@ -488,9 +503,14 @@ async function fixture(t: TestContext) {
             observed_time: time,
             evaluated_time: time,
           };
+          if (state.provider === provider) {
+            state.providerStatus = updated;
+          } else {
+            state.additionalProviderStatuses.set(name, updated);
+          }
         }
       }
-      return { provider: state.provider, mutation_id: mutationId, target_receipts: receipts };
+      return { provider, mutation_id: mutationId, target_receipts: receipts };
     },
     AttachSandboxProvider: (input) => {
       state.attaches.push(input);
@@ -963,11 +983,10 @@ test("native Proxy refuses a mixed model and MCP Plugin policy before Source res
   assert.equal(f.state.creates.length, 0);
 });
 
-test("native Proxy delivers multiple HTTP consumers using one Provider per Source and verifies every loaded route", async (t) => {
+test("native Proxy isolates and rotates projections of one Source across HTTP consumers", async (t) => {
   const f = await fixture(t);
   const plugin = {
     ...binding,
-    sourceRef: { ...binding.sourceRef, id: "source-plugin" },
     bindingRef: "plugin-api",
     consumer: { kind: "plugin" as const, pluginId: "http", requirement: "api", connection: "two" },
     projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
@@ -1003,7 +1022,7 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
         binding: plugin,
         resolveCredential: async () => {
           pluginResolutions++;
-          return { credential: "synthetic-plugin", version: "plugin-v1" };
+          return { credential: "synthetic-material", version: "source-v1" };
         },
       },
     ],
@@ -1021,6 +1040,15 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
   assert.equal(pluginResolutions, 1);
   assert.equal(f.state.creates.length, 2);
   assert.equal(f.state.attaches.length, 2);
+  const modelName = f.state.provider!.metadata.name;
+  const pluginProvider = [...f.state.additionalProviders.values()][0]!;
+  const pluginName = pluginProvider.metadata.name;
+  assert.notEqual(modelName, pluginName);
+  assert.deepEqual(f.sandbox.spec.providers, [modelName, pluginName]);
+  assert.deepEqual(
+    f.state.creates.map((creation) => record(creation.provider).credentials),
+    [{ OPENAI_API_KEY: "synthetic-material" }, { PLUGIN_API_KEY: "synthetic-material" }],
+  );
 
   // The controlled Gateway source/effective policy and supervisor receipts stand in for native readback.
   const evidence = f.observeServing();
@@ -1028,25 +1056,23 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
     record(record(evidence.policy.network_policies).model).endpoints as Wire[]
   )[0]!;
   modelEndpoint.path = request.requestPolicy.path;
-  const pluginProvider = [...f.state.additionalProviders.values()][0]!;
+  const pluginEndpoint = {
+    host: pluginRequest.host,
+    path: "/api/**",
+    ports: [443],
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    rules: [
+      { allow: { method: "GET", path: "/api" } },
+      { allow: { method: "GET", path: "/api/**" } },
+    ],
+    credential_binding: { provider: pluginName },
+    provider_credentialed: true,
+  };
   record(evidence.policy.network_policies).plugin = {
     name: "plugin",
     binaries: [{ path: pluginRequest.binary }],
-    endpoints: [
-      {
-        host: pluginRequest.host,
-        path: "/api/**",
-        ports: [443],
-        protocol: "rest",
-        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        rules: [
-          { allow: { method: "GET", path: "/api" } },
-          { allow: { method: "GET", path: "/api/**" } },
-        ],
-        credential_binding: { provider: pluginProvider.metadata.name },
-        provider_credentialed: true,
-      },
-    ],
+    endpoints: [pluginEndpoint],
   };
   record(evidence.policy.network_policies).discovery = {
     name: "discovery",
@@ -1066,13 +1092,51 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
   record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
   const pluginStatus = structuredClone(f.state.providerStatus!);
   const receipt = record(pluginStatus.receipt);
-  receipt.provider = pluginProvider.metadata.name;
+  receipt.provider = pluginName;
   Object.assign(record(receipt.desired), {
     provider_id: pluginProvider.metadata.id,
     provider_resource_version: pluginProvider.metadata.resource_version,
   });
-  f.state.additionalProviderStatuses.set(pluginProvider.metadata.name, pluginStatus);
+  f.state.additionalProviderStatuses.set(pluginName, pluginStatus);
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+
+  // One committed Source update must reach both placeholders and receive evidence from both copies.
+  f.setResolvedCredential("synthetic-material-v2", "source-v2");
+  await f.notify("source-v2");
+  assert.equal(f.resolutions(), 2);
+  const rotations = new Map(
+    f.state.updates.map(({ provider: value }) => {
+      const provider = record(value);
+      return [record(provider.metadata).name, [provider.credentials, provider.config]];
+    }),
+  );
+  assert.deepEqual(
+    rotations,
+    new Map([
+      [
+        modelName,
+        [{ OPENAI_API_KEY: "synthetic-material-v2" }, { oce_source_version: "source-v2" }],
+      ],
+      [
+        pluginName,
+        [{ PLUGIN_API_KEY: "synthetic-material-v2" }, { oce_source_version: "source-v2" }],
+      ],
+    ]),
+  );
+  assert.deepEqual(
+    new Set(f.state.statusReads.filter((read) => read.receipt_id).map((read) => read.provider)),
+    new Set([modelName, pluginName]),
+  );
+
+  // A loaded route still needs its own projection, even when both copies store the same Source.
+  pluginEndpoint.credential_binding.provider = modelName;
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+  pluginEndpoint.credential_binding.provider = pluginName;
   const discoveryEndpoint = (
     record(record(evidence.policy.network_policies).discovery).endpoints as Wire[]
   )[0]!;
@@ -1084,22 +1148,30 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
     code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
   });
   discoveryEndpoint.path = "/discovery";
+  Reflect.deleteProperty(record(evidence.policy.network_policies), "plugin");
   f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
   record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
-  Reflect.deleteProperty(record(evidence.policy.network_policies), "plugin");
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
     state: "failed",
     code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
   });
 
-  f.sandbox.spec.policy = { network_policies: {} };
-  f.state.config!.policy = { network_policies: {} };
+  // The Sandbox has withdrawn the Plugin route. Detaching its copy must leave the model attached.
   await f.proxy.removeDeployment(context, {
     targetRef: configuration.targetRef,
-    bindingRefs: [binding.bindingRef, plugin.bindingRef],
+    bindingRefs: [plugin.bindingRef],
   });
-  assert.equal(f.state.detaches.length, 2);
-  assert.equal(f.state.deletes.length, 2);
+  assert.deepEqual(
+    f.state.detaches.map(({ provider }) => provider),
+    [pluginName],
+  );
+  assert.deepEqual(
+    f.state.deletes.map(({ name }) => name),
+    [pluginName],
+  );
+  assert.deepEqual(f.sandbox.spec.providers, [modelName]);
+  assert.ok(f.state.profile);
+  assert.equal(f.state.additionalProfiles.size, 0);
 });
 
 test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {
@@ -1896,6 +1968,55 @@ test("Source retirement refuses a mixed-owned Provider before deleting native re
   assert.equal(f.state.deletes.length, 0);
   assert.equal(f.state.profileDeletes.length, 0);
   assert.ok(f.state.provider);
+});
+
+test("Source retirement finds a projected Profile left before Provider creation", async (t) => {
+  const f = await fixture(t);
+  const plugin = {
+    ...binding,
+    bindingRef: "plugin-api",
+    consumer: { kind: "plugin" as const, pluginId: "http", requirement: "api", connection: "one" },
+    projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
+  };
+  const injectionPolicies = [{ ...injection, bindingRef: plugin.bindingRef }];
+  // First-use resolution can fail after profile import, leaving a profile without a Provider.
+  await assert.rejects(
+    f.proxy.configureDeployment(
+      {
+        ...f.context,
+        revision: {
+          ...f.context.revision,
+          credentialDeployment: {
+            ...f.context.revision.credentialDeployment,
+            bindings: [plugin],
+            injectionPolicies,
+          },
+        },
+      },
+      {
+        ...configuration,
+        bindings: [
+          {
+            binding: plugin,
+            resolveCredential: async () => {
+              throw new Error("unavailable");
+            },
+          },
+        ],
+        injectionPolicies,
+      },
+    ),
+    DependencyUnavailableError,
+  );
+  const profileId = f.state.profile?.id;
+  assert.equal(typeof profileId, "string");
+  assert.equal(f.state.provider, undefined);
+  await f.proxy.retireSource(namespace, plugin.sourceRef, t.signal);
+  assert.deepEqual(
+    f.state.profileDeletes.map(({ id }) => id),
+    [profileId],
+  );
+  assert.equal(f.state.profile, undefined);
 });
 
 test("deployment cleanup does not swallow an unrelated native failed precondition", async (t) => {

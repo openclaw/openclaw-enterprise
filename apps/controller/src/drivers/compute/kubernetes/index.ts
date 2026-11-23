@@ -1192,40 +1192,6 @@ interface NativeRuntimeSnapshot {
   readonly configuration: string;
 }
 
-/** Match the staged model binding to the Harness model operation. */
-function validateStagedCredentialBindings(revision: Readonly<AgentRevision>): void {
-  const deployment = revision.credentialDeployment;
-  if (
-    !deployment ||
-    deployment.bindings.length === 0 ||
-    deployment.bindings.some(
-      ({ consumer }) => consumer.kind !== "model" && consumer.kind !== "plugin",
-    )
-  ) {
-    throw new DependencyUnavailableError("The staged credential bindings are unavailable.");
-  }
-  const auth = revision.harnessAuth;
-  const modelBindings = deployment.bindings.filter(({ consumer }) => consumer.kind === "model");
-  const binding = modelBindings[0];
-  const selected = harnessModelAuthentication(revision.configuration);
-  if (
-    modelBindings.length !== 1 ||
-    auth.method !== "credential_source" ||
-    !auth.tokenServiceInstanceId ||
-    binding?.consumer.kind !== "model" ||
-    binding.consumer.providerId !== selected.providerId ||
-    binding.sourceRef.kind !== "credential_source" ||
-    binding.sourceRef.namespaceId !== revision.namespaceId ||
-    binding.sourceRef.id !== auth.sourceId ||
-    binding.projection.environment !== selected.environmentName ||
-    binding.projection.presentation !== "bearer"
-  ) {
-    throw new DependencyUnavailableError(
-      "The staged model binding does not match the configured Harness model operation.",
-    );
-  }
-}
-
 /** One rendering step; neither credential values nor backend lookups belong here. */
 function prepareHarnessAuth(
   revision: Readonly<AgentRevision>,
@@ -1256,7 +1222,23 @@ function prepareHarnessAuth(
     harness.mode === "dedicated" &&
     (harness.id === "codex" || harness.id === "openclaw")
   ) {
-    validateStagedCredentialBindings(revision);
+    const selected = harnessModelAuthentication(configuration);
+    if (
+      !revision.credentialDeployment?.bindings.some(
+        ({ consumer, sourceRef, projection }) =>
+          consumer.kind === "model" &&
+          consumer.providerId === selected.providerId &&
+          sourceRef.kind === "credential_source" &&
+          sourceRef.namespaceId === revision.namespaceId &&
+          sourceRef.id === resolvedAuth.sourceId &&
+          projection.environment === selected.environmentName &&
+          projection.presentation === "bearer",
+      )
+    ) {
+      throw new DependencyUnavailableError(
+        "The staged model binding does not match the configured Harness model operation.",
+      );
+    }
     // This is the concrete launcher's presentation mode, derived from the admitted binding.
     const loginMode = "api_key";
     if (harness.id === "codex") {
@@ -6883,6 +6865,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         this.options.runtime === undefined ||
         revision.egressPlan !== undefined ||
         revision.credentialDeployment === undefined ||
+        revision.credentialDeployment.bindings.length === 0 ||
         proxy?.capability !== "credential_proxy_delivery" ||
         revision.credentialDeployment.proxyDriverId !== proxy.id ||
         proxy.deployProxy === undefined ||
@@ -6898,6 +6881,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ) {
         throw new DependencyUnavailableError(
           "The admitted staged credential composition is unavailable.",
+        );
+      }
+      const auth = revision.harnessAuth;
+      // OpenShell cannot project a separate model Secret. Staged launch also
+      // omits legacy Credential Gateway attachments.
+      if (
+        this.sandboxDriver.implementation === "openshell" &&
+        (auth?.method !== "credential_source" || auth.tokenServiceInstanceId === undefined)
+      ) {
+        throw new DependencyUnavailableError(
+          "OpenShell cannot deliver the selected Harness authentication with staged credentials.",
         );
       }
       return;
@@ -7061,7 +7055,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.validateExecutionAdmission(revision, "stored");
     if (revision.executionAdmission.mode === "standalone") {
-      validateStagedCredentialBindings(revision);
       if (
         revision.harness.mode !== "dedicated" ||
         revision.sandboxDriverId !== this.sandboxDriver?.id ||

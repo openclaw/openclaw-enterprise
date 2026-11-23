@@ -846,6 +846,29 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       },
     },
   });
+  // Plugin injection does not supply the model Secret used by separate API-key auth.
+  assert.throws(
+    () =>
+      fixture.driver.validateExecutionAdmission(
+        {
+          ...fixture.revision,
+          harnessAuth: {
+            method: "api_key",
+            source: { kind: "secret", namespaceId: tenant.id, id: "sec_model" },
+            secretDriverId: "kubernetes",
+          },
+          credentialDeployment: {
+            ...fixture.revision.credentialDeployment,
+            bindings: [pluginBinding],
+            injectionPolicies: [
+              { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest] },
+            ],
+          },
+        },
+        registration,
+      ),
+    /OpenShell cannot deliver the selected Harness authentication with staged credentials/,
+  );
   await fixture.prepare();
   fixture.markReady(fixture.gatewayName);
   const result = await fixture.prepare();
