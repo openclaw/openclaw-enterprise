@@ -10,7 +10,7 @@ node --test \
   tests/conformance/openshell-managed-bootstrap.test.ts \
   tests/conformance/openshell-gateway-wire.test.ts \
   tests/conformance/kubernetes-provider-harness.test.mjs \
-  tests/conformance/kubernetes-harness-workspace-volume.test.mjs \
+  tests/conformance/kubernetes-harness-workspace-volume.test.ts \
   tests/conformance/kubernetes-compute.test.mjs \
   tests/integration/sandbox-driver-startup.test.ts
 ```

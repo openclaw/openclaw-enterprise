@@ -3,12 +3,29 @@ import test from "node:test";
 import {
   NODE_SETUP_POLL_MS,
   observeNodeSetup,
+  type NodeSetupObservation,
 } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 
+type GatewayRequest = Parameters<typeof observeNodeSetup>[0];
+type ObservationCase = {
+  name: string;
+  status: Readonly<Record<string, unknown>>;
+  invalid?: boolean;
+  expected?: NodeSetupObservation | undefined;
+};
+
 // Protocol responses exercise the observation adapter, not native pairing or delivery.
-function gateway({ pairedAt = Infinity, completion, uncertain = false } = {}) {
-  const calls = [];
-  const request = async (method, params) => {
+function gateway({
+  pairedAt = Infinity,
+  completion,
+  uncertain = false,
+}: {
+  pairedAt?: number;
+  completion?: unknown;
+  uncertain?: boolean;
+} = {}) {
+  const calls: string[] = [];
+  const request: GatewayRequest = async (method, params) => {
     calls.push(method);
     // A receipt must reach its owner before any fallible node lookup or probe.
     assert.equal(method, "device.pair.setupStatus");
@@ -35,21 +52,21 @@ test("a setup observation without a wait reads the Gateway once", async () => {
 
 test("setup observation rejects malformed receipts without treating them as absent", async (t) => {
   const receipt = { setupId: "setup-1", access: "node", deviceId: "node-1", ts: 1 };
-  const malformed = [
+  const malformed: readonly (readonly [string, unknown])[] = [
     ["array", []],
     ["string", "broken"],
     ["null", null],
     ["number", 1],
     ["boolean", true],
   ];
-  for (const { name, status, invalid, expected } of [
+  const cases: readonly ObservationCase[] = [
     { name: "absent receipts", status: {}, expected: undefined },
     ...[
       { completion: receipt },
       { deliveryUncertain: receipt },
       // The schema permits both: confirmed completion keeps precedence.
       { completion: receipt, deliveryUncertain: { ...receipt, deviceId: "node-2" } },
-    ].map((status) => ({
+    ].map((status): ObservationCase => ({
       name: Object.keys(status).join(" and "),
       status,
       expected: {
@@ -69,10 +86,11 @@ test("setup observation rejects malformed receipts without treating them as abse
         invalid: true,
       },
     ]),
-  ]) {
+  ];
+  for (const { name, status, invalid, expected } of cases) {
     await t.test(name, async () => {
-      const calls = [];
-      const request = async (method) => {
+      const calls: string[] = [];
+      const request: GatewayRequest = async (method) => {
         calls.push(method);
         assert.equal(method, "device.pair.setupStatus");
         return status;
