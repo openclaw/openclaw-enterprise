@@ -3078,7 +3078,7 @@ revisionTest(
     const { owner, candidate: revision } = await fixture.admitInitialRevision(
       "stop-maintenance-authorization",
     );
-    await fixture.start(fixture.compute);
+    await fixture.start({ ...fixture.compute, maintenanceIntervalMs: 3_600_000 });
     await fixture.work(revision, "succeeded");
     await fixture.stop();
 
@@ -3093,27 +3093,10 @@ revisionTest(
     const neighborStop = await neighbor.requestStop(neighborOwner);
 
     const due = await fixture.advanceMaintenance(revision);
-    const scheduled = due.rows[0];
-    const maintenance = {
-      id: revision.id,
-      idempotencyKey: scheduled?.idempotency_key ?? `agent_revision:${revision.id}:maintenance:0`,
-    };
-    if (scheduled === undefined) {
-      const work = await fixture.state.transactWithQueue((_unit, queue) =>
-        queue.enqueue({
-          idempotencyKey: maintenance.idempotencyKey,
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          revisionId: revision.id,
-          actorId: fixture.actor.id,
-          availableAt: new Date(0),
-        }),
-      );
-      assert.equal(work.state, "queued", "expected a new maintenance pass");
-    } else {
-      assert.equal(due.rowCount, 1, "expected one scheduled maintenance pass");
-      assert.equal(scheduled.actor_id, fixture.actor.id, "scheduled maintenance keeps its actor");
-    }
+    assert.equal(due.rowCount, 1, "expected one scheduled maintenance pass");
+    const scheduled = required(due.rows[0]);
+    assert.equal(scheduled.actor_id, fixture.actor.id, "scheduled maintenance keeps its actor");
+    const maintenance = { id: revision.id, idempotencyKey: scheduled.idempotency_key };
     const stop = await fixture.requestStop(owner);
 
     // Maintenance may observe stopped intent first, but only the Agent-stop claim
