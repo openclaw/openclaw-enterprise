@@ -5,6 +5,7 @@ import { seedPlatformState } from "./platform-state-contract-fixture.ts";
 import { verifyCredentialSourceContract } from "./platform-state-credential-source-contract.ts";
 import { verifyEgressSendReceiptContract } from "./platform-state-egress-receipt-contract.ts";
 import { verifyPlatformStateLifecycle } from "./platform-state-lifecycle-contract.ts";
+import { verifyStandaloneCredentialStateContract } from "./platform-state-standalone-credential-contract.ts";
 import {
   verifyDuplicateNameContract,
   verifyNameLengthContract,
@@ -27,6 +28,7 @@ export async function verifyPlatformStateStoreContract(
     accountAgent: lifecycle.accountAgent,
     revision: seed.revision,
   });
+  await verifyStandaloneCredentialStateContract(store, seed);
   await verifyEgressSendReceiptContract(
     store,
     seed.installation,

@@ -55,6 +55,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
+import { responseTo } from "./console-action-helpers.ts";
 
 import {
   settledFetches,
@@ -1004,7 +1005,7 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
 // "Observed <time>" status line changed on every poll (finding 1425).
 test("an unchanged runtime status poll leaves the status strip and pickers untouched", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  computeDriver.state.lines = [line(1, "steady output")];
+  computeDriver.state.lines = [...earlierOutput(48), line(1, "steady output")];
   // A second Pod shows the Pod picker as well.
   computeDriver.state.extraPods = [
     { name: "gateway-second", uid: "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f" },
@@ -1015,7 +1016,14 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   await page.getByRole("log", { name: "Runtime log output" }).getByText("steady output").waitFor();
   const strip = page.locator(".runtime-strip");
   await strip.locator(".runtime-pod").nth(1).waitFor();
-  await page.locator("#runtime-log-pod:not([hidden])").waitFor();
+  const source = page.locator("#runtime-log-source");
+  const picker = page.locator("#runtime-log-pod");
+  await picker.waitFor();
+  const selectedPod = JSON.stringify([computeDriver.podName({ id: revisionId }), "gateway"]);
+  assert.equal(await picker.inputValue(), selectedPod);
+  await source.focus();
+  await page.keyboard.press("Tab");
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
   const content = { childList: true, subtree: true, characterData: true };
   const rewrites = await recordWrites(
     page,
@@ -1042,6 +1050,7 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
     before,
   );
   assert.deepEqual(await rewrites.jsonValue(), []);
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
 
   // A real change still updates the strip.
   computeDriver.state.restartCount = 4;
@@ -1049,6 +1058,35 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   await strip.getByText("4", { exact: true }).first().waitFor();
   assert.ok((await rewrites.jsonValue()).length > 0);
   await rewrites.dispose();
+
+  // The selected stream remains available, but its picker disappears when the other Pod leaves.
+  // On a narrow screen, removing the stacked card can move both pickers above the viewport.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await picker.evaluate((node) => {
+    globalThis.scrollBy({ top: node.getBoundingClientRect().top - 48, behavior: "instant" });
+  });
+  const pickerTop = await picker.evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(pickerTop >= 0 && pickerTop <= 50, "the focused Pod picker is near the top edge");
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
+  computeDriver.state.extraPods = [];
+  const status = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime`,
+  );
+  await page.clock.runFor(10_000);
+  assert.equal((await status).status(), 200);
+  await picker.waitFor({ state: "hidden" });
+  assert.equal(await picker.inputValue(), selectedPod);
+  assert.equal(await source.evaluate((node) => node.matches(":focus-visible")), true);
+  assert.equal(
+    await source.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return top >= 0 && bottom <= globalThis.innerHeight;
+    }),
+    true,
+    "the Source picker remains in the viewport after receiving focus",
+  );
 });
 
 test("a failed status refresh keeps the Pod cards dated with their last observation", async (t) => {
@@ -1170,13 +1208,25 @@ test("a status poll that replaces the selected Pod drops even an in-flight page 
   const before = reads().length;
   const wasPainted = await watchPainted(page, { text: late });
 
+  // The reader has already moved past the picker when its selection disappears.
+  const previous = page.locator("#runtime-log-previous");
+  await page.locator("#runtime-log-source").focus();
+  await page.keyboard.press("Tab");
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await previous.evaluate((node) => node.matches(":focus-visible")), true);
   state.extraPods = [];
   delete state.readPodUid;
   state.lines = [line(3, "first output from the remaining Pod")];
   await page.clock.runFor(10_000);
-  await picker
-    .getByRole("option", { name: old.name + " / gateway" })
-    .waitFor({ state: "detached" });
+  await picker.waitFor({ state: "hidden" });
+  assert.equal(await previous.evaluate((node) => node.matches(":focus-visible")), true);
+  assert.equal(
+    await picker
+      .getByRole("option", { name: old.name + " / gateway", includeHidden: true })
+      .count(),
+    0,
+  );
   assert.equal(await oldLine.count(), 0, "do not label the old output as the new selection");
 
   const delivered = page.waitForResponse(url);

@@ -146,6 +146,10 @@
                     "label": "Gateway managed mode"
                   },
                   {
+                    "page": "reference/agents/network-proxy",
+                    "label": "Network Proxy"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },
@@ -306,6 +310,10 @@
                   {
                     "page": "reference/credential-sources/managed-static",
                     "label": "Managed Static Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/other-delivery-modes",
+                    "label": "Other Delivery Modes"
                   },
                   {
                     "page": "guides/credential-proxy",
@@ -1379,7 +1387,6 @@
               "flows/cli-agent-browsing",
               "flows/cli-agent-apply",
               "flows/github-actions-testing/preparation",
-              "flows/github-actions-testing/network-proxy-acceptance",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",
               "flows/repository-credentials",

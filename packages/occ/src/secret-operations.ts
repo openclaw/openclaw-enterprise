@@ -1,3 +1,4 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isName,
   isSecretHarnessAuth,
@@ -28,7 +29,6 @@ import {
 } from "./errors.ts";
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
-import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 export interface CreateSecretInput {
@@ -49,17 +49,8 @@ interface SecretOperationsDependencies {
     ControllerAuthority,
     "authorize" | "authorizationDecision" | "canRead" | "holdAuthority"
   >;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly lockNamespaceForPolicyDelete: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<Readonly<Namespace>>;
   readonly selectDriver: () => SecretDriver;
   readonly nextIdentifier: (kind: "secret") => string;
   readonly timestamp: () => string;
@@ -220,7 +211,7 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
       // Compensate only a known failed OCC transaction, never an unknown COMMIT outcome.
       deps.registerRollback(() => secretOperation(() => driver.delete(secret)));
       await state.secrets.createSecret(secret);
-      await deps.bindCreator(state, principalId, {
+      await deps.iamPolicy.bindCreator(state, principalId, {
         kind: "secret",
         id: secret.id,
         namespaceId: namespace.id,
@@ -335,7 +326,7 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
   ): Promise<readonly RemovedAccessBinding[]> {
     namespaceIdentity(namespaceId);
     return transact(async (state) => {
-      const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
+      const namespace = await deps.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "secret",
         id: secretId,
         namespaceId,

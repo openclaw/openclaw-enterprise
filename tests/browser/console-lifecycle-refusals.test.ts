@@ -43,7 +43,7 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   AGENT_STOP_AND_DELETE_DENIED,
   GENERIC_DENIAL,
-  SECRET_CREATE_DENIED,
+  SECRET_CREATE_MEMBER_DENIED,
   callerDenied,
   deleteRefused,
   stopRefused,
@@ -1013,7 +1013,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await refused).status(), 403);
   const alert = dialog.getByRole("alert");
-  await alert.getByText(SECRET_CREATE_DENIED, { exact: true }).waitFor();
+  await alert.getByText(SECRET_CREATE_MEMBER_DENIED, { exact: true }).waitFor();
   // Show value stays in the Tab order, described by the refusal, and does not unmask.
   const reveal = dialog.getByRole("button", { name: "Show value", exact: true });
   await expectReachableReason(page, reveal, (await alert.textContent())?.trim() ?? "");
@@ -1021,7 +1021,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
   // The page's Create Secret says why instead of offering another refused attempt.
-  await expectReachableReason(page, create, `${SECRET_CREATE_DENIED} Then select Refresh.`);
+  await expectReachableReason(page, create, `${SECRET_CREATE_MEMBER_DENIED} Then select Refresh.`);
   assert.equal(await page.getByRole("dialog").count(), 0);
 });
 

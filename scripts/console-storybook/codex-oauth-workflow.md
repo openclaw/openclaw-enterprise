@@ -99,8 +99,11 @@ log must show two starts and one cancellation.
    Also inspect **Latest deployment access denied**, **Latest deployment loading**,
    and **Latest deployment unavailable**; each preserves the current pointer.
 4. Open **Pages/Agent detail → Bootstrap failure with cleanup pending**.
-   Read the retained Job/Pod and container evidence. Wait for cleanup to complete;
-   the deployment must remain failed and the evidence must stay visible.
+   On **Configuration**, tab to **View deployment** while the notice says the
+   deployment is queued or in progress. Wait for **Deployment resource cleanup
+   needs attention**. With focus still on the link, press Enter. On **Deployment**
+   for v7, read the recorded Job, Pod, and container evidence. After cleanup
+   completes, the deployment still shows failed and the evidence stays visible.
 5. Open **Pages/Agent detail → Bootstrap container status and logs**. Confirm
    `prepare-oauth-home` exited 0 while `oauth-bootstrap` exited 1. Use **Pod /
    container** to select each stream and inspect its distinct simulated output.

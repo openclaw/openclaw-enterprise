@@ -1,3 +1,4 @@
+import { admitsOpenClawExecutionMode } from "./agent-harness-topology.ts";
 import type {
   CredentialSourceType,
   HarnessExecutionMode,
@@ -20,11 +21,6 @@ interface InstallationCapabilityDependencies {
   readonly allowsGatewaySourceType: (sourceType: CredentialSourceType) => boolean;
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly sandboxDriver: () => SandboxDriver | undefined;
-  readonly admitOpenClawExecutionMode: (
-    sandbox: SandboxDriver | undefined,
-    executionMode: HarnessExecutionMode,
-    nativeWorkerSupport: NativeWorkerSupportSource | undefined,
-  ) => true | Error;
 }
 
 async function readInstallationCapabilities(
@@ -40,7 +36,7 @@ async function readInstallationCapabilities(
     pluginCatalogs: _catalogs,
     ...declared
   } = installation.capabilities ?? {};
-  const openclaw = openClawExecutionModes(nativeWorkerSupport, dependencies);
+  const openclaw = openClawExecutionModes(nativeWorkerSupport, dependencies.sandboxDriver);
   const nativeWorkers = openclaw.executionModes.includes("dedicated")
     ? nativeWorkerSupport
     : undefined;
@@ -84,10 +80,7 @@ async function readInstallationCapabilities(
  */
 function openClawExecutionModes(
   nativeWorkerSupport: NativeWorkerSupportSource | undefined,
-  dependencies: Pick<
-    InstallationCapabilityDependencies,
-    "sandboxDriver" | "admitOpenClawExecutionMode"
-  >,
+  sandboxDriver: InstallationCapabilityDependencies["sandboxDriver"],
 ): {
   executionModes: HarnessExecutionMode[];
   settingRefusals?: Partial<Record<HarnessExecutionMode, string>>;
@@ -95,7 +88,7 @@ function openClawExecutionModes(
 } {
   let sandbox: SandboxDriver | undefined;
   try {
-    sandbox = dependencies.sandboxDriver();
+    sandbox = sandboxDriver();
   } catch (error) {
     if (error instanceof DependencyUnavailableError) {
       return { executionModes: [], sandboxDriverUnavailable: true };
@@ -105,7 +98,7 @@ function openClawExecutionModes(
   const executionModes: HarnessExecutionMode[] = [];
   const settingRefusals: Partial<Record<HarnessExecutionMode, string>> = {};
   for (const mode of HARNESS_EXECUTION_MODES) {
-    const admission = dependencies.admitOpenClawExecutionMode(sandbox, mode, nativeWorkerSupport);
+    const admission = admitsOpenClawExecutionMode(sandbox, mode, nativeWorkerSupport);
     if (admission === true) {
       executionModes.push(mode);
     } else if (

@@ -54,7 +54,7 @@ const fullQa = [
 
 const manifestDirectory = "scripts/ci/test-suites";
 
-function parseManifest(text: string): { files: { path: string }[] } {
+function parseManifest(text: string): { files: { path: string; expectedTests?: unknown }[] } {
   const value: unknown = JSON.parse(text);
   const manifest = asRecord(value);
   const files = manifest?.files;
@@ -84,13 +84,13 @@ async function createPrMerge(repo: string, root: string) {
     const path = join(manifestDirectory, lane + ".json");
     const text = await readFile(join(repo, path), "utf8");
     await writeFile(join(source, path), text);
-    const manifest = parseManifest(text);
-    return manifest.files.map(({ path }) => path);
+    return parseManifest(text).files;
   }
+  const openshellFiles = await copyManifest("openshell");
   const full = {
-    "local-installation": await copyManifest("dev-up-k3d"),
+    "local-installation": (await copyManifest("dev-up-k3d")).map(({ path }) => path),
     qa: fullQa,
-    openshell: await copyManifest("openshell"),
+    openshell: openshellFiles.map(({ path }) => path),
   };
   await copyManifest("gateway-routing");
   await copyManifest("qa-matrix");
@@ -130,7 +130,7 @@ async function createPrMerge(repo: string, root: string) {
   for (const parent of [base, head]) {
     assert.notEqual(spawnSync("git", ["cat-file", "-e", parent], { cwd: checkout }).status, 0);
   }
-  return { checkout, base, head, sha, full };
+  return { checkout, base, head, sha, full, openshellFiles };
 }
 
 export function registerAdvisoryCases(repo: string) {
@@ -193,7 +193,7 @@ export function registerAdvisoryCases(repo: string) {
       });
     }
     const root = await fixture(t);
-    const { base, head, sha, checkout, full } = await createPrMerge(repo, root);
+    const { base, head, sha, checkout, full, openshellFiles } = await createPrMerge(repo, root);
     const event = (
       labels: readonly string[],
       {
@@ -270,6 +270,18 @@ export function registerAdvisoryCases(repo: string) {
     const routingFile = "tests/integration/harness-topology-k3d-routing-real.test.mjs";
     const browserFile = "tests/integration/oidc-agent-chat-k3d-real.test.ts";
     const qaFile = "tests/integration/qa-matrix-real.test.mjs";
+    const ranked = openshellFiles
+      .map(({ path, expectedTests }) => ({
+        path,
+        count: Array.isArray(expectedTests) ? expectedTests.length : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+    const largest = ranked[0]?.path;
+    const first = full.openshell[0];
+    assert.ok(first && largest);
+    const scheduled = { ...full, openshell: [...full.openshell] };
+    scheduled.openshell[0] = largest;
+    scheduled.openshell[full.openshell.indexOf(largest)] = first;
     type Selection = [
       labels: string[],
       expected: Partial<typeof full>,
@@ -290,7 +302,7 @@ export function registerAdvisoryCases(repo: string) {
       [[compose, keycloak, model], { openshell, ...keycloakModel }],
       [["full-qa"], full],
       [["full-qa", compose, keycloak, model], full],
-      [[], full, "schedule"],
+      [[], scheduled, "schedule"],
       [[], full, "workflow_dispatch"],
       [[], full, "workflow_dispatch", ""],
       [[], full, "workflow_dispatch", "all"],
@@ -299,7 +311,7 @@ export function registerAdvisoryCases(repo: string) {
       [[], { openshell }, "workflow_dispatch", openshellFile],
       [[], keycloakOnly, "workflow_dispatch", keycloakFile],
       [[], { qa: fullQa }, "workflow_dispatch", qaFile],
-      [[], full, "schedule", routingFile],
+      [[], scheduled, "schedule", routingFile],
       [[keycloak], keycloakOnly, "pull_request", routingFile],
       [[], { ...full, "local-installation": [] }, "push"],
       [[], { ...full, "local-installation": [] }, "push", routingFile],
@@ -452,6 +464,32 @@ export function registerAdvisoryCases(repo: string) {
     const registeredOpenshell = await readFile(openshellManifest, "utf8");
     try {
       const manifest = parseManifest(registeredOpenshell);
+      // The first tied maximum trades slots with the first row; neither other row moves.
+      const [firstFile, middle, firstMax, secondMax] = full.openshell;
+      assert.ok(firstFile && middle && firstMax && secondMax);
+      await writeFile(
+        openshellManifest,
+        JSON.stringify({
+          ...manifest,
+          files: [
+            { path: firstFile },
+            { path: middle, expectedTests: ["single case"] },
+            { path: firstMax, expectedTests: ["first case", "second case"] },
+            { path: secondMax, expectedTests: ["third case", "fourth case"] },
+          ],
+        }),
+      );
+      const tied = await run(event([]), "schedule");
+      assert.equal(tied.status, 0, tied.stderr);
+      const matrix = tied.output.split("\n").find((line) => line.startsWith("openshell-matrix="));
+      assert.ok(matrix);
+      const rows = asRecord(JSON.parse(matrix.slice("openshell-matrix=".length)))?.include;
+      assert.ok(Array.isArray(rows));
+      assert.deepEqual(
+        rows.map((row: unknown) => asRecord(row)?.file),
+        [firstMax, middle, firstFile, secondMax],
+      );
+
       manifest.files.push({ path: routingFile });
       await writeFile(openshellManifest, JSON.stringify(manifest));
       await assertRefused(

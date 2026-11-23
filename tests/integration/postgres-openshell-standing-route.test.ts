@@ -9,6 +9,7 @@ import {
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -507,6 +508,8 @@ for (const fault of ["before write", "after commit", "during worker replacement"
         "superseded",
       );
       const hook = { startupId: randomUUID(), observationId: "b".repeat(64) };
+      const preview = new ObservedHookPreview(workspace, bindingId);
+      preview.hook = hook;
       const provider = "prepared-git";
       const binding = {
         workspace,
@@ -547,7 +550,7 @@ for (const fault of ["before write", "after commit", "during worker replacement"
         binding,
         bindingId,
         fence: 1,
-        preview: { hook },
+        preview,
         supervisor: installed,
         installed,
       } as Parameters<OpenShellGitRuntime["reconcile"]>[0];

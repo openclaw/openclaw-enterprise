@@ -1,3 +1,4 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isName,
   type ComputeDriver,
@@ -47,17 +48,8 @@ export interface ServiceAccountDeletion {
 interface ServiceAccountOperationsDependencies {
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "readableListRows">;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly lockNamespaceForPolicyDelete: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<Readonly<Namespace>>;
   readonly hasSelection: () => boolean;
   readonly selectDriver: () => ServiceAccountDriver;
   readonly computeDriver: () => ComputeDriver;
@@ -183,7 +175,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         namespaceId: namespace.id,
         name: input.name,
       });
-      await deps.bindCreator(state, principalId, {
+      await deps.iamPolicy.bindCreator(state, principalId, {
         kind: "service_account",
         id: account.id,
         namespaceId: namespace.id,
@@ -282,7 +274,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
   ): Promise<ServiceAccountDeletion> {
     serviceAccountIdentity(namespaceId, serviceAccountId);
     return transact(async (state) => {
-      const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
+      const namespace = await deps.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "service_account",
         id: serviceAccountId,
         namespaceId,

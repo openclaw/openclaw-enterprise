@@ -2,7 +2,7 @@
 
 This guide covers `LegacyEgressProxyDriver`, which serves existing protected-egress deployments through the `credential_proxy` capability. Start with the [legacy contract](../reference/drivers/credential-proxy.md#legacy-protected-egress) and choose a delivery profile that your Backend can enforce. Register the Driver with its paired Sandbox, implement installation and request handling, and qualify the result through a real Agent and Backend. An implementation does not need to use OpenShell.
 
-For the canonical `CredentialProxyDriver`, see the [staged delivery contract](../reference/drivers/credential-proxy.md#interface). The regular Agent workflow does not call that contract yet.
+For the canonical `CredentialProxyDriver`, see the [credential delivery contract](../reference/drivers/credential-proxy.md#interface) and [implementation status](../reference/credential-sources.md#implementation-status).
 
 ## 1. Choose the enforcement boundary
 

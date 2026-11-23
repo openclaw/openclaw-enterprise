@@ -30,8 +30,7 @@ jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
 
 On default-deny clusters, apply OpenShell NetworkPolicies in `$PLATFORM_NS`
 before Helm. Render the chart with `$RUN_DIR/openshell.json` to check Pod labels
-and ports. For stock
-OpenShell v0.1.8, both Pod templates have
+and ports. For stock OpenShell v0.1.9, both Pod templates have
 `app.kubernetes.io/instance=openshell-gateway`. The certificate Job has
 `app.kubernetes.io/name=openshell-certgen` and
 `app.kubernetes.io/component=certgen`. The Gateway has

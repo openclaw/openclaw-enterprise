@@ -859,6 +859,33 @@ function migrationDatabase([installed, candidate, release, namespace]: [
   return [...new Set(names)].join("\n");
 }
 
+function checkedMigrationInvocation(initializer: Container) {
+  const { command, args } = initializer;
+  if (
+    command !== undefined &&
+    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
+  ) {
+    fail("the initialization Job contains an invalid migration command.");
+  }
+  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const entry = migrationEntry(args);
+  if (!entry) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  return { entry, option: args.at(-1) };
+}
+
+function migrationMode([renderedPath, release]: [string, string]) {
+  const { initializer } = migrationInitializer(renderedPath, release);
+  const { option } = checkedMigrationInvocation(initializer);
+  if (option === "--expect-empty") {
+    fail("the initialization Job requires an empty database for a new install.");
+  }
+  return option === "--require-current" ? "separate" : "hook";
+}
+
 // Run only the selected image's migration program. Keep its database identity
 // and CA without copying other initialization containers.
 function migrationJob(
@@ -887,20 +914,7 @@ function migrationJob(
   if (podLabels != null && !isLabelMap(podLabels)) {
     fail("the rendered initialization Job contains invalid Pod labels.");
   }
-  const { command, args } = initializer;
-  if (
-    command !== undefined &&
-    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
-  ) {
-    fail("the initialization Job contains an invalid migration command.");
-  }
-  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
-    fail("the initialization Job contains invalid migration arguments.");
-  }
-  const entry = migrationEntry(args);
-  if (!entry) {
-    fail("the initialization Job contains invalid migration arguments.");
-  }
+  const { entry } = checkedMigrationInvocation(initializer);
   const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
   const options = {
@@ -1307,6 +1321,7 @@ type Command =
   | { action: "drafts"; input: Parameters<typeof drafts>[0] }
   | { action: "secret"; input: Parameters<typeof secret>[0] }
   | { action: "job" | "identity-job"; input: JobArguments }
+  | { action: "migration-mode"; input: Parameters<typeof migrationMode>[0] }
   | { action: "migration-database"; input: Parameters<typeof migrationDatabase>[0] }
   | { action: "migration-job"; input: Parameters<typeof migrationJob> }
   | { action: "child"; input: Parameters<typeof child>[0] }
@@ -1355,6 +1370,8 @@ function parseCommand([action, ...input]: string[]): Command {
       return { action, input: argumentsOf(input, 7) };
     case "child":
       return { action, input: argumentsOf(input, 4) };
+    case "migration-mode":
+      return { action, input: argumentsOf(input, 2) };
     case "migration-database":
       return { action, input: argumentsOf(input, 4) };
     case "migration-job": {
@@ -1386,7 +1403,7 @@ function parseCommand([action, ...input]: string[]): Command {
 
 function failUsage(): never {
   return fail(
-    "expected drafts, secret, job, identity-job, migration-database, migration-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
+    "expected drafts, secret, job, identity-job, migration-mode, migration-database, migration-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
   );
 }
 
@@ -1419,6 +1436,8 @@ function run(command: Command): string | number {
       );
     case "child":
       return child(command.input);
+    case "migration-mode":
+      return migrationMode(command.input);
     case "migration-database":
       return migrationDatabase(command.input);
     case "migration-job":

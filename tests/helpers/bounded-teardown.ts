@@ -23,6 +23,7 @@ type TeardownOptions = {
   stepLimitMs?: number;
   exitGraceMs?: number;
   log?: (message: string) => void;
+  sanitizeError?: (error: unknown) => unknown;
   exit?: () => unknown;
   failFile?: () => void;
   settled?: (quietMs: number) => PromiseLike<unknown>;
@@ -174,6 +175,7 @@ export function boundedTeardown(
     stepLimitMs = teardownStepLimitMs,
     exitGraceMs = abandonedTeardownExitGraceMs,
     log = (message) => process.stderr.write(`${message}\n`),
+    sanitizeError = (error) => error,
     // The exit follows a failure, so its code is a failure's.
     exit = () => process.exit(process.exitCode || 1),
     // Fails the file once its test has been reported, should the process still end by itself.
@@ -225,11 +227,17 @@ export function boundedTeardown(
       ]);
       return { abandoned };
     } catch (error) {
-      const message = formatCleanupError(error);
+      let sanitized: unknown;
+      try {
+        sanitized = sanitizeError(error);
+      } catch {
+        sanitized = new Error("cleanup error sanitizer failed");
+      }
+      const message = formatCleanupError(sanitized);
       log(`${label}: cleanup ${site} failed: ${message}`);
       return {
         abandoned,
-        error: new Error(`cleanup ${site}: ${message}`, { cause: error }),
+        error: new Error(`cleanup ${site}: ${message}`, { cause: sanitized }),
       };
     } finally {
       clearTimeout(timer);

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-21
-last_updated_session: authoring-run/16cfa409-7c14-4f52-9167-3e897f919125
+updated: 2026-11-22
+last_updated_session: authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e
 ---
 
 # Harness Authentication Binding Flow
@@ -130,13 +130,7 @@ dedicated Codex and the paired Sandbox and Credential Gateway. Deployment and
 guided provisioning reject unsupported combinations before admitting work or
 stopping predecessors.
 
-For a TokenService Source, deployment rechecks the caller's and Agent
-principal's exact source `operate`, then returns `409` before saving an Agent
-revision because this owner has no revision delivery path. When Native IAM gives
-the Agent principal a missing source grant during deployment, the refusal rolls
-back that grant, its Role if newly created, and its success audit. Agent save
-stores the source references only; it does not save a `DeploymentPolicy` or delivery
-snapshot. Gateway-backed sources keep their serving deployment path.
+For a managed TokenService Source, deployment checks the caller's and Agent principal's source `operate` grants, the approved model route, and the saved network permission. Supported admission saves the Source reference and separate network and injection policies in the Agent revision; see the [credential lifecycle](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision). Unsupported routes are refused before revision or work creation. If admission fails after Native IAM creates the Agent's source grant, the transaction rolls back that grant, any new Role, and its success audit. Agent save records Source references only. Gateway-owned Sources retain their existing delivery path.
 
 Host credential changes can affect a runtime version after restart without
 redeployment; see the
@@ -329,6 +323,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 10:23: Describe managed Source deployment through credential admission. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)
 
 - 2026-11-21 11:45: Preserve the extracted Agent flow and public Source enrollment link. (authoring-run/16cfa409-7c14-4f52-9167-3e897f919125 - 7533013d1061c433e27883818cf69f955239c43f)
 

@@ -452,7 +452,7 @@ test(
     };
     const held = run("sh", ["-c", command], {
       cwd: client,
-      env: { ...env, ...envAuth },
+      env: { ...env, ...envAuth, TMPDIR: join(client, "absent-temp-dir") },
       allowFailure: true,
     }).then(
       (result) => ({ result }),
@@ -487,9 +487,63 @@ test(
       allowFailure: true,
     });
     assert.equal(refused.code, 0, "new authenticated Git process sees the explicit refusal");
+    const incorrectStatus = await run("sh", ["-c", fetchAfterWithdrawalCommand(".", 503)], {
+      cwd: client,
+      env: { ...env, ...envAuth },
+      allowFailure: true,
+    });
+    assert.equal(incorrectStatus.code, 43, "an authenticated 401 cannot satisfy a 503 oracle");
     assert.ok(fixture.snapshot().requests > beforeFresh);
     const uncredentialed = await run("sh", ["-c", fresh], { cwd: client, env, allowFailure: true });
-    assert.notEqual(uncredentialed.code, 0, "anonymous refusal must fail the withdrawal oracle");
+    assert.equal(uncredentialed.code, 42, "anonymous refusal must fail the withdrawal oracle");
+    // Check the content-free return codes even when a process reports only exit 128.
+    const trace = (method, status, basic = true) => [
+      "=> Send header: " +
+        method +
+        " /fixture/repo.git/" +
+        (method === "GET" ? "info/refs?service=git-upload-pack" : "git-upload-pack") +
+        " HTTP/1.1",
+      ...(basic ? ["=> Send header: Authorization: Basic <redacted>"] : []),
+      ...(status === undefined ? [] : ["<= Recv header: HTTP/1.1 " + status]),
+    ];
+    const discovery = trace("GET", 200);
+    for (const [cmd, lines, code] of [
+      [fresh, [...trace("GET", 401), ...trace("GET", 401)], 0],
+      [fresh, [...trace("GET", 200), ...trace("GET", 401)], 43],
+      [command, trace("GET", undefined), 41],
+      [command, ["oce-fixture-git-ready-failed"], 57],
+      [command, discovery, 42],
+      [command, [...discovery, ...trace("POST", 401, false)], 47],
+      [command, [...discovery, ...trace("POST", 401)], 0],
+      [command, [...discovery, ...trace("POST", 503)], 48],
+      [command, [...discovery, ...trace("POST", 403)], 43],
+    ]) {
+      const git =
+        "git() { printf '%s\\n' " +
+        lines.map((line) => "'" + line + "'").join(" ") +
+        " >&2; return 128; }";
+      const result = await run("sh", ["-c", git + "\n" + cmd], {
+        cwd: client,
+        env,
+        allowFailure: true,
+      });
+      assert.equal(result.code, code);
+    }
+    const marker = ".oce-git-withdrawal-0123456789abcdef";
+    const failedCleanup = await run(
+      "sh",
+      [
+        "-c",
+        "git() { if [ \"$1\" = remote ]; then printf '%s\\n' 'https://fixture.invalid/repo'; return; fi; " +
+          ": > " +
+          marker +
+          "/unexpected; return 128; }\n" +
+          withdrawDuringFetchCommand(".", 401, marker),
+      ],
+      { cwd: client, env, allowFailure: true },
+    );
+    assert.equal(failedCleanup.code, 41, "cleanup must preserve the original Git oracle result");
+    assert.ok((await stat(join(client, marker, "unexpected"))).isFile());
     assert.notEqual(
       (await git(["clone", fixture.cloneUrl, "revoked"], token, { allowFailure: true })).code,
       0,
@@ -776,20 +830,40 @@ test("the installed Skipper model requires terminal success and keeps failure di
     ),
     "SKIPPER_COMPUTE_DONE_skipper-test",
   );
-  for (const output of [
-    nativeToolOutput({
-      exit: 1,
-      output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
-    }),
-    nativeToolOutput({
-      exit: 0,
-      output: "Process running with session ID 99\nprivate-error-canary",
-    }),
-    "private-error-canary",
+  const echoed = "`private-error-canary SKIPPER_COMPUTE_DONE_skipper-test`";
+  const denied =
+    "exec_command failed: CreateProcess { message: " +
+    JSON.stringify(
+      "Rejected(" +
+        JSON.stringify(
+          echoed + " rejected: rm -f style commands are not permitted. Use a safer approach",
+        ) +
+        ")",
+    ) +
+    " }";
+  for (const [output, status] of [
+    [
+      nativeToolOutput({
+        exit: 1,
+        output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
+      }),
+      "completed",
+    ],
+    [
+      nativeToolOutput({
+        exit: 0,
+        output: "Process running with session ID 99\nprivate-error-canary",
+      }),
+      "completed",
+    ],
+    ["private-error-canary", "unrecognized"],
+    [denied, "tool-denied"],
+    ["private-error-canary " + denied, "unrecognized"],
   ]) {
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).status, status);
     assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(

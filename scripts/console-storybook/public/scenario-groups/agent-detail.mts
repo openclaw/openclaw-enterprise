@@ -1,5 +1,6 @@
 import type {
   AgentCredentialSourceBinding,
+  AgentNetworkProxy,
   AgentDeploymentStatusWire,
   AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
@@ -49,6 +50,8 @@ type AgentDetailScenario = {
   harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
+  agentNetworkProxy?: AgentNetworkProxy;
+  extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   pluginDiscoveryCredential?: "none";
@@ -115,7 +118,13 @@ type AgentDetailScenario = {
   stopElsewhereOnReread?: true;
   diagnosticsState?: "noSlack" | "unknown";
   runtimePod?:
-    "startupWarnings" | "dedicatedPair" | "missingAgent" | "none" | "replaced" | "rollover";
+    | "startupWarnings"
+    | "dedicatedPair"
+    | "missingAgent"
+    | "none"
+    | "replaced"
+    | "rollover"
+    | "scaleDown";
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
@@ -317,7 +326,8 @@ export function createAgentDetailScenarios({
         description:
           "Submit requested overrides and inspect the resolved settings after deployment.",
         steps: [
-          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy.",
+          "In Configuration snapshot, expand View overrides and View settings. Compare the destinations in the two JSON documents.",
         ],
         gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
       },
@@ -407,6 +417,124 @@ export function createAgentDetailScenarios({
         ],
         gap: "The fixture simulates saves, admission, and worker completion; it does not run a live Agent or Gateway.",
       },
+      networkProxyEmpty: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy empty",
+        path: draft,
+        deployed: true,
+        description:
+          "The draft has no upstream proxy. The editor labels its Gateway-channel-only scope and the next-deployment lifecycle.",
+        steps: [
+          "Enter an HTTP or HTTPS endpoint and optionally select a proxy credential Secret.",
+          "Save the setting, then inspect the current version to confirm its snapshot did not change.",
+        ],
+        gap: "Simulated UI proof; no proxy, Secret backend, or Gateway runs.",
+      },
+      networkProxySaved: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy saved",
+        path: draft,
+        deployed: true,
+        agentNetworkProxy: {
+          url: "https://proxy.example:8443",
+          credentialSecretId: "sec_00000000-0000-4000-8000-000000000010",
+        },
+        extraSecrets: [
+          { id: "sec_00000000-0000-4000-8000-000000000010", name: "Proxy credential (simulated)" },
+        ],
+        description:
+          "The draft shows the endpoint and a safe Secret reference. Clearing applies only to the next deployment.",
+        steps: ["Clear the proxy, inspect the current version, then deploy the cleared draft."],
+        gap: "Simulated UI proof; revision and deployment results are fixture state.",
+      },
+      networkProxyValidation: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy validation",
+        path: draft,
+        deployed: true,
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "socks5://proxy.example:1080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description: "The editor rejects an unsupported proxy URL before sending an Agent update.",
+        gap: "Simulated UI proof; server admission is separate.",
+      },
+      networkProxySaveError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy save error",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              "The Network proxy endpoint is not configured by the Installation. Select an installed endpoint.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "A refused save keeps the edit visible and leaves Deploy blocked until it is fixed or canceled.",
+        gap: "Simulated UI refusal; no Compute admission runs.",
+      },
+      networkProxyEnforcementUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy enforcement unavailable",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+            message:
+              "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "An enforcement outage shows safe recovery guidance and requires a draft reload before another save.",
+        gap: "Simulated UI refusal; no Envoy fleet is stopped.",
+      },
+      networkProxyPermission: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy permission",
+        path: draft,
+        deployed: true,
+        agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+        description:
+          "A viewer can inspect the saved selection but cannot edit it without exact Agent update permission.",
+        gap: "Simulated permission response.",
+      },
+      networkProxySecretLoading: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets loading",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000 }],
+        description:
+          "The existing Secret selector reports loading while its Namespace list is pending.",
+        gap: "Simulated delayed Secret list.",
+      },
+      networkProxySecretError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets error",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+        description:
+          "The existing Secret selector reports an unavailable list without treating it as empty.",
+        gap: "Simulated Secret list failure.",
+      },
       editCurrentConfiguration: {
         group: "Pages/Agent detail",
         name: "Edit current Configuration",
@@ -433,6 +561,7 @@ export function createAgentDetailScenarios({
           "The permission answer denies Configuration update, so a version's Configuration tab offers Open draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
         steps: [
           "Find Open draft below the Configuration snapshot, and no Edit current Configuration.",
+          "Choose Draft repositories beside the snapshot heading. Check that the Repositories tab opens read-only. Use Back and check that Draft repositories has focus.",
           "Choose Open draft: the draft opens read-only, with no Edit Configuration button.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -449,6 +578,7 @@ export function createAgentDetailScenarios({
           "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+          "Beside Configuration snapshot, choose Draft credentials. Check that Credentials has focus and the draft shows the authentication source. Use Back and check that Draft credentials has focus on the snapshot. Repeat with Draft repositories.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
         ],
         nextStory: "authSaveHoldsNavigation",
@@ -564,7 +694,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: shareExistingPerson,
         description:
-          "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+          "The sharing acknowledgment explains that removing the Agent grant leaves the separate Namespace discovery grant in place. Other grants may still provide access.",
       },
       agentSharingHoldsNavigation: {
         group: "Pages/Agent detail",
@@ -767,6 +897,7 @@ export function createAgentDetailScenarios({
           "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
         steps: [
           "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
+          "Select a few characters with Shift+Left. Switch browser tabs and return. After the access check, press Shift+Left again. The selection extends one more character to the left.",
           "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
           "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
           "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
@@ -1500,12 +1631,12 @@ export function createAgentDetailScenarios({
         description:
           "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
         steps: [
-          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration. The conflict moves focus to Reload draft, which is described by the alert.",
           "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
           "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
           "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
         ],
-        gap: "Simulated preflight conflict only; the browser regression checks a real Controller PATCH race.",
+        gap: "Simulated preflight conflict. The browser regression covers a real Controller PATCH conflict arriving during a return-to-tab access check.",
       },
       admitted: {
         group: "Pages/Agent detail",
@@ -1699,6 +1830,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
       deploymentRunning: {
@@ -1711,6 +1843,7 @@ export function createAgentDetailScenarios({
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
           'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+          "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {
@@ -1735,6 +1868,7 @@ export function createAgentDetailScenarios({
           'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
           "Before the status poll lands, focus Viewing version without changing its v7 selection.",
           'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+          "Reset. Tab to v7 under Latest visible deployment before completion. When the badge reads Completed, the focus outline stays visible. Press Enter to open Deployment for v7.",
           "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
           "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
         ],
@@ -1890,17 +2024,72 @@ export function createAgentDetailScenarios({
       deploymentBootstrapCleanup: {
         group: "Pages/Agent detail",
         name: "Bootstrap failure with cleanup pending",
-        path: `${candidateVersion}&tab=deployment`,
+        path: `${candidateVersion}&tab=configuration`,
         deployed: true,
         candidateDeploymentStatus: "failed",
         bootstrapFailure: true,
         cleanupStatus: "queued",
         cleanupCompletes: true,
+        rules: [
+          // Match the first queued record. Later reads use the failed bootstrap and its cleanup.
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            once: true,
+            data: (
+              [
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000007",
+                  revision: 7,
+                  deploymentStatus: "queued",
+                  createdAt: "2026-09-26T22:52:53.000Z",
+                },
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000006",
+                  revision: 6,
+                  configurationGeneration: 1,
+                  createdAt: "2026-09-25T12:00:00.000Z",
+                  deploymentStatus: "succeeded",
+                },
+              ] satisfies AgentRevisionSummaryWire[]
+            ).map((summary) => ({
+              ...summary,
+              harness: {
+                ...summary.harness,
+                configuration: {
+                  modelProvider: {
+                    baseUrl: "https://api.openai.com/v1",
+                    protocol: "openai-responses",
+                    supportsStandaloneWebSearch: false,
+                  },
+                },
+              },
+            })),
+          },
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            once: true,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: newerDeployment.namespaceId,
+              agentId: newerDeployment.agentId,
+              status: "queued",
+              cleanup: null,
+              progress: { lastAttempt: null, nextAttemptAt: "2026-09-26T22:53:01.000Z" },
+              error: null,
+              warnings: [],
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
         description:
-          "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+          "A poll changes the Configuration notice from queued to cleanup pending. The deployment remains failed after cleanup and its recorded evidence stays visible.",
         steps: [
+          "On Configuration, tab to View deployment while the notice says a deployment is queued or in progress.",
+          "Wait for the notice to say Deployment resource cleanup needs attention. Press Enter with focus still on the link to open Deployment for v7.",
           "Read the failing oauth-bootstrap exit status beside the successful init container.",
-          "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
+          "After cleanup completes, check that the deployment still shows failed and the evidence remains visible.",
         ],
       },
     } satisfies Record<string, AgentDetailScenario>,
@@ -2921,6 +3110,18 @@ export function createAgentDetailScenarios({
         steps: [
           "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
           "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
+        ],
+      },
+      runtimeLogOnePodRemains: {
+        ...runtimeLogsPage,
+        name: "One Pod remains while reading logs",
+        runtimePod: "scaleDown",
+        description:
+          "The selected Pod keeps serving logs when the other Pod disappears. The Pod / container picker is no longer needed.",
+        steps: [
+          "Tab from Source to Pod / container. Leave the first Pod selected.",
+          "After the next status update, check that the picker disappears, Source has focus, and the same output remains visible. Tab to Previous instance.",
+          "Reload and tab to Previous instance before the update. Focus should stay there.",
         ],
       },
       runtimeLogPodReplaced: {
