@@ -278,28 +278,41 @@ export async function observeUntil<T>(
 }
 
 type GitInstallation = Awaited<ReturnType<typeof createOpenShellGitInstallation>>;
+type StartupModelObservation = Awaited<
+  ReturnType<
+    typeof import("../fixtures/synthetic-egress-provider.mjs").startSyntheticEgressProvider
+  >
+>["observations"][number];
+
+export async function prepareFiniteGitAgent(
+  t: TestContext,
+  fixture: GitInstallation,
+  repositoryRefs?: readonly string[],
+) {
+  const prepared = await prepareGitAgent(fixture, false, repositoryRefs);
+  const deploy = async () => {
+    const admitted = await deployGitAgent(t, fixture, prepared);
+    const { deadlineWallMs } = admitted;
+    assert.ok(deadlineWallMs !== undefined);
+    return { ...admitted, deadlineWallMs };
+  };
+  return { ...prepared, deploy };
+}
 
 export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation) {
-  const admitted = await deployGitAgent(t, fixture, false);
-  const { deadlineWallMs } = admitted;
-  assert.ok(deadlineWallMs !== undefined);
-  return { ...admitted, deadlineWallMs };
+  return (await prepareFiniteGitAgent(t, fixture)).deploy();
 }
 
-export function deployStandingAgent(t: TestContext, fixture: GitInstallation) {
-  return deployGitAgent(t, fixture, true);
+export async function deployStandingAgent(t: TestContext, fixture: GitInstallation) {
+  return deployGitAgent(t, fixture, await prepareGitAgent(fixture, true));
 }
 
-async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing: boolean) {
-  const {
-    request,
-    namespace,
-    modelSource,
-    repositoryRef,
-    workspace,
-    gatewayClient,
-    checkpoint: evidence,
-  } = fixture;
+async function prepareGitAgent(
+  fixture: GitInstallation,
+  standing: boolean,
+  repositoryRefs: readonly string[] = [fixture.repositoryRef],
+) {
+  const { request, namespace, modelSource, repositoryRef } = fixture;
   const base = `/namespaces/${namespace.id}`;
   const suffix = randomUUID();
   const model = process.env.OCC_TEST_OPENAI_MODEL;
@@ -314,7 +327,10 @@ async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing
     executionMode: "dedicated",
     harnessAuth: { method: "credential_source", sourceId: modelSource.id },
     credentialSources: [{ sourceId: modelSource.id }],
-    repositoryBindings: [{ repositoryRef, profile: "github-repository" }],
+    repositoryBindings: repositoryRefs.map((repositoryRef) => ({
+      repositoryRef,
+      profile: "github-repository",
+    })),
   });
   const path = `${base}/agents/${agent.id}`;
   const role = await request("POST", `${base}/iam/roles`, {
@@ -353,6 +369,19 @@ async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing
     assert.ok(approvals.some(({ id }: { id: string }) => id === approvalId));
   }
 
+  return { agent, configuration, path, suffix, approvalId };
+}
+
+async function deployGitAgent(
+  t: TestContext,
+  fixture: GitInstallation,
+  { agent, configuration, path, suffix, approvalId }: Awaited<ReturnType<typeof prepareGitAgent>>,
+) {
+  const { request, modelSource, workspace, gatewayClient, checkpoint: evidence } = fixture;
+  const standing = approvalId !== undefined;
+  const modelObservations: readonly StartupModelObservation[] | undefined =
+    fixture.startupModelObservations;
+  const beforeModelRequests = modelObservations?.length ?? 0;
   // Use the finite grant's actual admission deadline for expiry checks.
   const admissionStartedAt = Date.now();
   const revision = await request("POST", `${path}/deploy`);
@@ -363,8 +392,8 @@ async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing
   const deadlineWallMs = revision.repositoryCredentials?.deadlineWallMs;
   if (!approvalId) {
     assert.ok(Number.isSafeInteger(deadlineWallMs));
-    assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
-    assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
+    assert.ok(deadlineWallMs >= admissionStartedAt + fixture.sessionDurationSeconds * 1000);
+    assert.ok(deadlineWallMs <= admissionReturnedAt + fixture.sessionDurationSeconds * 1000);
     await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
   }
   const reportInitialRuntimeFailure =
@@ -401,6 +430,20 @@ async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing
     },
     10 * 60_000,
   ).catch(reportInitialRuntimeFailure("deployment-observation"));
+  if (modelObservations !== undefined) {
+    assert.ok(
+      modelObservations
+        .slice(beforeModelRequests)
+        .some(
+          ({ method, path, credentialVersion, status }) =>
+            method === "POST" &&
+            path === "/v1/responses" &&
+            credentialVersion === "initial" &&
+            status === 200,
+        ),
+      "The released Codex startup must reach the authenticated HTTPS Responses fixture",
+    );
+  }
 
   const selector = `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`;
   const readExecution = async () => {
@@ -412,6 +455,11 @@ async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing
     assert.equal(pods.items.length, 1, "expected the single original Harness Pod");
     const pod = pods.items[0];
     assert.ok(pod);
+    assert.equal(
+      pod.metadata.namespace,
+      workspace,
+      "Harness Pod must belong to its Agent workspace",
+    );
     assert.ok(
       pod.status.conditions.some(({ type, status }) => type === "Ready" && status === "True"),
       "the original Harness Pod must remain ready",
