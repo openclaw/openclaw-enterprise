@@ -857,10 +857,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
-      // Members can configure browser access; guided provisioning remains administrator-only.
+      // A member gets the Installation's capabilities, guided provisioning included (RFC-0026).
       if (resource === "agent-capabilities" && method === "GET") {
-        const { agentProvisioning: _administratorOnly, ...capabilities } =
-          installationFixture(installationScenario(scenario), createdAt).capabilities ?? {};
+        const { capabilities } = installationFixture(installationScenario(scenario), createdAt);
         return response({ capabilities });
       }
       if (

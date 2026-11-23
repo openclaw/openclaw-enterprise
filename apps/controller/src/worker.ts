@@ -1367,6 +1367,7 @@ export class ControllerWorker {
   private readonly secretDriverId: string | undefined;
   private readonly configuredServiceAccountDriverId: string | undefined;
   private readonly nativeWorkerSupport: NativeWorkerSupport | undefined;
+  private readonly iamConfiguration: InstallationRuntimeDrivers["installation"]["iam"];
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
@@ -1474,6 +1475,9 @@ export class ControllerWorker {
     this.policyCeiling = drivers?.installation.sandboxNetworkPolicyCeiling ?? [];
     this.configuredServiceAccountDriverId = drivers?.installation.drivers.service_account?.id;
     this.nativeWorkerSupport = drivers?.installation.runtime?.nativeWorkerSupport;
+    // Guided provisioning creates an Agent and Configuration, so the worker binds their creator
+    // to the configured Owner Role as the API does (RFC-0026).
+    this.iamConfiguration = drivers?.installation.iam;
     if (this.mode === "production" && drivers === undefined) {
       throw new Error("Production controller workers require Installation startup configuration.");
     }
@@ -1707,6 +1711,7 @@ export class ControllerWorker {
       ...(this.nativeWorkerSupport === undefined
         ? {}
         : { nativeWorkerSupport: this.nativeWorkerSupport }),
+      ...(this.iamConfiguration === undefined ? {} : { iamConfiguration: this.iamConfiguration }),
     };
     const provisioning =
       this.repositoryAdmission === undefined

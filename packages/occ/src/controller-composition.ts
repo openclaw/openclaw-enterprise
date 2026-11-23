@@ -1066,6 +1066,7 @@ export function createControllerComposition(
     authorizeRecord: provisioningRequests.authorizeProvisioningRecord,
     bindCreator: iamPolicy.bindCreator,
     ensureAgentOperateGrants: agentCredentialAccess.ensureAgentOperateGrants,
+    auditAgentOperateGrant: agentCredentialAccess.auditAgentOperateGrant,
     backendId: (ref) => resolveAgentBackendId(backendMap, ref),
     repository: repositoryPolicy,
     hasConfigurationDriver: () => drivers.hasSelection("configuration"),

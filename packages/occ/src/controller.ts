@@ -230,7 +230,7 @@ export class OpenClawController {
   async getNamespaceAgentCapabilities(
     principalId: string,
     namespaceId: string,
-  ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
+  ): Promise<Readonly<InstallationCapabilities>> {
     return this.composition.installationCapabilityQueries.getNamespaceAgentCapabilities(
       principalId,
       namespaceId,

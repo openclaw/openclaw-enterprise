@@ -52,6 +52,7 @@ import {
   AgentDeletingError,
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
+  CallerStateDeniedError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
   ComputeRepositoryCredentialsUnsupportedError,
@@ -198,6 +199,7 @@ interface ProvisioningWorkerDependencies {
   >["authorizeProvisioningRecord"];
   readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly ensureAgentOperateGrants: AgentCredentialAccess["ensureAgentOperateGrants"];
+  readonly auditAgentOperateGrant: AgentCredentialAccess["auditAgentOperateGrant"];
   readonly backendId: (ref: BackendRef | undefined) => string | null;
   readonly repository: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
@@ -631,6 +633,11 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     // Take it before the Namespace lock: applying the configuration holds it exclusively and
     // then locks each Namespace it writes a configured binding into.
     await state.installations.holdIAMConfiguration("shared");
+    // Hold the requester's account through COMMIT, as its session holds it for a create: a
+    // disable commits before this step, which then fails permanently, or after its writes.
+    if (!(await state.installations.holdPrincipalAccount(record.actorId))) {
+      throw new CallerStateDeniedError("The account that requested provisioning is disabled.");
+    }
     const namespace = await lockNamespace(state, record.namespaceId);
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
@@ -1241,7 +1248,14 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           : { secretBindings: plan.configuration.secretBindings }),
         harnessAuth: plan.harnessAuth,
       });
-      await dependencies.ensureAgentOperateGrants(state, namespace.id, agent, grantSources);
+      for (const binding of await dependencies.ensureAgentOperateGrants(
+        state,
+        namespace.id,
+        agent,
+        grantSources,
+      )) {
+        await dependencies.auditAgentOperateGrant(state, record.actorId, agent, binding);
+      }
       return commitProvisioningCheckpoint(state, claim, {
         completedPhase: "configuration",
         status: "running",

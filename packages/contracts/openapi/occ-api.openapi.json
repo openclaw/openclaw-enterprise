@@ -15828,8 +15828,26 @@
                       "properties": {
                         "capabilities": {
                           "additionalProperties": false,
-                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
+                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them, including browser-access availability and guided provisioning.",
                           "properties": {
+                            "agentProvisioning": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "minItems": 1,
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["executionModes"],
+                              "type": "object"
+                            },
                             "credentialSources": {
                               "additionalProperties": false,
                               "properties": {
@@ -19053,7 +19071,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires create permission for Configuration resources in the requested Namespace. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth.",
         "operationId": "provisionAgent",
         "parameters": [
           {
@@ -19678,8 +19696,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
             "action": "read",
             "condition": "associated_service_account",
@@ -19691,13 +19714,19 @@
             "condition": "bound_secret",
             "resourceKind": "secret",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
+            "scope": "request_body"
           }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/provision/{workId}": {
       "get": {
-        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can read it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.",
+        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can read it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, operate permission on the CredentialSource it uses for Harness authentication when present, and read permission on its Harness ServiceAccount when present. When the work sets gatewayManagedMode to false, the caller also needs administer permission on the Installation; this is checked after the work item is read. OCC re-checks these grants against the initiator while the work runs.",
         "operationId": "getAgentProvisioning",
         "parameters": [
           {
@@ -19937,7 +19966,12 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           {
             "action": "read",
             "condition": "provisioning_work",
@@ -19979,13 +20013,19 @@
             "condition": "bound_secret",
             "resourceKind": "secret",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
+            "scope": "requested"
           }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/provision/{workId}/retry": {
       "post": {
-        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.",
+        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, operate permission on the CredentialSource it uses for Harness authentication when present, and read permission on its Harness ServiceAccount when present. When the work sets gatewayManagedMode to false, the caller also needs administer permission on the Installation; this is checked after the work item is read. OCC re-checks these grants against the initiator while the work runs.",
         "operationId": "retryAgentProvisioning",
         "parameters": [
           {
@@ -20225,7 +20265,12 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           {
             "action": "read",
             "condition": "provisioning_work",
@@ -20266,6 +20311,12 @@
             "action": "operate",
             "condition": "bound_secret",
             "resourceKind": "secret",
+            "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
             "scope": "requested"
           }
         ]

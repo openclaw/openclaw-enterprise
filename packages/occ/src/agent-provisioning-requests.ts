@@ -90,7 +90,7 @@ import {
   validateRepositoryBrokerNetworkProxy,
   type createRepositoryPolicyOperations,
 } from "./repository-policy.ts";
-import { refuseTakenAgentName } from "./agent-drafts.ts";
+import { authorizeGatewayManagedModeChange, refuseTakenAgentName } from "./agent-drafts.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
@@ -181,6 +181,12 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
     const gatewayManagedMode = normalizeGatewayManagedMode(input.gatewayManagedMode, true);
+    await authorizeGatewayManagedModeChange(
+      authority,
+      dependencies.installationId,
+      principalId,
+      !gatewayManagedMode,
+    );
     const backendId = dependencies.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
@@ -670,7 +676,8 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
   /**
    * The provisioning grants that need only the requested Namespace. Status and retry check them
    * before any lookup, so a caller without them gets the same audited denial whether or not the
-   * Namespace or work item exists.
+   * Namespace or work item exists. Like Agent create, provisioning needs no Installation grant
+   * (RFC-0026): the requester operates each source it binds and owns what the worker creates.
    */
   async function authorizeProvisioningRequest(
     principalId: string,
@@ -686,10 +693,6 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       kind: "configuration",
       namespaceId,
       id: namespaceId,
-    });
-    await authority.authorize(principalId, "administer", {
-      kind: "installation",
-      id: dependencies.installationId,
     });
   }
 
@@ -723,6 +726,12 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       }
     }
     const plan = parseProvisioningPlan(record);
+    await authorizeGatewayManagedModeChange(
+      authority,
+      dependencies.installationId,
+      principalId,
+      !plan.gatewayManagedMode,
+    );
     if (dependencies.selectedIAM().namespacePolicyTransaction !== "platform-unit-of-work") {
       throw new DependencyUnavailableError(
         "Agent provisioning requires transactional Namespace policy management.",

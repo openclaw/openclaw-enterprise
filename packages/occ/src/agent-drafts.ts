@@ -221,6 +221,26 @@ export async function refuseTakenAgentName(
   }
 }
 
+/**
+ * Authorizes Installation administer when a request sets gatewayManagedMode to false. The denial
+ * names gatewayManagedMode: the rest of an Agent create, update, or provisioning request needs
+ * no Installation grant (finding 2691, RFC-0026).
+ */
+export async function authorizeGatewayManagedModeChange(
+  authority: Pick<ControllerAuthority, "authorize">,
+  installationId: string,
+  principalId: string,
+  required: boolean,
+): Promise<void> {
+  if (required) {
+    await authority
+      .authorize(principalId, "administer", { kind: "installation", id: installationId })
+      .catch((error: unknown) => {
+        throw QualifiedAuthorizationDeniedError.qualify(error, "gateway_managed_mode");
+      });
+  }
+}
+
 function requireNamespaceAcceptsAgents(namespace: Pick<Namespace, "status">): void {
   if (namespace.status !== "provisioning" && namespace.status !== "ready") {
     throw new ResourceStateConflictError("The Namespace does not accept new Agents.");
@@ -304,22 +324,13 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     }
   }
 
-  async function authorizeGatewayManagedModeChange(
-    principalId: string,
-    required: boolean,
-  ): Promise<void> {
-    if (required) {
-      // The denial names gatewayManagedMode: the rest of the request needs no Installation grant
-      // (finding 2691).
-      await dependencies.authority
-        .authorize(principalId, "administer", {
-          kind: "installation",
-          id: dependencies.installationId,
-        })
-        .catch((error: unknown) => {
-          throw QualifiedAuthorizationDeniedError.qualify(error, "gateway_managed_mode");
-        });
-    }
+  function authorizeGatewayManagedMode(principalId: string, required: boolean): Promise<void> {
+    return authorizeGatewayManagedModeChange(
+      dependencies.authority,
+      dependencies.installationId,
+      principalId,
+      required,
+    );
   }
 
   async function createAgent(
@@ -363,7 +374,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespaceId: input.namespaceId,
       };
       await dependencies.authority.authorize(principalId, "create", target);
-      await authorizeGatewayManagedModeChange(principalId, input.gatewayManagedMode === false);
+      await authorizeGatewayManagedMode(principalId, input.gatewayManagedMode === false);
       requireGatewayManagedModeSupport(gatewayManagedMode);
       const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
@@ -508,7 +519,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       id: input.namespaceId,
       namespaceId: input.namespaceId,
     });
-    await authorizeGatewayManagedModeChange(
+    await authorizeGatewayManagedMode(
       principalId,
       normalizeGatewayManagedMode(input.gatewayManagedMode, true) === false,
     );
@@ -625,7 +636,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       }
       const configurationId = input.configurationId ?? agent.configurationId;
       if (gatewayManagedMode !== undefined) {
-        await authorizeGatewayManagedModeChange(
+        await authorizeGatewayManagedMode(
           principalId,
           gatewayManagedMode !== agent.gatewayManagedMode,
         );

@@ -2154,9 +2154,8 @@ function renderAgentForm(
     { id: "create-agent-capability-status", className: "hint", role: "status" },
     "Checking installation capabilities…",
   );
-  // Above the form, not mid-form: why a member's form offers what it does (UX plan A2).
-  // Granting an Agent access to its Secrets is Installation administration, so the member learns
-  // before Create that an administrator finishes that step.
+  // Above the form, not mid-form: why a member's form offers what it does (UX plan A2). A deploy
+  // or guided provisioning grants the Agent the sources the member operates (RFC-0026).
   const namespaceName = context.namespace?.name ?? "this Namespace";
   const memberAccess = `${
     typeof presetOptions.presetName === "string"
@@ -3012,8 +3011,8 @@ function renderAgentForm(
     );
     return true;
   }
-  // A member cannot provision, so its form registers the model source and saves a draft that the
-  // member deploys (RFC-0026); an administrator's form provisions.
+  // Without guided provisioning, a member's form registers the model source and saves a draft that
+  // the member deploys (RFC-0026); with it, any caller's form provisions.
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&

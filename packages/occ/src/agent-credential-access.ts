@@ -385,31 +385,41 @@ export function createAgentCredentialAccess({
       agent,
       missing,
     )) {
-      await state.audit.append({
-        id: `aud_${crypto.randomUUID()}`,
-        installationId,
-        namespaceId: agent.namespaceId,
-        occurredAt: timestamp(),
-        kind: "mutation",
-        actorId: principalId,
-        source: "occ",
-        action: "openclaw.iam.access_bindings.create",
-        resource: {
-          kind: binding.resourceKind as "secret" | "credential_source",
-          id: binding.resourceId as string,
-          namespaceId: agent.namespaceId,
-        },
-        outcome: "success",
-        details: {
-          bindingId: binding.id,
-          subjectKind: binding.subjectKind,
-          subjectId: binding.subjectId,
-          roleId: binding.roleId,
-          reason: "agent_deploy",
-          agentId: agent.id,
-        },
-      });
+      await auditAgentOperateGrant(state, principalId, agent, binding);
     }
+  }
+
+  /** Audits an Agent's `operate` grant that a deploy or guided provisioning wrote for its caller. */
+  async function auditAgentOperateGrant(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    binding: Readonly<AccessBinding>,
+  ): Promise<void> {
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId,
+      namespaceId: agent.namespaceId,
+      occurredAt: timestamp(),
+      kind: "mutation",
+      actorId: principalId,
+      source: "occ",
+      action: "openclaw.iam.access_bindings.create",
+      resource: {
+        kind: binding.resourceKind as "secret" | "credential_source",
+        id: binding.resourceId as string,
+        namespaceId: agent.namespaceId,
+      },
+      outcome: "success",
+      details: {
+        bindingId: binding.id,
+        subjectKind: binding.subjectKind,
+        subjectId: binding.subjectId,
+        roleId: binding.roleId,
+        reason: "agent_deploy",
+        agentId: agent.id,
+      },
+    });
   }
 
   return {
@@ -417,6 +427,7 @@ export function createAgentCredentialAccess({
     authorizeAgentCredentialSources,
     admitCredentialSources,
     ensureAgentOperateGrants,
+    auditAgentOperateGrant,
     grantDeployedAgentSources,
   };
 }

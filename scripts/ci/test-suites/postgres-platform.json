@@ -9,6 +9,7 @@
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.ts",
+    "tests/integration/postgres-agent-provisioning-member.test.ts",
     "tests/integration/postgres-device-authorization.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
@@ -304,6 +305,14 @@
         "parser and exact-account IAM refusals precede provider and Secret effects",
         "revoked exact-account authority cannot recover a retained credential",
         "force deletion keeps configured-provider and no-provider behavior separate"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-provisioning-member.test.ts",
+      "expectedTests": [
+        "a Default user provisions an Agent and owns what the worker creates",
+        "provisioning stops when its requester's account is disabled before the worker runs",
+        "provisioning that turns off gatewayManagedMode stops when its requester loses Installation administer"
       ]
     },
     {

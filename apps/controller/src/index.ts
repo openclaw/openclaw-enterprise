@@ -528,14 +528,15 @@ function operationTarget(
   return { kind: "installation", id: installationId };
 }
 
-function clientInstallation(
-  installation: Readonly<Installation>,
+// GET /installation and the Namespace Agent capabilities report the same composed capabilities.
+function clientCapabilities(
+  capabilities: Installation["capabilities"],
   computeDriver: Readonly<ComputeDriver> | undefined,
   nativeAdminEnabled: boolean,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
-  const capabilities = {
-    ...installation.capabilities,
+  return {
+    ...capabilities,
     ...(nativeAdminEnabled ? { nativeAdmin: true } : {}),
     ...(agentProvisioning === undefined
       ? {}
@@ -543,6 +544,18 @@ function clientInstallation(
           agentProvisioning: { executionModes: [...agentProvisioning.executionModes] },
         }),
   };
+}
+
+function clientInstallation(
+  installation: Readonly<Installation>,
+  computeDriver: Readonly<ComputeDriver> | undefined,
+  nativeAdminEnabled: boolean,
+): Record<string, unknown> {
+  const capabilities = clientCapabilities(
+    installation.capabilities,
+    computeDriver,
+    nativeAdminEnabled,
+  );
   return {
     id: installation.id,
     name: installation.name,
@@ -1872,10 +1885,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: {
-            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
-            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
-          },
+          capabilities: clientCapabilities(
+            await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId),
+            options.computeDriver,
+            options.nativeAdmin?.enabled === true,
+          ),
         },
         meta: { requestId: request.id },
       });

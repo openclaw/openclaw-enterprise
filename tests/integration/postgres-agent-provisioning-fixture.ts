@@ -42,6 +42,8 @@ interface FixtureDrivers {
   pluginDriver?: NonNullable<InstallationRuntimeDrivers["pluginDrivers"]>[number] | undefined;
   sandboxDriver?: InstallationRuntimeDrivers["sandboxDriver"];
   credentialGatewayDriver?: InstallationRuntimeDrivers["credentialGatewayDriver"];
+  // The Installation `iam` configuration that the API and the worker both start with.
+  iam?: InstallationRuntimeDrivers["installation"]["iam"];
 }
 
 type WorkerEventListener = NonNullable<ControllerWorkerOptions["emit"]>;
@@ -161,12 +163,14 @@ function installationDrivers({
   pluginDriver,
   sandboxDriver,
   credentialGatewayDriver,
+  iam,
 }: FixtureDrivers): InstallationRuntimeDrivers {
   return {
     // The fixture injects Drivers directly and omits loader-only definitions and a logging level.
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
+      ...(iam === undefined ? {} : { iam }),
       backend: [
         ...(repoDriver === undefined
           ? []
@@ -345,6 +349,7 @@ export async function createProvisioningFixture<
     pluginDriver: options.pluginDriver,
     sandboxDriver: options.sandboxDriver,
     credentialGatewayDriver: options.credentialGatewayDriver,
+    iam: options.iam,
   });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
   let nativeAdminSettings: Pick<PostgresDevelopmentConfig, "nativeAdmin" | "gatewayApiKeyPath"> = {
@@ -475,9 +480,11 @@ export async function createProvisioningFixture<
     };
   }
 
-  async function bootstrapNamespace(): Promise<FixtureNamespace> {
+  async function bootstrapNamespace(
+    name = `agent-provisioning-${randomUUID().slice(0, 8)}`,
+  ): Promise<FixtureNamespace> {
     const namespace = await requestChecked(NamespaceResponse, "POST", "/namespaces", {
-      body: { name: `agent-provisioning-${randomUUID().slice(0, 8)}` },
+      body: { name },
     });
     assert.equal(namespace.status, 201, JSON.stringify(namespace.body));
     await startWorker();

@@ -434,7 +434,14 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
     const checks: [AuthorizationRequest["action"], ResourceRef][] = [
       ["create", { kind: "agent", namespaceId, id: namespaceId }],
       ["create", { kind: "configuration", namespaceId, id: namespaceId }],
-      ["administer", { kind: "installation", id: installationId }],
+      ...(plan.gatewayManagedMode
+        ? []
+        : [
+            ["administer", { kind: "installation", id: installationId }] as [
+              AuthorizationRequest["action"],
+              ResourceRef,
+            ],
+          ]),
       ...(record.agentId === undefined
         ? []
         : (["read", "operate", "deploy"] as const).map(

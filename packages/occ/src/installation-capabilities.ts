@@ -143,13 +143,12 @@ export function createInstallationCapabilityQueries(
 
   /**
    * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
-   * there but cannot read the Installation, such as a Default user (RFC-0026). Browser access
-   * is available to resource owners; guided provisioning still requires Installation administration.
+   * there but cannot read the Installation, such as a Default user (RFC-0026).
    */
   async function getNamespaceAgentCapabilities(
     principalId: string,
     namespaceId: string,
-  ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
+  ): Promise<Readonly<InstallationCapabilities>> {
     namespaceIdentity(namespaceId);
     await dependencies.authority.authorize(principalId, "create", {
       kind: "agent",
@@ -157,8 +156,7 @@ export function createInstallationCapabilityQueries(
       id: namespaceId,
     });
     await dependencies.transactions.read((state) => exactNamespace(state, namespaceId));
-    const { agentProvisioning: _administratorOnly, ...capabilities } = await readCapabilities();
-    return immutableCopy(capabilities);
+    return immutableCopy(await readCapabilities());
   }
 
   return { getInstallation, getNamespaceAgentCapabilities };

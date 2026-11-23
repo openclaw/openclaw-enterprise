@@ -64,7 +64,7 @@ The Slack modal saves tokens through `POST /namespaces/:namespaceId/secrets` bef
 
 Console registers the model Secret as directed by the Credential Gateway catalog before provisioning. [Recovery](../reference/console/create-and-deploy.md) reuses confirmed sources or retries uncertain registration. Installation discovery preserves catalog metadata.
 
-Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
+Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 
 For drafts, Console creates the Configuration and Agent, then grants Slack Secret access. Credential-access retry keeps the Agent.
 
@@ -76,7 +76,7 @@ For drafts, Console creates the Configuration and Agent, then grants Slack Secre
 
 OCC authorizes the exact Credential Source. Guided Create Agent returns `409` for TokenService-owned Sources before queueing; see the [implementation gap](../reference/credential-sources.md#implementation-status). Compute validates the catalog entry and login mode for Gateway-owned Sources.
 
-OCC requires Agent `create`, Configuration `create`, and Installation `administer` for the Namespace; status and retry require the same grants or return `403`. It validates Configuration, references, workspace inputs, execution mode, and authority. A taken Agent name returns `409`; reserved Secret destinations, cross-Namespace references, or missing/`runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule. An absent Secret returns `404`. Before Compute planning, Secret bindings receive Agent save’s Harness authentication check and named `400`.
+OCC requires Agent `create` and Configuration `create` in the Namespace; status and retry require the same grants or return `403`. Setting `gatewayManagedMode` to `false` also requires Installation `administer`. It validates Configuration, references, workspace inputs, execution mode, and authority. A taken Agent name returns `409`; reserved Secret destinations, cross-Namespace references, or missing/`runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule. An absent Secret returns `404`. Before Compute planning, Secret bindings receive Agent save’s Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
@@ -92,7 +92,7 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 `packages/occ/src/agent-provisioning-worker.ts:processAgentProvisioning`
 
-Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
+Under its queue claim, the worker verifies the requester's account, ownership, Namespace readiness and authority before
 effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
 values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
 workspace selections, and grants its service principal the exact Secret permissions.
@@ -233,6 +233,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-16 18:47: Let Default users provision; hold the requester's account. (authoring-run/60b8dff5-ebea-43c3-ab5e-fd19b476733c - 204c2a8c26d6f4b1492f258879bd47e7e4948b43)
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)

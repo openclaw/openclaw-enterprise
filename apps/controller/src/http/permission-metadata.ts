@@ -135,7 +135,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       return [
         requirement("create", "agent", "namespace"),
         requirement("create", "configuration", "namespace"),
-        requirement("administer", "installation"),
+        requirement("administer", "installation", "installation", "gateway_managed_mode_disabled"),
         ...(["read", "operate", "deploy"] as const).map((action) =>
           requirement(action, "agent", "requested", "provisioning_work"),
         ),
@@ -144,6 +144,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         ),
         requirement("read", "service_account", "requested", "associated_service_account"),
         requirement("operate", "secret", "requested", "bound_secret"),
+        requirement("operate", "credential_source", "requested", "bound_credential_source"),
       ];
     case "provisionAgentRuntimeCredentials":
     case "getSavedAgentPluginPolicyCapabilities":
@@ -192,13 +193,13 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   const deploying = operationId === "deployAgent" || operationId === "deployAgentFirst";
   if (creating || updating || provisioning || deploying) {
     const permissions = [primary(creating || provisioning ? "namespace" : "requested")];
-    if (creating || updating) {
+    if (!deploying) {
       permissions.push(
         requirement(
           "administer",
           "installation",
           "installation",
-          creating ? "gateway_managed_mode_disabled" : "gateway_managed_mode_changed",
+          updating ? "gateway_managed_mode_changed" : "gateway_managed_mode_disabled",
         ),
       );
     }
@@ -206,10 +207,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       return permissions;
     }
     if (provisioning) {
-      permissions.push(
-        requirement("create", "configuration", "namespace"),
-        requirement("administer", "installation"),
-      );
+      permissions.push(requirement("create", "configuration", "namespace"));
     } else {
       permissions.push(requirement("read", "configuration"));
     }
@@ -223,17 +221,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       requirement("read", "service_account", "requested", "associated_service_account"),
       requirement("operate", "secret", "requested", "bound_secret"),
     );
-    // Provisioning refuses CredentialSources. Other Agent writes can bind them.
-    if (!provisioning) {
-      permissions.push(
-        requirement(
-          "operate",
-          "credential_source",
-          creating ? "request_body" : "requested",
-          "bound_credential_source",
-        ),
-      );
-    }
+    // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Provisioning
+    // checks the harness credential source that its request names.
+    permissions.push(
+      requirement(
+        "operate",
+        "credential_source",
+        creating || provisioning ? "request_body" : "requested",
+        "bound_credential_source",
+      ),
+    );
     // OCC checks policy read before admitting the saved deployment policy or
     // checking an Agent update for overlap between host additions and repository bindings.
     if (deploying || updating) {
@@ -294,7 +291,7 @@ function permissionDescription(
   if (operationId === "getAgentProvisioning" || operationId === "retryAgentProvisioning") {
     const verb = operationId === "getAgentProvisioning" ? "read" : "retry";
     // The provisioning_work rows are described here, not per row.
-    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.`;
+    return `Requires create permission for Agent and Configuration resources in the requested Namespace. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, operate permission on the CredentialSource it uses for Harness authentication when present, and read permission on its Harness ServiceAccount when present. When the work sets gatewayManagedMode to false, the caller also needs administer permission on the Installation; this is checked after the work item is read. OCC re-checks these grants against the initiator while the work runs.`;
   }
   const names: Record<ResourceKind, string> = {
     installation: "Installation",
