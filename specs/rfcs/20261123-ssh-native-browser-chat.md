@@ -4,8 +4,9 @@ Status: proposed. No browser access is provided by this document.
 
 ## Decision
 
-Use OCC's existing browser session, authorization and proxy. Start with chat
-only. Return unsupported for admin, missing route, mismatched revision, or a
+Use OCC's existing browser session, authorization and proxy. Support chat for exact-Agent operate and administration for exact-Agent
+administer, without granting host administration. Return unsupported for a
+missing route, mismatched revision, or a
 gateway that cannot enforce the delegated session scope. Do not grant students
 an SSH account, a gateway password or a direct gateway URL.
 
@@ -13,7 +14,7 @@ an SSH account, a gateway password or a direct gateway URL.
 
 Implement the existing getGatewayBrowserRequest contract, not a new public
 API. Resolve the Installation, Namespace, Agent and active served revision
-from controller-owned data. Bind the principal and chat-only authority on the
+from controller-owned data. Bind the principal and mode-specific authority on the
 server side. Do not accept destination URLs or identity headers from clients.
 
 SSH gateways listen on the compute host's loopback, not the controller's.
@@ -30,7 +31,8 @@ the installed OCC and gateway pair. Otherwise leave availability unsupported.
 ## Acceptance
 
 1. With no opt-in, deployment and loopback readiness remain unchanged.
-2. A teacher with operate opens the shared designer and their assigned tutor.
+2. An administrator can operate both assigned Agents in admin mode; a
+   principal with operate receives only chat mode.
 3. A student can submit a chat turn on their own tutor but cannot open the
    designer or another student's tutor, including by following a copied URL.
 4. Neither a browser header nor an existing local profile can widen chat
