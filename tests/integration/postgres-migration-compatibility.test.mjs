@@ -1499,6 +1499,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preInstallationNetworkPolicyCeiling"],
+      [93, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
