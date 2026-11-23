@@ -441,6 +441,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
     ports: pluginRequest.ports,
   };
   const sameTuplePluginRequest = { ...pluginRequest, binary: grant.binary };
+  const installedDefaultPluginRequest = { ...pluginRequest, host: "docs.example.test" };
   const duplicateModelGrant = { ...broadPluginGrant, id: "model-duplicate", binary: grant.binary };
   const unsafeRevisions: readonly { readonly reason: string; readonly revision: AgentRevision }[] =
     [
@@ -475,6 +476,28 @@ ${NATIVE_WORKER_ENTRYPOINT}
           },
         },
       })),
+      {
+        reason: "a Plugin route cannot narrow installed network access for another executable",
+        revision: {
+          ...revision,
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: {
+              allowed: [
+                { binary: grant.binary, host: grant.host, ports: grant.ports },
+                installedDefaultPluginRequest,
+              ],
+            },
+            injectionPolicies: [
+              revision.credentialDeployment!.injectionPolicies[0]!,
+              {
+                bindingRef: pluginBinding.bindingRef,
+                allowedRequests: [installedDefaultPluginRequest],
+              },
+            ],
+          },
+        },
+      },
       {
         reason:
           "a broad credential-free Plugin grant cannot be silently replaced by narrow injection routes",
@@ -556,11 +579,17 @@ ${NATIVE_WORKER_ENTRYPOINT}
     assert.deepEqual(events, [], "unsupported policy must not mutate the native runtime");
   }
   // The delivery pair qualifies policies independently of the launcher's Secret support.
+  const pluginOnlyRequests = [pluginRequest, profileRequest].map((request) => ({
+    ...request,
+    host: "plugin.example.test",
+  }));
   const pluginOnly = {
     ...revision.credentialDeployment!,
-    networkAccessPolicy: { allowed: [pluginRequest, profileRequest] },
+    networkAccessPolicy: { allowed: pluginOnlyRequests },
     bindings: [pluginBinding],
-    injectionPolicies: [revision.credentialDeployment!.injectionPolicies[1]!],
+    injectionPolicies: [
+      { bindingRef: pluginBinding.bindingRef, allowedRequests: pluginOnlyRequests },
+    ],
   };
   assert.equal(
     supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: pluginOnly }),

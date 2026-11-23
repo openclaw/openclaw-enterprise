@@ -22,7 +22,7 @@ export const supportsOpenShellCredentialDeployment: NonNullable<
     return false;
   }
   try {
-    compileOpenShellCredentialPolicy(policy);
+    compileOpenShellCredentialPolicy(policy, sandbox.admitNetworkPolicy([], 1).defaults);
     // TODO(1.0 strict policy): require HTTPS scheme, exact executable, and Bearer matching when native support is available.
     return true;
   } catch {

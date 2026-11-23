@@ -2560,7 +2560,10 @@ function stagedCredentialPolicies(
   if (!deployment) {
     credentialPolicyFailure();
   }
-  const { credentialRoutes: routes, publicRoutes } = compileOpenShellCredentialPolicy(deployment);
+  const { credentialRoutes: routes, publicRoutes } = compileOpenShellCredentialPolicy(
+    deployment,
+    snapshot.defaults,
+  );
   const httpDestinations = [...routes, ...publicRoutes];
   const networks = asRecord(policy.network_policies);
   const defaults = asRecord(snapshot.defaults);

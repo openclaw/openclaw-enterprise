@@ -7,6 +7,7 @@ import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 
 import { openShellProviderName } from "../../backends/openshell.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
+import { openShellNetworkRouteMayOverlap } from "./openshell-policy.ts";
 
 export interface OpenShellCredentialRoute {
   readonly binding: DeploymentCredentialBinding;
@@ -200,7 +201,10 @@ function networkCoversRequest(
 }
 
 /** Compile only the admitted HTTP credential selectors; the Provider resolver also uses endpoint paths. */
-export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
+export function compileOpenShellCredentialPolicy(
+  policy: DeploymentPolicy,
+  defaultNetworks?: Readonly<Record<string, unknown>>,
+): {
   readonly credentialRoutes: readonly OpenShellCredentialRoute[];
   readonly publicRoutes: readonly OpenShellPublicRoute[];
 } {
@@ -304,6 +308,23 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
   inheritSubtreeRules(credentialRoutes);
   const publicRoutes = openShellPublicRoutes(policy, credentialRoutes);
   const httpRoutes = [...credentialRoutes, ...publicRoutes];
+  const modelRoutes = credentialRoutes.filter(
+    ({ binding }) => binding.consumer.kind === "model" && binding.bindingRef === "model",
+  );
+  // Model staging already narrows its admitted destination. A new route cannot remove
+  // installed network access at another destination.
+  if (
+    defaultNetworks !== undefined &&
+    httpRoutes.some(
+      (route) =>
+        !modelRoutes.some(
+          (model) =>
+            model.host.toLowerCase() === route.host.toLowerCase() && model.port === route.port,
+        ) && openShellNetworkRouteMayOverlap(defaultNetworks, route),
+    )
+  ) {
+    credentialPolicyFailure();
+  }
   for (const grant of policy.networkAccessPolicy.allowed) {
     if (grant.requestPolicy !== undefined) {
       continue;
