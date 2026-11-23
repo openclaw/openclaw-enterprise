@@ -89,12 +89,20 @@ gh api --method GET repos/OWNER/REPO/pulls
 gh api --method GET repos/OWNER/REPO/pulls/NUMBER
 ```
 
-`NUMBER` must be a positive decimal number of at most 19 digits. OpenShell
-injects the real credential outside the Agent and enforces these routes locally.
-No OCE service is in the request path, so API access continues while the current
-credential is valid (at most one hour) when the Worker is unavailable; the Worker
-renews the credential. Omitting `scopedRest` keeps native delivery Git-only. These
-settings do not permit comments, reviews, PR updates or merges, issue writes,
+`NUMBER` must be a positive decimal number of at most 19 digits.
+
+Three parties act on a request:
+
+- **OpenShell** checks every request inside the Sandbox. It refuses a request
+  outside the saved grants before GitHub receives it, and adds the real
+  credential to an allowed one. The Agent holds only a placeholder.
+- **OCE** sees no request. It writes the OpenShell rules from the saved grants
+  when the Agent is deployed, and the Worker renews the credential. API access
+  continues without the Worker while the current credential is valid (at most
+  one hour).
+- **GitHub** applies the permissions and repositories of the credential.
+
+Omitting `scopedRest` keeps native delivery Git-only. These settings do not permit comments, reviews, PR updates or merges, issue writes,
 GraphQL, or direct access to repositories without a saved grant. Pull request
 creation has the exceptions under [Known limits](#known-limits).
 
@@ -121,18 +129,31 @@ OpenShell matches the method, path and query of a request. It does not inspect
 the body, and OCE does not check it. An Agent that can create pull requests in a
 repository can also do the following in that repository:
 
-- Name a branch of a fork as the head, with `head: "OWNER:BRANCH"` or `head_repo`.
-  If the token also covers a repository of the same fork network for which the
-  Agent has no saved grant, such a pull request makes that repository's commits
-  readable through the target repository's pull request ref and diff.
+- Name another repository's branch as the head, with `head: "OWNER:BRANCH"` or
+  `head_repo`. The credential covers every repository bound to the Agent,
+  including a binding without a saved grant. If such a repository shares a fork
+  network with the target, its commits become readable through the target's
+  pull request ref and diff.
 - Convert an existing issue into a pull request, with `issue: NUMBER`, which
   changes that issue.
 
 A query string can carry the same fields.
 
 Two things bound both cases. GitHub applies the permissions and repositories of
-the installation token. The target is always a repository for which the Agent
-already holds a saved Write grant.
+the credential. The target is always a repository for which the Agent already
+holds a saved Write grant.
+
+To avoid the fork exposure, give every repository bound to an Agent that can
+create pull requests a saved Read or Write grant, or remove the bindings the
+Agent does not need, and redeploy. The credential then covers only repositories
+the Agent can already read. Otherwise leave `pull_requests` at `read` on the
+registration, which withholds creation.
+
+Closing it in the product needs one of two changes, and neither exists yet. OCE
+could withhold the creation route unless every bound repository has a saved
+grant. OpenShell could inspect request bodies, which would also cover issue
+conversion. Whether GitHub refuses a head repository that the credential does
+not cover has not been verified.
 
 ## Console access levels
 
