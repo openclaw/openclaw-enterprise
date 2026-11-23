@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-23
+last_updated_session: authoring-run/b1a95805-a38f-494a-bacb-fe124b75359f
 ---
 
 # Service API Keys Flow
@@ -50,8 +50,9 @@ optional Namespace at issuance, but it does not snapshot or grant permissions.
   [apps/controller/src/auth/index.ts:revokeServiceKey](../../apps/controller/src/auth/index.ts).
 
 The controller already has configured Better Auth storage and its selected IAM
-Driver. Native IAM requires an existing ServicePrincipal, Role, and
-AccessBinding; issuance creates none of them. For Namespace automation, an
+Driver. Issuance requires an existing non-Agent ServicePrincipal in the
+requested scope. It can have no grants. Issuance creates no identity,
+Role or AccessBinding. For Namespace automation, an
 administrator creates the ServicePrincipal through `POST
 /namespaces/:namespaceId/iam/service-principals`
 ([`createIAMServicePrincipal`](../../packages/occ/src/iam-policy-operations.ts)), which writes a
@@ -65,9 +66,9 @@ and [API reference](../reference/api.md).
 ```mermaid
 graph TD
   subgraph Issue["Administrator issues a key"]
-    A["POST service-keys with session or Installation key"] --> B["requireInstallationAdmin and IAM lookup"]
+    A["POST service-keys with session or Installation key"] --> B["Check Installation admin, target principal<br/>and coverage of its current grants"]
     B -->|Unauthorized or invalid principal| C["Reject issuance"]
-    B -->|Exact non-Agent ServicePrincipal| D["createServiceKey persists hashed key and scope"]
+    B -->|Checks pass| D["createServiceKey persists hashed key and scope"]
     D --> E["Append issuance audit"]
     E -->|Success| F["Return plaintext key once"]
     E -->|Failure| G["Attempt deletion and return 503"]
@@ -84,9 +85,11 @@ graph TD
     L -->|Allowed| N["Return Namespace resource"]
   end
   subgraph Revoke["Administrator revokes the key"]
-    N --> O["DELETE service-keys with session or Installation key"]
-    O --> P["revokeServiceKey deletes the Better Auth record"]
-    P --> Q["Append revocation audit and return revoked ID"]
+    O["DELETE service-keys/:keyId"] --> S["Check Installation admin, key ID<br/>and coverage of current grants"]
+    S -->|Checks pass| P["Delete stored key"]
+    P --> Q["Append revocation audit"]
+    Q -->|Success| T["Return revoked ID"]
+    Q -->|Failure| U["Return 503, key stays deleted"]
     P -->|Subsequent key use| J
   end
 ```
@@ -108,8 +111,9 @@ creation and bootstrap retain their human-session boundary.
 The handler asks the selected IAM Driver for the requested ServicePrincipal and
 checks that its ID and optional Namespace match exactly. Unknown identities,
 human Principals, Agent-owned ServicePrincipals, and mismatched scope return
-`400`. Successful lookup grants no new permission and passes the existing
-principal to Better Auth.
+`400`. Before creating the key, `requireCoverage` checks that
+the caller holds every current grant of the target ServicePrincipal at the
+same or a broader scope. An audited coverage denial returns `403`.
 
 ### 2. Persist the key, freeze its scope, and audit before disclosure
 
@@ -127,10 +131,10 @@ and public plugin management routes are not enabled.
 The controller appends an issuance audit containing the resolved issuer, the
 principal ID, and the key's ID (`serviceKeyId`) and name (`serviceKeyName`), then
 returns `201` with the plaintext key once.
-There is no plaintext retrieval endpoint. If creation or audit persistence
-fails, the response is `503` with no credential. If creation already succeeded,
-the controller attempts deletion of the unreturned key; this cleanup is best
-effort, not an atomic transaction with the audit sink.
+There is no plaintext retrieval endpoint. A refused name returns `400`.
+A creation or audit dependency failure returns `503`. If the issuance
+audit fails, OCC withholds the key and attempts to delete it. Cleanup
+can fail, leaving a key without a successful audit event or a returned ID.
 
 ### 3. Verify the credential and enforce its fixed identity scope
 
@@ -200,10 +204,12 @@ called after `getServiceKey`.
 The administrator repeats credential admission and current IAM
 Installation-authority checks. Either a human session or an Installation-scoped
 service key can authorize this request.
-The handler looks up the non-secret key ID in this Installation; a missing or
-already removed key returns `404`. It deletes the Better Auth record through
-the adapter, appends the revocation audit, and returns the ID with
-`revoked: true`. The IAM principal and its policy remain unchanged.
+OCC looks up the key ID in this Installation, then rechecks the
+caller's coverage of the principal's current grants. A grant added since
+issuance can keep the original issuer from revoking the key.
+OCC deletes the Better Auth record, appends the revocation audit, and
+returns the ID with `revoked: true`. The IAM principal and its policy
+remain unchanged. Removing an AccessBinding does not revoke a key.
 
 Deletion prevents ordinary concurrent verification updates from recreating the
 row. Subsequent verification fails across controller instances, although a
@@ -241,7 +247,11 @@ schedule rotation.
   `openclaw.auth.service-keys.revoke` audit actions using the request and
   non-secret key IDs. Never log the header or plaintext key. A `503` requires
   checking the auth, IAM, or audit dependency; revocation may already have
-  deleted the credential.
+  deleted the credential. A `404` at revocation means OCC found no eligible
+  key in this Installation.
+- After uncertain issuance, keep any output private. Follow
+  [key recovery](../reference/authentication/service-api-keys.md#recover-a-lost-or-exposed-service-key)
+  before retrying, even if the response contained no key ID.
 
 These commands describe the proof hooks, not a new runtime execution record.
 
@@ -259,6 +269,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 18:11: Explain grant checks, uncertain issuance and key revocation. (authoring-run/b1a95805-a38f-494a-bacb-fe124b75359f - 78e1d5a06acd6216c2f9d76762baa102bbbd44d6)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 04:25: Trace the request, method, route pattern and operation on auth library refusal and error lines. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)

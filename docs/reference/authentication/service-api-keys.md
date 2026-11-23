@@ -17,10 +17,10 @@ upstream credentials managed by [Service accounts](../service-accounts.md).
   one. Fresh bootstrap creates an Installation service administrator. For
   Namespace automation or a member's CLI, create a Namespace service principal
   with `occ iam service-principal create` (`POST
-/namespaces/:namespaceId/iam/service-principals`) and grant it a Role with an
-  AccessBinding; both use the [Namespace IAM API](../authorization.md#manage-namespace-policy).
-  A new service principal holds no grant. You must already hold every grant of
-  the principal whose key you issue or revoke.
+/namespaces/:namespaceId/iam/service-principals`). A new principal can
+  receive a key before it has any grants. To grant access, bind a Role to
+  the principal through the [Namespace IAM API](../authorization.md#manage-namespace-policy).
+  To issue or revoke its key, you must hold every grant the principal currently has.
 - A private directory for credentials. Keep shell tracing disabled, do not print
   keys, and run the examples from the repository root. CLI examples assume the
   [`occ` executable](../../guides/cli.md) is installed and on `PATH`.
@@ -55,8 +55,14 @@ Installation principal, unset `OCC_NAMESPACE`, which the CLI also sends as
 Success returns HTTP `201`. The response contains the credential exactly once in
 `data.key` and a non-secret `data.id` needed to revoke it. Record the key and
 principal IDs separately for recovery; there is no plaintext retrieval endpoint.
-If the request fails, read and then delete the file (it holds the error
-response, or nothing); never give it to an automation client.
+If issuance fails, keep any output file private. Even an interrupted transfer
+can leave part or all of the credential. Do not print the file or give it to
+a client. [Resolve an uncertain outcome](#recover-a-lost-or-exposed-service-key)
+before deleting the file or issuing another key.
+
+If the CLI cannot write or close the file after receiving a key ID, it
+reports that ID and attempts revocation and file removal. Either step can
+fail. If printing the summary fails after the save, the file remains.
 
 ## Use a service key
 
@@ -211,21 +217,37 @@ restore grants. Editing the source Secret is not rotation. See
 
 ## Recover a lost or exposed service key
 
-If you retained the key and principal IDs, sign in as a human administrator,
-revoke the old key, then [issue a replacement](#issue-a-service-key). Otherwise,
-have an authorized administrator inspect only non-secret key metadata and IAM
-bindings to identify the key; OCC has no public key-list endpoint. Do not
-export key values, password hashes, sessions, or full table dumps.
+If you know the key and principal IDs, have an authorized administrator
+[revoke that key](#revoke-or-rotate-a-service-key), then
+[issue a replacement](#issue-a-service-key).
+
+A lost response or `503` during issuance can leave a usable key even if you
+received no ID and find no issuance audit event. OCC has no public key-list
+endpoint. Give an authorized administrator the Installation, Namespace if
+scoped, principal ID, key name, approximate time and any request ID. Compare
+non-secret key metadata, IAM bindings and available audit records. A name
+alone cannot identify the key. Revoke only a confirmed match. If the outcome
+remains uncertain, keep the file private and stop before issuing another key.
+Do not export key values, password hashes, sessions or full table dumps.
+
+A `503` during revocation can occur before or after deletion. A `404` means
+OCC found no eligible record for that ID in this Installation. Neither status
+alone proves that the original request deleted the key. Verify the Installation,
+key ID and available records before deciding whether to retry.
 
 ## Issuance
 
 `POST /api/auth/service-keys` requires current IAM `administer` on the singleton
-Installation, even for a Namespace key. A key carries every grant of its
-principal, so the caller must also already hold each of that principal's grants
-at the same or a broader scope; otherwise issuance returns `403`. Agent
-`administer` counts for a delegated Agent `read_logs` grant, since both admit log
-reads. An administrator bound only to the exact Installation cannot issue a key for the
-unscoped bootstrap service administrator or for a Namespace principal. The body names an existing
+Installation, even for a Namespace key. Native IAM checks that the caller covers every current grant of the
+target principal at the same or a broader scope. Missing coverage returns
+`403` when the denial audit succeeds. Agent `administer` covers Agent
+`read_logs` because both allow log reads.
+
+An administrator bound only to the exact Installation can issue a key for a
+Namespace principal with no grants. That binding alone cannot cover grants
+on Namespace resources or the bootstrap service administrator's unscoped grants.
+
+The body names an existing
 `servicePrincipalId`, its exact `namespaceId` when scoped, and a nonblank `name`
 of 1–32 characters. Optional `expiresIn` is an integer from 86,400 to
 31,536,000 seconds (1–365 days); omission gives 30 days. Other fields are
@@ -253,7 +275,7 @@ settings; initial delivery uses the [bootstrap settings](../settings/production.
 `DELETE /api/auth/service-keys/:keyId` requires the same authority as issuance.
 It returns `200` with `data: {"id":"<key-id>","revoked":true}`. Subsequent
 requests fail across controller instances; a request already authorized can
-finish. An unknown or removed key returns `404`. Revoking an issuer’s key does
+finish. See [recovery](#recover-a-lost-or-exposed-service-key) for `404` or `503`. Revoking an issuer’s key does
 not revoke other keys issued through it or delete a principal or its bindings.
 
 HTTP issuance and revocation emit [audit events](../../guides/topics/audit-log.md)
@@ -274,5 +296,5 @@ but does not restore the deleted key.
 | Missing, invalid, expired, or revoked credential; key used for account creation or bootstrap               | `401 UNAUTHENTICATED`.                                                |
 | Missing identity or exact grant, changed principal scope, cross-Namespace request, or matching Restriction | `403 FORBIDDEN`.                                                      |
 | Unknown, Agent-owned, or incorrectly scoped principal at issuance; invalid name, lifetime, or fields       | `400 INVALID_REQUEST`.                                                |
-| Unknown or removed key at revocation                                                                       | `404 NOT_FOUND`.                                                      |
+| No eligible key for this ID in this Installation at revocation                                             | `404 NOT_FOUND`.                                                      |
 | Required authentication, IAM, or audit dependency unavailable                                              | `503 DEPENDENCY_UNAVAILABLE`; do not retry with a broader credential. |

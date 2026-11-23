@@ -120,10 +120,15 @@ Each binding grants one target, so bind the same targets a person would need, as
 [Let a person run an existing Agent](topics/iam.md#let-a-person-run-an-existing-agent).
 Issuing the key requires that you already hold every grant of the service
 principal. The key never reaches another Namespace, IAM policy, or key issuance. Hand over the `0600` key file privately; the member
-sets `OCC_SERVICE_KEY_FILE` to it and `OCC_NAMESPACE` to the Namespace. When the
-key is no longer needed, run `occ service-key revoke <key-id>` (the ID printed
-at creation) or delete its AccessBindings. Disabling the member's console
-account does not end the key, so revoke it when they leave. OCE does not record
+sets `OCC_SERVICE_KEY_FILE` to it and `OCC_NAMESPACE` to the Namespace. If issuance fails, keep any output private and follow
+[key recovery](../reference/authentication/service-api-keys.md#recover-a-lost-or-exposed-service-key).
+
+When the key is no longer needed, run `occ service-key revoke <key-id>`
+with the ID printed at creation. Revocation requires the same authority as
+issuance, checked against the principal's current grants. Removing bindings
+does not revoke the key. Restoring grants can restore its access. Disabling
+the member's console account also leaves the key in place. Revoke it when
+they leave. OCE does not record
 whom a key was issued for, so start each key's `--name` with the person's name, as
 `nora-laptop` does: [Remove a person](topics/iam.md#remove-a-person) finds their keys by it.
 
@@ -164,7 +169,7 @@ TLS behavior.
   file from `occ service-key create`, with a nonempty `data.key` on one line.
 - `OCC rejected the service key`: the key is invalid, expired or revoked. Ask an
   Installation administrator for a new key.
-- HTTP `403`: the message names the missing grant. Ask an Installation
-  administrator to grant it.
+- HTTP `403`: check the caller's identity, scope, grants and Restrictions.
+  To issue or revoke a key, also check coverage of the target principal's grants.
 - `certificate is not trusted`: set `OCC_CA_BUNDLE` to your Installation's PEM
   bundle. The CLI has no insecure TLS mode.
