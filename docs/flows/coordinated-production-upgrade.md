@@ -95,7 +95,7 @@ Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
 other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
 [token and impersonation overrides](../guides/deploy/production-upgrade-command.md#run-the-image-upgrade),
 source mismatch, chart edits or symlinks, and evidence or baseline aliases.
-`preprovisionedNamespace` must yield one `false` (`preprovisioned-namespace.err`).
+Preview rejects `preprovisionedNamespace` bindings. Preparation rechecks the baseline (`preprovisioned-namespace.err`).
 
 `check_migration` matches rendered and deployed migrator inputs and checks the
 revision around a read-only Job. Success requires recognized history and

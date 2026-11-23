@@ -1060,6 +1060,44 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.equal(invalid.stdout, "");
 });
 
+test("fresh upgrade operations refuse preprovisioned Namespace baselines before preview", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  const baseline = join(f.rendered, "values.yaml");
+  const before = (await readdir(f.directory)).sort();
+
+  // The chart-owned initializer is available with either spelling of the default.
+  for (const values of ["{}\n", "preprovisionedNamespace: {}\n"]) {
+    await writeFile(baseline, values);
+    const result = run("plan", f);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Image upgrade plan \(offline\)/);
+  }
+
+  const namespaceId = "ns_preprovisioned_fixture";
+  const uid = "a1df16e3-c141-457f-8d2c-25916887a043";
+  await writeFile(
+    baseline,
+    `preprovisionedNamespace:\n  namespaceId: ${namespaceId}\n  uid: ${uid}\n`,
+  );
+  for (const action of ["plan", "apply", "preflight"]) {
+    const result = run(action, f, [], {
+      automaticEvidence: true,
+      env: { OCC_URL: "http://127.0.0.1:9" },
+    });
+    assert.equal(result.status, 2, `${action}: ${result.stdout}${result.stderr}`);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /production image upgrades require the chart initialization Job/);
+    assert.match(
+      result.stderr,
+      /preprovisioned Namespace canaries manage database upgrades separately/,
+    );
+    assert.ok(!result.stderr.includes(namespaceId));
+    assert.ok(!result.stderr.includes(uid));
+  }
+  assert.deepEqual((await readdir(f.directory)).sort(), before);
+});
+
 test("explicit evidence placement refuses unsafe parents before preview or dispatch", async (t) => {
   const f = await fixture(t);
   await selectCheckout(f);
