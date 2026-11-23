@@ -19,83 +19,84 @@ or build these images for your registry:
 | Controller | Root [`Dockerfile`](../../../Dockerfile), target `runtime`                                                     | API, worker, migration, and bootstrap       |
 | Runtime    | [`deploy/runtime/Dockerfile`](../../../deploy/runtime/Dockerfile), assembling pinned OpenClaw source and Codex | Gateways and Agents (one image serves both) |
 
-Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
-
-Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
+Build the runtime first. For native Git, skip to the [pinned controller](#build-a-controller-for-native-git).
+Authenticate with `docker login <registry-host>` and approved credentials; for
+private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
-Stop on failure; retain metadata.
-Use the standard Slack/Codex runtime for both slots unless you separately verified
-another gateway/Codex pair. Installing packages at gateway
-startup is unsupported.
+Stop on failure; retain metadata. Use the standard Slack/Codex runtime for both
+roles unless you verified a distinct pair. Gateway startup cannot install packages.
+
+If package downloads require an HTTPS proxy or private registry CA, add
+`--secret "id=build-ca,src=$CA_BUNDLE"` to each image build. Set `CA_BUNDLE` to
+a PEM file containing the public trust roots and approved CA certificate. The
+Dockerfiles mount it only during downloads. Keep TLS verification enabled; image
+registry TLS uses the builder's trust configuration.
 
 ```bash
-# Build from a clean checkout.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
+if unset CONTROLLER_IMAGE RUNTIME_IMAGE RUNTIME_DIGEST OCC_IMAGE_METADATA &&
   NODE_BASE_IMAGE="$(yq -p=json -e -r '.prepare.defaultEnv.NODE_BASE_IMAGE' scripts/ci/test-suites/images-packaging.json)" &&
-  OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
+  OCC_SOURCE_SHA="$(git rev-parse HEAD)" &&
+  OCC_IMAGE_TAG="$OCC_SOURCE_SHA-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
-  export OCC_IMAGE_TAG &&
-  docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" --target runtime \
-    --metadata-file "$OCC_IMAGE_METADATA/controller.json" \
-    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
-    --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \
-    --label "org.opencontainers.image.revision=$OCC_IMAGE_TAG" \
-    -t "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" . &&
   docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" \
     "${openclaw_build_args[@]}" \
     --metadata-file "$OCC_IMAGE_METADATA/runtime.json" \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
-    --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \
+    --build-arg OCC_BUILD_REVISION="$OCC_SOURCE_SHA" \
+    --label "org.opencontainers.image.revision=$OCC_SOURCE_SHA" \
     -f deploy/runtime/Dockerfile \
     -t "$OCC_IMAGE_REPOSITORY/runtime:$OCC_IMAGE_TAG" . &&
-  CONTROLLER_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/controller.json")" &&
   RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")" &&
-  [[ "$CONTROLLER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] &&
   [[ "$RUNTIME_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@$CONTROLLER_DIGEST"
-  export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
-else
-  printf 'Build or digest extraction failed; stop. Metadata: %s\n' "${OCC_IMAGE_METADATA:-unavailable}" >&2
-  false
-fi
-```
-
-If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
-
-Before installation, [check each digest](../../testing/docker.md#check-published-images)
-on native hosts for every target architecture, without skips. Configure pull
-credentials only when the selected registry requires them.
-
-### Build a controller for native Git
-
-The current Enterprise Containers workflow does not embed these pins in the GHCR
-controller. For native Git, initialize the variables above, run the runtime build
-first, and derive its immutable reference from `runtime.json`:
-
-```bash
-if unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE &&
-  [[ -f "${OCC_IMAGE_METADATA:-}/runtime.json" ]] &&
-  RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")" &&
-  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]]; then
   export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
 else
   unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE
-  printf '%s\n' 'Runtime metadata or digest is missing or invalid.' >&2
+  printf 'Runtime build or digest extraction failed; stop. Metadata: %s\n' "${OCC_IMAGE_METADATA:-unavailable}" >&2
   false
 fi
 ```
 
-Qualify the selected image with the lane's [prepared dependencies](../../testing/docker.md#check-published-images).
-Override the runtime built by preparation. Build and push the controller only after
-smoke, preparation, suite and cleanup succeed. Use a fresh metadata directory for each attempt:
+Before installation, [check both published digests](../../testing/docker.md#check-published-images)
+on native hosts for every target architecture, without skips. Configure pull
+credentials only when required.
+
+### Build a standard controller
+
+Skip this step for native Git. Otherwise, publish the standard controller:
 
 ```bash
-CONTROLLER_ATTEMPT_TAG="$OCC_IMAGE_TAG-${OCC_IMAGE_METADATA##*/}"
+if unset CONTROLLER_IMAGE CONTROLLER_DIGEST &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  [[ "$(git rev-parse HEAD)" == "$OCC_SOURCE_SHA" ]] &&
+  CONTROLLER_ATTEMPT_TAG="$OCC_SOURCE_SHA-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" &&
+  docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" --target runtime \
+    --metadata-file "$OCC_IMAGE_METADATA/controller.json" \
+    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+    --build-arg OCC_BUILD_REVISION="$OCC_SOURCE_SHA" \
+    --label "org.opencontainers.image.revision=$OCC_SOURCE_SHA" \
+    -t "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG" . &&
+  CONTROLLER_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/controller.json")" &&
+  [[ "$CONTROLLER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@$CONTROLLER_DIGEST"
+else
+  unset CONTROLLER_IMAGE CONTROLLER_DIGEST
+  printf 'Controller build or digest extraction failed; stop. Metadata: %s\n' "${OCC_IMAGE_METADATA:-unavailable}" >&2
+  false
+fi
+```
+
+### Build a controller for native Git
+
+The GHCR controller lacks native Git pins. Qualify the runtime with the lane's
+[prepared dependencies](../../testing/docker.md#check-published-images), overriding its
+runtime image. Publish the pinned controller only after smoke, preparation, suite
+and cleanup succeed:
+
+```bash
 RUNTIME_CHECK_STATUS=0
 [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
   docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version &&
@@ -116,8 +117,12 @@ CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
 if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
   (( RUNTIME_CHECK_STATUS == 0 )) &&
   [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  [[ "$(git rev-parse HEAD)" == "$OCC_SOURCE_SHA" ]] &&
+  CONTROLLER_ATTEMPT_TAG="$OCC_SOURCE_SHA-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" &&
   node scripts/build-controller.ts docker --platform "$OCC_IMAGE_PLATFORM" --target runtime \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+    --build-arg OCC_BUILD_REVISION="$OCC_SOURCE_SHA" \
+    --label "org.opencontainers.image.revision=$OCC_SOURCE_SHA" \
     --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
     --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
     --tag "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG" &&
@@ -131,16 +136,15 @@ else
 fi
 ```
 
-For distinct qualified images, pass each role's exact same-source manifest digest.
-Configure Gateway and Agent with their matching immutable image references, then
-run the normal controller/runtime image checks above against `CONTROLLER_IMAGE`.
+For distinct qualified images, pass each role's same-source manifest digest and
+configure Gateway and Agent with the matching immutable references.
 
 ### Build through a package registry mirror
 
 When building either image from source, Corepack downloads the pinned pnpm
 version, then pnpm installs dependencies. Corepack does not read npmrc. To
 route both downloads through a mirror, supply the secrets for their respective
-steps to each `docker buildx build` command:
+steps to each image build command:
 
 ```bash
 --secret "id=corepack-env,src=$COREPACK_ENV_FILE" \

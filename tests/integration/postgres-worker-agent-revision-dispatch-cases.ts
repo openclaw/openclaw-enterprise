@@ -11,7 +11,11 @@ import {
   type RepositoryNetworkGrant,
   type SandboxPolicySnapshot,
 } from "../../packages/contracts/src/index.ts";
-import { PostgresWorkQueue, type OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  isRepositoryRuntimeRetirementWork,
+  PostgresWorkQueue,
+  type OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { registerRevisionSnapshotCase } from "./postgres-worker-agent-revision-refusal-cases.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
@@ -21,7 +25,7 @@ import type {
 } from "../helpers/postgres-worker-refused-candidate.ts";
 import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import type { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { waitFor, waitUntil } from "../helpers/wait-for.ts";
+import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
 
 interface DispatchFixture {
   admitInitialRevision: RevisionFixture["admitInitialRevision"];
@@ -30,6 +34,7 @@ interface DispatchFixture {
   revision: RevisionFixture["revision"];
   actor: RevisionFixture["actor"];
   compute: RevisionFixture["compute"];
+  createWorkerPool: RevisionFixture["createWorkerPool"];
   currentAgent: RevisionFixture["currentAgent"];
   expireClaim: RevisionFixture["expireClaim"];
   namespace: RevisionFixture["namespace"];
@@ -499,9 +504,21 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         }
         if (capability === "refused after stop began") {
           await fixture.start(computeSupportingRepositoryPolicy(compute));
-          await waitFor("the candidate to begin the predecessor sweep", async () =>
-            prepared.includes(candidate.id) ? true : undefined,
-          );
+          const queue = new PostgresWorkQueue(fixture.observerPool);
+          // Entering Compute does not release the claim. Park the candidate only after
+          // its recorded deferral, in the same update that checks it is unclaimed.
+          await waitFor("the prepared candidate to defer and release its claim", async () => {
+            if (!(await queue.findWorkAttempt(candidate.idempotencyKey, "REVISION_INCOMPLETE"))) {
+              return;
+            }
+            const parked = await fixture.observerPool.query(
+              `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour'
+               WHERE idempotency_key = $1 AND state = 'queued' AND claim_token IS NULL`,
+              [candidate.idempotencyKey],
+            );
+            return parked.rowCount === 1 ? true : undefined;
+          });
+          assert.ok(prepared.includes(candidate.id));
           await fixture.stop();
           const replacement = await fixture.state.read((view) =>
             view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
@@ -522,10 +539,12 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         ).length;
         // Hold candidate work so no candidate-owned stop can mask the
         // effects of the predecessor's maintenance claim.
-        await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = ANY($1::text[])",
-          [[candidate.idempotencyKey, ...(later ? [later.idempotencyKey] : [])]],
-        );
+        if (capability !== "refused after stop began") {
+          await fixture.observerPool.query(
+            "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = ANY($1::text[])",
+            [[candidate.idempotencyKey, ...(later ? [later.idempotencyKey] : [])]],
+          );
+        }
         const {
           rows: [next],
         } = await fixture.advanceMaintenance(previous);
@@ -1071,13 +1090,16 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         const resume = Promise.withResolvers<void>();
         let blocked = false;
         const calls: string[] = [];
+        const stoppedRevisions: string[] = [];
+        let callsAtRefusal: string[] | undefined;
+        let retirementWorkId: string | undefined;
         const afterCommit = boundary === "activation after commit";
         const expected = untouched
           ? []
           : repository || boundary === "preparation"
             ? ["bind"]
             : ["bind", "prepare"];
-        await fixture.start({
+        const compute: ComputeDriver = {
           ...(repository
             ? repositoryCompute(fixture.compute, options.sandboxDriverId)
             : fixture.compute),
@@ -1107,6 +1129,35 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           async activateRevision() {
             calls.push("activate");
           },
+          async stopRevision(revision) {
+            await fixture.compute.stopRevision(revision);
+            stoppedRevisions.push(revision.id);
+          },
+        };
+        await fixture.start(compute, {
+          emit: ({ event, workId, revisionId, outcome, code }) => {
+            if (event !== "worker.completed" || revisionId !== candidate.id) {
+              return;
+            }
+            if (
+              workId === candidate.idempotencyKey &&
+              outcome === "permanent" &&
+              code === "AUTHORIZATION_DENIED"
+            ) {
+              callsAtRefusal = [...calls];
+            }
+            if (
+              typeof workId === "string" &&
+              outcome === "success" &&
+              isRepositoryRuntimeRetirementWork({
+                idempotencyKey: workId,
+                agentId: owner.id,
+                revisionId,
+              })
+            ) {
+              retirementWorkId = workId;
+            }
+          },
         });
         try {
           await waitUntil(`validation before ${boundary}`, () => blocked);
@@ -1124,15 +1175,26 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           resume.resolve();
         }
         const result = await settledRevision(fixture, candidate);
-        assert.deepEqual(calls, expected);
         assert.equal(result.reasonCode, "AUTHORIZATION_DENIED");
+        // The denied deployment and its retirement are separate jobs. Retirement can bind
+        // Compute before the test observes the deployment's terminal row.
+        assert.deepEqual(
+          await waitFor("candidate refusal completion", () => callsAtRefusal),
+          expected,
+        );
+        if (repository) {
+          const idempotencyKey = await waitFor(
+            "candidate retirement completion",
+            () => retirementWorkId,
+          );
+          await fixture.work({ id: candidate.id, idempotencyKey }, "succeeded");
+          assert.deepEqual(stoppedRevisions, [candidate.id]);
+          assert.deepEqual(repository.calls, []);
+        }
         assert.equal(
           (await fixture.currentAgent(owner))?.activeRevisionId,
           afterCommit ? candidate.id : previous.id,
         );
-        if (repository) {
-          assert.deepEqual(repository.calls, []);
-        }
         const queue = new PostgresWorkQueue(fixture.observerPool);
         const attempt = await queue.findWorkAttempt(candidate.idempotencyKey);
         const denied = await fixture.observerPool.query<{ authorization: unknown }>(
@@ -1168,6 +1230,143 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
             untouched ? "REVISION_ALREADY_ACTIVE" : "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE",
           );
         }
+      },
+    );
+  }
+
+  for (const boundary of ["Compute binding", "exclusive predecessor stop"] as const) {
+    revisionTest(
+      `an IAM change committed during the lock wait prevents ${boundary}`,
+      async (fixture) => {
+        const owner = await fixture.agent("repository-policy-iam-lock", {
+          executionMode: "dedicated",
+        });
+        const { id: policyId, options } = await saveRepositoryPolicy(fixture, owner, []);
+        const previous = await fixture.revision(owner, 1, options);
+        const compute = computeSupportingRepositoryPolicy(fixture.compute);
+        await fixture.start({ ...compute, maintenanceIntervalMs: 3_600_000 });
+        await fixture.work(previous, "succeeded");
+        await fixture.stop();
+        const candidate = await fixture.revision(owner, 2, options);
+
+        // The first advisory-lock statement can freeze a Repeatable Read snapshot
+        // before the writer commits. Use the Worker's single connection to identify
+        // that wait in PostgreSQL before making the revocation visible.
+        const workerPool = fixture.createWorkerPool();
+        await workerPool.query("SET default_transaction_isolation = 'repeatable read'");
+        const {
+          rows: [worker],
+        } = await workerPool.query<{ pid: number; isolation: string }>(
+          "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+        );
+        assert.equal(worker?.isolation, "repeatable read");
+
+        const paused = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        const exclusive = boundary === "exclusive predecessor stop";
+        const effects: string[] = [];
+        let validations = 0;
+        const writer = await fixture.observerPool.connect();
+        try {
+          await fixture.start(
+            {
+              ...compute,
+              maintenanceIntervalMs: 3_600_000,
+              ...(exclusive
+                ? { requiresStoppedPredecessors: () => true }
+                : {
+                    async bindAgent() {
+                      effects.push("bind");
+                    },
+                  }),
+              validateProtectedRepositoryNetworkPolicy() {
+                // For exclusive placement, let initial validation finish and pause
+                // at the validation just before preparation checks predecessors.
+                validations += 1;
+                if (validations === (exclusive ? 2 : 1)) {
+                  paused.resolve();
+                  return resume.promise;
+                }
+              },
+              async prepareRevision(revision, ctx) {
+                effects.push(`prepare:${revision.id}`);
+                return compute.prepareRevision(revision, ctx);
+              },
+              async stopRevision(revision) {
+                effects.push(`stop:${revision.id}`);
+                await compute.stopRevision(revision);
+              },
+            },
+            { pool: workerPool },
+          );
+          await within(paused.promise, `validation before ${boundary}`);
+          await writer.query("BEGIN");
+          const {
+            rows: [blocker],
+          } = await writer.query<{ pid: number }>(
+            "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
+            ["occ:iam-configuration"],
+          );
+          assert.ok(blocker);
+          resume.resolve();
+          await waitUntil("Worker waits for the IAM configuration writer", async () => {
+            const { rowCount } = await fixture.observerPool.query(
+              `SELECT 1 FROM pg_locks
+             WHERE pid = $1 AND locktype = 'advisory' AND NOT granted
+               AND $2 = ANY(pg_blocking_pids(pid))`,
+              [worker.pid, blocker.pid],
+            );
+            return rowCount === 1;
+          });
+          await writer.query(
+            `INSERT INTO occ.iam_restrictions
+             (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+            [`restriction-${randomUUID()}`, fixture.namespace.id, policyId],
+          );
+          await writer.query("COMMIT");
+        } catch (error) {
+          await writer.query("ROLLBACK");
+          throw error;
+        } finally {
+          resume.resolve();
+          writer.release();
+        }
+
+        const result = await settledRevision(fixture, candidate);
+        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
+          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+         FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
+          [fixture.namespace.id],
+        );
+        assert.deepEqual(
+          {
+            state: result.state,
+            reason: result.reasonCode,
+            effects,
+            active: (await fixture.currentAgent(owner))?.activeRevisionId,
+            denials: denied.rows,
+          },
+          {
+            state: "failed_permanent",
+            reason: "AUTHORIZATION_DENIED",
+            effects: [],
+            active: previous.id,
+            denials: [
+              {
+                authorization: {
+                  principalId: fixture.actor.id,
+                  action: "update",
+                  resource: {
+                    kind: "sandbox_policy",
+                    id: policyId,
+                    namespaceId: fixture.namespace.id,
+                  },
+                },
+              },
+            ],
+          },
+        );
       },
     );
   }

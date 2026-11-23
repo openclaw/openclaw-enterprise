@@ -18,6 +18,7 @@ import {
   registerProtectedRepositoryPolicyDeploymentCase,
   registerRepositoryCredentialsDeploymentAdmissionCases,
   selectedRepositoryRegistry,
+  verifyRepositoryPolicyWriteProjection,
 } from "./repository-credentials-deployment-admission-cases.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
@@ -41,7 +42,10 @@ import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  assertExecutionAdmission,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -280,7 +284,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
-    bindRepositoryAdmission = false,
+    repositoryAdmission,
     configureRegistry,
   } = {},
 ) {
@@ -334,17 +338,18 @@ async function fixture(
     };
     const repository = registry === undefined ? undefined : repositoryDriver(registry, Driver);
     const controller =
-      bindRepositoryAdmission && repository !== undefined
+      repositoryAdmission !== undefined && repository !== undefined
         ? OpenClawController.forInstallation(installation, options, {
             policy: repository,
             backendId,
+            ...(repositoryAdmission === "built-in" && { policyMode: "built-in" }),
           })
         : new OpenClawController(installation, options);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
-    if (repository !== undefined) {
+    if (repository !== undefined && repositoryAdmission !== "built-in") {
       controller.registerDriver(repository);
       controller.selectDriver(repository.capability, repository.id);
     }
@@ -366,7 +371,7 @@ async function fixture(
     t.after(() => app.close());
     /** @type {AdmissionRequest} */
     const request = await createAuthenticatedControllerRequest(app, auth);
-    return { controller, request, app };
+    return { controller, request, app, repository };
   }
 
   const initial = await compose();
@@ -440,15 +445,21 @@ async function fixture(
   }
 
   // A signed-in person with no grant at all, for answers that must not depend on existence.
-  /** @param {AdmissionApp} app @returns {Promise<AdmissionRequest>} */
-  async function requestWithoutGrants(app) {
+  /**
+   * @param {AdmissionApp} app
+   * @param {(principalId: string) => void} [grant]
+   * @returns {Promise<AdmissionRequest>}
+   */
+  async function requestWithoutGrants(app, grant) {
     const credentials = {
       email: `outsider-${randomUUID()}@example.com`,
       password: `outsider-password-${randomUUID()}`,
       name: "Outsider",
     };
     const account = await auth.auth.createAccount(credentials);
-    iamState.identities.push(auth.auth.principalSeed(account, { grant: "none" }).principal);
+    const { principal } = auth.auth.principalSeed(account, { grant: "none" });
+    iamState.identities.push(principal);
+    grant?.(principal.id);
     return createAuthenticatedControllerRequest(app, credentials);
   }
 
@@ -903,7 +914,7 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
   assert.ok(loaded);
   const f = await fixture(t, {
     harness: "codex",
-    bindRepositoryAdmission: true,
+    repositoryAdmission: "selected",
     extraRepositories: ["manual"],
     controllerOptions: {
       ...installationControllerOptions(loaded.installation),
@@ -975,6 +986,14 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
     assert.equal(rejected.status, 200, JSON.stringify(rejected));
     assert.deepEqual(rejected.data.repositoryNetworkPolicyCeiling, [], "async rejection");
 
+    approval.mock.mockImplementation(() => {
+      throw new Error("synthetic private approval diagnostic");
+    });
+    const failed = await f.request("GET", policyPath);
+    assert.equal(failed.status, 200);
+    assert.deepEqual(failed.data.repositoryNetworkPolicyCeiling, [], "synchronous exception");
+    assert.equal(JSON.stringify(failed).includes("synthetic private approval diagnostic"), false);
+
     const sentinel = "synthetic-private-repository-driver-diagnostic";
     approval.mock.mockImplementation(() => {
       throw new SandboxNetworkPolicyConflictError(sentinel);
@@ -996,6 +1015,233 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
     assert.deepEqual(replaced.data.repositoryNetworkPolicyCeiling, [], "method replacement");
   } finally {
     restoreApproval();
+  }
+
+  await t.test("ignores an approval getter that would replace itself", async (t) => {
+    let reads = 0;
+    t.after(
+      installApproval({
+        get() {
+          if (++reads === 2) {
+            Object.defineProperty(repository, "repositoryNetworkPolicyAllows", {
+              value: () => false,
+            });
+          }
+          return () => true;
+        },
+      }),
+    );
+    const current = await f.request("GET", policyPath);
+    assert.equal(current.status, 200, JSON.stringify(current));
+    assert.deepEqual(current.data.repositoryNetworkPolicyCeiling, []);
+    assert.deepEqual(current.data.policy, initial.data.policy);
+    assert.equal(reads, 0);
+  });
+
+  for (const [name, input] of [
+    ["saved-policy apply", {}],
+    ["save-and-apply", { additions: [] }],
+  ]) {
+    await t.test(
+      `${name} refuses an active-only repository list before writing policy or work`,
+      async (t) => {
+        const agent = await f.createAgent({ executionMode: "dedicated" });
+        await f.prepareDeployment(agent);
+        const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+        assert.equal(
+          (await f.request("PATCH", `${policyPath}/editing`, { enabled: true })).status,
+          200,
+        );
+        const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+        assert.equal(deployed.status, 202, JSON.stringify(deployed));
+        const revisionId = deployed.data.id;
+        assert.ok(
+          await f.state.transact((unit) =>
+            unit.agents.compareAndSetActiveRevision(
+              f.namespace.id,
+              agent.id,
+              undefined,
+              revisionId,
+            ),
+          ),
+        );
+        const readPolicy = () =>
+          f.state.read((view) => view.sandboxPolicies.find(f.namespace.id, agent.id));
+        const readWork = () => f.state.read((view) => view.operations.list());
+        const before = await readPolicy();
+        assert.ok(before);
+        assert.equal(Object.hasOwn(before, "repositoryNetworkPolicy"), false);
+        assert.equal(before.application, undefined);
+        const workBefore = await readWork();
+        const revision = await f.state.read((view) =>
+          view.revisions.findRevision(f.namespace.id, agent.id, revisionId),
+        );
+        assert.ok(revision?.sandboxPolicy);
+        assert.equal(revision.sandboxPolicy.repositoryNetworkPolicy, undefined);
+        const repositoryNetworkPolicy = admitRepositoryNetworkPolicy([], []);
+        assert.ok(repositoryNetworkPolicy);
+        const transact = f.state.transact.bind(f.state);
+        const save = t.mock.fn();
+        const append = t.mock.fn();
+        // Only the historical revision read changes. The HTTP handler, IAM, transaction,
+        // policy persistence, and operation queue are the ordinary application path.
+        const legacyRevision = t.mock.method(f.state, "transact", (work, options) =>
+          transact(
+            (unit) =>
+              work({
+                ...unit,
+                sandboxPolicies: {
+                  ...unit.sandboxPolicies,
+                  save(...args) {
+                    save();
+                    return unit.sandboxPolicies.save(...args);
+                  },
+                },
+                operations: {
+                  ...unit.operations,
+                  append(...args) {
+                    append();
+                    return unit.operations.append(...args);
+                  },
+                },
+                revisions: {
+                  ...unit.revisions,
+                  async findRevision(...scope) {
+                    const found = await unit.revisions.findRevision(...scope);
+                    if (found?.id === revisionId && found.sandboxPolicy !== undefined) {
+                      return {
+                        ...found,
+                        sandboxPolicy: { ...found.sandboxPolicy, repositoryNetworkPolicy },
+                      };
+                    }
+                    return found;
+                  },
+                },
+              }),
+            options,
+          ),
+        );
+        const apply = { expectedVersion: before.version, revisionId, ...input };
+        const applyPath = `${policyPath}/apply`;
+        try {
+          const refused = await f.request("POST", applyPath, apply);
+          assert.equal(refused.status, 409, JSON.stringify(refused));
+          assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+          assert.match(
+            refused.error.message,
+            /^The active revision has a repository network policy that is missing from the saved policy\./,
+          );
+          assert.match(refused.error.message, /confirm its workload has stopped\./);
+          assert.equal(refused.data, undefined);
+          assert.equal(save.mock.callCount(), 0);
+          assert.equal(append.mock.callCount(), 0);
+          assert.deepEqual(await readPolicy(), before);
+          assert.deepEqual(await readWork(), workBefore);
+        } finally {
+          legacyRevision.mock.restore();
+        }
+        const applied = await f.request("POST", applyPath, apply);
+        assert.equal(applied.status, 202, JSON.stringify(applied));
+        const current = await readPolicy();
+        assert.equal(current?.version, before.version + (input.additions === undefined ? 0 : 1));
+        assert.equal(current?.application?.revisionId, revisionId);
+        assert.equal(current?.application?.state, "pending");
+        assert.equal(applied.data.application.id, current?.application?.id);
+        const workAfter = await readWork();
+        assert.equal(workAfter.length, workBefore.length + 1);
+        assert.ok(workAfter.some((work) => work.operationId === current?.application?.id));
+      },
+    );
+  }
+
+  await t.test(
+    "editing denial conceals whether the saved policy has a repository list",
+    async () => {
+      const agent = await f.createAgent({ executionMode: "dedicated" });
+      const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+      const initial = await f.request("GET", policyPath);
+      assert.equal(initial.status, 200, JSON.stringify(initial));
+      assert.equal(Object.hasOwn(initial.data.policy, "repositoryNetworkPolicy"), false);
+      const unsupported = {
+        id: "sandbox-without-network-policy",
+        capability: "sandbox",
+        implementation: "test-sandbox",
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+        facets: ["networking", "filesystem", "process"],
+        async cleanup() {},
+      };
+      f.controller.registerDriver(unsupported);
+      f.controller.selectDriver("sandbox", unsupported.id);
+      const scope = { namespaceId: f.namespace.id, resourceId: initial.data.policy.id };
+      const editing = () => f.request("PATCH", `${policyPath}/editing`, { enabled: true });
+      const withoutRead = async () => {
+        const unreadable = restrict(f.iamState, "read", "sandbox_policy", scope);
+        try {
+          const denied = await editing();
+          assert.equal(denied.status, 403, JSON.stringify(denied));
+          assert.equal(denied.error.code, "FORBIDDEN");
+          assert.equal(denied.data, undefined);
+          return denied.error;
+        } finally {
+          liftRestriction(f.iamState, unreadable);
+        }
+      };
+      try {
+        const before = await withoutRead();
+        assert.equal((await editing()).status, 409);
+        // Seed policy that could have been saved before the selected Driver changed.
+        await seedRepositoryPolicy(f, agent, repositoryNetworkPolicyCeiling);
+        const saved = await f.request("GET", policyPath);
+        assert.deepEqual(saved.data.policy.repositoryNetworkPolicy, repositoryNetworkPolicyCeiling);
+        assert.deepEqual(await withoutRead(), before);
+        assert.equal((await f.request("GET", policyPath)).data.editingEnabled, false);
+        assert.equal((await editing()).status, 200);
+      } finally {
+        f.controller.selectDriver("sandbox", sandbox.id);
+      }
+    },
+  );
+});
+
+test("the SandboxPolicy read preserves saved grants when the built-in repository owner fails", async (t) => {
+  const savedGrants = [{ repository: "example/project", access: "read" }];
+  for (const ceiling of [savedGrants, []]) {
+    await t.test(ceiling.length ? "configured ceiling" : "empty ceiling", async (t) => {
+      const f = await fixture(t, {
+        repositoryAdmission: "built-in",
+        controllerOptions: { repositoryNetworkPolicyCeiling: ceiling },
+      });
+      const agent = await f.createAgent();
+      const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+      // This controller can read saved grants from a compatible writer but cannot create them.
+      await f.state.transact(async (unit) => {
+        const policy = await unit.sandboxPolicies.find(f.namespace.id, agent.id);
+        assert.ok(policy);
+        const saved = {
+          ...policy,
+          version: policy.version + 1,
+          repositoryNetworkPolicy: savedGrants,
+        };
+        assert.deepEqual(await unit.sandboxPolicies.save(saved, policy.version), saved);
+      });
+      const initial = await f.request("GET", policyPath);
+      assert.equal(initial.status, 200, JSON.stringify(initial));
+      assert.deepEqual(initial.data.repositoryNetworkPolicyCeiling, ceiling);
+      assert.deepEqual(initial.data.policy.repositoryNetworkPolicy, savedGrants);
+      assert.equal(initial.data.repositoryNetworkPolicySaveSupported, true);
+
+      const privateDiagnostic = "synthetic private repository owner diagnostic";
+      const resolve = t.mock.fn(() => {
+        throw new Error(privateDiagnostic);
+      });
+      // Break contract introspection after the actual owner has been bound and validated.
+      Object.defineProperty(f.repository, "resolve", { get: resolve });
+      const current = await f.request("GET", policyPath);
+      assert.equal(current.status, 200, JSON.stringify(current));
+      assert.deepEqual(current.data, { ...initial.data, repositoryNetworkPolicyCeiling: [] });
+      assert.equal(JSON.stringify(current).includes(privateDiagnostic), false);
+      assert.equal(resolve.mock.callCount(), ceiling.length ? 1 : 0);
+    });
   }
 });
 
@@ -1205,6 +1451,7 @@ async function protectedOpenShellComposition(
     runtimeAuthCompute = false,
     inspected = false,
     repositoryNetworkPolicyCeiling,
+    repositoryAdmission = repositoryNetworkPolicyCeiling === undefined ? undefined : "selected",
     configureRegistry,
   } = {},
 ) {
@@ -1242,7 +1489,7 @@ async function protectedOpenShellComposition(
       .map(({ repositoryRef }) => repositoryRef)
       .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
     installationAccess,
-    bindRepositoryAdmission: repositoryNetworkPolicyCeiling !== undefined,
+    repositoryAdmission,
     configureRegistry,
   });
   let sandbox = repositorySandbox(
@@ -1393,6 +1640,7 @@ test("first repository policy save requires affirmative admission of the exact d
   const f = await protectedOpenShellComposition(t, {
     bindings,
     configureRegistry: selectedRepositoryRegistry("write"),
+    repositoryAdmission: "built-in",
     installedProfile: "repository",
     credentialGateway: true,
     repositoryNetworkPolicyCeiling: [{ ...grant, access: "write" }],
@@ -1509,7 +1757,8 @@ test("first repository policy save requires affirmative admission of the exact d
   assert.equal((await put([grant])).status, 409);
   assert.equal(admit.mock.callCount(), admissionsBeforeDrift);
   f.controller.selectDriver("compute", selectedCompute.id);
-  const repo = f.controller.selectedDriver("repo");
+  const repo = f.repository;
+  assert.ok(repo);
   const allows = repo.repositoryNetworkPolicyAllows.bind(repo);
   const approval = repo.repositoryNetworkPolicyAllows;
   repo.repositoryNetworkPolicyAllows = (input) => {
@@ -1544,6 +1793,34 @@ test("first repository policy save requires affirmative admission of the exact d
     return refused;
   }
 
+  await t.test("first-save hint is unavailable if the built-in Repo owner fails", async () => {
+    const edit = await editableAgent();
+    const before = await f.request("GET", edit.policyPath);
+    assert.equal(before.status, 200);
+    assert.equal(before.data.repositoryNetworkPolicySaveSupported, true);
+    assert.equal(Object.hasOwn(before.data.policy, "repositoryNetworkPolicy"), false);
+
+    const sentinel = "synthetic private repository owner diagnostic";
+    const resolve = t.mock.fn(() => {
+      throw new Error(sentinel);
+    });
+    Object.defineProperty(repo, "resolve", { get: resolve, configurable: true });
+    try {
+      const configurationReads = read.mock.callCount();
+      const after = await f.request("GET", edit.policyPath);
+      assert.equal(after.status, 200, JSON.stringify(after));
+      assert.equal(JSON.stringify(after).includes(sentinel), false);
+      assert.deepEqual(after.data, {
+        ...before.data,
+        repositoryNetworkPolicyCeiling: [],
+        repositoryNetworkPolicySaveSupported: false,
+      });
+      assert.ok(resolve.mock.callCount() > 0);
+      assert.equal(read.mock.callCount(), configurationReads);
+    } finally {
+      Reflect.deleteProperty(repo, "resolve");
+    }
+  });
   await t.test("a Sandbox without protected artifact admission cannot opt in", async () => {
     const original = Object.getOwnPropertyDescriptor(sandbox, "admitProtectedCodexArtifactPolicy");
     Object.defineProperty(sandbox, "admitProtectedCodexArtifactPolicy", {
@@ -1605,6 +1882,13 @@ test("first repository policy save requires affirmative admission of the exact d
       f.controller.selectDriver("iam", iam.id);
     }
   });
+
+  await t.test(
+    "an update-only editor cannot distinguish a first empty list from withdrawal",
+    async () => {
+      await verifyRepositoryPolicyWriteProjection(f, editableAgent, source.data.id, grant);
+    },
+  );
 
   const artifactCheck = t.mock.method(sandbox, "admitProtectedCodexArtifactPolicy");
   const saved = await put([grant]);

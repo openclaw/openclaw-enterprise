@@ -47,7 +47,7 @@ graph TD
 ### 1. Authorize the exact deployment
 
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares a bodyless POST.
-`apps/controller/src/index.ts:requiredPermissions` requires exact Agent
+`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents exact Agent
 `operate` and `read` plus Agent revision `read`.
 `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`
 resolves the version under the supplied Namespace and Agent, authorizes the

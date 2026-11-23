@@ -20,6 +20,8 @@ type ReceivedRequest = {
 };
 
 const received: ReceivedRequest[] = [];
+const reuseHeader = "x-oce-rehearsal-upstream-reused";
+const sampledSockets: import("node:net").Socket[] = [];
 const origin = createServer((incoming, outgoing) => {
   let body = "";
   incoming.setEncoding("utf8").on("data", (chunk: string) => {
@@ -27,7 +29,12 @@ const origin = createServer((incoming, outgoing) => {
   });
   incoming.on("end", () => {
     received.push({ method: incoming.method, path: incoming.url, headers: incoming.headers, body });
-    outgoing.writeHead(201, {
+    const sample = incoming.headers["x-probe-socket"] === "yes";
+    if (sample) {
+      sampledSockets.push(incoming.socket);
+    }
+    outgoing.writeHead(sample ? 200 : 201, {
+      [reuseHeader]: "forged-origin",
       "content-type": "text/plain",
       "x-origin": "loopback",
       forwarded: "for=origin",
@@ -135,6 +142,7 @@ async function forwarded(
   const response = await send(method, path, headers, body);
   assert.equal(response.status, 201, `${method} ${path}`);
   assert.equal(response.headers["x-origin"], "loopback");
+  assert.equal(response.headers[reuseHeader], undefined);
   assert.deepEqual(response.headers["set-cookie"], ["first=1", "second=2"]);
   assert.equal(response.body, "origin response\n");
   for (const name of ["forwarded", "x-real-ip", "x-forwarded-host"]) {
@@ -176,6 +184,19 @@ try {
   // Bootstrap reads precede key custody. Its only permitted write is a keyed
   // namespace POST on the exact raw path.
   writeFileSync(`${gate}.bootstrap`, generation, { mode: 0o600 });
+  // Each HTTPS client connects afresh. A pooled HTTP connection can still carry both reads.
+  for (const expected of ["0", "1"]) {
+    const sample = await send("GET", "/installation", {
+      connection: "keep-alive",
+      "x-probe-socket": "yes",
+      [reuseHeader]: "forged-client",
+    });
+    assert.equal(sample.status, 200);
+    assert.equal(sample.headers[reuseHeader], expected);
+    assert.equal(received.at(-1)?.headers[reuseHeader], undefined);
+  }
+  assert.equal(sampledSockets.length, 2);
+  assert.ok(sampledSockets[0] === sampledSockets[1], "Both reads reached the same origin socket");
   await forwarded("GET", "/installation");
   await forwarded("GET", "/namespaces/tenant_A-1");
   await refused("GET", "/namespaces/tenant_A-1?extra=true", key);

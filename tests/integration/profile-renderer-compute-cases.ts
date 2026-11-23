@@ -66,27 +66,21 @@ export function registerComputeCases(): void {
       "gateway.example",
       "openclaw-system ",
     ];
-    for (const namespace of refused) {
-      await assertPreflightFailure(
-        "openclaw",
-        baseInput({ controlPlane: { ...controlPlane, namespace } }),
-        namespaceMessage,
-      );
-      assert.throws(
-        () => admit({ ...routing, gatewayNamespace: namespace }),
-        SharedConfigurationValidationError,
-      );
-    }
-    for (const envoyNamespace of refused) {
-      await assertPreflightFailure(
-        "openclaw",
-        baseInput({ controlPlane: { ...controlPlane, envoyNamespace } }),
-        envoyMessage,
-      );
-      assert.throws(
-        () => admit({ ...routing, envoyNamespace }),
-        SharedConfigurationValidationError,
-      );
+    for (const [rendererField, driverField, message] of [
+      ["namespace", "gatewayNamespace", namespaceMessage],
+      ["envoyNamespace", "envoyNamespace", envoyMessage],
+    ] as const) {
+      for (const value of refused) {
+        await assertPreflightFailure(
+          "openclaw",
+          baseInput({ controlPlane: { ...controlPlane, [rendererField]: value } }),
+          message,
+        );
+        assert.throws(
+          () => admit({ ...routing, [driverField]: value }),
+          SharedConfigurationValidationError,
+        );
+      }
     }
     const namespace = "a".repeat(63);
     const envoyNamespace = `${"b".repeat(62)}9`;

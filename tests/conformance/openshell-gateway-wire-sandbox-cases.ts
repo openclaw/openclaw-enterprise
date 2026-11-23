@@ -1,4 +1,5 @@
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { canonicalSandboxSpec } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -107,6 +108,15 @@ export function registerSandboxCases(): void {
           { service: "", targetPort: 18_790, authorizationMode: "bearer_passthrough" },
         ],
         spec: {
+          template: {
+            image: "runtime@sha256:" + "a".repeat(64),
+            resources: {
+              fields: {
+                requests: { structValue: { fields: { cpu: { stringValue: "1" } } } },
+                limits: { structValue: { fields: { memory: { stringValue: "2Gi" } } } },
+              },
+            },
+          },
           policy: {
             network_policies: {
               model: {
@@ -147,13 +157,21 @@ export function registerSandboxCases(): void {
         AbortSignal.timeout(2_000),
       );
 
+      // Independently pinned field numbers must carry sizing, and real protobuf
+      // Value oneof markers must not break adoption of the readback.
+      const template = createRequests[0]?.spec?.template;
+      assert.deepEqual(
+        canonicalSandboxSpec({ template }),
+        canonicalSandboxSpec({ template: request.spec.template }),
+      );
+      assert.equal(template?.driver_config, undefined);
       assert.equal(created.workspace, "tenant-workspace");
       assert.deepEqual(created.serviceUrls, {
         "": `http://tenant-workspace--${request.name}.openshell.localhost:${port}/`,
       });
       assert.ok(observed && service);
       assert.deepEqual(observed.annotations, request.annotations);
-      assert.deepEqual(observed.spec, request.spec);
+      assert.deepEqual(canonicalSandboxSpec(observed.spec), canonicalSandboxSpec(request.spec));
       assert.equal(service.targetPort, 18_790);
       assert.equal(service.authorizationMode, "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH");
       assert.equal(
