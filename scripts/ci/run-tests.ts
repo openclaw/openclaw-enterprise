@@ -10,6 +10,7 @@ import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { openShellRequiredEnv } from "./openshell-model-inputs.ts";
+import type { PostgresPreparationFailureReason } from "./prepare-postgres.ts";
 import { aggregateGroup } from "./runner-aggregate.ts";
 import {
   case2PhaseEnv,
@@ -832,7 +833,7 @@ async function completePhaseChild() {
     }
   };
   let phaseError:
-    | { code: "phase-failed"; reason?: "docker-subnet-exhausted" }
+    | { code: "phase-failed"; reason?: PostgresPreparationFailureReason }
     | { code: "cleanup-state-missing" }
     | undefined;
   try {
@@ -899,10 +900,12 @@ async function completePhaseChild() {
       isRecord(request) &&
       request.phase === "prepare" &&
       error instanceof Error &&
-      "dockerSubnetExhausted" in error &&
-      error.dockerSubnetExhausted === true
+      "prepareFailureReason" in error
     ) {
-      phaseError.reason = "docker-subnet-exhausted";
+      const reason = error.prepareFailureReason;
+      if (reason === "docker-subnet-exhausted" || reason === "postgres-connection-refused") {
+        phaseError.reason = reason;
+      }
     }
     exitCode = 1;
   }

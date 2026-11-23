@@ -94,6 +94,14 @@ Cleanup verifies each regular journal's fresh owner identity, path and lane;
 preexisting, replaced or symlinked journals are refused. Direct local runs use
 fresh private paths and an after-hook with the same Docker prerequisites.
 
+## Connection refused during setup
+
+If `lifecycle.phases.prepare.error.reason` is `postgres-connection-refused`,
+the runner could not open the initial PostgreSQL session. Confirm that cleanup
+passed. Check that the runner can reach the container’s published loopback
+port from its network namespace. Keep the port bound to `127.0.0.1`.
+After you correct the connection, start a new attempt.
+
 ## Subnet pool exhaustion
 
 Complete lifecycle results record `docker-subnet-exhausted` in `lifecycle.phases.prepare.error.reason`.
