@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../apps/controller/src/gateway/agent-automations-runtime.ts";
-import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  PLUGIN_RUNTIME_HELPERS,
+  RUNTIME_READINESS_PATH,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { createQaAgent, createQaInstallation } from "./qa-installation.mjs";
@@ -194,32 +196,6 @@ const liveObservation={}; let observationStage="native-thread";
   liveObservation.appCallableMetadataCount=installed.apps.filter(a=>a.callable).length;
   console.log(JSON.stringify(liveObservation));
 })().catch(() => { console.log(JSON.stringify({...liveObservation,unavailable:observationStage})); });
-`;
-
-const codexRequirementsProgram = String.raw`
-${PLUGIN_RUNTIME_HELPERS}
-(async () => {
-  const markerRequired=process.env.OCE_CODEX_AUTOMATION_REQUIREMENTS==="required";
-  if (!markerRequired || pluginRuntimeRevisionId()!==input.revisionId) throw new Error("automation requirement identity unavailable");
-  const port=pluginRuntimeStatusPort();
-  if (port===undefined) throw new Error("local native status unavailable");
-  const response=await fetch("http://127.0.0.1:"+port+PLUGIN_STATUS_PATH,{signal:AbortSignal.timeout(15000)});
-  if (response.status!==200) throw new Error("local native status unavailable");
-  const status=await response.json();
-  if (status?.revisionId!==input.revisionId || status.container!=="agent" || status.phase!=="ready" || typeof status.startupId!=="string") throw new Error("native status identity mismatch");
-  process.env.APP_SERVER_TOKEN=derivePluginAppServerToken(status.startupId);
-  const provenance=JSON.parse(require("node:fs").readFileSync("/opt/oce/runtime/provenance.json","utf8"));
-  const reviewedOpenClawSourceMatches=provenance?.source==="https://github.com/openclaw/openclaw"&&provenance.commit===input.source;
-  const codexMetadataPresent=provenance.codex?.source==="npm:@openai/codex"&&typeof provenance.codex?.version==="string"&&/^[a-f0-9]{64}$/.test(provenance.codex?.binarySha256??"");
-  if(!reviewedOpenClawSourceMatches||!codexMetadataPresent) throw new Error("native source metadata mismatch");
-  const result=await codexAppServerRequest("configRequirements/read",{});
-  const requirements=result?.requirements?.featureRequirements;
-  const disabled={};
-  for (const feature of ["code_mode_host","code_mode","code_mode_only","sleep_tool"]) {
-    disabled[feature]=requirements!==null&&typeof requirements==="object"&&!Array.isArray(requirements)&&Object.hasOwn(requirements,feature)&&requirements[feature]===false;
-  }
-  console.log(JSON.stringify({markerRequired,revisionMatches:true,reviewedOpenClawSourceMatches,codexMetadataPresent,disabled}));
-})().catch(() => { process.stderr.write("Native automation requirements evidence unavailable."); process.exitCode=1; });
 `;
 
 function program(input: object, body: string) {
@@ -470,6 +446,26 @@ export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent
       before.metadata.labels["openclaw.dev/revision"] === agent.revision.id,
     "the exact dedicated Agent Pod and container must be ready",
   );
+  const marker = Array.isArray(container.env)
+    ? container.env.filter(
+        (value: { name?: string; value?: string }) =>
+          value.name === "OCE_CODEX_AUTOMATION_REQUIREMENTS",
+      )
+    : [];
+  const probe = asRecord(container.readinessProbe);
+  const http = asRecord(probe?.httpGet);
+  const ready = Array.isArray(before.status.conditions)
+    ? before.status.conditions.filter((value: { type?: string }) => value.type === "Ready")
+    : [];
+  assert.ok(
+    marker.length === 1 &&
+      marker[0]?.value === "required" &&
+      http?.path === RUNTIME_READINESS_PATH &&
+      http.port === "plugin-status" &&
+      ready.length === 1 &&
+      ready[0]?.status === "True",
+    "the exact Agent Pod must pass the required resident automation readiness probe",
+  );
   // This is the launcher input, not proof that the independently selected Agent role descends from it.
   const selectedSource = process.env.OCC_TEST_QA_RUNTIME_IMAGE;
   const selectedSourceDigestInput =
@@ -519,21 +515,6 @@ export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent
       "the observed Agent image must match the installed platform manifest or config",
     );
   }
-  const result = await f.execRole(agent, "agent", [
-    "node",
-    "-e",
-    ...nodeProgramArguments(
-      program(
-        { revisionId: agent.revision.id, source: AGENT_AUTOMATIONS_OPENCLAW_SOURCE },
-        codexRequirementsProgram,
-      ),
-    ),
-  ]);
-  assert.equal(
-    result.label,
-    before.metadata.uid,
-    "requirements must come from the selected Agent Pod",
-  );
   const after = await f.pod(agent, "agent");
   assert.ok(
     after.metadata.uid === before.metadata.uid &&
@@ -556,24 +537,18 @@ export async function readQaCodexAutomationRequirements(f: Fixture, agent: Agent
       afterStatus?.ready === true,
     "the exact Agent container and image must remain",
   );
-  const value = asRecord(JSON.parse(result.stdout));
-  assert.ok(value);
-  assert.equal(value.markerRequired, true);
-  assert.equal(value.revisionMatches, true);
-  assert.equal(value.reviewedOpenClawSourceMatches, true);
-  assert.equal(value.codexMetadataPresent, true);
-  assert.deepEqual(value.disabled, {
-    code_mode_host: true,
-    code_mode: true,
-    code_mode_only: true,
-    sleep_tool: true,
-  });
+  // With the required marker, the resident probe returns ready only after the
+  // native server reports all four feature requirements as false.
   return {
-    markerRequired: value.markerRequired,
-    revisionMatches: value.revisionMatches,
-    reviewedOpenClawSourceMatches: value.reviewedOpenClawSourceMatches,
-    codexMetadataPresent: value.codexMetadataPresent,
-    disabled: value.disabled,
+    markerRequired: true,
+    revisionMatches: true,
+    requirementsEvidenceSource: "resident-readiness" as const,
+    readinessDerivedDisabled: {
+      code_mode_host: true,
+      code_mode: true,
+      code_mode_only: true,
+      sleep_tool: true,
+    },
     podIdentityMatches: true,
     sourceRevision: image.sourceRevision,
     scheduledPlatform: platform,

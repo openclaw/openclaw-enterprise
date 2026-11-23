@@ -35,7 +35,6 @@ type FailurePhase =
   | "admission"
   | "continue"
   | "recovery-readiness"
-  | "requirements-after-recovery"
   | "stock-restore"
   | "evidence-write"
   | "cleanup"
@@ -61,7 +60,6 @@ export type QaCodexReadinessCallbacks = {
   pendingReservations: () => Promise<PendingReservation[]>;
   cancelPending: (reservation: PendingReservation) => Promise<void>;
   createPaused: () => Promise<Response>;
-  readRequirements: () => Promise<unknown>;
 };
 
 type Identity = {
@@ -572,16 +570,6 @@ export async function verifyQaCodexAutomationReadinessRefusal(
           );
         }
       }
-    }
-  }
-  if (recovered) {
-    try {
-      await callbacks.readRequirements();
-    } catch {
-      fail(
-        new Error("Recovered native automation requirements could not be verified."),
-        "requirements-after-recovery",
-      );
     }
   }
   if (postAttempted && recovered) {

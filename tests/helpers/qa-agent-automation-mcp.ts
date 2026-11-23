@@ -819,7 +819,6 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
               enabled: false,
               schedule: { kind: "every", everyMs: 86_400_000 },
             }),
-          readRequirements: () => readQaCodexAutomationRequirements(f, agent),
         });
         await waitAutomationReady();
         const sessions = asRecord(
@@ -1412,8 +1411,6 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         revisionId: agent.revision.id,
         markerRequired: requirements.markerRequired,
         revisionMatches: requirements.revisionMatches,
-        reviewedOpenClawSourceMatches: requirements.reviewedOpenClawSourceMatches,
-        codexMetadataPresent: requirements.codexMetadataPresent,
         podIdentityMatches: requirements.podIdentityMatches,
         sourceRevision: requirements.sourceRevision,
         scheduledPlatform: requirements.scheduledPlatform,
@@ -1423,7 +1420,8 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         installedConfigDigest: requirements.installedConfigDigest,
         observedImageDigest: requirements.observedImageDigest,
         inspectedRunningConfigDigest: requirements.inspectedRunningConfigDigest,
-        disabled: requirements.disabled,
+        requirementsEvidenceSource: requirements.requirementsEvidenceSource,
+        readinessDerivedDisabled: requirements.readinessDerivedDisabled,
       });
     }
     const restored = await create("Restored revision Service control", {

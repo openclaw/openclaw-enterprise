@@ -97,8 +97,6 @@ export async function verifyQaAgentAutomations(
       revisionId: agent.revision.id,
       markerRequired: requirements.markerRequired,
       revisionMatches: requirements.revisionMatches,
-      reviewedOpenClawSourceMatches: requirements.reviewedOpenClawSourceMatches,
-      codexMetadataPresent: requirements.codexMetadataPresent,
       podIdentityMatches: requirements.podIdentityMatches,
       sourceRevision: requirements.sourceRevision,
       scheduledPlatform: requirements.scheduledPlatform,
@@ -108,7 +106,8 @@ export async function verifyQaAgentAutomations(
       installedConfigDigest: requirements.installedConfigDigest,
       observedImageDigest: requirements.observedImageDigest,
       inspectedRunningConfigDigest: requirements.inspectedRunningConfigDigest,
-      disabled: requirements.disabled,
+      requirementsEvidenceSource: requirements.requirementsEvidenceSource,
+      readinessDerivedDisabled: requirements.readinessDerivedDisabled,
     });
     retirement.confirmed = false;
     outcome = await verifyQaAgentAutomationsAtRevision(f, agent, retirement);
