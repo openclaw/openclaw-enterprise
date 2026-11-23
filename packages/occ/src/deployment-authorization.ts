@@ -21,6 +21,8 @@ export interface FirstDeploymentIntent {
 export interface AuthorizedAgentDeployment {
   readonly revision: Readonly<AgentRevision>;
   readonly authorization: Readonly<AuthorizationSnapshot>;
+  /** The Source the repository registry selected for the revision's Git credential; never a value. */
+  readonly repositoryCredentialSourceId?: string;
 }
 
 export async function authorizeFirstDeploymentReceipt(

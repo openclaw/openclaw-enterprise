@@ -78,8 +78,19 @@ interface SandboxPolicyDependencies {
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
   ) => Promise<
-    ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
+    | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
+        readonly credentialSource?: string;
+      })
+    | undefined
   >;
+  /** Refuses a save whose registry-selected Source the caller or Agent may not use. */
+  readonly admitRepositoryCredentialSource: (
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+  ) => Promise<void>;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
@@ -618,20 +629,29 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (edit) {
         assertScopedRepositoryHistory(await state.revisions.listRevisions(namespaceId, agentId));
       }
-      const admittedEdit =
+      const qualifiedEdit =
         repositoryOnly && !withdrawal && networkPolicyUnavailable() === undefined
-          ? (
-              await dependencies.qualifyRepositoryEdit(
-                state,
-                agent,
-                expectedVersion + 1,
-                async (ref) =>
-                  (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
-                    .allowed,
-                resolveHarness,
-              )
-            )?.admit(repositoryNetworkPolicy)
+          ? await dependencies.qualifyRepositoryEdit(
+              state,
+              agent,
+              expectedVersion + 1,
+              async (ref) =>
+                (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
+                  .allowed,
+              resolveHarness,
+            )
           : undefined;
+      // Withdrawal needs no Source. Every other save checks the Source the registry selects.
+      if (qualifiedEdit?.credentialSource !== undefined) {
+        await dependencies.admitRepositoryCredentialSource(
+          state,
+          principalId,
+          agent,
+          qualifiedEdit.credentialSource,
+          repositoryNetworkPolicy,
+        );
+      }
+      const admittedEdit = repositoryOnly ? qualifiedEdit?.admit(repositoryNetworkPolicy) : undefined;
       if (!admittedEdit && (edit || additions.length > 0)) {
         if (await protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(

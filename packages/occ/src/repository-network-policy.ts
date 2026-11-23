@@ -42,6 +42,8 @@ export type RepositoryGrantPolicy = {
     readonly namespaceId: string;
     readonly grant: RepositoryNetworkGrant;
   }): boolean;
+  /** Whether a registration of the Namespace selects this credential source. */
+  namesCredentialSource?(input: { readonly namespaceId: string; readonly sourceId: string }): boolean;
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
@@ -49,6 +51,8 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   readonly nativeGit?: "v1";
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
+  /** The TokenService Source that holds the credential in place of the GitHub App. */
+  readonly credentialSource?: string;
 };
 
 type RepositoryGrantMethod = NonNullable<RepositoryGrantPolicy["repositoryNetworkPolicyAllows"]>;
@@ -360,16 +364,39 @@ function selectedRepositoryGrantAllows(
   );
 }
 
+function assertRepositoryGrantsWithin(
+  grants: readonly RepositoryNetworkGrant[] | undefined,
+  limit: RepositoryNetworkPolicyCeiling | undefined,
+  message: string,
+): void {
+  if (grants?.some((grant) => !selectedRepositoryGrantAllows(limit, grant))) {
+    throw new ResourceStateConflictError(message, [
+      { path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" },
+    ]);
+  }
+}
+
 export function assertSelectedRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
   selected: RepositoryNetworkPolicyCeiling | undefined,
 ): void {
-  if (grants?.some((grant) => !selectedRepositoryGrantAllows(selected, grant))) {
-    throw new ResourceStateConflictError(
-      "The saved repository network policy exceeds the Agent's selected Git credential. Review the saved policy and repository bindings before deploying.",
-      [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
-    );
-  }
+  assertRepositoryGrantsWithin(
+    grants,
+    selected,
+    "The saved repository network policy exceeds the Agent's selected Git credential. Review the saved policy and repository bindings before deploying.",
+  );
+}
+
+/** The Source ceiling is one more limit on the saved grants, beside the registry and Installation. */
+export function assertSourceRepositoryGrants(
+  grants: readonly RepositoryNetworkGrant[] | undefined,
+  ceiling: RepositoryNetworkPolicyCeiling,
+): void {
+  assertRepositoryGrantsWithin(
+    grants,
+    ceiling,
+    "The saved repository network policy exceeds the repository ceiling of the credential source that the repository registration selects. Remove those grants, or ask an operator to widen the source's ceiling.",
+  );
 }
 
 function refuseRepositoryPolicy(error: unknown, operation: "save" | "deploy"): never {

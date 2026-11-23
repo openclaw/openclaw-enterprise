@@ -494,6 +494,7 @@ function createCredentialServices({
   credentialSourceDelivery,
   deviceCipher,
   canUseNativeAuthorization,
+  repositoryRegistryNamesSource,
 }: {
   installationId: string;
   stateAndAuthority: ReturnType<typeof createStateAndAuthority>;
@@ -514,6 +515,7 @@ function createCredentialServices({
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
+  repositoryRegistryNamesSource: (namespaceId: string, sourceId: string) => boolean;
 }) {
   const nextSourceId = () => resourceValues.nextIdentifier("credential_source");
   const { tokenService, preparedIssuer, connectionTokenIssuer } =
@@ -580,6 +582,7 @@ function createCredentialServices({
         sourceDrivers: credentialSourceDrivers,
         iamPolicy,
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+        repositoryRegistryNamesSource,
         retireDelivery: async (namespace, source, signal) => {
           if (!drivers.hasSelection("credential_proxy_delivery")) {
             return;
@@ -766,6 +769,9 @@ export function createControllerComposition(
     credentialSourceDelivery: options.credentialSourceDelivery,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
+    // The repository policy is composed after the credential services; it is read per call.
+    repositoryRegistryNamesSource: (namespaceId, sourceId) =>
+      repositoryPolicy.repositoryRegistryNamesSource(namespaceId, sourceId),
   });
   const {
     agentCredentialAccess,
@@ -794,6 +800,8 @@ export function createControllerComposition(
   );
   const sandboxPolicyOperations = createSandboxPolicyOperations({
     qualifyRepositoryEdit: (...args) => repositoryPolicy.qualifyRepositoryEdit(...args),
+    admitRepositoryCredentialSource: (...args) =>
+      agentCredentialAccess.admitRepositoryCredentialSource(...args),
     repositoryCeiling: (namespaceId) =>
       repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,

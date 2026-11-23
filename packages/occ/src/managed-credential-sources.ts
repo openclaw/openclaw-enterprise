@@ -160,6 +160,8 @@ interface ManagedCredentialSourceDependencies {
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  /** Whether the loaded repository registry selects the Source for a Namespace registration. */
+  readonly repositoryRegistryNamesSource: (namespaceId: string, sourceId: string) => boolean;
   readonly retireDelivery: (
     namespace: Readonly<Namespace>,
     source: CredentialSourceReference,
@@ -382,12 +384,11 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "Change the repository ceiling separately from credential material.",
         );
       }
-      // TODO(repository token Source delivery): also refuse while a repository registration names
-      // the Source; that registry field is not implemented yet.
-      if (
-        ceilingChanges &&
-        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
-      ) {
+      // Bound covers the loaded repository registry: it freezes no grant, so check it apart.
+      const bound = async () =>
+        dependencies.repositoryRegistryNamesSource(ref.namespaceId, source.id) ||
+        (await state.credentialSources.hasReferences(ref.namespaceId, source.id));
+      if (ceilingChanges && (await bound())) {
         throw new ResourceStateConflictError(
           "Repository ceiling changes require an unbound source.",
         );
@@ -400,10 +401,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "Change the provider preset separately from credential material or lifecycle settings.",
         );
       }
-      if (
-        presetChanges &&
-        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
-      ) {
+      if (presetChanges && (await bound())) {
         throw new ResourceStateConflictError("Provider preset changes require an unbound source.");
       }
       return source;
@@ -553,6 +551,11 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
               "Disconnect the saved account to retire its grant.",
             );
           }
+        }
+        if (dependencies.repositoryRegistryNamesSource(locked.id, found.id)) {
+          throw new ResourceStateConflictError(
+            "The repository registry selects this credential source for a Namespace registration. Remove it from the registry and restart the controller and Worker, then delete it.",
+          );
         }
         const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
         if (blocking === "reference") {

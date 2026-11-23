@@ -199,7 +199,7 @@ export interface DeploymentAdmissionDependencies {
   ) => ModelPolicyAgent;
   readonly credentialAccess: Pick<
     AgentCredentialAccess,
-    "grantDeployedAgentSources" | "admitCredentialSources"
+    "grantDeployedAgentSources" | "admitCredentialSources" | "admitRepositoryCredentialSource"
   >;
   readonly secretDriver: () => SecretDriver;
   readonly validateComputeConfiguration: (values: Readonly<OpenClawConfigurationDocument>) => void;
@@ -917,6 +917,24 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           Date.parse(createdAt),
         );
       const admittedRepository = admitRepository();
+      const repositorySourceId = admittedRepository?.credentialSource;
+      if (repositorySourceId !== undefined) {
+        // A Source credential is scoped only by the saved network policy: without one there is
+        // nothing to enforce, and the App's online path must never serve it.
+        if (!policy?.repositoryNetworkPolicy?.length) {
+          throw new ResourceStateConflictError(
+            "The repository registration selects a credential source, which needs a saved repository network policy with at least one grant. Save the Agent's repository grants before deploying.",
+            [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+          );
+        }
+        await dependencies.credentialAccess.admitRepositoryCredentialSource(
+          state,
+          principalId,
+          lockedAgent,
+          repositorySourceId,
+          policy.repositoryNetworkPolicy,
+        );
+      }
       const resolvedRepositoryCredentials = admittedRepository?.credentials;
       if (resolvedRepositoryCredentials !== undefined) {
         validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
@@ -1187,7 +1205,11 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         resourceId: revision.id,
         actorId: principalId,
       });
-      const result = Object.freeze({ revision, authorization });
+      const result = Object.freeze({
+        revision,
+        authorization,
+        ...(repositorySourceId !== undefined && { repositoryCredentialSourceId: repositorySourceId }),
+      });
       if (auditEvent) {
         await state.audit.append(auditEvent(result));
       }

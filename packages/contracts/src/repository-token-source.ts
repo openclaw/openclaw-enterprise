@@ -75,6 +75,11 @@ function parseCeiling(value: string): RepositoryNetworkPolicyCeiling {
   return ceiling;
 }
 
+/** Reads a stored ceiling; an invalid value throws SourceRepositoryCeilingError. */
+export function readSourceRepositoryCeiling(value: string): RepositoryNetworkPolicyCeiling {
+  return parseCeiling(value);
+}
+
 /** Validates a submitted ceiling and returns its stored form, sorted by repository. */
 export function canonicalSourceRepositoryCeiling(value: string): string {
   return [...parseCeiling(value)]
