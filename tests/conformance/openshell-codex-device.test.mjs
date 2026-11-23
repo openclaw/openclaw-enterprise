@@ -6,10 +6,10 @@ import {
   codexDeviceAuthorizationState,
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
-} from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
+} from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { redirectProviderFetch, startProviderServer } from "../helpers/provider-http-transport.ts";
 
-test("Codex device authorization never follows issuer redirects", async (t) => {
+test("Codex device authorization validates issuer transport and grant fields", async (t) => {
   const paths = [
     "/api/accounts/deviceauth/usercode",
     "/api/accounts/deviceauth/token",
@@ -71,6 +71,59 @@ test("Codex device authorization never follows issuer redirects", async (t) => {
       );
     });
   }
+  await t.test("successful exchange retains the first usable grant", async (t) => {
+    const expirySeconds = Math.floor(Date.now() / 1000) + 3600;
+    const accessToken = jwt({
+      exp: expirySeconds,
+      "https://api.openai.com/auth": { chatgpt_account_id: "account-fixture" },
+    });
+    const identityToken = jwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "account-fixture",
+        chatgpt_plan_type: "business",
+      },
+    });
+    const server = await startProviderServer(t, (request, response) => {
+      request.resume();
+      response.setHeader("content-type", "application/json");
+      if (request.url === paths[0]) {
+        response.end(
+          JSON.stringify({ device_auth_id: "device-fixture", user_code: "USER-CODE", interval: 5 }),
+        );
+      } else if (request.url === paths[1]) {
+        response.end(
+          JSON.stringify({
+            authorization_code: "synthetic-code",
+            code_verifier: "synthetic-verifier",
+          }),
+        );
+      } else {
+        response.end(
+          JSON.stringify({
+            access_token: accessToken,
+            refresh_token: "synthetic-grant-refresh",
+            id_token: identityToken,
+          }),
+        );
+      }
+    });
+    redirectProviderFetch(
+      t,
+      new Set(paths.map((path) => `https://auth.openai.com${path}`)),
+      `http://127.0.0.1:${server.port}`,
+    );
+    const signal = AbortSignal.timeout(10_000);
+    const login = await startCodexDeviceAuthorization("source-owner", signal);
+    const state = codexDeviceAuthorizationState("source-owner", login.privateState);
+    const grant = await pollCodexDeviceAuthorization(state, signal);
+    assert.deepEqual(grant, {
+      accessToken,
+      expiresAt: new Date(expirySeconds * 1000).toISOString(),
+      refreshToken: "synthetic-grant-refresh",
+      account: { accountId: "account-fixture", planType: "business", isFedramp: false },
+    });
+    assert.deepEqual(server.requests, paths);
+  });
 });
 
 function jwt(payload) {

@@ -7,7 +7,7 @@ import {
   CODEX_ACCESS_TOKEN_ENV,
   CODEX_OAUTH_TYPE,
 } from "../../apps/controller/src/backends/openshell-refresh-sources.ts";
-import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
+import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { Backend, Namespace } from "../../packages/contracts/src/index.ts";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";

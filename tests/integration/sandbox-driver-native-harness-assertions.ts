@@ -17,7 +17,7 @@ import {
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
+import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import {
   OpenShellSandboxDriver,
   type OpenShellSandboxDriverOptions,

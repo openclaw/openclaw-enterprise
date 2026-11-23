@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-23
+last_updated_session: authoring-run/a480239e-505a-4a94-9df4-703da59be734
 ---
 
 # Credential source refresh Flow
@@ -120,10 +120,9 @@ failure code. Otherwise OCC commits `ready` with audit.
 `packages/occ/src/plugin-discovery.ts:withPluginDiscoveryCredential`
 
 OCC checks Agent authority and Namespace `credential_source:create` before registration
-and again before login. Audits `source_registering`, `source_ready`, and
-`session_pending` omit login material. Failed starts retain the source. The
-`device_authorization` row in `occ.authentication_states` stores the sealed challenge
-and provider handle, immutable binding, and versioned progress.
+and login. Audits `source_registering`, `source_ready`, and `session_pending` omit login
+material. Failed starts retain the source. `occ.authentication_states` stores the sealed
+challenge and provider handle, immutable binding, and versioned progress.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
 `start_unconfirmed` across navigation. Agent detail keeps Credentials open for
@@ -137,7 +136,7 @@ Poll checks source `operate` before changes and after I/O. Scope mismatches audi
 Version checks serialize polls and fence cancelled results. OCC rechecks both Drivers
 after I/O. Cancellation and expiry clear encrypted state.
 
-`apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
+`apps/controller/src/drivers/token-service/codex-device-authorization.ts:startCodexDeviceAuthorization`
 sends start, poll, and exchange requests from API Pods to fixed `auth.openai.com`
 endpoints, refusing redirects. `DeviceAuthorizationStartError` classifies connection
 failures and timeouts as `unreachable`; HTTP rejection, malformed replies, and
@@ -146,16 +145,15 @@ failures and timeouts as `unreachable`; HTTP rejection, malformed replies, and
 warning records the Refresh boundary and failure class, excluding provider messages,
 response bodies, and nested causes.
 
-`apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
-performs the Codex exchange, configures OpenShell refresh material, and stores
-trusted account metadata. Before code acquisition, issuer `429`, `5xx`, or fetch
-connection failures return pending, retaining the handle and interval. An aborted
-initial poll, including OCC's internal timeout, or failure from code acquisition
-onward closes the session without replay. OpenShell owns future refresh and
-successor persistence. After handoff, polls read state: unfinished refresh
-stays pending; a persistent uncertain marker needs operator inspection. Ready confirms
-a usable token. Later versions attach the provider without reseeding credentials;
-account metadata changes require a new login and version.
+`apps/controller/src/drivers/token-service/codex-device-authorization.ts:pollCodexDeviceAuthorization`
+returns the first grant and account metadata to
+`apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`,
+which configures OpenShell refresh and stores the metadata. Before code acquisition,
+issuer `429`, `5xx`, or connection failures leave login pending. Aborts, including OCC's
+timeout, and failures after code acquisition close the session without replay. OpenShell
+owns renewal and successor persistence. Unfinished refresh stays pending; an uncertain
+marker needs inspection. Ready confirms a usable token. Later versions attach without
+reseeding. Account metadata changes require a new login and version.
 
 For plugin configuration, the Gateway reads ownership/account metadata with its
 Backend identity, then calls `GetProviderCredentials` over operator-TLS.
@@ -312,6 +310,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 
 ## Changelog
 
+- 2026-11-23 15:56: Move the Codex issuer exchange into the TokenService Driver in the accompanying change. (authoring-run/a480239e-505a-4a94-9df4-703da59be734 - 82ab46ced89791f2283c64847c68c68bc54b1c02)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:18: Link device login source. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
 

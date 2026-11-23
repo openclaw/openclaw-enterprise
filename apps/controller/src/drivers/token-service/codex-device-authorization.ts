@@ -17,6 +17,8 @@ type AccountMetadata = Omit<ExternalChatgptAuth, "accessTokenPlaceholder"> & {
 };
 
 interface DeviceTokens {
+  readonly accessToken: string;
+  readonly expiresAt: string;
   readonly refreshToken: string;
   readonly account: AccountMetadata;
 }
@@ -201,6 +203,8 @@ export async function pollCodexDeviceAuthorization(
     throw new Error("Codex OAuth returned an expired access token or no expiry.");
   }
   return {
+    accessToken,
+    expiresAt: new Date(expiry).toISOString(),
     refreshToken: required(token.refresh_token),
     account: {
       accountId,
