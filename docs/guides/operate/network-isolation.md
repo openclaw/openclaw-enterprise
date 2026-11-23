@@ -19,6 +19,8 @@ You need:
 - An enforcing NetworkPolicy implementation.
 - Bash, Python 3, and `kubectl` permission to `exec` into Pods, `get pods/proxy`,
   and create and delete Pods and a Namespace.
+- A way to delete test objects with an API-enforced UID precondition. See
+  [Clean up](#clean-up).
 - `KUBECONFIG_FILE`, `CONTEXT`, `TENANT_NAMESPACE`, `GATEWAY_RUNTIME_NAMESPACE`
   and `AGENT_ID` from the [production Agent guide](../deploy/production-agents.md).
 - One running Agent, preferably a test Agent (see
@@ -46,7 +48,12 @@ Define a `kubectl` wrapper and a probe that prints one result per target.
 A target is `host:port`, or `dns:name` for a lookup:
 
 ```bash
-kc() { kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" "$@"; }
+set -e -o pipefail
+: "${TENANT_NAMESPACE:?}" "${AGENT_ID:?}"
+kc() { kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" "$@"; }
+pod() { kc -n "$1" get pods -l "openclaw.dev/agent=$2,openclaw.dev/workload-role=$3" \
+  -o jsonpath='{.items[0].metadata.name}'; }
+pod_ip() { kc -n "$1" get pod "$2" -o jsonpath='{.status.podIP}'; }
 PROBE_JS='
 const net = require("net"), dns = require("dns");
 const one = (t) => new Promise((done) => {
@@ -70,7 +77,8 @@ probe() { local ns=$1 pod=$2 container=$3; shift 3
   kc -n "$ns" exec "$pod" -c "$container" -- node -e "$PROBE_JS" "$@"; }
 ```
 
-`OPEN` means the connection was allowed. A denied connection reports
+A successful DNS lookup prints `RESOLVED <address>`. A successful TCP
+connection prints `OPEN`. A denied connection reports
 `ECONNREFUSED` on CNIs that reject (kube-router) or `TIMEOUT` on CNIs that drop
 packets. A closed port also reports `ECONNREFUSED`. To tell a policy denial from
 a closed port, confirm that another source reaches the same target: the control
@@ -83,14 +91,11 @@ For a dedicated Agent, find its gateway Pod in the Gateway runtime namespace and
 its Harness Pod in the tenant namespace:
 
 ```bash
-pod() { kc -n "$1" get pods -l "openclaw.dev/agent=$2,openclaw.dev/workload-role=$3" \
-  -o jsonpath='{.items[0].metadata.name}'; }
-pod_ip() { kc -n "$1" get pod "$2" -o jsonpath='{.status.podIP}'; }
 HARNESS_POD=$(pod "$TENANT_NAMESPACE" "$AGENT_ID" agent) HARNESS_CONTAINER=agent
 GATEWAY_POD=$(pod "$GATEWAY_RUNTIME_NAMESPACE" "$AGENT_ID" gateway)
 HARNESS_IP=$(pod_ip "$TENANT_NAMESPACE" "$HARNESS_POD")
 GATEWAY_IP=$(pod_ip "$GATEWAY_RUNTIME_NAMESPACE" "$GATEWAY_POD")
-AGENT_PORTS="$HARNESS_IP:18790 $HARNESS_IP:18791 $GATEWAY_IP:8080"
+AGENT_PORTS="$HARNESS_IP:18790 $HARNESS_IP:18791 $GATEWAY_IP:8080 $GATEWAY_IP:18791"
 ```
 
 An embedded Agent runs in one gateway Pod in the tenant namespace, with the
@@ -126,12 +131,30 @@ TARGETS="dns:kubernetes.default.svc.cluster.local $API_SERVICE $API_ENDPOINT $DA
 ## Create the control Pod
 
 The control Pod runs in a Namespace without policies, so it shows what each
-target answers when nothing denies it:
+target answers when nothing denies it.
+
+Preserve the original kubeconfig for recovery. Record its path, the context and
+the tenant Namespace. Run the commands in Bash and stop dependent steps if a
+command fails. Run each create separately. Save the printed kind, namespace (for
+Pods), generated name and UID outside the shell before continuing. If a create
+fails or its acknowledgement is missing, stop and reconcile the request before
+retrying. Delete only acknowledged objects. A current name or label does not
+establish ownership.
 
 ```bash
-test_pod() { # namespace name labels-json
-  kc apply -f - <<EOF
-{"apiVersion":"v1","kind":"Pod","metadata":{"name":"$2","namespace":"$1","labels":$3},
+create_identity() {
+  local identity kind namespace
+  identity=$(kc create -f - \
+    -o jsonpath='{.kind}{" "}{.metadata.name}{" "}{.metadata.uid}{" "}{.metadata.namespace}') || return 1
+  read -r kind CREATED_NAME CREATED_UID namespace <<< "$identity" || return 1
+  [[ "$kind" == "$1" && "${namespace:--}" == "$2" &&
+    -n "$CREATED_NAME" && -n "$CREATED_UID" ]] || return 1
+  printf '%s %s %s %s\n' "$kind" "${namespace:--}" "$CREATED_NAME" "$CREATED_UID"
+}
+test_pod() { # namespace prefix labels-json
+  local namespace="${1:?}"
+  create_identity Pod "$namespace" <<EOF
+{"apiVersion":"v1","kind":"Pod","metadata":{"generateName":"$2","namespace":"$namespace","labels":$3},
  "spec":{"automountServiceAccountToken":false,"restartPolicy":"Never",
   "securityContext":{"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}},
   "containers":[{"name":"probe","image":"$IMAGE","command":["node","-e","setInterval(()=>{},1e9)"],
@@ -140,17 +163,30 @@ test_pod() { # namespace name labels-json
     "capabilities":{"drop":["ALL"]}}}]}}
 EOF
 }
-kc create namespace oce-netcheck
-kc label namespace oce-netcheck pod-security.kubernetes.io/enforce=restricted
-test_pod oce-netcheck control '{"app":"oce-netcheck"}'
-kc -n oce-netcheck wait --for=condition=Ready pod/control --timeout=120s
-probe oce-netcheck control probe $TARGETS
+create_identity Namespace - <<EOF
+{"apiVersion":"v1","kind":"Namespace","metadata":{"generateName":"oce-netcheck-","labels":{"pod-security.kubernetes.io/enforce":"restricted"}}}
+EOF
+CONTROL_NS=$CREATED_NAME CONTROL_NS_UID=$CREATED_UID
 ```
 
-DNS, the Kubernetes API, the database, both `1.1.1.1` ports and `PRIVATE_HTTPS`
-must be `OPEN`; skip any target your network blocks for every Pod. `ENVOY` and
-the Agent ports deny the control Pod, because their ingress policies admit only
-their peers; the API row shows that `ENVOY` listens.
+Save the Namespace identity, then create the control Pod.
+
+```bash
+test_pod "$CONTROL_NS" control- '{"app":"oce-netcheck"}'
+CONTROL_POD=$CREATED_NAME CONTROL_POD_UID=$CREATED_UID
+```
+
+Save the Pod identity, then wait for the Pod and run the probe.
+
+```bash
+kc -n "$CONTROL_NS" wait --for=condition=Ready "pod/$CONTROL_POD" --timeout=120s
+probe "$CONTROL_NS" "$CONTROL_POD" probe $TARGETS
+```
+
+DNS resolves. The Kubernetes API, database, both `1.1.1.1` ports and
+`PRIVATE_HTTPS` must be `OPEN`. Skip any target your network blocks for every Pod.
+`ENVOY` and the Agent ports deny the control Pod, because their ingress policies
+admit only their peers; the API row shows that `ENVOY` listens.
 
 The test Pods use the installed controller image and need the node's own pull
 access, as the OCE Pods do; OCE renders no pull Secret. Don't add `imagePullSecrets`
@@ -158,7 +194,7 @@ access, as the OCE Pods do; OCE renders no pull Secret. Don't add `imagePullSecr
 
 ## Run the checks
 
-| Source        | Command                                                                   | Expected                                                                                                                                                                                                                                                                                                                                                       |
+| Source        | Command                                                                   | Expected result (for DNS, `OPEN` means `RESOLVED <address>`)                                                                                                                                                                                                                                                                                                   |
 | ------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | API           | `probe openclaw-system deploy/openclaw-enterprise-api api $TARGETS`       | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`. The API also reaches the destinations your values grant, including sign-in on TCP/443: an empty Google or OIDC `egressCidrs` allows any address except link-local `169.254.0.0/16`, which holds cloud metadata. Without private routing, a gateway client can reach the gateway port. |
 | Worker        | `probe openclaw-system deploy/openclaw-enterprise-worker worker $TARGETS` | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`; no sign-in, model discovery or channel directory egress. With repository credentials, `repositoryCredentials.upstreamCidrs` is open on TCP/443.                                                                                                                                       |
@@ -168,8 +204,12 @@ access, as the OCE Pods do; OCE renders no pull Secret. Don't add `imagePullSecr
 | Profile label | See [Check profile labels](#check-profile-labels)                         | Everything denied.                                                                                                                                                                                                                                                                                                                                             |
 | Plugin status | See [Check the status port](#check-the-status-port)                       | Reachable from the API server's proxy sources and the Agent's own gateway.                                                                                                                                                                                                                                                                                     |
 
-For another Agent's ports, use `HARNESS_IP:18790` of a dedicated Agent, or
-`:8080` and `:18791` of an embedded Agent's gateway.
+For the Other Agent check, use the applicable example in
+[Collect the targets](#collect-the-targets) to build `OTHER_AGENT_PORTS` from the
+second Agent's Pod IPs. Keep the first Agent's Pod variables and `AGENT_PORTS`.
+Probe `OTHER_AGENT_PORTS` from the first Agent's Pods, then probe `AGENT_PORTS`
+from the second Agent's Pods. Repeat for Agents in the same OCC Namespace and
+across OCC Namespaces.
 
 ### Check profile labels
 
@@ -185,14 +225,28 @@ print(json.dumps({k: v for k, v in labels.items() if k.startswith("openclaw.dev/
                   and k not in ("openclaw.dev/network-profile", "openclaw.dev/service-principal")}))')
 UNKNOWN=$(echo "$LABELS" | python3 -c '
 import json, sys; l = json.load(sys.stdin); l["openclaw.dev/network-profile"] = "unknown-v1"; print(json.dumps(l))')
-test_pod "$TENANT_NAMESPACE" netcheck-profile-missing "$LABELS"
-test_pod "$TENANT_NAMESPACE" netcheck-profile-unknown "$UNKNOWN"
-kc -n "$TENANT_NAMESPACE" wait --for=condition=Ready \
-  pod/netcheck-profile-missing pod/netcheck-profile-unknown --timeout=120s
-probe "$TENANT_NAMESPACE" netcheck-profile-missing probe $TARGETS
-probe "$TENANT_NAMESPACE" netcheck-profile-unknown probe $TARGETS
-kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-unknown
+test_pod "$TENANT_NAMESPACE" netcheck-profile-missing- "$LABELS"
+MISSING_POD=$CREATED_NAME MISSING_UID=$CREATED_UID
 ```
+
+Save the first Pod identity, then create the second Pod.
+
+```bash
+test_pod "$TENANT_NAMESPACE" netcheck-profile-unknown- "$UNKNOWN"
+UNKNOWN_POD=$CREATED_NAME UNKNOWN_UID=$CREATED_UID
+```
+
+Save the second Pod identity, then wait for both Pods and run the probes.
+
+```bash
+kc -n "$TENANT_NAMESPACE" wait --for=condition=Ready \
+  "pod/$MISSING_POD" "pod/$UNKNOWN_POD" --timeout=120s
+probe "$TENANT_NAMESPACE" "$MISSING_POD" probe $TARGETS
+probe "$TENANT_NAMESPACE" "$UNKNOWN_POD" probe $TARGETS
+```
+
+Promptly [remove the recorded profile test Pods](#clean-up) using their original
+namespace, name and UID. Confirm deletion.
 
 Every target must be denied, DNS included (`EAI_AGAIN` or `TIMEOUT`). In a
 tenant namespace created before network profiles, `allow-dns` still selects
@@ -201,19 +255,22 @@ every Pod, so DNS resolves there.
 While these Pods exist, OCC counts them as the Agent's Pods: stopping, deleting
 or redeploying the Agent waits for them, and its plugin status and runtime logs
 are incomplete. Use a test Agent, change nothing on it while they run, and
-delete them right after the probes as shown. They count against the
-namespace's Pod quota.
+delete them right after the probes. They count against the namespace's Pod quota.
 
 ### Check the status port
 
 The status port `18791` admits the API server's proxy sources from
-`network.pluginStatusProxySourceCidrs`. Check that the proxy reaches the
-Gateway's private status endpoint and that the policy blocks its native port:
+`network.pluginStatusProxySourceCidrs`. Confirm that the proxy reaches the
+Gateway status endpoint and that the control Pod cannot connect directly to the
+same Pod on port `18791`. Use the result from the
+[control Pod probe](#create-the-control-pod). Check that the policy also blocks
+proxy access to the native port. Compare each response or error with the
+expected result below.
 
 ```bash
-kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:18791/proxy/openclaw/runtime/status"
+kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:18791/proxy/openclaw/runtime/status" || true
 echo
-kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:8080/proxy/"
+kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:8080/proxy/" || true
 ```
 
 For an embedded Agent, use `$TENANT_NAMESPACE/pods/$HARNESS_POD` in both
@@ -222,11 +279,9 @@ the status server while the Pod starts. The second fails with
 `error trying to reach service` and `502 Bad Gateway`. Some CNIs, such as k3s's
 kube-router, always admit traffic from a node to its own Pods: when the API server
 runs on the Pod's node, the second command can return the gateway's response, so this
-check cannot show the status-port policy there. The control Pod showed
-that other Pods cannot connect to the status port directly. Repeat for Agents
-on different nodes. The proxy source address can differ per node. Host-network
-Pods and node processes that share a proxy source address can also reach the
-port.
+check cannot show the status-port policy there. Repeat for Agents on different
+nodes. The proxy source address can differ per node. Host-network Pods and node
+processes that share a proxy source address can also reach the port.
 
 For the running version, select **Run diagnostics for this version** in the
 Console or call the [deployment diagnostics API](../../reference/agents.md#current-runtime-diagnostics).
@@ -251,12 +306,37 @@ egress grant is temporary; see [network security](../../reference/security.md).
 
 ## Clean up
 
-Delete the control Namespace and any profile test Pods left by an interrupted run:
+Use the original recorded kubeconfig, context and tenant Namespace. If the shell
+was lost, set `KUBECONFIG_FILE`, `CONTEXT` and `TENANT_NAMESPACE` to their
+original recorded values. Redefine only the `kc` wrapper from
+[Set up the probe](#set-up-the-probe). Do not repeat setup or creates. Restore
+the recorded names and UIDs from successful create responses. After the profile
+checks, promptly delete the first acknowledged profile Pod with an API-enforced
+precondition on its original UID.
 
 ```bash
-kc delete namespace oce-netcheck
-kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-unknown --ignore-not-found
+kc delete --raw="/api/v1/namespaces/${TENANT_NAMESPACE:?}/pods/${MISSING_POD:?}" -f - <<EOF
+{"apiVersion":"v1","kind":"DeleteOptions","preconditions":{"uid":"${MISSING_UID:?}"}}
+EOF
 ```
+
+Use the same command with each other acknowledged Pod's recorded namespace, name
+and UID. Confirm removal and leave replacements untouched. At the end of the
+check or after an interruption, promptly remove remaining acknowledged Pods.
+
+Delete the recorded control Namespace last, using `/api/v1/namespaces/${CONTROL_NS:?}`
+and its recorded `${CONTROL_NS_UID:?}` in the same UID precondition. Deleting the
+Namespace deletes everything in it. Confirm every create has a known outcome.
+Verify that the Namespace contains only acknowledged probe objects and verified
+Kubernetes-created Namespace defaults, such as the `default` ServiceAccount and
+`kube-root-ca.crt` ConfigMap. A familiar name alone does not establish origin.
+Keep the Namespace exclusive to this check through deletion. If any object's
+origin is uncertain or you cannot ensure exclusive use, delete only acknowledged
+Pods by UID and leave the Namespace for the cluster owner to reconcile. Stop on
+a conflict, uncertain ownership, or an ambiguous create or deletion response.
+Follow the
+[manual reconciliation guidance](../deploy/production-preflight-cleanup.md#reconcile-unsupported-or-uncertain-evidence)
+without repeating an uncertain request.
 
 ## If a check fails
 
@@ -264,7 +344,8 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
   source and target namespaces (`kc get networkpolicy -A`) and look for an extra
   allow policy. Kubernetes grants the union of all matching policies. An in-cluster
   model endpoint you opened with your own policy also shows `OPEN`.
-- Every probe connects: the CNI does not enforce NetworkPolicy.
+- If every probe connects and the matching policies do not explain the result,
+  check whether the CNI enforces NetworkPolicy.
 - An Agent cannot reach its model: check its
   [network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   and the model egress exclusions.
