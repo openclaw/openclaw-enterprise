@@ -141,7 +141,7 @@ The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6
 
 **One permission model.** [Issue creation with repository Write access](20261123-repository-issue-creation.md) removes `scopedRest`. For native App delivery, derive routes from the approved Namespace permissions and saved Agent grant. Metadata and Contents alone keep Git-only access. Existing agents with broader permissions can gain eligible routes on their next deployment. There is no separate REST version or Agent upgrade approval.
 
-**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). Set `createIssues: false` on a repository’s Namespace registration to disable just that POST. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
+**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). The proposed [API action filter](20261123-repository-issue-creation.md#optional-api-restrictions) narrows eligible routes for one repository. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
 
 **Outside this proposal.** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149) proposes Git-only personal access tokens. PRs backed by personal or shared installation tokens need a separate decision because those credentials can cover repositories beyond the Agent’s bindings.
 
