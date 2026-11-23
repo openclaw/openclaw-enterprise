@@ -120,6 +120,9 @@ async function fixture(t: TestContext) {
   };
 }
 
+// Each case takes a few seconds; a hang fails it here, not at the lane deadline.
+const caseTimeoutMs = 20_000;
+
 /** Whether a promise settles within `ms`, without consuming its rejection. */
 async function settlesWithin(promise: Promise<unknown>, ms: number) {
   let settled = false;
@@ -133,7 +136,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number) {
 
 test(
   "a held Source row makes TokenService replacement and OCC retirement wait until it is released",
-  { ...requiresPostgres, timeout: 60_000 },
+  { ...requiresPostgres, timeout: caseTimeoutMs },
   async (t) => {
     const f = await fixture(t);
     const custody = f.custody();
@@ -177,7 +180,7 @@ test(
 
 test(
   "a Source lock gives up after its bounded wait while a replacement holds the row",
-  { ...requiresPostgres, timeout: 60_000 },
+  { ...requiresPostgres, timeout: caseTimeoutMs },
   async (t) => {
     const f = await fixture(t);
     const custody = f.custody();
@@ -204,43 +207,51 @@ test(
 
 test(
   "PostgreSQL ends a Source hold its frozen Worker abandoned, and the resumed Worker writes nothing",
-  { ...requiresPostgres, timeout: 60_000 },
+  { ...requiresPostgres, timeout: caseTimeoutMs },
   async (t) => {
     const f = await fixture(t);
     const holdLimitMs = 1000;
     const custody = f.custody({ holdLimitMs });
+    // Released here, not in an after hook: the pool's own hook waits for its clients.
     const writer: pg.PoolClient = await f.other.connect();
-    t.after(() => writer.release(true));
-    const serverNow = async () =>
-      Date.parse(
-        (
-          (await writer.query("SELECT clock_timestamp() AS at")).rows[0] as { at: Date }
-        ).at.toISOString(),
+    try {
+      const serverNow = async () =>
+        Date.parse(
+          (
+            (await writer.query("SELECT clock_timestamp() AS at")).rows[0] as { at: Date }
+          ).at.toISOString(),
+        );
+      const taken = await serverNow();
+      const locked = await custody.lock(f.ref);
+      assert.ok(locked?.source);
+      const { hold } = locked;
+      // A retirement starts while the Worker holds the row... Its time is read in an outer
+      // query: in the locking query's own select list it is computed before the lock is granted.
+      const retiring = writer.query(
+        `WITH locked AS MATERIALIZED (
+           SELECT 1 FROM occ.credential_sources
+           WHERE namespace_id = $1 AND id = $2 FOR UPDATE
+         )
+         SELECT clock_timestamp() AS at FROM locked`,
+        [f.ref.namespaceId, f.ref.sourceId],
       );
-    const taken = await serverNow();
-    const locked = await custody.lock(f.ref);
-    assert.ok(locked?.source);
-    const { hold } = locked;
-    // A retirement starts while the Worker holds the row...
-    const retiring = writer.query(
-      `SELECT clock_timestamp() AS at FROM occ.credential_sources
-       WHERE namespace_id = $1 AND id = $2 FOR UPDATE`,
-      [f.ref.namespaceId, f.ref.sourceId],
-    );
-    // ...and the Worker freezes: no timer, no I/O, nothing of its own runs.
-    const frozenUntil = performance.now() + 3 * holdLimitMs;
-    while (performance.now() < frozenUntil) {
-      // Spin without yielding to the event loop.
+      // ...and the Worker freezes: no timer, no I/O, nothing of its own runs.
+      const frozenUntil = performance.now() + 3 * holdLimitMs;
+      while (performance.now() < frozenUntil) {
+        // Spin without yielding to the event loop.
+      }
+      assert.equal(hold.held(), false, "past its limit the hold answers false at once");
+      const granted = Date.parse(((await retiring).rows[0] as { at: Date }).at.toISOString());
+      const waited = granted - taken;
+      assert.ok(
+        waited >= holdLimitMs - 100 && waited < 2.5 * holdLimitMs,
+        `the row was free ${waited} ms after the hold was taken, while the Worker was frozen`,
+      );
+      assert.equal(await hold.confirm(), false, "the resumed Worker learns the hold is gone");
+      await hold.release();
+    } finally {
+      writer.release(true);
     }
-    assert.equal(hold.held(), false, "past its limit the hold answers false at once");
-    const granted = Date.parse(((await retiring).rows[0] as { at: Date }).at.toISOString());
-    const waited = granted - taken;
-    assert.ok(
-      waited >= holdLimitMs - 100 && waited < 2.5 * holdLimitMs,
-      `the row was free ${waited} ms after the hold was taken, while the Worker was frozen`,
-    );
-    assert.equal(await hold.confirm(), false, "the resumed Worker learns the hold is gone");
-    await hold.release();
     // The lock pool lost nothing: the next loan locks the row again.
     const next = await custody.lock(f.ref);
     assert.ok(next?.source);
@@ -251,7 +262,7 @@ test(
 
 test(
   "a Source hold whose session was terminated releases cleanly and lets writers through",
-  { ...requiresPostgres, timeout: 60_000 },
+  { ...requiresPostgres, timeout: caseTimeoutMs },
   async (t) => {
     const f = await fixture(t);
     const custody = f.custody();
@@ -280,7 +291,7 @@ test(
 
 test(
   "a Source lock reads ownership from the selected TokenService only, and the deployed access from the revision",
-  { ...requiresPostgres, timeout: 60_000 },
+  { ...requiresPostgres, timeout: caseTimeoutMs },
   async (t) => {
     const f = await fixture(t);
     const foreign = await f.custody({ tokenServiceDriverId: "another-token-service" }).lock(f.ref);
