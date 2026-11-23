@@ -118,7 +118,13 @@ type AgentDetailScenario = {
   stopElsewhereOnReread?: true;
   diagnosticsState?: "noSlack" | "unknown";
   runtimePod?:
-    "startupWarnings" | "dedicatedPair" | "missingAgent" | "none" | "replaced" | "rollover";
+    | "startupWarnings"
+    | "dedicatedPair"
+    | "missingAgent"
+    | "none"
+    | "replaced"
+    | "rollover"
+    | "scaleDown";
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
@@ -1824,6 +1830,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
       deploymentRunning: {
@@ -1836,7 +1843,7 @@ export function createAgentDetailScenarios({
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
           'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
-          "Open draft and select the text “Ready to deploy.” beside Deploy new version. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
+          "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {
@@ -2869,6 +2876,7 @@ export function createAgentDetailScenarios({
         description:
           "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
         steps: [
+          "At 1440 px, read the Gateway status. Phase and Ready share a row. Last termination has its own row, with the reason, exit code, and time visible before Age.",
           "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
           "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
           "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. From 320px up, each timestamp stays on one line; below about 400px it takes a line of its own, with the level beside the origin under it. When the Logs card is narrower than 662px (at 1000px and below, and from 1101px to about 1280px, where the card sits beside the version list), the message moves under the time, level, and origin instead of shrinking.",
@@ -2899,7 +2907,8 @@ export function createAgentDetailScenarios({
         description:
           "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
         steps: [
-          "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
+          "Focus Logs and press Enter. While runtime status is loading, press Shift+Tab until Viewing version has focus. When the output appears, focus stays on Viewing version and the page stays at the same scroll position.",
+          "Reset the story, open Logs again, and leave focus on the tab. When the output appears, Logs keeps focus and the panel scrolls into view if needed.",
         ],
       },
       runtimeLogsStartupWarnings: {
@@ -2912,6 +2921,7 @@ export function createAgentDetailScenarios({
         description:
           "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color. With no restart there is no previous instance, and a note under the log toolbar says so.",
         steps: [
+          "At 1440 px, read the Gateway status across three rows. Look for Phase and Ready, Container and Restarts, then State and Age.",
           "Tab through the log controls. Previous instance takes focus and looks unavailable, described by “This container has not restarted, so there is no previous instance.” Space or a click does not check it (finding 2944).",
         ],
       },
@@ -2922,8 +2932,8 @@ export function createAgentDetailScenarios({
         description:
           "The Agent (Harness) and Gateway Pod cards share the Logs panel's width, each with its long generated name and its init containers.",
         steps: [
-          "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
-          "At 390 each card spans the panel, one under the other.",
+          "At 1440 px, the cards sit side by side and fill the panel. Read each container name and its restart count on the same row, then its state and any termination details before the next container.",
+          "At 390 px, the cards stack. Read one label and its value per row, in the same order.",
         ],
       },
       runtimeLogsMissingAgentPod: {
@@ -3103,6 +3113,18 @@ export function createAgentDetailScenarios({
         steps: [
           "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
           "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
+        ],
+      },
+      runtimeLogOnePodRemains: {
+        ...runtimeLogsPage,
+        name: "One Pod remains while reading logs",
+        runtimePod: "scaleDown",
+        description:
+          "The selected Pod keeps serving logs when the other Pod disappears. The Pod / container picker is no longer needed.",
+        steps: [
+          "At 1440 px, note the status rows in the first Pod card. Tab from Source to Pod / container and leave the first Pod selected.",
+          "After the next status update, check that the remaining Pod widens and keeps the same status rows. The picker disappears, Source has focus, and the same output remains visible. Tab to Previous instance.",
+          "Reload and tab to Previous instance before the update. Focus should stay there.",
         ],
       },
       runtimeLogPodReplaced: {
