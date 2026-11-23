@@ -538,7 +538,9 @@ export function openShellPushedPolicyMatches(
           candidate.provider === binding.provider &&
           typeof endpoint?.host === "string" &&
           candidate.host.toLowerCase() === endpoint.host.toLowerCase() &&
-          candidate.path === endpoint.path &&
+          (candidate.endpointPath === undefined
+            ? endpoint.path === undefined || endpoint.path === ""
+            : candidate.endpointPath === endpoint.path) &&
           sameOpenShellPolicy(rule.binaries, [{ path: candidate.binary }]) &&
           sameOpenShellPolicy(ports, [candidate.port]),
       );
@@ -564,7 +566,7 @@ export function openShellPushedPolicyMatches(
           },
           {
             host: route.host,
-            path: route.path,
+            path: route.endpointPath,
             ports: [route.port],
             protocol: "rest",
             enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",

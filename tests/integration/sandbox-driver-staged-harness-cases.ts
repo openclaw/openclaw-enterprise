@@ -27,6 +27,112 @@ import {
 } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
+export async function verifyStagedModelPolicyObservation(): Promise<void> {
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, openShellWorkspaceHarnessConfiguration());
+  const fixture = runtimeSandboxFixture(driver);
+  fixture.requirements.credentialAttachments = [];
+  const grant = {
+    id: "model",
+    binary: "/app/bin/model-client",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const request = {
+    binary: grant.binary,
+    host: grant.host,
+    ports: grant.ports,
+    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  };
+  const binding = {
+    bindingRef: "model",
+    sourceRef: {
+      kind: "credential_source" as const,
+      namespaceId: fixture.revision.namespaceId,
+      id: "cs_fixture",
+    },
+    consumer: { kind: "model" as const, providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
+  };
+  const revision: AgentRevision = {
+    ...completeSandboxRevision(fixture.revision),
+    executionAdmission: { version: 8, mode: "standalone" },
+    sandboxPolicy: driver.admitNetworkPolicy([grant], 1),
+    credentialDeployment: {
+      driver: {
+        id: driver.id,
+        implementation: driver.implementation,
+        configurationId: "a".repeat(64),
+      },
+      proxyDriverId: driver.id,
+      networkAccessPolicy: {
+        allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
+      },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    },
+  };
+  const context = { ...fixture.context, revision, requirements: fixture.requirements };
+  gateway.createSandbox = async (request) => {
+    const sandbox = storedSandbox(request, { id: "sandbox-fixture", resourceVersion: "1" });
+    gateway.sandboxes.set(sandbox.name, sandbox);
+    return sandbox;
+  };
+  await driver.ensureNamespace(context);
+  await driver.provisionStagedHarness(context);
+  const sandbox = [...gateway.sandboxes.values()][0]!;
+  const idle = sandbox.spec!.policy as Record<string, unknown> & {
+    network_policies: Record<string, unknown>;
+  };
+  const provider = openShellProviderName(binding.sourceRef.id);
+  gateway.sandboxes.set(sandbox.name, {
+    ...sandbox,
+    spec: { ...sandbox.spec!, providers: [provider] },
+  });
+
+  // A serving model Sandbox created by main stores the request path in its REST rule,
+  // with no endpoint selector. Recovery must observe that exact policy as already applied.
+  const retained = {
+    ...idle,
+    network_policies: {
+      ...idle.network_policies,
+      "oce-agent-model": {
+        name: "oce-agent-model",
+        binaries: [{ path: grant.binary }],
+        endpoints: [
+          {
+            host: grant.host,
+            ports: [443],
+            protocol: "rest",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+            credential_binding: { provider },
+          },
+        ],
+      },
+    },
+  };
+  let loaded: Record<string, unknown> = retained;
+  gateway.getPolicyStatus = async () => ({
+    policy: loaded,
+    version: 1,
+    activeVersion: 1,
+    state: "POLICY_STATUS_LOADED",
+  });
+  assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+
+  gateway.updatePolicy = async ({ policy }) => {
+    loaded = structuredClone(policy);
+  };
+  await driver.applyNetworkPolicy(context, {
+    snapshot: revision.sandboxPolicy!,
+    expectedProviderVersion: "1",
+    operationId: revision.id,
+  });
+  assert.deepEqual(loaded, retained, "new model-only policy keeps the same canonical shape");
+  assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+}
+
 export async function verifyStagedHarnessActivation(t: TestContext): Promise<void> {
   const directory = await temporaryDirectory(t, "staged-harness-");
   const marker = join(directory, "harness.json");

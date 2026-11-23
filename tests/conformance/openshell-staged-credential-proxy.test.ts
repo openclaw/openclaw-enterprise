@@ -716,7 +716,6 @@ async function fixture(t: TestContext) {
     const time = { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 };
     const endpoint = {
       host: request.host,
-      path: request.requestPolicy.path,
       ports: [443],
       protocol: "rest",
       enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
@@ -1025,6 +1024,10 @@ test("native Proxy delivers multiple HTTP consumers using one Provider per Sourc
 
   // The controlled Gateway source/effective policy and supervisor receipts stand in for native readback.
   const evidence = f.observeServing();
+  const modelEndpoint = (
+    record(record(evidence.policy.network_policies).model).endpoints as Wire[]
+  )[0]!;
+  modelEndpoint.path = request.requestPolicy.path;
   const pluginProvider = [...f.state.additionalProviders.values()][0]!;
   record(evidence.policy.network_policies).plugin = {
     name: "plugin",
@@ -1567,10 +1570,12 @@ test("staged OpenShell Proxy refuses a stale concurrent first-use winner without
   assert.equal(f.state.updates.length, 0);
 });
 
-test("staged OpenShell Proxy observes the final Gateway configuration and serving Provider", async (t) => {
+test("staged OpenShell Proxy reobserves the canonical serving model policy from main", async (t) => {
   const f = await fixture(t);
   await f.configure();
-  f.observeServing();
+  const evidence = f.observeServing();
+  const endpoint = (record(record(evidence.policy.network_policies).model).endpoints as Wire[])[0]!;
+  assert.equal(endpoint.path, undefined, "model path is enforced by the REST rule");
   const status = () => f.proxy.getDeploymentStatus(f.context, configuration);
   assert.deepEqual(await status(), { state: "ready" });
   assert.equal(f.state.statusReads[0]?.sandbox, f.sandbox.metadata.name);

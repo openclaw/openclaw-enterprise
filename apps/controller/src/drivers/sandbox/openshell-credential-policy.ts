@@ -14,6 +14,7 @@ export interface OpenShellCredentialRoute {
   readonly host: string;
   readonly port: number;
   readonly path: string;
+  readonly endpointPath?: string;
   readonly rules: readonly { readonly allow: { readonly method: string; readonly path: string } }[];
 }
 
@@ -282,7 +283,18 @@ export function compileOpenShellCredentialPolicy(policy: DeploymentPolicy): {
       }
     }
   }
-  return { credentialRoutes, publicRoutes };
+  // Keep the established single-model endpoint shape. Aggregate routes need endpoint
+  // paths so OpenShell can select the correct Provider before evaluating REST rules.
+  const singleModel =
+    credentialRoutes.length === 1 &&
+    publicRoutes.length === 0 &&
+    credentialRoutes[0]!.binding.consumer.kind === "model";
+  return {
+    credentialRoutes: credentialRoutes.map((route) =>
+      singleModel ? route : { ...route, endpointPath: route.path },
+    ),
+    publicRoutes,
+  };
 }
 
 interface OpenShellPublicRoute {

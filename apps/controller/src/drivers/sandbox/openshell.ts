@@ -2634,7 +2634,10 @@ function stagedCredentialPolicies(
   }
   const idleNetworks = { ...trusted, ...desiredDefaults, ...additions };
   const admitted: Record<string, unknown> = { ...idleNetworks };
-  const compiled = [...routes, ...publicRoutes];
+  const compiled: readonly ((typeof routes)[number] | (typeof publicRoutes)[number])[] = [
+    ...routes,
+    ...publicRoutes,
+  ];
   for (const [index, route] of compiled.entries()) {
     const matching = snapshot.additions.filter(
       (grant) =>
@@ -2664,6 +2667,7 @@ function stagedCredentialPolicies(
     if (Object.hasOwn(admitted, name)) {
       credentialPolicyFailure();
     }
+    const endpointPath = "provider" in route ? route.endpointPath : route.path;
     admitted[name] = {
       name,
       binaries: [{ path: route.binary }],
@@ -2671,7 +2675,7 @@ function stagedCredentialPolicies(
         {
           host: route.host,
           ports: [route.port],
-          path: route.path,
+          ...(endpointPath === undefined ? {} : { path: endpointPath }),
           protocol: "rest",
           enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
           rules: route.rules,
