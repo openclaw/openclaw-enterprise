@@ -1416,6 +1416,28 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await page.reload();
   await review.waitFor();
   assert.equal(await deploy.isDisabled(), true);
+  // The shared draft actions survive tab changes. A response from before an
+  // editor visit cannot satisfy the required review after returning.
+  const delayed = await holdRequests(t, page, fixture.origin + base, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await review.click();
+  await delayed.requested;
+  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const lateRead = responseTo(page, "GET", fixture.origin + base);
+  delayed.release();
+  const lateResponse = await lateRead;
+  assert.equal(lateResponse.status(), 200);
+  assert.deepEqual(
+    record(record(record(await lateResponse.json()).data).policy).repositoryNetworkPolicy,
+    grants,
+  );
+  await nextFrames(page);
+  assert.equal(await deploy.isDisabled(), true, "a pre-editor policy read cannot unlock Deploy");
+  assert.equal(await review.isVisible(), true);
   await review.click();
   await page
     .getByText(

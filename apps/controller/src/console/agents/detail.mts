@@ -1996,6 +1996,7 @@ export async function renderAgentDetail(
   // first and scrolls itself.
   const linkedOnLoad = takeLinkedVersionView(linkedKey());
   let repositoryReview = linkedOnLoad?.repositoryReview;
+  let repositoryReviewGeneration = 0;
   if (linkedOnLoad && selectedTab !== "logs") {
     scrollOnReveal = () => {
       scrollOnReveal = null;
@@ -4204,10 +4205,15 @@ export async function renderAgentDetail(
     const confirmation = element("p", { className: "hint", role: "status" });
     const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
     const reviewAccess = button("Review saved GitHub access", async () => {
+      const generation = repositoryReviewGeneration;
+      const current = () =>
+        context.isCurrent() &&
+        reviewAccess.isConnected &&
+        generation === repositoryReviewGeneration;
       reviewAccess.disabled = true;
       try {
         const view = await request(`${path}/sandbox-policy/networking`, { expectedStatus: 200 });
-        if (!context.isCurrent() || !reviewAccess.isConnected) {
+        if (!current()) {
           return;
         }
         repositoryReview = repositoryReviewFrom(view, namespaceId, agent.id);
@@ -4221,6 +4227,9 @@ export async function renderAgentDetail(
         confirmation.tabIndex = -1;
         confirmation.focus();
       } catch (cause) {
+        if (!current()) {
+          return;
+        }
         if (requestFailure(cause).status === 401) {
           context.onExpired();
         } else {
@@ -7209,6 +7218,8 @@ export async function renderAgentDetail(
       reviewRepositories &&
       [selectedTab, nextTab].some((tab) => tab === "repositories" || tab === "policy")
     ) {
+      // Draft actions stay mounted across tabs, including any outstanding policy read.
+      repositoryReviewGeneration += 1;
       repositoryReview = undefined;
     }
     selectedTab = nextTab;
