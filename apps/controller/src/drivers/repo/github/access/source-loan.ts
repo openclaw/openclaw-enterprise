@@ -33,12 +33,15 @@ export interface RepositorySourceCustody {
   /**
    * Takes a shared lock on the Source's catalog row with a bounded wait and reads it. Replacement
    * and retirement take the row exclusively, so they wait until the hold is released.
-   * Undefined when the lock could not be taken in time.
+   * Undefined when the lock could not be taken in time; any other failure throws.
    */
-  lock(ref: RepositorySourceRef): Promise<{
-    readonly source: LockedRepositorySource | undefined;
-    readonly hold: MaterialWriteHold;
-  }>;
+  lock(ref: RepositorySourceRef): Promise<
+    | {
+        readonly source: LockedRepositorySource | undefined;
+        readonly hold: MaterialWriteHold;
+      }
+    | undefined
+  >;
   /** The value and its custody version, read from TokenService under the hold. */
   resolve(
     ref: RepositorySourceRef,
@@ -60,6 +63,7 @@ export interface RepositorySourceCustody {
 
 const reasons = {
   source_locked: "could not be locked within the bounded wait",
+  source_lock_failed: "could not be locked: the database did not answer",
   source_unavailable: "is missing or not ready",
   source_not_owned: "is not a Source of this Installation's TokenService",
   source_preset_refused: "is not a github Source",
@@ -159,6 +163,10 @@ export function createRepositorySourceMaterialReader<Transaction, Source extends
     try {
       locked = await custody.lock(ref);
     } catch {
+      throw new RepositorySourceLoanRefusal(sourceId, "source_lock_failed");
+    }
+    if (!locked) {
+      // A replacement or retirement holds the row; the next refresh tries again.
       throw new RepositorySourceLoanRefusal(sourceId, "source_locked");
     }
     try {

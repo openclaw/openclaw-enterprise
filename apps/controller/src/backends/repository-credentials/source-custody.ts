@@ -19,6 +19,8 @@ const STATEMENT_TIMEOUT_MS = 5000;
  * partitioned), PostgreSQL ends the idle session itself, which releases the row.
  */
 const HOLD_LIMIT_MS = 60_000;
+/** PostgreSQL's code for a lock wait that reached `lock_timeout`. */
+const LOCK_NOT_AVAILABLE = "55P03";
 
 /** pg's client also reports `end` when the server closes the session. */
 type HoldingClient = Omit<PostgresClient, "on" | "removeListener"> & {
@@ -167,6 +169,9 @@ export function createRepositorySourceCustody(options: {
           await client.query("ROLLBACK").catch(() => {});
         }
         end(true);
+        if ((error as { code?: unknown } | null)?.code === LOCK_NOT_AVAILABLE) {
+          return undefined;
+        }
         throw error;
       }
     },

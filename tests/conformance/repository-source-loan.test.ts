@@ -25,6 +25,7 @@ interface SourceRow {
   credential: string;
   version: string;
   lockTimesOut?: boolean;
+  lockFails?: boolean;
   unreadable?: boolean;
 }
 
@@ -60,7 +61,10 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
     async lock() {
       counts.locks += 1;
       if (row.lockTimesOut) {
-        throw new Error("lock timeout");
+        return undefined;
+      }
+      if (row.lockFails) {
+        throw new Error("connection refused");
       }
       counts.shared += 1;
       let open = true;
@@ -219,6 +223,7 @@ test("every loan refusal releases the row, names a code, and is reported once pe
     ["classic token", (fake) => (fake.row.credential = classic), "token_class_refused"],
     ["unreadable", (fake) => (fake.row.unreadable = true), "source_unreadable"],
     ["lock wait ended", (fake) => (fake.row.lockTimesOut = true), "source_locked"],
+    ["database unreachable", (fake) => (fake.row.lockFails = true), "source_lock_failed"],
   ];
   for (const [name, change, reason] of cases) {
     const fake = custodyFake();
