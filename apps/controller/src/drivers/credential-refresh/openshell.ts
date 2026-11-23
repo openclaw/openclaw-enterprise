@@ -35,7 +35,7 @@ import {
   codexDeviceAuthorizationState,
   startCodexDeviceAuthorization,
   pollCodexDeviceAuthorization,
-} from "../token-service/codex-device-authorization.ts";
+} from "./codex-device-authorization.ts";
 
 export interface OpenShellCredentialRefreshSelection {
   readonly id?: string;

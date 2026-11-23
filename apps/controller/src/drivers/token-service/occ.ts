@@ -6,6 +6,7 @@ import type {
   CredentialRefreshStatus,
   CredentialProxyDriver,
   CredentialSource,
+  CredentialSourceDeviceAuthorization,
   OAuthCredentialSource,
   StoredCredentialSource,
   CredentialSourceReference,
@@ -19,6 +20,8 @@ import type {
   SourceRegistrationInput,
   SourceUpdate,
   TokenServiceDriver,
+  TokenServiceDeviceAuthorizationContext,
+  TokenServiceDeviceAuthorizationResult,
   TokenServiceSourceInstance,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -34,6 +37,11 @@ import type { OAuthAccountTokens } from "../../backends/token-service/oauth-conn
 
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
+import {
+  codexDeviceAuthorizationState,
+  pollCodexDeviceAuthorization,
+  startCodexDeviceAuthorization,
+} from "./codex-device-authorization.ts";
 
 const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
 
@@ -162,6 +170,60 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         ref.id,
       ]),
     };
+  }
+
+  private assertDeviceEnrollment(context: TokenServiceDeviceAuthorizationContext): void {
+    if (
+      context.harnessId !== "codex" ||
+      !isNonEmptyString(context.namespaceId) ||
+      !isNonEmptyString(context.ownerPrincipalId) ||
+      !this.oauth
+    ) {
+      throw new ScopeViolationError("Device login is unavailable for this enrollment.");
+    }
+  }
+
+  async startDeviceAuthorization(
+    context: TokenServiceDeviceAuthorizationContext,
+    signal: AbortSignal,
+  ): Promise<CredentialSourceDeviceAuthorization> {
+    this.assertDeviceEnrollment(context);
+    return startCodexDeviceAuthorization(signal);
+  }
+
+  async pollDeviceAuthorization(
+    context: TokenServiceDeviceAuthorizationContext,
+    privateState: string,
+    beforeCreate: () => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<TokenServiceDeviceAuthorizationResult> {
+    this.assertDeviceEnrollment(context);
+    const result = await pollCodexDeviceAuthorization(
+      codexDeviceAuthorizationState(privateState),
+      signal,
+    );
+    if (!result) {
+      return { status: "pending" };
+    }
+    // The control plane rechecks the exact saved Agent, session, and Namespace authority
+    // after the issuer grants and before this owner publishes any Source or custody.
+    await beforeCreate();
+    signal.throwIfAborted();
+    const { account, ...grant } = result;
+    const source = await this.createSource(
+      {
+        kind: "oauth_refresh_token",
+        namespaceId: context.namespaceId,
+        name: `Codex account ${randomUUID()}`,
+        consent: { kind: "builtin_codex", ownerPrincipalId: context.ownerPrincipalId, account },
+        grant,
+      },
+      signal,
+    );
+    if (source.type !== "oauth2-refresh-token") {
+      throw new ResourceStateConflictError("The TokenService returned an invalid OAuth Source.");
+    }
+    return { status: "ready", source };
   }
 
   async createSource(

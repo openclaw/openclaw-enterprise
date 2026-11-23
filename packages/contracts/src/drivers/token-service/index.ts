@@ -2,6 +2,8 @@ import type {
   AccessBinding,
   CredentialSource,
   CredentialSourceReference,
+  CredentialSourceDeviceAuthorization,
+  OAuthCredentialSource,
   OAuthConnectionGrant,
   OAuthBuiltinCodexSourceConsent,
   OAuthTemplateSourceConsent,
@@ -100,9 +102,30 @@ export interface SourceRefreshOperation extends TokenServiceSourceInstance<Crede
   readonly operationId: string;
 }
 
+/** Trusted enrollment context selected by the authorized control-plane login flow. */
+export interface TokenServiceDeviceAuthorizationContext {
+  readonly namespaceId: string;
+  readonly ownerPrincipalId: string;
+  readonly harnessId: string;
+}
+
+export type TokenServiceDeviceAuthorizationResult =
+  | { readonly status: "pending" }
+  | { readonly status: "ready"; readonly source: OAuthCredentialSource };
+
 /** The selected owner creates and maintains CredentialSources and their usable credentials. */
 export interface TokenServiceDriver extends Omit<Driver, "capability"> {
   readonly capability: "token_service";
+  startDeviceAuthorization?(
+    context: TokenServiceDeviceAuthorizationContext,
+    signal: AbortSignal,
+  ): Promise<CredentialSourceDeviceAuthorization>;
+  pollDeviceAuthorization?(
+    context: TokenServiceDeviceAuthorizationContext,
+    privateState: string,
+    beforeCreate: () => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<TokenServiceDeviceAuthorizationResult>;
   createSource(input: SourceRegistrationInput, signal: AbortSignal): Promise<CredentialSource>;
   updateSource(
     source: TokenServiceSourceInstance,

@@ -25,7 +25,7 @@ import {
   CODEX_OAUTH_TYPE,
   CODEX_ACCESS_TOKEN_ENV,
 } from "../../backends/openshell-refresh-sources.ts";
-import { codexAccountMetadata } from "../token-service/codex-device-authorization.ts";
+import { codexAccountMetadata } from "../credential-refresh/codex-device-authorization.ts";
 import {
   modelProviderBaseUrl,
   savedModelProvider,

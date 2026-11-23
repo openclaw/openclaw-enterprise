@@ -1878,6 +1878,8 @@ export type {
   ResolvedCredential,
   CredentialRefreshStatus,
   SourceRefreshOperation,
+  TokenServiceDeviceAuthorizationContext,
+  TokenServiceDeviceAuthorizationResult,
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
 

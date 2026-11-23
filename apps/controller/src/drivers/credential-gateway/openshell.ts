@@ -55,7 +55,7 @@ import {
 import {
   CODEX_ACCOUNT_CONFIG,
   CODEX_OAUTH_TOKEN_URL,
-} from "../token-service/codex-device-authorization.ts";
+} from "../credential-refresh/codex-device-authorization.ts";
 
 export interface OpenShellCredentialGatewayOptions {
   /** Absolute paths of the Harness binaries allowed to reach model endpoints. */

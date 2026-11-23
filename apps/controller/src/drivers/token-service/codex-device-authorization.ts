@@ -1,26 +1,15 @@
 import type {
   CredentialSourceDeviceAuthorization,
-  ExternalChatgptAuth,
+  OAuthConnectionGrant,
+  OAuthBuiltinCodexSourceConsent,
 } from "@openclaw-enterprise/contracts";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../backends/token-service/codex-oauth-preset.ts";
-import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";
+import { DeviceAuthorizationStartError, parseOAuthGrantedScopes } from "@openclaw-enterprise/occ";
 
-export const CODEX_OAUTH_CLIENT_ID = BUILTIN_CODEX_OAUTH_PRESET.clientId;
-export const CODEX_OAUTH_TOKEN_URL = BUILTIN_CODEX_OAUTH_PRESET.tokenUrl;
-// Login-time metadata is separate from rotating credentials. The PoC does not
-// update this snapshot on refresh; account/plan changes require reconnecting.
-export const CODEX_ACCOUNT_CONFIG = "oce.codex.account";
+type AccountMetadata = OAuthBuiltinCodexSourceConsent["account"];
 
-type AccountMetadata = Omit<ExternalChatgptAuth, "accessTokenPlaceholder"> & {
-  readonly accountUserId?: string;
-};
-
-interface DeviceTokens {
-  readonly accessToken: string;
-  readonly expiresAt: string;
-  readonly refreshToken: string;
+interface DeviceTokens extends OAuthConnectionGrant {
   readonly account: AccountMetadata;
 }
 
@@ -78,16 +67,15 @@ function unreachable(error: unknown): DeviceAuthorizationStartError {
 }
 
 export async function startCodexDeviceAuthorization(
-  sourceId: string,
   signal: AbortSignal,
 ): Promise<CredentialSourceDeviceAuthorization> {
   let reply: Response;
   try {
-    reply = await fetch("https://auth.openai.com/api/accounts/deviceauth/usercode", {
+    reply = await fetch(`${BUILTIN_CODEX_OAUTH_PRESET.issuer}/api/accounts/deviceauth/usercode`, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: CODEX_OAUTH_CLIENT_ID }),
+      body: JSON.stringify({ client_id: BUILTIN_CODEX_OAUTH_PRESET.clientId }),
       signal,
     });
   } catch (error) {
@@ -103,16 +91,13 @@ export async function startCodexDeviceAuthorization(
     const userCode = required(response.user_code);
     const interval = Number(response.interval ?? 5);
     return {
-      verificationUrl: "https://auth.openai.com/codex/device",
+      verificationUrl: `${BUILTIN_CODEX_OAUTH_PRESET.issuer}/codex/device`,
       userCode,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       intervalSeconds: Number.isFinite(interval) ? Math.max(1, interval) : 5,
       privateState: JSON.stringify({
-        sourceId,
         deviceAuthId,
         userCode,
-        configureRequestId: randomUUID(),
-        rotateRequestId: randomUUID(),
       }),
     };
   } catch {
@@ -120,16 +105,16 @@ export async function startCodexDeviceAuthorization(
   }
 }
 
-export function codexDeviceAuthorizationState(sourceId: string, privateState: string) {
-  const state = asRecord(JSON.parse(privateState));
-  if (state?.sourceId !== sourceId) {
-    throw new Error("Codex device authorization belongs to another credential source.");
+export function codexDeviceAuthorizationState(privateState: string) {
+  let state: Record<string, unknown> | undefined;
+  try {
+    state = asRecord(JSON.parse(privateState));
+  } catch {
+    throw new Error("Codex device authorization state is invalid.");
   }
   return {
-    deviceAuthId: required(state.deviceAuthId),
-    userCode: required(state.userCode),
-    configureRequestId: required(state.configureRequestId),
-    rotateRequestId: required(state.rotateRequestId),
+    deviceAuthId: required(state?.deviceAuthId),
+    userCode: required(state?.userCode),
   };
 }
 
@@ -143,7 +128,7 @@ export async function pollCodexDeviceAuthorization(
   });
   let response: Response;
   try {
-    response = await fetch("https://auth.openai.com/api/accounts/deviceauth/token", {
+    response = await fetch(`${BUILTIN_CODEX_OAUTH_PRESET.issuer}/api/accounts/deviceauth/token`, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/json" },
@@ -172,16 +157,16 @@ export async function pollCodexDeviceAuthorization(
   const authorization = await responseRecord(response);
   // From code acquisition onward, errors remain uncertain: never retry a consumed grant.
   const token = await responseRecord(
-    await fetch(CODEX_OAUTH_TOKEN_URL, {
+    await fetch(BUILTIN_CODEX_OAUTH_PRESET.tokenUrl, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "authorization_code",
-        client_id: CODEX_OAUTH_CLIENT_ID,
+        client_id: BUILTIN_CODEX_OAUTH_PRESET.clientId,
         code: required(authorization.authorization_code),
         code_verifier: required(authorization.code_verifier),
-        redirect_uri: "https://auth.openai.com/deviceauth/callback",
+        redirect_uri: `${BUILTIN_CODEX_OAUTH_PRESET.issuer}/deviceauth/callback`,
       }),
       signal,
     }),
@@ -207,6 +192,8 @@ export async function pollCodexDeviceAuthorization(
     accessToken,
     expiresAt: new Date(expiry).toISOString(),
     refreshToken: required(token.refresh_token),
+    requestedScopes: [],
+    grantedScopes: parseOAuthGrantedScopes(token.scope, undefined),
     account: {
       accountId,
       planType,
@@ -217,12 +204,4 @@ export async function pollCodexDeviceAuthorization(
         identity.chatgpt_account_is_fedramp === true || access.chatgpt_account_is_fedramp === true,
     },
   };
-}
-
-export function codexAccountMetadata(config: Readonly<Record<string, string>>): AccountMetadata {
-  const value = asRecord(JSON.parse(required(config[CODEX_ACCOUNT_CONFIG])));
-  if (!value || !isNonEmptyString(value.accountId) || !isNonEmptyString(value.planType)) {
-    throw new Error("OpenShell has no completed Codex OAuth account metadata.");
-  }
-  return value as unknown as AccountMetadata;
 }
