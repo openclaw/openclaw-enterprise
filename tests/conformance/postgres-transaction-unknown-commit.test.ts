@@ -8,7 +8,7 @@ import {
   type PostgresClient,
   type PostgresPool,
 } from "../../packages/occ/src/state/postgres-state.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 type QueryResult = Awaited<ReturnType<PostgresClient["query"]>> & { command: string };
 

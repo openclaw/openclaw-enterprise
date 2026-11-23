@@ -17,13 +17,13 @@ After preparation, [install OCE](eks-openshell-installation.md) in the same prot
 
 ### Prepare AWS infrastructure
 
-Provision the following through your reviewed AWS infrastructure workflow. The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
+Provision the following through your reviewed AWS infrastructure workflow. For a dedicated cluster, use the [Terraform reference and installation handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster). The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
 
 Use an authorized AWS account and role. The Kubernetes operator needs permission to create namespaces, RBAC, Secrets and storage claims; Kubernetes access does not replace OCC IAM grants.
 
 Choose a cluster whose workloads can trust the OpenShell Gateway with its
 [cluster-wide Kubernetes authority](../../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
-For stock OpenShell v0.1.8 operator mode, namespace selectors do not restrict
+For stock OpenShell v0.1.9 operator mode, namespace selectors do not restrict
 that authority. Use a dedicated evaluation cluster when other tenants must
 remain outside this trust boundary.
 
@@ -39,11 +39,11 @@ The prior validated configuration used EKS 1.36, AL2023, kernel 6.18, VPC CNI 1.
 
 Enable Amazon VPC CNI NetworkPolicy support with `NETWORK_POLICY_ENFORCING_MODE=strict` in the managed add-on configuration. Strict mode denies traffic while policies initialize. Prepare DNS and system-service policies first, then verify allowed and denied paths using [AWS’s setup procedure](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy-configure.html).
 
-[Enforcement can be unreliable for standalone Pods without controller ownership](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html). Use controller-owned Jobs for temporary maintenance and upgrade clients that mount database or recovery credentials; matching policy labels alone is insufficient. See [sign-in maintenance](auth-maintenance.md#run-the-command). If the bootstrap volume helper’s isolation cannot be verified, use the storage-administrator preparation path in [production installation](production-installation.md#provision-system-secrets-and-install).
+[Enforcement can be unreliable for standalone Pods without controller ownership](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html). Use controller-owned Jobs for temporary maintenance and upgrade clients that mount database or recovery credentials; matching policy labels alone is insufficient. See [sign-in maintenance](auth-maintenance.md#run-the-command). Precreate the bootstrap credential Secret before Helm installation; see [production installation](production-installation.md#provision-system-secrets-and-install).
 
 Install the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html). Allow its controller to reach Kubernetes, DNS and regional EC2, STS and credential endpoints. The node plugin needs Kubernetes and DNS when instance metadata is unavailable. Keep workload access to instance metadata disabled. Require ready CSI Pods and topology labels on every eligible node before creating claims.
 
-Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway and bootstrap claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 Before binding a PersistentVolume to an existing EBS volume, check the
 [tag conditions of the CSI controller's selected IAM policy](https://docs.aws.amazon.com/eks/latest/best-practices/identity-and-access-management.html#iam-permissions-recommendations-when-using-the-amazon-ebs-csi-driver)
@@ -62,11 +62,17 @@ for the volume and time of the failed attach.
 
 Private gateway routing is enabled by default. Prepare its controllers, CRDs, GatewayClass and service-key Secret before installing OCC; the Helm chart does not install these prerequisites.
 
+To add Slack, also [prepare managed channel egress](channel-egress.md) before
+installing OCC. It needs EnvoyPatchPolicy support and matching Helm and
+Installation settings with actual Pod, Service, and node address exclusions.
+Helm defaults channel egress on; it does not install the Envoy controller or
+CRDs. The channel fleet is separate from private workspace routing.
+
 Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox controller on the control pool. Before rollout, prepare policies for controllers and certificate Jobs: DNS and API Service VIPs, API EndpointSlice addresses, API-server admission to webhooks and Envoy data-plane access to xDS. Match installed labels and ports on both sides. Include all private EKS control-plane interface addresses for webhook callers; one Service endpoint or public DNS answer may omit them. Require ready controllers before installing OCE.
 
 The templates below enable private Envoy routing with a `ClusterIP` Service and a separate routing key. OCC checks Agent permissions; the browser connects to OCC’s HTTPS origin. The deployment helpers verify actual Envoy peers and apply Agent network policies. Preserve certificate/hostname verification, exact proxy CIDRs and the fixed native identity’s `operator.admin` grant. Keep model and channel credentials separate from routing credentials. See [private routing](workspace-routing.md#configure-private-routing) for the configuration contract and [existing-resource preparation](workspace-routing.md#enable-routing-for-existing-namespaces-and-agents) when updating an existing installation.
 
-Use an OpenShell-compatible kernel, restricted tenant Pod Security and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent group. Check Landlock, seccomp and no-new-privileges before enrolling credentials. For optional Slack support, configure [both required CONNECT proxies](../integrations/slack.md#configure-both-slack-proxies); NAT alone is insufficient.
+Use an OpenShell-compatible kernel and restricted tenant Pod Security. Keep Agent placement on the intended node group through cluster/provider configuration; OCE does not select a RuntimeClass or configure a PSA exemption. Check Landlock, seccomp and no-new-privileges before enrolling credentials. NAT alone does not provide managed channel egress.
 
 ## 1. Prepare the cluster and images
 
@@ -121,30 +127,21 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 
 ### Refresh API network policies after the node groups join
 
-EKS control-plane addresses can change after initial setup. Once both node groups are ready, collect the current addresses below. Repeat this check immediately before installing or upgrading OCC, and when webhook admission times out.
+After both node groups are ready, set `EKS_CLUSTER_ARN` from your infrastructure
+outputs. Follow the [credential and permissions requirements](prerequisite-diagnosis.md#collect-eks-addresses)
+before collecting. Repeat before installing or upgrading OCC, or after webhook timeouts.
 
 ```bash
-# API clients can reach the Service IP or a backing endpoint.
-api_service=$(kubectl --context "$CONTEXT" -n default get service kubernetes -o json |
-  jq -er '.spec.clusterIP')
-API_CIDRS=$(kubectl --context "$CONTEXT" -n default get endpointslices \
-  -l kubernetes.io/service-name=kubernetes -o json |
-  jq -ce --arg svc "$api_service" '[.items[] | select(.addressType=="IPv4") |
-    .endpoints[].addresses[]] | select(length > 0) | . + [$svc] | unique | map(. + "/32")')
+inventory=$(node scripts/diagnose-kubernetes-prerequisites.ts \
+  --inventory-eks "${EKS_CLUSTER_ARN:?Set the intended EKS cluster ARN}" \
+  --kubeconfig "$KUBECONFIG" --context "$CONTEXT")
+API_CIDRS=$(jq -ce '.apiCidrs' <<<"$inventory")
+webhook_cidrs=$(jq -ce '.eks.webhookCidrs' <<<"$inventory")
 export API_CIDRS
-
-# Webhook callers can use any control-plane interface for this cluster.
-vpc_config=$(aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER" \
-  --query cluster.resourcesVpcConfig --output json)
-vpc_id=$(jq -er .vpcId <<<"$vpc_config")
-cluster_sg=$(jq -er .clusterSecurityGroupId <<<"$vpc_config")
-webhook_cidrs=$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
-  --filters "Name=vpc-id,Values=$vpc_id" "Name=group-id,Values=$cluster_sg" \
-  "Name=description,Values=Amazon EKS $EKS_CLUSTER" --output json |
-  jq -ce '[.NetworkInterfaces[].PrivateIpAddresses[].PrivateIpAddress] |
-    select(length > 0) | unique | map(. + "/32")')
 printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
 ```
+
+A failed read or target mismatch produces no CIDRs.
 
 Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach every installed prerequisite webhook, including the AWS Load Balancer Controller when used. Match each webhook's actual port and Pod labels. Use the refreshed `API_CIDRS` when rendering OCC values.
 
@@ -164,7 +161,17 @@ aws ecr get-login-password --region "$AWS_REGION" | \
 
 Retain these values for image publication. Builder login does not authorize node pulls.
 
-[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.8 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.9 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+
+<a id="openshell-gateway-upgrade-recovery"></a>
+
+**Before upgrading an OpenShell Gateway from 0.1.8 to 0.1.9, stop Gateway writes and back up its database.** For the default encrypted database credential store, also secure a backup of its key-encryption key. [Credential storage](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/deploy/helm/openshell/README.md#credential-storage)
+
+Version 0.1.9 applies migration 10. The 0.1.8 Gateway refuses to open the migrated database. To return to 0.1.8, stop the 0.1.9 Gateway, restore the pre-upgrade database and its matching key if used, then start 0.1.8. Restoration discards Gateway database writes made after the backup. For a SQLite database, include its `-wal` and `-shm` files in the backup and the restore. After the restore, redeploy every running Agent. A Sandbox whose supervisor renewed its session after the backup can no longer authenticate, and its Agent fails every request while it still shows as active. [SQLite migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/sqlite/010_add_mutation_admission_expiry_index.sql) · [PostgreSQL migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/postgres/010_add_mutation_admission_expiry_index.sql)
+
+<a id="openshell-gateway-admission-limit"></a>
+
+The OpenShell values that the installation renders set `mutation_admission_limit_per_caller` to 5000 under `gatewayConfig."openshell.gateway"`. OpenShell 0.1.9 sets 1000 by default. This setting is the number of durable request admissions that one caller can hold. The OCC controller is one caller for every Namespace, an Agent redeploy uses about three admissions, and the Gateway keeps completed admissions for `mutation_replay_window_seconds` (default 24 hours). If deployments report [`SANDBOX_ADMISSION_LIMIT_REACHED`](../../reference/drivers/openshell-sandbox.md#troubleshooting) at your deploy rate, increase the value in the OpenShell Helm values and upgrade the release.
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 

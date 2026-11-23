@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
-import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.ts";
 import { loadInstallationFile } from "./installation-file.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
@@ -14,6 +14,8 @@ export async function loadedProxyInstallation(
     id: string;
     registry: { backendId: string };
     preview?: boolean;
+    /** repository.preparedGitHub.apiOrigin; omitted selects github.com. */
+    apiOrigin?: string;
     createOpenShellBackend: NonNullable<
       Parameters<typeof loadInstallationConfiguration>[0]["createOpenShellBackend"]
     >;
@@ -81,6 +83,7 @@ export async function loadedProxyInstallation(
         preparedGitHub: {
           custodyKeyPath: join(directory, "custody.key"),
           privateKeyPath: join(directory, "app.pem"),
+          ...(input.apiOrigin && { apiOrigin: input.apiOrigin }),
         },
         openShell: { registrationName: "oce-prepared-git", authority },
       },

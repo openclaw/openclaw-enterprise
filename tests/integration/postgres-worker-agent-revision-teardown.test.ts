@@ -7,9 +7,9 @@ import { testRepositoryCleanup } from "./postgres-worker-agent-revision-teardown
 import { testDeadlineWithdrawal } from "./postgres-worker-agent-revision-teardown-withdrawal.ts";
 
 // Repository sessions through admission, maintenance and cleanup. Agent stop, its Gateway drain,
-// Agent deletion and Namespace teardown are in the -stop sibling; deployment and dispatch cases,
-// and the persisted deploy, stop and delete lifecycle, are in postgres-worker-agent-revision.test.mjs;
-// credential-source withdrawals are in its -credential-sources sibling.
+// Agent deletion and Namespace teardown are in the -stop sibling. Deployment and dispatch are in
+// postgres-worker-agent-revision.test.mjs, persisted deploy, Stop and delete are in the -lifecycle
+// sibling, and credential-source withdrawals are in the -credential-sources sibling.
 
 const { setup, cleanup } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);

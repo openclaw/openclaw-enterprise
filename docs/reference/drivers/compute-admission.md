@@ -9,7 +9,7 @@ trusted Installation settings, never the backend.
 
 | Method                                                                            | Called at                                                                                                                                                                                                                                                                  | Refusal                                                                                                                                                              |
 | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validateConfiguration(configuration, options?)`                                  | Configuration create and update, Agent provisioning, and Preset create and update (rendered with defaults; `options.unresolved` marks unfilled variables)                                                                                                                  | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
+| `validateConfiguration(configuration, options?)`                                  | Configuration create and update, Agent creation draft validation, provisioning and deployment, and Preset create and update (rendered with defaults; `options.unresolved` marks unfilled variables)                                                                        | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
 | `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update, with `null` bindings, when the binding is `runtime` or a Secret and the Configuration selects a model                                                                                              | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
 | `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                                                                                                                                                    | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
 | `validateWorkspaceSetup(harness, configuration, sandboxDriverId?)`                | Agent create with initial workspace files, Agent update while that setup is pending (or completed, when the update names another Configuration or execution mode), deployment of an Agent with a pending or completed setup, and provisioning with initial workspace files | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation applies the same rule.                                                 |
@@ -43,13 +43,37 @@ bundled Kubernetes Compute, Configuration save already checked the channel
 Secret bindings (below). A stored
 Agent that fails a check still reads; its next update must fix the pair.
 
+## Immutable runtime inputs
+
+After `admitRevision`, OCC may call `snapshotRuntimeInputs` on the admitted
+revision. The optional opaque string is stored as `compute.runtimeInputs` in
+the existing revision snapshot (printable ASCII, at most 4096 characters).
+It is private launch metadata; `compute.admission` keeps its existing format
+and authorization checks. SQL migration 0078 permits and validates the new
+optional field without adding a table or column.
+
+Kubernetes captures Gateway and agent images for locally managed dedicated
+Codex revisions without protected egress, including the Gateway image used
+for workspace initialization. Preparing or activating that same revision
+continues to use those images after Installation defaults change. A new
+revision captures the new images. It also records a non-image compatibility
+fingerprint for planned-replacement eligibility; that fingerprint does not
+relax authorization or make ordinary preparation refuse a changed Installation.
+
+Revisions without this metadata keep their existing behavior. A malformed or
+unknown snapshot version fails closed. Older readers retain the original
+admission string and ignore this optional metadata; older controllers do not
+provide the image-preservation guarantee. This capability alone does not enable
+completion waiting, change new-message admission, or extend deployment timeouts.
+
 ## Kubernetes Compute
 
 [Kubernetes Compute](kubernetes-compute.md) keeps these rules in
 [its rule module](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts).
 `validateConfiguration` refuses:
 
-- an enabled `channels.<provider>` other than `slack` or `msteams`;
+- an enabled `channels.<provider>` without an installed Channel Driver; the bundled
+  composition currently installs Slack only;
 - a non-empty `auth`;
 - an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
   case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or
@@ -164,7 +188,7 @@ them. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode
-and the Installation's `runtime.channels`.
+and the Installation's `runtime.channelEgress`.
 With `runtime` set, `validateHarnessAuth` refuses `dedicated` without
 `gatewayRouting` (and node enrollment) or `runtime.gatewayNodeSelector`,
 naming the setting, at Agent save too: the execution mode is the Agent's.

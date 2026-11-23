@@ -4,7 +4,6 @@ import { removeImageFileContainer, type ImageFileContainerReceipt } from "../lib
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.ts";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
-import { fork, spawn } from "node:child_process";
 import { constants, type Dirent } from "node:fs";
 import {
   access,
@@ -20,8 +19,10 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startObservabilityPhase } from "./observability-phase-notice.ts";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.ts";
+import { quoteIdentifier, runPostgresAdmin } from "./postgres-admin.ts";
+import { runCommand } from "./command-supervision.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -32,7 +33,10 @@ type K3dCleanupIdentity = {
   networkID: string;
   volumes: { name: string; createdAt: string }[];
 };
+export type RequireJournal = (present: boolean) => void;
+
 type CleanupAuthority = {
+  requireJournal?: RequireJournal | undefined;
   expectedCleanupOwner?: string;
   expectedCleanupLane?: string;
   expectedStateSha256?: string;
@@ -51,11 +55,6 @@ type CommandRunner = (
   args: string[],
   options?: CommandOptions,
 ) => Promise<{ stdout: string }>;
-type SupervisorResult = {
-  code: number | null;
-  signal: string | null;
-  error?: { message: string; code?: string };
-};
 type DropResult = { error?: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,18 +74,6 @@ function errorCode(error: unknown): unknown {
 
 function errorMessage(error: unknown): unknown {
   return isRecord(error) ? error.message : undefined;
-}
-
-function isSupervisorResult(value: unknown): value is SupervisorResult {
-  return (
-    isRecord(value) &&
-    (value.code === null || typeof value.code === "number") &&
-    (value.signal === null || typeof value.signal === "string") &&
-    (value.error === undefined ||
-      (isRecord(value.error) &&
-        typeof value.error.message === "string" &&
-        (value.error.code === undefined || typeof value.error.code === "string")))
-  );
 }
 
 const activeCommands = new Set<() => void>();
@@ -134,154 +121,49 @@ function databaseDropTimeoutMs() {
   return Math.min(60_000, commandTimeoutMs());
 }
 
-function execFile(
+async function execFile(
   command: string,
   args: string[],
   options: CommandOptions = {},
 ): Promise<CommandResult> {
-  return new Promise((resolvePromise, reject) => {
-    const processGroup = process.platform !== "win32";
-    const spawnOptions = {
-      cwd: options.cwd ?? repositoryRoot,
-      env: { ...process.env, ...(options.env ?? {}) },
-    };
-    // The supervisor remains the group leader until command and pipes settle.
-    // It also owns termination when this caller exits without running JS hooks.
-    const child = processGroup
-      ? fork(new URL("./cleanup-command.ts", import.meta.url), [], {
-          ...spawnOptions,
-          detached: true,
-          execArgv: [],
-          stdio: ["ignore", "pipe", "pipe", "ipc"],
-        })
-      : spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
-    if (processGroup && process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
-      process.send({ type: "ci-lifecycle-group", id: child.pid });
-    }
-    let commandResult: SupervisorResult | undefined;
-    if (processGroup) {
-      child.on("message", (result) => {
-        if (isSupervisorResult(result)) {
-          commandResult = result;
-        }
+  let stdout = "";
+  let stderr = "";
+  const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
+  const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
+  const result = await runCommand(
+    command,
+    args,
+    { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] },
+    { phase: "cleanup", deadline: { timeoutMs, graceMs }, activeCommands },
+    (child) => {
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString();
       });
-    }
-    let signalError: unknown;
-    let killSent = false;
-    const signalCommand = (signal: NodeJS.Signals) => {
-      if (signal === "SIGKILL") {
-        killSent = true;
-      }
-      try {
-        if (processGroup) {
-          // A live supervisor anchors the numeric group ID. Once it exits,
-          // never signal an ID that another process could have reused.
-          if (
-            child.pid !== undefined &&
-            child.pid > 1 &&
-            child.exitCode === null &&
-            child.signalCode === null
-          ) {
-            process.kill(-child.pid, signal);
-          }
-        } else {
-          child.kill(signal);
-        }
-      } catch (error) {
-        if (errorCode(error) !== "ESRCH") {
-          signalError ??= error;
-        }
-      }
-    };
-    const stop = () => signalCommand("SIGKILL");
-    activeCommands.add(stop);
-    const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
-    const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
-    let timedOut = false;
-    let settled = false;
-    let killTimer: NodeJS.Timeout | undefined;
-    let abandonTimer: NodeJS.Timeout | undefined;
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      signalCommand("SIGTERM");
-      killTimer = setTimeout(() => {
-        signalCommand("SIGKILL");
-        // A descendant can escape the group while retaining these pipes. Bound
-        // their lifetime without signalling processes outside our owned group.
-        abandonTimer = setTimeout(() => {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.unref();
-          finish(child.exitCode, child.signalCode);
-        }, graceMs);
-      }, graceMs);
-    }, timeoutMs);
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-    function finish(code: number | null, signal: string | null, spawnError?: Error) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      activeCommands.delete(stop);
-      clearTimeout(timeoutTimer);
-      clearTimeout(killTimer);
-      clearTimeout(abandonTimer);
-      // Close can precede the grace timer if surviving descendants closed their
-      // output. They still belong to the timed-out command and must be stopped.
-      if (timedOut && !killSent) {
-        signalCommand("SIGKILL");
-      }
-      let error = spawnError;
-      if (processGroup && !error) {
-        if (commandResult) {
-          ({ code, signal } = commandResult);
-          if (commandResult.error) {
-            error = Object.assign(new Error(commandResult.error.message), commandResult.error);
-          }
-        } else {
-          error = new Error(
-            `Cleanup command supervisor exited before reporting a result (${signal ?? code})`,
-          );
-        }
-      }
-      if (timedOut) {
-        error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
-      } else if (!error && code !== 0) {
-        const message = stderr.trim() || stdout.trim() || signal || String(code);
-        error = new Error(`${command} ${args.join(" ")} failed: ${message}`);
-      }
-      if (error) {
-        Object.assign(error, { stdout, stderr });
-        if (signalError) {
-          error.cause = signalError;
-        }
-        reject(error);
-      } else {
-        resolvePromise({ stdout, stderr });
-      }
-    }
-    child.on("error", (error) => {
-      if (child.pid === undefined) {
-        finish(null, null, error);
-      } else {
-        // A failed kill is not a failed spawn: keep the pipe-abandonment bound.
-        signalError ??= error;
-      }
-    });
-    // Exit precedes pipe drain. Keep the deadline and escalation alive until
-    // close, even when the wrapper has exited but its descendants have not.
-    child.on("close", (code, signal) => finish(code, signal));
-    if (processGroup) {
-      child.send({ command, args });
-    }
-  });
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+    },
+  );
+  let error: Error;
+  if (result.kind === "timeout") {
+    error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
+  } else if (result.kind === "spawn-error") {
+    error = result.error;
+  } else if (result.kind === "supervisor-lost") {
+    error = new Error(
+      `Cleanup command supervisor exited before reporting a result (${result.signal ?? result.code})`,
+    );
+  } else if (result.code !== 0) {
+    const message = stderr.trim() || stdout.trim() || result.signal || String(result.code);
+    error = new Error(`${command} ${args.join(" ")} failed: ${message}`);
+  } else {
+    return { stdout, stderr };
+  }
+  Object.assign(error, { stdout, stderr });
+  if (result.signalError) {
+    error.cause = result.signalError;
+  }
+  throw error;
 }
 
 function assertCleanupState(state: unknown): asserts state is CleanupState {
@@ -421,13 +303,6 @@ function composeArgs(resource: CleanupResource, state: CleanupState, ...args: st
   return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
 }
 
-function quoteIdentifier(value: string) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
 async function cleanupComposePostgres(
   resource: CleanupResource,
   state: CleanupState,
@@ -537,7 +412,7 @@ async function cleanupK3dCluster(
 }
 
 // The fixture lanes bind <directory>/storage into every node as local-path's storage
-// (prepare.mjs). local-path creates each claim's volume directory as root and removes it with a
+// (prepare.ts). local-path creates each claim's volume directory as root and removes it with a
 // helper Pod only after the claim is deleted, so volumes of namespaces that tests deleted without
 // waiting leave directories the runner user cannot remove. The cluster is gone by now, so nothing
 // writes there again: empty the storage as root from the cluster's own node image, which is
@@ -999,11 +874,16 @@ async function cleanupResourceIds(
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
   }
+  authority.requireJournal?.(true);
   if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+    authority.requireJournal?.(false);
     assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
-  const dropped = resourceIds === undefined ? undefined : await dropDatabases(path, resourceIds);
+  const dropped =
+    resourceIds === undefined
+      ? undefined
+      : await dropDatabases(path, resourceIds, authority.requireJournal);
   // A test may prepare and clean databases from its own process beside the runner.
   return withStateLock(
     path,
@@ -1022,17 +902,15 @@ async function cleanupResourceIds(
 // file whole), and only their entries are removed under the lock. An entry stays until
 // its drop succeeds, so a crash in between leaves it for lane cleanup, as before. A lane
 // template stays on the locked path: prepareFile finds it through the state and copies it.
-async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
+async function dropDatabases(
+  path: string,
+  resourceIds: readonly unknown[],
+  requireJournal?: RequireJournal,
+) {
   const results = new Map<unknown, DropResult>();
-  let state: CleanupState;
-  try {
-    state = await readState(path);
-  } catch (error) {
-    // Another cleanup removed the emptied state; the locked pass returns as before.
-    if (errorCode(error) === "ENOENT") {
-      return results;
-    }
-    throw error;
+  const state = await readStateIfPresent(path, { requireJournal });
+  if (!state) {
+    return results;
   }
   for (const entry of [...state.resources].reverse()) {
     const resource = resourceFields(entry);
@@ -1051,6 +929,22 @@ async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
     }
   }
   return results;
+}
+
+async function readStateIfPresent(
+  path: string,
+  { requireJournal, expectedStateSha256, expectedCleanupOwner }: CleanupAuthority,
+) {
+  requireJournal?.(true);
+  try {
+    return await readState(path, expectedStateSha256, expectedCleanupOwner !== undefined);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      requireJournal?.(false);
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 async function stateExists(path: string, regularFile = false) {
@@ -1076,15 +970,11 @@ async function cleanupLockedResourceIds(
   dropped: Map<unknown, DropResult> = new Map(),
   authority: CleanupAuthority = {},
 ) {
-  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+  const state = await readStateIfPresent(path, authority);
+  if (!state) {
     assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
-  const state = await readState(
-    path,
-    authority.expectedStateSha256,
-    authority.expectedCleanupOwner !== undefined,
-  );
   if (authority.expectedCleanupOwner !== undefined) {
     assert.equal(state.cleanupOwner, authority.expectedCleanupOwner, "CI cleanup owner mismatch");
     assert.equal(state.statePath, path, "CI cleanup state path mismatch");
@@ -1132,7 +1022,8 @@ async function cleanupLockedResourceIds(
     await writeState(path, state);
     throw new Error(`Cleanup failed for ${failures.join(", ")}`);
   }
-  if (state.resources.length === 0) {
+  // The complete lifecycle owns the lane journal until final cleanup.
+  if (state.resources.length === 0 && (resourceIds === undefined || !authority.requireJournal)) {
     await rm(path, { force: true });
   }
   return true;
@@ -1175,29 +1066,47 @@ async function main() {
   if (!args.state) {
     throw new Error("--state is required.");
   }
-  let processedState: boolean;
+  // Match the composite's lane paths even when preparation left no journal.
+  const runnerTemp = process.env.RUNNER_TEMP;
+  const finishTiming =
+    runnerTemp &&
+    isAbsolute(runnerTemp) &&
+    args.state === join(runnerTemp, "state", "k3d-observability.json") &&
+    args.results === join(runnerTemp, "results", "k3d-observability.json") &&
+    args.lane === undefined &&
+    args["cleanup-owner"] === undefined
+      ? startObservabilityPhase("k3d-observability", "lane-cleanup")
+      : undefined;
+  const started = performance.now();
+  let outcome: "success" | "failure" | "skipped" = "failure";
   try {
-    const owner = args["cleanup-owner"];
-    const lane = args.lane;
-    assert.equal(
-      owner !== undefined,
-      lane !== undefined,
-      "bound cleanup requires both owner and lane",
-    );
-    processedState = await cleanupState(
-      args.state,
-      owner !== undefined && lane !== undefined
-        ? { expectedCleanupOwner: owner, expectedCleanupLane: lane }
-        : {},
-    );
-  } catch (error) {
-    if (args.results) {
-      await recordLaneCleanup(args.results, "failed");
+    let processedState: boolean;
+    try {
+      const owner = args["cleanup-owner"];
+      const lane = args.lane;
+      assert.equal(
+        owner !== undefined,
+        lane !== undefined,
+        "bound cleanup requires both owner and lane",
+      );
+      processedState = await cleanupState(
+        args.state,
+        owner !== undefined && lane !== undefined
+          ? { expectedCleanupOwner: owner, expectedCleanupLane: lane }
+          : {},
+      );
+    } catch (error) {
+      if (args.results) {
+        await recordLaneCleanup(args.results, "failed");
+      }
+      throw error;
     }
-    throw error;
-  }
-  if (args.results) {
-    await recordLaneCleanup(args.results, "passed", processedState);
+    if (args.results) {
+      await recordLaneCleanup(args.results, "passed", processedState);
+    }
+    outcome = processedState ? "success" : "skipped";
+  } finally {
+    finishTiming?.(outcome, Math.round(performance.now() - started));
   }
 }
 

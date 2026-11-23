@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type RequestListener } from "node:http";
-import { cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import test, { type TestContext } from "node:test";
@@ -23,7 +23,9 @@ import {
 } from "./first-agent-startup-lifecycle-cases.ts";
 import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
+import { withEnvironment } from "../helpers/environment.ts";
+import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import type {
   RuntimeLogRecord,
@@ -80,6 +82,7 @@ async function fixture(t: TestContext, sandboxDriver: string) {
         dockerHost: "unix:///tmp/first-agent-startup-test.sock",
         keyPath,
         keyOwned: true,
+        installationId: "ins_test",
       })}\n`,
       { mode: 0o600 },
     ),
@@ -88,8 +91,7 @@ async function fixture(t: TestContext, sandboxDriver: string) {
     writeFile(
       keyPath,
       `${JSON.stringify({
-        data: { key: "test-service-key", servicePrincipalId: "sp_test" },
-        meta: { installationId: "ins_test" },
+        data: { key: "test-service-key" },
       })}\n`,
       { mode: 0o600 },
     ),
@@ -141,6 +143,7 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "scripts/first-agent-database.ts",
     "scripts/first-agent-diagnostics.ts",
     "scripts/first-agent-model.ts",
+    "scripts/lib/podman-compose-provider.ts",
     "scripts/lib/private-owned-path.ts",
   ]) {
     const target = join(directory, path);
@@ -216,6 +219,60 @@ test("first-Agent accepts current Compose-backed Kubernetes development state", 
   assert.match(invocation, /^DOCKER_TLS=unset$/m);
   assert.match(invocation, /^DOCKER_TLS_VERIFY=unset$/m);
   assert.match(invocation, /^DOCKER_CERT_PATH=unset$/m);
+});
+
+test("existing Local Setup uses the same Compose provider for first-Agent and QA", async (t) => {
+  const { directory, engineLog, env } = await fixture(t, "none");
+  const tools = join(directory, "tools");
+  const state = await developmentState(directory);
+  const provider = await writeCommand(tools, "docker-compose");
+  const portLookup = [
+    'printf "%s\\n" "$*" "${PODMAN_COMPOSE_PROVIDER-unset}" > "$FIRST_AGENT_TEST_ENGINE_LOG"',
+    "echo 127.0.0.1:18443",
+  ].join("\n");
+  await writeCommand(tools, "podman", portLookup);
+  await writeCommand(tools, "docker", portLookup);
+
+  async function check(engine: string, override: string | undefined, expected: string) {
+    await writeFile(
+      join(directory, "state.json"),
+      JSON.stringify({ ...state, containerEngine: engine }),
+    );
+    const lookupEnv = {
+      FIRST_AGENT_TEST_ENGINE_LOG: engineLog,
+      OCC_DEVELOPMENT_STATE_DIRECTORY: directory,
+      OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
+      OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER: "none",
+      OCC_URL: undefined,
+      PATH: tools,
+      PODMAN_COMPOSE_PROVIDER: override,
+    };
+    const args = `compose --project-directory ${repository} --project-name first-agent-startup-test -f ${join(directory, "compose.yaml")} port controller 3000`;
+    async function expectLookup(caller: string) {
+      assert.equal(await readFile(engineLog, "utf8"), `${args}\n${expected}\n`, caller);
+      await rm(engineLog);
+    }
+    // A mismatched URL stops the operator after resolving the disposable controller port.
+    assert.match(
+      runFirstAgent({ ...env, ...lookupEnv, OCC_URL: "http://127.0.0.1:18444" }),
+      /OCC_URL does not match the controller port/,
+    );
+    await expectLookup("first-Agent");
+    const stack = await withEnvironment(lookupEnv, () => localFirstAgentStack(t));
+    assert.equal(stack.environment.OCC_URL, "http://127.0.0.1:18443");
+    await expectLookup("existing-stack QA");
+  }
+
+  await check("podman", undefined, "docker-compose");
+  await check("podman", "", "docker-compose");
+  await check("podman", "custom-provider", "custom-provider");
+  await chmod(provider, 0o600);
+  await check("podman", undefined, "podman-compose");
+  await rm(provider);
+  await mkdir(provider);
+  await check("podman", undefined, "podman-compose");
+  await check("docker", undefined, "unset");
+  await check("docker", "custom-provider", "custom-provider");
 });
 
 test("first-Agent requires dedicated Codex for OpenShell before external calls", async (t) => {
@@ -538,6 +595,33 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
   );
 });
 
+test("first-Agent refuses missing or mismatched confirmed Installation state", async (t) => {
+  for (const scenario of ["missing", "mismatched"]) {
+    const requests: string[] = [];
+    // A controller response must not silently rebind this helper to another Installation.
+    const { directory, engineLog, env } = await k3dFixture(t, "none", (request, response) => {
+      requests.push(request.url ?? "");
+      assert.equal(request.headers["x-api-key"], "test-service-key");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { id: "ins_00000000-0000-4000-8000-000000000099" } }));
+    });
+    if (scenario === "missing") {
+      const state = await developmentState(directory);
+      delete state.installationId;
+      await writeFile(join(directory, "state.json"), JSON.stringify(state), { mode: 0o600 });
+    }
+    const output = await runFirstAgentAsync(env);
+    assert.match(
+      output,
+      scenario === "missing"
+        ? /Local Setup has no confirmed Installation ID/
+        : /The controller Installation does not match Local Setup's administrator key/,
+    );
+    assert.deepEqual(requests, scenario === "missing" ? [] : ["/installation"]);
+    await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+  }
+});
+
 registerFirstAgentLockAndRecordCases(lifecycleDependencies);
 
 test("first-Agent counts a prompt's characters as code points", () => {
@@ -610,9 +694,22 @@ test("model verification retains safe failure metadata without forwarding probe 
   let responseStatus = 503;
   let responseBody: string | ((body: unknown) => string) = "private-upstream-body";
   let requests = 0;
+  let stall: "headers" | "body" | undefined;
+  let deadlines: number[] = [];
   const server = createServer(async (request, response) => {
     requests++;
-    response.writeHead(request.headers.authorization ? responseStatus : 401);
+    if (!request.headers.authorization) {
+      response.writeHead(401).end();
+      return;
+    }
+    if (stall === "headers") {
+      return;
+    }
+    response.writeHead(responseStatus);
+    if (stall === "body") {
+      response.flushHeaders();
+      return;
+    }
     if (typeof responseBody === "function") {
       let body = "";
       const chunks: AsyncIterable<unknown, unknown, unknown> = request;
@@ -654,8 +751,8 @@ test("model verification retains safe failure metadata without forwarding probe 
     if (suppliedOutput !== undefined) {
       return suppliedOutput;
     }
-    // Execute the production serialized probe. Only its transport destination is
-    // adapted to an owned loopback server; this does not claim a Gateway/model run.
+    // Run the serialized probe in a Node VM with synthetic process I/O. The fetch
+    // adapter sends real HTTP to the loopback fixture and controls timeout and abort cases.
     let output = "";
     const options = args.at(-1);
     const program = args.at(-2);
@@ -667,7 +764,14 @@ test("model verification retains safe failure metadata without forwarding probe 
     assert.ok(typeof nonce === "string");
     assert.ok(!program.includes(nonce));
     const completion: unknown = runInNewContext(program, {
-      AbortSignal,
+      AbortSignal: {
+        timeout: (milliseconds: number) => {
+          deadlines.push(milliseconds);
+          return AbortSignal.timeout(
+            stall === "headers" && milliseconds === 160_000 ? 100 : milliseconds,
+          );
+        },
+      },
       process: {
         env: { OPENCLAW_GATEWAY_PASSWORD: "synthetic-password" },
         stdin: Readable.from([input]),
@@ -677,9 +781,17 @@ test("model verification retains safe failure metadata without forwarding probe 
           },
         },
       },
-      fetch: (url: string, options: RequestInit) => {
+      fetch: async (url: string, options: RequestInit) => {
         assert.equal(url, "http://127.0.0.1:8080/v1/chat/completions");
-        return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, options);
+        const destination = `http://127.0.0.1:${port}/v1/chat/completions`;
+        if (stall !== "body" || !new Headers(options.headers).has("authorization")) {
+          return fetch(destination, options);
+        }
+        // Abort after the actual 200 headers arrive, before the server sends a body.
+        const controller = new AbortController();
+        const result = await fetch(destination, { ...options, signal: controller.signal });
+        controller.abort();
+        return result;
       },
     });
     await completion;
@@ -742,8 +854,13 @@ test("model verification retains safe failure metadata without forwarding probe 
   responseStatus = 401;
   await verify("authorization", 401);
   responseStatus = 200;
-  responseBody = JSON.stringify({ choices: [{ message: { content: "private-wrong-answer" } }] });
-  await verify("nonce", undefined);
+  stall = "headers";
+  deadlines = [];
+  await verify("unavailable", undefined);
+  assert.deepEqual(deadlines, [15_000, 160_000]);
+  stall = "body";
+  await verify("response_format", undefined);
+  stall = undefined;
   suppliedOutput = JSON.stringify({
     error: "private-unknown",
     status: 503,
@@ -770,29 +887,143 @@ test("model verification retains safe failure metadata without forwarding probe 
   suppliedOutput = undefined;
   const id = "chatcmpl_20000000-0000-4000-8000-000000000001";
   let completionId = id;
+  const verifyModel = (prompt?: string) =>
+    verifyFirstAgentModel(kubectl, {
+      namespaceId: "namespace",
+      agentId: "agent",
+      revisionId: "revision",
+      expectProviderKey: false,
+      sessionKey,
+      prompt,
+    });
+  const customPrompt = "Describe the weather in one sentence.";
+  const customAnswer = "  The sky is clear.\n";
+  let reply = (_prompt: string, nonce: string): Fields => ({
+    role: "assistant",
+    content: nonce,
+  });
   responseBody = (body) => {
     const { messages } = record(body);
     assert.ok(Array.isArray(messages));
     const prompts: unknown[] = messages;
-    const { content } = record(prompts[0]);
+    const { role, content } = record(prompts[0]);
+    assert.equal(role, "user");
     assert.ok(typeof content === "string");
-    const nonce = content.match(/FIRST_AGENT_[0-9a-f-]+/);
-    assert.ok(nonce);
-    return JSON.stringify({
-      id: completionId,
-      choices: [{ message: { content: nonce[0] } }],
-    });
+    if (content === customPrompt) {
+      return JSON.stringify({
+        id,
+        choices: [{ message: { role: "assistant", content: customAnswer } }],
+      });
+    }
+    const nonce = content.match(
+      /^Reply with exactly this nonce and no other text: (FIRST_AGENT_[0-9a-f-]+)$/,
+    );
+    assert.ok(nonce?.[1]);
+    return JSON.stringify({ id: completionId, choices: [{ message: reply(content, nonce[1]) }] });
   };
+
+  // Every false proof carries the real nonce from the outgoing request, so the
+  // pre-fix substring parser accepts it and the missing rejection fails the test.
+  const invalidReplies = [
+    ["missing role", "response_format", (_prompt, nonce) => ({ content: nonce })],
+    ["wrong role", "response_format", (_prompt, nonce) => ({ role: "user", content: nonce })],
+    ["prompt echo", "nonce", (prompt) => ({ role: "assistant", content: prompt })],
+    [
+      "repeated nonce",
+      "nonce",
+      (_prompt, nonce) => ({ role: "assistant", content: `${nonce} ${nonce}` }),
+    ],
+    [
+      "message refusal",
+      "response_format",
+      (_prompt, nonce) => ({ role: "assistant", content: nonce, refusal: "private-refusal" }),
+    ],
+    [
+      "refusal part",
+      "response_format",
+      (_prompt, nonce) => ({
+        role: "assistant",
+        content: [
+          { type: "text", text: nonce },
+          { type: "refusal", refusal: "private-refusal" },
+        ],
+      }),
+    ],
+    [
+      "incorrect part type",
+      "response_format",
+      (_prompt, nonce) => ({
+        role: "assistant",
+        content: [{ type: "image_url", text: nonce }],
+      }),
+    ],
+    [
+      "malformed text part",
+      "response_format",
+      (_prompt, nonce) => ({
+        role: "assistant",
+        content: [
+          { type: "text", text: nonce },
+          { type: "text", text: { value: 42 } },
+        ],
+      }),
+    ],
+  ] satisfies [string, FirstAgentModelError["code"], typeof reply][];
+  for (const [name, code, invalidReply] of invalidReplies) {
+    await t.test(name, async () => {
+      reply = invalidReply;
+      await verify(code, undefined);
+    });
+  }
+
+  reply = (_prompt, nonce) => ({ role: "assistant", content: nonce, refusal: null });
   const before = requests;
-  const proof = await verifyFirstAgentModel(kubectl, {
-    namespaceId: "namespace",
-    agentId: "agent",
-    revisionId: "revision",
-    expectProviderKey: false,
-    sessionKey,
-  });
+  const proof = await verifyModel();
   assert.equal(proof.runId, id);
   assert.equal(requests - before, 2, "one denial and one accepted nonce request");
+
+  reply = () => ({ role: "assistant", content: proof.nonce });
+  await verify("nonce", undefined);
+
+  for (const [format, wrap] of [
+    ["surrounding whitespace", (nonce) => ` \t${nonce}\n`],
+    ["final period", (nonce) => `${nonce}.`],
+    ["single quotes", (nonce) => `' ${nonce} '`],
+    ["double quotes and final period", (nonce) => `"${nonce}" . `],
+    ["inline backticks", (nonce) => "`" + nonce + "`"],
+    ["untagged multiline fence", (nonce) => "```\n " + nonce + " \n```"],
+  ] satisfies [string, (nonce: string) => string][]) {
+    reply = (_prompt, nonce) => ({ role: "assistant", content: wrap(nonce) });
+    assert.equal((await verifyModel()).runId, id, format);
+  }
+
+  // A tagged CRLF fence spans both supported text-part shapes. The custom
+  // response still reaches the caller with its original whitespace.
+  reply = (_prompt, nonce) => ({
+    role: "assistant",
+    content: [
+      { type: "text", text: "```text\r\n" + nonce.slice(0, 12) },
+      { type: "text", text: { value: nonce.slice(12) + "\r\n```." } },
+    ],
+  });
+  assert.equal((await verifyModel(customPrompt)).response, customAnswer);
+
+  for (const wrap of [
+    (nonce: string) => `${nonce} is ready`,
+    (nonce: string) => `"${nonce}'`,
+    (nonce: string) => "```text\n" + nonce,
+    (nonce: string) => `"${nonce}."`,
+  ]) {
+    reply = (_prompt, nonce) => ({ role: "assistant", content: wrap(nonce) });
+    await verify("nonce", undefined);
+  }
+
+  reply = (_prompt, nonce) => ({ role: "assistant", content: `${nonce}synthetic-password` });
+  await verify("credential", undefined);
+  reply = (_prompt, nonce) => ({ role: "assistant", content: nonce + "x".repeat(20_000) });
+  await verify("response_size", undefined);
+
+  reply = (_prompt, nonce) => ({ role: "assistant", content: nonce });
   completionId = "private-invalid-id";
   await verify("response_format", undefined);
 

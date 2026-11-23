@@ -22,38 +22,66 @@ import {
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "./repository-credentials/github.mjs";
+} from "./repository-credentials/github.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../conformance/repository-sessions.contract.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { authorizedPrincipal } from "../helpers/postgres-backend-state.mjs";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
+
+export const preparedGitUseSocketName = "prepared-git-use.sock";
 
 // This exercises the production use service over real PostgreSQL and a synthetic
 // HTTPS GitHub App issuer. It does not prove a Git subprocess or live GitHub push.
+/**
+ * @template {{opened: import("../../apps/controller/src/drivers/repo/access/service-contracts.ts").RepositoryCredentialSessionResult}} Broker
+ * @param {import("../helpers/console-file-app.ts").CleanupRegistrar} t
+ * @param {{
+ *   openBroker?: (input: {
+ *     gh: import("./repository-credentials/github.ts").GitHubFixture<Awaited<ReturnType<typeof import("./repository-credentials/process.ts").createTlsMaterial>>>,
+ *     registry: ReturnType<typeof validateGitHubRepositoryRegistry>,
+ *     socketPath: string,
+ *     namespaceId: string,
+ *     binding: ReturnType<typeof resolveGitHubRepositoryBinding>,
+ *     pushRef: string,
+ *     deadlineWallMs: number,
+ *     repository: string,
+ *   }) => Broker | void | Promise<Broker | void>,
+ *   recordDeploymentOperation?: boolean,
+ *   draftPull?: boolean,
+ *   draftPullLimit?: "none" | undefined,
+ *   draftResponse?: import("./repository-credentials/github.ts").GitHubFixtureOptions["draftResponse"],
+ *   dnsIssuer?: boolean,
+ *   sessionLifetimeMs?: number,
+ *   standingApproval?: boolean,
+ *   installationAccess?: boolean,
+ *   tokenLifetimeMs?: number,
+ *   ownerClock?: import("../../apps/controller/src/drivers/repo/access/backend-contracts.ts").Clock,
+ * }} [options]
+ */
 export async function fixture(
   t,
   {
     openBroker,
     recordDeploymentOperation = false,
     draftPull = false,
-    draftPullLimit = /** @type {"none" | undefined} */ (undefined),
+    draftPullLimit,
     draftResponse,
     dnsIssuer = false,
     sessionLifetimeMs = 3_600_000,
     standingApproval = false,
     installationAccess = false,
-    tokenLifetimeMs = /** @type {number | undefined} */ (undefined),
+    tokenLifetimeMs,
     /** The first owner's clock argument; undefined starts it as the worker does. */
-    ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/access/backend-contracts.ts").Clock | undefined} */ (
-      undefined
-    ),
+    ownerClock,
   } = {},
 ) {
-  const directory = await socketDirectory(t, "prepared-git-");
+  const directory = await socketDirectory(t, "prepared-git-", {
+    longest: preparedGitUseSocketName,
+  });
   const privateKeyPath = join(directory, "app.pem");
   const custodyKeyPath = join(directory, "custody.key");
   const permissions = {
@@ -183,7 +211,7 @@ export async function fixture(
     durationSeconds: 3600,
     brokerProtocol: 3,
   });
-  const socketPath = join(directory, "prepared-git-use.sock");
+  const socketPath = join(directory, preparedGitUseSocketName);
   const broker = await openBroker?.({
     gh,
     registry,
@@ -194,7 +222,7 @@ export async function fixture(
     deadlineWallMs,
     repository: fixtureRepository,
   });
-  const sessionId = broker?.opened.session.sessionId ?? `session-${randomUUID()}`;
+  const sessionId = (broker && broker.opened.session.sessionId) ?? `session-${randomUUID()}`;
   const deployer = recordDeploymentOperation
     ? authorizedPrincipal(await state.loadNativeIAMState())
     : undefined;
@@ -275,7 +303,7 @@ export async function fixture(
         "A socketless fixture owner requires an explicit custody selection",
       );
       // Each owner serves its use socket beside its control socket: give it its own directory.
-      const sockets = await socketDirectory(t, "pgit-", { longest: "prepared-git-use.sock" });
+      const sockets = await socketDirectory(t, "pgit-", { longest: preparedGitUseSocketName });
       const other = await startPreparedGitHubGitOwner({
         ...ownerOptions,
         controlSocket: join(sockets, "control.sock"),
@@ -288,7 +316,8 @@ export async function fixture(
     socketPath,
     broker,
     permissions,
-    admitReplacement: (sessionId) => admit(sessionId, "admission-" + randomUUID()),
+    admitReplacement: (/** @type {string} */ sessionId) =>
+      admit(sessionId, "admission-" + randomUUID()),
     state,
     agent,
     revision,
@@ -343,6 +372,7 @@ export async function fixture(
   };
 }
 
+/** @param {Pick<Awaited<ReturnType<typeof fixture>>, "owner" | "gh" | "permissions">} f */
 export async function prepare(f) {
   // Discovery and issuance may be separate worker passes; no use request drives either.
   await f.owner.maintain();

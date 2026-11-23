@@ -18,7 +18,6 @@ import type {
   LoggingLevel,
   PluginDeploymentWarning,
   RuntimeFailureEvidence,
-  SecretEnvironmentProjection,
 } from "../../packages/contracts/src/index.ts";
 import { admitRevisionHarness as admitHarnessFixture } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { items, kubernetesOptions, record } from "./plugin-compute-fixtures.ts";
@@ -162,24 +161,21 @@ interface KubernetesFixtureMethods {
     context: ComputeRevisionContext,
     target: Address,
   ): PreparedAuth;
-  deployment(
-    name: string,
-    owner: Ownership,
-    target: Address,
-    image: string,
-    serviceAccount: string,
-    role: "gateway" | "agent",
-    environment: Readonly<Record<string, string>>,
-    loggingLevel: LoggingLevel,
-    configuration?: GatewayConfiguration,
-    embedded?: boolean,
-    workloadServicePrincipalId?: string,
-    harnessAuth?: PreparedAuth,
-    enabledChannels?: readonly { egress: "https-proxy" }[],
-    secretEnvironment?: readonly SecretEnvironmentProjection[],
-    pluginRuntime?: { name: string; runtime: PluginRuntimeSpec },
-    pluginWarnings?: readonly PluginDeploymentWarning[],
-  ): KubernetesObject;
+  deployment(input: {
+    name: string;
+    ownership: Ownership;
+    namespace: Address;
+    images: Readonly<{ runtime: string; workspaceSetup: string }>;
+    serviceAccountName: string;
+    role: "gateway" | "agent";
+    environment: Readonly<Record<string, string>>;
+    loggingLevel: LoggingLevel;
+    configuration?: GatewayConfiguration;
+    embedded?: boolean;
+    harnessAuth?: PreparedAuth;
+    pluginRuntime?: { name: string; runtime: PluginRuntimeSpec };
+    pluginWarnings?: readonly PluginDeploymentWarning[];
+  }): KubernetesObject;
 }
 
 type KubernetesFixture = Pick<KubernetesComputeDriver, keyof KubernetesComputeDriver> &

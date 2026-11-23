@@ -3,14 +3,14 @@ import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { InstalledDriver, PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createBackendWorkerDrivers } from "./postgres-backend-state.mjs";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.mjs";
+import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { standingExecutionPlatform } from "./postgres-standing-execution.ts";
@@ -88,8 +88,8 @@ export async function repositoryRestartInventory(
               ...input.sandbox,
               configuration: input.proxy!.configuration,
               definition: {
-                configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-                validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+                configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+                validateConfiguration: OpenShellLegacyEgressProxyDriver.validateConfiguration,
                 configurationContributions: OpenShellSandboxDriver.configurationContributions,
               },
             },
@@ -149,6 +149,7 @@ export async function repositoryRestartInventory(
 
   // Register the same selected owner in Compute and API composition. No exchange or
   // repository sender is configured on this read-only API instance.
+  assert.ok(fixture.database.url, "Restart inventory requires its owned PostgreSQL database");
   const app = await composePostgresDevelopment(
     {
       mode: "development",

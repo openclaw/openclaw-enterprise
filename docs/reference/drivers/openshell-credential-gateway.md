@@ -36,8 +36,8 @@ drivers:
   sandbox:
     id: openshell-sandbox
     configuration:
-      gateway:
-        workspaceMode: operator
+      integrationMode: legacy
+      gateway: {}
       # See openshell-sandbox.md for the remaining Sandbox settings.
   credential_gateway:
     id: openshell-credentials

@@ -1,477 +1,60 @@
-// Exercise browser session cookies against the real HTTPS listener and stock Agent UI.
+// Exercise guarded OIDC browser access against the real HTTPS listener and stock Agent UI.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.ts";
-import { chromium } from "playwright";
 import { publishedJSON } from "./dev-up-keycloak.mjs";
-import { launchTrustingBrowser, preflightTrustingBrowser } from "./trusted-chromium.ts";
 import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
+import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.ts";
+import { verifyOpenShellOwnerPasswordSession } from "./openshell-owner-password-session.ts";
+
+export {
+  assertOpenShellOwnerModelSelection,
+  preflightOpenShellOwnerBrowser,
+} from "./openshell-owner-password-session.ts";
 
 const execute = promisify(execFile);
 
-export function assertOpenShellOwnerModelSelection(environment) {
-  const endpoint = environment.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
-  assert.ok(
-    !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
-    "The browser Agent requires the public OpenAI endpoint",
-  );
-  assert.ok(
-    !environment.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
-    "The browser Agent does not accept native provider overrides",
-  );
-}
-
-function ownerBrowserRouting(cluster) {
-  const consoleHost = `console.${cluster}.oce.localhost`;
-  const agentDomain = `agents.${cluster}.oce.localhost`;
-  return {
+export async function verifyOpenShellOwnerSession(input) {
+  const { t, cluster, stateDirectory, kubectl, environment, browserPort, namespaceId } = input;
+  const {
+    browser,
     consoleHost,
+    consoleOrigin,
     agentDomain,
-    hosts: [
-      { host: consoleHost, address: "127.0.0.1" },
-      { host: `*.${agentDomain}`, address: "127.0.0.1" },
-      { host: "*", address: "~NOTFOUND" },
-    ],
-  };
-}
-
-export async function preflightOpenShellOwnerBrowser(root, cluster) {
-  try {
-    await preflightTrustingBrowser(chromium, root, ownerBrowserRouting(cluster).hosts);
-  } catch (error) {
-    throw new Error(
-      "OpenShell browser preflight failed before dev-up. Check certutil, sandbox support for " +
-        "OCC_TEST_BROWSER_EXECUTABLE, and use a short TMPDIR for Chromium sockets.",
-      { cause: error },
-    );
-  }
-}
-
-export async function verifyOpenShellOwnerSession({
-  t,
-  cluster,
-  browserPort,
-  stateDirectory,
-  namespaceId,
-  kubectl,
-  environment,
-}) {
-  assertOpenShellOwnerModelSelection(environment);
-  const { consoleHost, agentDomain, hosts } = ownerBrowserRouting(cluster);
-  const consoleOrigin = `https://${consoleHost}:${browserPort}`;
-  const scope = `/namespaces/${namespaceId}`;
-  // Install the public CA in the fixture browser's private trust database before
-  // startup. Chromium verifies both hostnames and manages the HttpOnly cookies.
-  const browser = await launchTrustingBrowser(chromium, dirname(stateDirectory), {
-    caFiles: [join(stateDirectory, "browser-ca.crt")],
-    hosts,
-  });
-  t.after(() => browser.close());
-  const origins = new Set([consoleOrigin]);
-
-  async function consoleRequest(page, method, path, body) {
-    assert.equal(new URL(page.url()).origin, consoleOrigin);
-    return page.evaluate(
-      async ({ method, path, body }) => {
-        const res = await fetch(path, {
-          method,
-          mode: "same-origin",
-          credentials: "same-origin",
-          redirect: "error",
-          ...(body === undefined
-            ? {}
-            : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-        });
-        return {
-          status: res.status,
-          data: res.status === 204 ? undefined : (await res.json()).data,
-        };
-      },
-      { method, path, body },
-    );
-  }
-
-  async function signIn(email, password, recovery = false) {
-    const context = await browser.newContext({ serviceWorkers: "block" });
-    await context.route("**/*", (route) =>
-      origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort(),
-    );
-    const page = await context.newPage();
-    const loaded = await page.goto(consoleOrigin + "/console/");
-    assert.ok(loaded);
-    assert.equal((await loaded.serverAddr())?.ipAddress, "127.0.0.1");
-    if (recovery) {
-      await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
-    }
-    await page.getByLabel("Email", { exact: true }).waitFor();
-    assert.equal(new URL(page.url()).origin, consoleOrigin);
-    const signedOut = await consoleRequest(page, "GET", "/api/auth/session");
-    assert.equal(signedOut.status, 200);
-    assert.equal(signedOut.data, null);
-    await page.getByLabel("Email", { exact: true }).fill(email);
-    // Keep credentials out of Playwright call logs if the form stops accepting input.
-    try {
-      await page.getByLabel("Password", { exact: true }).fill(password);
-    } catch {
-      assert.fail("Could not enter the password on the verified fixture sign-in form");
-    }
-    const response = page.waitForResponse(
-      (res) =>
-        res.url() === consoleOrigin + "/api/auth/sign-in/email" &&
-        res.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    assert.equal((await response).status(), 200, "ordinary Console password form");
-    await page.getByLabel("Password", { exact: true }).waitFor({ state: "hidden" });
-    return page;
-  }
-
-  let owner = await signIn(
-    "admin@development.openclaw.invalid",
-    (await readFile(join(stateDirectory, "initial-admin-password"), "utf8")).trim(),
-  );
-  async function api(method, path, body, status = 200) {
-    const res = await consoleRequest(owner, method, path, body);
-    assert.equal(res.status, status, `${method} ${path}`);
-    return res.data;
-  }
-
-  // Use the shipped first-Agent entry point, including its own bootstrap settings,
-  // deployment checks and real model verification. The rest of the test never
-  // needs the model credential or Git repository authority.
-  const name = "browser-onboarding";
-  const modelEnvironment = {
-    ...environment,
-    OPENCLAW_FIRST_AGENT_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
-  };
-  // General browser proof uses the API-key path even when CI also supplies a PAT.
-  // Dedicated PAT cases retain their account-policy checks separately.
-  delete modelEnvironment.CODEX_ACCESS_TOKEN;
-  delete modelEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  assert.ok(
-    modelEnvironment.OPENAI_API_KEY || modelEnvironment.OPENAI_API_KEY_FILE,
-    "Set OPENAI_API_KEY or OPENAI_API_KEY_FILE for the real browser Agent",
-  );
-  assert.ok(
-    modelEnvironment.OPENCLAW_FIRST_AGENT_MODEL,
-    "Set OCC_TEST_OPENAI_MODEL for the selected account",
-  );
-  const runFirstAgent = () =>
-    execute(
-      process.execPath,
-      [
-        fileURLToPath(new URL("../../scripts/first-agent.ts", import.meta.url)),
-        name,
-        "--harness",
-        "codex",
-        "--control-ui",
-      ],
-      { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
-    );
-  await runFirstAgent();
-  const agents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
-  assert.equal(agents.length, 1, "the helper created one Agent in its own default Namespace");
-  const agent = agents[0];
-  const agentPath = scope + "/agents/" + agent.id;
-  const rev = { id: agent.activeRevisionId };
-  assert.ok(rev.id, "first-Agent reported a serving revision");
-  const deployment = await api("GET", agentPath + "/deployments/" + rev.id);
-  assert.equal(deployment.status, "succeeded");
-  const installation = await api("GET", "/installation");
-  const host = deriveNativeAdminHost(installation.id, agent, agentDomain);
-  const origin = `https://${host}:${browserPort}`;
-  origins.add(origin);
-  async function grant(subjectId, resourceKind, resourceId, actions) {
-    const role = await api(
-      "POST",
-      scope + "/iam/roles",
-      {
-        name: "browser-" + actions.join("-"),
-        permissions: actions.map((action) => ({ action, resourceKind })),
-      },
-      201,
-    );
-    return api(
-      "POST",
-      scope + "/iam/access-bindings",
-      { subjectKind: "identity", subjectId, roleId: role.id, resourceKind, resourceId },
-      201,
-    );
-  }
-  const access = await api("GET", agentPath + "/native-admin");
-  assert.equal(access.origin, origin);
-  assert.equal(access.status, "available");
-  // A second invocation must recognize the current saved template and frozen
-  // revision, complete its real model check, and leave their configuration intact.
-  const configurationPath = scope + "/configurations/" + agent.configurationId;
-  const beforeRepeat = await api("GET", configurationPath);
-  await runFirstAgent();
-  const repeatedAgents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
-  assert.equal(repeatedAgents.length, 1);
-  assert.equal(repeatedAgents[0].id, agent.id);
-  assert.equal(repeatedAgents[0].activeRevisionId, rev.id);
-  const afterRepeat = await api("GET", configurationPath);
-  assert.equal(afterRepeat.generation, beforeRepeat.generation);
-  assert.deepEqual(afterRepeat.values, beforeRepeat.values);
-  const instructions = await api("GET", agentPath + "/workspace/files/AGENTS.md");
-  assert.ok(instructions.content.trim(), "fresh workspace has its real bootstrap instructions");
-  const { stdout: pods } = await execute(
-    "kubectl",
-    [
-      ...kubectl,
-      "get",
-      "pod",
-      "-A",
-      "-l",
-      `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${rev.id}`,
-      "-o",
-      "json",
-    ],
-    { env: environment },
-  );
-  const native = JSON.parse(pods).items.filter((p) =>
-    p.status.containerStatuses?.some((c) => c.name === "agent" && c.ready),
-  );
-  assert.equal(native.length, 1);
-  await execute(
-    "kubectl",
-    [
-      ...kubectl,
-      "-n",
-      native[0].metadata.namespace,
-      "exec",
-      native[0].metadata.name,
-      "-c",
-      "agent",
-      "--",
-      "test",
-      "-s",
-      "/sandbox/enterprise/BOOTSTRAP.md",
-    ],
-    { env: environment },
-  );
-
-  const email = `browser-reader-${randomUUID()}@example.test`;
-  const password = "test-owner-" + randomUUID();
-  const account = await api(
-    "POST",
-    "/api/auth/accounts",
-    { email, password, name: "Test collaborator" },
-    201,
-  );
-  await grant(account.principalId, "agent", agent.id, ["read"]);
-  const collaborator = await signIn(email, password);
-  const denied = "before-" + randomUUID();
-  const allowed = "grant-" + randomUUID();
-  const revoked = "revoked-" + randomUUID();
-  const barrier = "owner-" + randomUUID();
-  const reconnect = "ws-revoked-" + randomUUID();
-  async function navigate(page, marker, status) {
-    const response = await page.goto(origin + "/settings/advanced?probe=" + marker, {
-      waitUntil: "domcontentloaded",
-    });
-    assert.equal(response?.status(), status);
-    assert.equal((await response.serverAddr())?.ipAddress, "127.0.0.1");
-    if (status === 200) {
-      assert.ok(
-        await page.locator("html").getAttribute("data-openclaw-bootstrap-config"),
-        "stock UI bootstrap present",
-      );
-    }
-  }
-  async function connectedTab(person, marker) {
-    const page = await person.context().newPage();
-    // hello-ok is the native Gateway's authenticated response on this exact
-    // socket. A successful HTML request or a bare 101 does not establish it.
-    const hello = page
-      .waitForEvent("websocket", {
-        predicate: (ws) => new URL(ws.url()).origin === origin.replace("https:", "wss:"),
-        timeout: 30_000,
-      })
-      .then(async (ws) => {
-        await ws.waitForEvent("framereceived", {
-          timeout: 30_000,
-          predicate: ({ payload }) => {
-            const frame = JSON.parse(String(payload));
-            return frame.type === "res" && frame.ok === true && frame.payload?.type === "hello-ok";
-          },
-        });
-        return ws;
-      });
-    const [socket] = await Promise.all([hello, navigate(page, marker, 200)]);
-    return { page, socket };
-  }
-  assert.equal((await consoleRequest(collaborator, "GET", agentPath)).status, 200);
-  const deniedPage = await collaborator.context().newPage();
-  await navigate(deniedPage, denied, 403);
-  const binding = await grant(account.principalId, "agent", agent.id, ["administer"]);
-  const shared = await connectedTab(collaborator, allowed);
-  const control = await connectedTab(owner, "control-" + randomUUID());
-  assert.ok(!shared.socket.isClosed() && !control.socket.isClosed());
-
-  // Keep the original pages, cookies and Gateway alive while removing just the
-  // collaborator's administer binding. The owner is an unaffected socket control.
-  const started = performance.now();
-  await Promise.all([
-    shared.socket.waitForEvent("close", { timeout: 30_000 }),
-    api("DELETE", scope + "/iam/access-bindings/" + binding.id, undefined, 204),
-  ]);
-  const elapsed = Math.ceil(performance.now() - started);
-  assert.ok(
-    elapsed <= 30_000,
-    "withdrawal closed the established socket within its authorization lease",
-  );
-  assert.ok(!control.socket.isClosed(), "the owner's existing socket stays open");
-
-  // Use the revoked browser's same origin and cookies to attempt a new upgrade.
-  // A refused upgrade must never open or reach the private Envoy route.
-  const opened = await shared.page.evaluate(
-    ({ path, marker }) =>
-      new Promise((resolve, reject) => {
-        const url = new URL(globalThis.location.origin);
-        url.pathname = path;
-        url.protocol = "wss:";
-        url.searchParams.set("probe", marker);
-        const ws = new globalThis.WebSocket(url);
-        const timeout = setTimeout(() => {
-          ws.close();
-          reject(new Error("upgrade did not settle"));
-        }, 10_000);
-        ws.onopen = () => {
-          clearTimeout(timeout);
-          ws.close();
-          resolve(true);
-        };
-        ws.onclose = () => {
-          clearTimeout(timeout);
-          resolve(false);
-        };
-      }),
-    { path: new URL(shared.socket.url()).pathname, marker: reconnect },
-  );
-  assert.equal(opened, false, "the withdrawn session cannot reopen its native stream");
-  await navigate(deniedPage, revoked, 403);
-  assert.equal(
-    (await consoleRequest(collaborator, "GET", agentPath)).status,
-    200,
-    "same signed-in collaborator retains Agent read",
-  );
-  const barrierPage = await owner.context().newPage();
-  await navigate(barrierPage, barrier, 200);
-  assert.ok(
-    !control.socket.isClosed(),
-    "authorized control still connected after the denied retry",
-  );
-
-  // Correlate closure to OCC's authorization decision rather than a network
-  // interruption. Return a boolean only, scoped to this human and this Agent.
-  async function withdrawalAudited() {
-    const audit = execute(
-      "kubectl",
-      [
-        ...kubectl,
-        "-n",
-        "oce-system",
-        "exec",
-        "-i",
-        "statefulset/postgres",
-        "--",
-        "env",
-        "PGOPTIONS=-c default_transaction_read_only=on",
-        "psql",
-        "-qXAt",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-U",
-        "postgres",
-        "-d",
-        environment.OCC_DEVELOPMENT_DATABASE_NAME ?? "openclaw_enterprise",
-        "-v",
-        "actor=" + account.principalId,
-        "-v",
-        "agent=" + agent.id,
-        "-f",
-        "-",
-      ],
-      { env: environment },
-    );
-    audit.child.stdin
-      .end(`SELECT EXISTS (SELECT 1 FROM occ.audit_events opened JOIN occ.audit_events closed
-    ON opened.details->'nativeAdmin'->>'connectionId'=closed.details->'nativeAdmin'->>'connectionId'
-    WHERE opened.actor_id=:'actor' AND closed.actor_id=:'actor' AND opened.resource_id=:'agent' AND closed.resource_id=:'agent'
-      AND opened.action='openclaw.agents.native_admin.websocket.connect'
-      AND closed.action='openclaw.agents.native_admin.websocket.close'
-      AND closed.details->'nativeAdmin'->>'closeReason'='authorization_denied');`);
-    return (await audit).stdout.trim() === "t";
-  }
-  const auditDeadline = Date.now() + 10_000;
-  let audited = await withdrawalAudited();
-  while (!audited && Date.now() < auditDeadline) {
-    await delay(250);
-    audited = await withdrawalAudited();
-  }
-  assert.ok(audited, "matched native socket connect and authorization-denied close audit");
-  // Require positive controls in the real private Envoy logs before interpreting
-  // absence. Both refused request markers must stop at OCC, before the Gateway.
-  const observationDeadline = Date.now() + 30_000;
-  let reached;
-  while (Date.now() < observationDeadline) {
-    const { stdout: logs } = await execute(
-      "kubectl",
-      [
-        ...kubectl,
-        "-n",
-        "envoy-gateway-system",
-        "logs",
-        "-l",
-        "gateway.envoyproxy.io/owning-gateway-namespace=oce-system",
-        "-c",
-        "envoy",
-        "--tail=1500",
-      ],
-      { env: environment, maxBuffer: 4 * 1024 * 1024 },
-    );
-    if (logs.includes(allowed) && logs.includes(barrier)) {
-      assert.ok(
-        !logs.includes(denied) && !logs.includes(revoked) && !logs.includes(reconnect),
-        "denied requests must not reach private Gateway routing",
-      );
-      reached = true;
-      break;
-    }
-    await delay(500);
-  }
-  assert.ok(reached, "both authorized requests must be observable at the private Gateway route");
-  t.diagnostic(
-    `Agent ${agent.id} revision ${rev.id}: workspace bootstrapped, native UI 200; same reader session 403 -> 200 -> 403, owner 200; Envoy markers denied=0 granted=present revoked=0 owner=present. Authenticated socket closed after ${elapsed} ms (authorization_denied); reconnect refused before Envoy; owner socket stayed connected.`,
-  );
+    host,
+    origin,
+    agent,
+    agentPath,
+    rev,
+    account,
+    recoveryUserId,
+    runtimeImagesBeforeUpgrade,
+    allowOwnedRequest,
+    openRecoveryPage,
+    expectOwnerStatus,
+    grant,
+    consoleRequest,
+    readNativeAccess,
+  } = await verifyOpenShellOwnerPasswordSession(input);
 
   // The earlier phase proves the shared-cookie/password path. Switch only this
   // disposable installation to guarded OIDC; all native runtime I/O stays real.
-  const recoverySession = await api("GET", "/api/auth/session");
   const oidc = await enableInstalledOidcNativeAdmin({
     t,
     cluster,
     stateDirectory,
     kubectl,
     environment,
-    recoveryUserId: recoverySession.user.id,
+    recoveryUserId,
     consoleOrigin,
     agentDomain,
   });
-  owner = await signIn(
-    "admin@development.openclaw.invalid",
-    (await readFile(join(stateDirectory, "initial-admin-password"), "utf8")).trim(),
-    true,
-  );
+  const owner = await openRecoveryPage();
   // Account GET requires Origin, which browser fetch cannot set. Dial the
   // owned listener with its CA and hostname; Chromium's trust does not apply to Node.
   const accountResponse = await publishedJSON(
@@ -491,13 +74,13 @@ export async function verifyOpenShellOwnerSession({
     },
   );
   const currentAccount = accountResponse.data;
-  await api("POST", `/api/auth/accounts/${account.id}/providers/oidc`, {
+  await expectOwnerStatus("POST", `/api/auth/accounts/${account.id}/providers/oidc`, {
     subject: oidc.subject,
     expectedVersion: currentAccount.version,
   });
   await grant(account.principalId, "agent", agent.id, ["administer"]);
   await grant(account.principalId, "namespace", namespaceId, ["read"]);
-  const guardedAccess = await api("GET", agentPath + "/native-admin");
+  const guardedAccess = await readNativeAccess(agentPath);
   assert.equal(guardedAccess.status, "available");
   assert.equal(guardedAccess.sessionMode, "host-only-exchange");
   assert.equal(guardedAccess.origin, origin);
@@ -507,9 +90,7 @@ export async function verifyOpenShellOwnerSession({
     join(await mkdtemp(join(tmpdir(), "oce-native-host-only-real-")), "receipt.json");
   const guarded = await browser.newContext({ serviceWorkers: "block" });
   t.after(() => guarded.close());
-  await guarded.route("**/*", (route) =>
-    origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort(),
-  );
+  await guarded.route("**/*", allowOwnedRequest);
   const received = [];
   const sends = [];
   guarded.on("page", (page) => {
@@ -669,10 +250,7 @@ export async function verifyOpenShellOwnerSession({
         controllerImage: oidc.controllerImage,
         agentId: agent.id,
         revisionId: rev.id,
-        runtimeImagesBeforeUpgrade: native[0].status.containerStatuses.map(({ name, imageID }) => ({
-          name,
-          imageID,
-        })),
+        runtimeImagesBeforeUpgrade,
         provider: "OIDC protocol fixture; runtime and model are real",
         reopenedSameConversation: true,
         chatSubmissions: sends.length,

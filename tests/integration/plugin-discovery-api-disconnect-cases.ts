@@ -15,11 +15,11 @@ import {
   CredentialSourceResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AccessBinding, CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
+import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { listen } from "../helpers/listen.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {

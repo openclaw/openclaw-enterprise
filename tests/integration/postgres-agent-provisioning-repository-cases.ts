@@ -22,7 +22,7 @@ import {
 } from "./postgres-agent-provisioning-setup.ts";
 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -35,7 +35,7 @@ import {
   PROVISIONING_NOT_COMPLETED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { failingTransportDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {

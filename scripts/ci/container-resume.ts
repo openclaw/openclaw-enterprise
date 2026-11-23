@@ -74,21 +74,13 @@ async function verifyPreparation(env: NodeJS.ProcessEnv) {
     `${runPath}/attempts/${env.PREPARATION_ATTEMPT}/jobs`,
     "jobs",
   );
-  const legacyJobs: unknown[] = images.map((image) => `Prepare ${image} OCI image`);
   const nativeJobs: unknown[] = images.flatMap((image) => [
     `prepare / Prepare ${image} (amd64)`,
     `prepare / Prepare ${image} (arm64)`,
     `Assemble ${image} OCI image`,
   ]);
   nativeJobs.push("prepare / Smoke runtime (amd64)", "prepare / Smoke runtime (arm64)");
-  const hasLegacyJobs = jobs.some((job) => legacyJobs.includes(property(job, "name")));
-  if (hasLegacyJobs) {
-    assert.ok(
-      !jobs.some((job) => nativeJobs.includes(property(job, "name"))),
-      "Preparation attempt mixes legacy and native jobs.",
-    );
-  }
-  for (const name of ["validate", ...(hasLegacyJobs ? legacyJobs : nativeJobs)]) {
+  for (const name of ["validate", ...nativeJobs]) {
     const selected = jobs.filter((job) => property(job, "name") === name);
     assert.equal(selected.length, 1, `Exactly one successful ${name} job is required.`);
     assert.equal(property(selected[0], "head_sha"), env.SOURCE_SHA);

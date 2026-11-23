@@ -1,7 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
-import { fileURLToPath } from "node:url";
-import { format, resolveConfig } from "prettier";
+import { writeFile } from "node:fs/promises";
+import { renderChartProgram } from "./render-chart-program.ts";
 
 type ApiCaScript = { filename: string; contents: string };
 
@@ -12,11 +10,10 @@ export async function generateApiCaScripts(): Promise<ApiCaScript[]> {
   return Promise.all(
     programs.map(async (program) => {
       const filename = `${program}.mjs`;
-      const filepath = fileURLToPath(new URL(filename, chartFiles));
-      const source = await readFile(new URL(`${program}.ts`, import.meta.url), "utf8");
-      // Type stripping leaves padding. Format the JavaScript with the repository's settings.
-      const options = await resolveConfig(filepath);
-      const contents = await format(stripTypeScriptTypes(source), { ...options, filepath });
+      const contents = await renderChartProgram(
+        new URL(`${program}.ts`, import.meta.url),
+        new URL(filename, chartFiles),
+      );
       return { filename, contents };
     }),
   );

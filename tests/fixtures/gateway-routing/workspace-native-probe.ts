@@ -14,7 +14,7 @@ import type {
 } from "../../../packages/contracts/src/index.ts";
 import { createDevelopmentComputeDriver } from "../../helpers/development.ts";
 import { createTestSecretDriver } from "../../helpers/secret-driver.ts";
-import { bindRole } from "../../helpers/iam-grants.mjs";
+import { bindRole } from "../../helpers/iam-grants.ts";
 import {
   createTenantReaderFixture,
   tenantRequest,

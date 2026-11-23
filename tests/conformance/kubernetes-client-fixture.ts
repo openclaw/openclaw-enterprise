@@ -14,7 +14,7 @@ import type { TestContext } from "node:test";
 import type { TLSSocket } from "node:tls";
 
 import type { KubernetesAuthentication } from "../../apps/controller/src/drivers/kubernetes/authentication.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 
 type ApiEndpoint = { readonly url: string; readonly caPath: string };

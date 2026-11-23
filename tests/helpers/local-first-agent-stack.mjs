@@ -11,7 +11,8 @@ import {
   redactFailureDetail,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.ts";
-import { selectComposeSubnet } from "./compose-network.mjs";
+import { configurePodmanComposeProvider } from "../../scripts/lib/podman-compose-provider.ts";
+import { selectComposeSubnet } from "./compose-network.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");
@@ -145,7 +146,7 @@ export function startupFailureObservation() {
         }
         candidates++;
         const match =
-          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|controller-image-import|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
+          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|controller-image-import|codex-sandbox-preparation|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
             line,
           );
         if (
@@ -497,9 +498,7 @@ async function existingOrigin(directory, state, environment) {
     COMPOSE_DISABLE_ENV_FILE: "1",
     DOCKER_HOST: state.dockerHost,
   });
-  if (state.containerEngine === "podman") {
-    subprocessEnvironment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
-  }
+  configurePodmanComposeProvider(state.containerEngine, subprocessEnvironment);
   const result = await run(
     state.containerEngine,
     [
@@ -563,6 +562,7 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
   if (existing) {
     return {
       directory: selected,
+      ownsInstallation: false,
       environment: {
         ...testEnvironment,
         OCC_URL: await existingOrigin(selected, existing, testEnvironment),
@@ -707,5 +707,5 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
       context,
     ),
   );
-  return { directory, environment };
+  return { directory, environment, ownsInstallation: true };
 }

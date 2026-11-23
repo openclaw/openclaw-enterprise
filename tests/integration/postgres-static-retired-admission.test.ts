@@ -18,7 +18,7 @@ import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mj
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type FixtureAppFactory = NonNullable<
   NonNullable<Parameters<typeof staticEgressFixture>[1]>["appFactory"]
@@ -327,6 +327,7 @@ test(
       if (context.harnessAuth.method !== "credential_source") {
         assert.fail("source required");
       }
+      assert.ok(context.harnessAuth.source);
       assert.equal(context.harnessAuth.source.id, f.source.id);
       assert.equal(context.harnessAuth.source.config.authorized_base_url, f.modelProvider.baseUrl);
       assert.equal(f.secretReads, secretReads);

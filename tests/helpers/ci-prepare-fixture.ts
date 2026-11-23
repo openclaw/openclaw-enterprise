@@ -5,10 +5,10 @@ import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.ts";
 import { readJsonLines } from "./json-lines.mjs";
-import { socketDirectory } from "./socket-directory.mjs";
+import { socketDirectory } from "./socket-directory.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.ts";
@@ -163,6 +163,29 @@ export function spawnResult(
       clearTimeout(timer);
       resolve({ status, signal, error, ...output });
     });
+  });
+}
+
+// Runs a module program that imports prepare.ts (argv[1]) and uses the state at argv[2].
+export function runProgram(
+  program: string,
+  statePath: string,
+  env: NodeJS.ProcessEnv,
+  timeout?: number,
+) {
+  const prepare = new URL("../../scripts/ci/prepare.ts", import.meta.url).href;
+  return spawnResult(process.execPath, ["--input-type=module", "-e", program, prepare, statePath], {
+    env,
+    ...(timeout === undefined ? {} : { timeout }),
+  });
+}
+
+// prepare.ts appends to $GITHUB_ENV when no --github-env is given, and in CI that is the job's
+// own file, so a case passes GITHUB_ENV or GITHUB_OUTPUT on only when it sets them (finding 1216).
+export function runPrepare(args: string[], env: NodeJS.ProcessEnv = {}) {
+  const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
+  return spawnResult(process.execPath, [preparePath, ...args], {
+    env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
   });
 }
 
@@ -328,22 +351,22 @@ export async function fixtureImageCommands(
         env: { ...env, ...extraEnv },
       }),
     prepare: (args: string[] = [], options?: SpawnOptions) =>
-      run("prepare.mjs", [...prepareArgs, ...args], options),
+      run("prepare.ts", [...prepareArgs, ...args], options),
     prepareStagingSignin: () =>
       spawnResult(
         process.execPath,
         [
           "--input-type=module",
           "-e",
-          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; await prepareStagingSigninCluster(process.argv[1]);',
+          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.ts"; await prepareStagingSigninCluster(process.argv[1]);',
           statePath,
         ],
         { env },
       ),
     warmImageCache: (args: string[] = []) =>
-      run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
+      run("warm-image-cache.ts", ["--state", statePath, ...args]),
     prepareFile: (file: string) =>
-      run("prepare.mjs", ["--lane", lane, "--file", file, "--state", statePath]),
+      run("prepare.ts", ["--lane", lane, "--file", file, "--state", statePath]),
     cleanup,
     cleanupSuccessfully: async () => {
       const result = await cleanup();

@@ -1,14 +1,33 @@
 import { realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import { failureSecrets, redactFailure } from "./failure-redaction.ts";
 import { exercisedAssertionFailures, recordsCoverage } from "./full-integration-coverage.ts";
+import {
+  credentialReplacementCase,
+  credentialReplacementDiagnostic,
+  openShellReplacementCheckpoints,
+  upstreamOutageCase,
+} from "./openshell-progress.mjs";
 import {
   failureDetails,
   optionalReporterField,
   reporterField,
 } from "./runner-failure-diagnostics.ts";
-import { absoluteInputPath, isObject, issue, repoRelativePath } from "./runner-inputs.ts";
+import { absoluteInputPath, issue, repoRelativePath } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
+import { nativeFirstAgentProofDiagnostic } from "./reporter.ts";
+
+// Only the split failure notice consumes this value; symbols stay out of result JSON.
+export const splitCaseFailure = Symbol("failed declared split case");
+
+const nativeRedeploymentCase =
+  "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution";
+const nativeFirstAgentComposeEntry = "tests/integration/local-first-agent-openshell-real.test.mjs";
+const nativeFirstAgentWrappers = new Set([
+  nativeFirstAgentComposeEntry,
+  "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+]);
 
 type TerminalEvent = Parameters<typeof exercisedAssertionFailures>[1][number] & {
   data: Record<string, unknown>;
@@ -28,13 +47,26 @@ type TestCase = {
   durationMs: unknown;
 };
 
-type SuiteSource = { file: string; line?: number; column?: number; nesting?: number };
+type SuiteSource = {
+  file: string;
+  line?: number;
+  column?: number;
+  nesting?: number;
+};
 type Issue = ReturnType<typeof issue>;
+type OpenShellReplacement = {
+  checkpoint: (typeof openShellReplacementCheckpoints)[number];
+  outcome: "failed" | "unfinished";
+};
 export type FileEvidence = {
   details?: NonNullable<ReturnType<typeof failureDetails>> | undefined;
   fileFailure?: { error: unknown; diagnosticKind?: "post-test-async-activity" };
   measurements: unknown[];
   unfinishedStage?: "installation" | "replacement" | undefined;
+  openShellReplacement?: OpenShellReplacement | undefined;
+  [splitCaseFailure]?:
+    | ReturnType<typeof nativeFirstAgentProofDiagnostic>
+    | ReturnType<typeof credentialReplacementDiagnostic>;
   testRunExercised: boolean;
   tests: TestCase[];
   skippedSuites: { name: unknown; source: SuiteSource | undefined }[];
@@ -96,10 +128,15 @@ function parseReporter(stdout: string, timedOut: boolean): unknown[] {
   return events;
 }
 
+const upstreamStages = ["installation", "exposure-auth", "initial-model", "replacement"];
+const upstreamReplacementPrefix = [
+  ...upstreamStages.slice(0, -1).flatMap((stage) => [`${stage}:started`, `${stage}:passed`]),
+  "replacement:started",
+];
+
 // An unfinished start is useful only if the earlier operations finished in order
 // and the independent terminal diagnostics agree with that sequence.
 function upstreamUnfinishedStage(events: readonly unknown[], measurements: readonly unknown[]) {
-  const stages = ["installation", "exposure-auth", "initial-model", "replacement"];
   const phases = ["installation", "exposure-auth", "gateway-turns", "pod-replacement"];
   let index = 0;
   let started = false;
@@ -116,7 +153,7 @@ function upstreamUnfinishedStage(events: readonly unknown[], measurements: reado
       continue;
     }
     if (
-      reporterField(data, "stage") !== stages[index] ||
+      reporterField(data, "stage") !== upstreamStages[index] ||
       reporterField(data, "outcome") !== (started ? "passed" : "started")
     ) {
       return undefined;
@@ -126,7 +163,7 @@ function upstreamUnfinishedStage(events: readonly unknown[], measurements: reado
     }
     started = !started;
   }
-  const stage = stages[index];
+  const stage = upstreamStages[index];
   if (!started || (stage !== "installation" && stage !== "replacement")) {
     return undefined;
   }
@@ -138,7 +175,7 @@ function upstreamUnfinishedStage(events: readonly unknown[], measurements: reado
     if (kind !== "openshell-stage" && kind !== "openshell-sandbox-phase") {
       return undefined;
     }
-    const names = kind === "openshell-stage" ? stages : phases;
+    const names = kind === "openshell-stage" ? upstreamStages : phases;
     const measuredStage = reporterField(measurement, "stage");
     const position = typeof measuredStage === "string" ? names.indexOf(measuredStage) : -1;
     if (
@@ -153,6 +190,66 @@ function upstreamUnfinishedStage(events: readonly unknown[], measurements: reado
   return stage;
 }
 
+// Attribute progress through the selected terminal event. Node can deliver
+// independent measurements after a failed case.
+function upstreamReplacement(
+  events: readonly unknown[],
+  measurements: readonly unknown[],
+  cutoff: unknown,
+  outcome: OpenShellReplacement["outcome"],
+): OpenShellReplacement | undefined {
+  const progress: unknown[] = [];
+  let afterCutoff = false;
+  for (const event of events) {
+    if (event === cutoff) {
+      afterCutoff = true;
+    }
+    if (reporterField(event, "type") !== "test:progress") {
+      continue;
+    }
+    const data = reporterField(event, "data");
+    const kind = reporterField(data, "kind");
+    if (kind !== "openshell-stage" && kind !== "openshell-replacement-checkpoint") {
+      continue;
+    }
+    if (afterCutoff) {
+      return undefined;
+    }
+    progress.push(
+      kind === "openshell-stage"
+        ? `${reporterField(data, "stage")}:${reporterField(data, "outcome")}`
+        : reporterField(data, "checkpoint"),
+    );
+  }
+
+  if (outcome === "failed") {
+    const replacement = measurements.filter(
+      (entry) =>
+        optionalReporterField(entry, "kind") === "openshell-stage" &&
+        reporterField(entry, "stage") === "replacement",
+    );
+    if (
+      progress.pop() !== "replacement:failed" ||
+      replacement.length !== 1 ||
+      reporterField(replacement[0], "outcome") !== "failed"
+    ) {
+      return undefined;
+    }
+  }
+  if (!upstreamReplacementPrefix.every((step, index) => progress[index] === step)) {
+    return undefined;
+  }
+  const checkpoints = progress.slice(upstreamReplacementPrefix.length);
+  const checkpoint = openShellReplacementCheckpoints[checkpoints.length - 1];
+  if (
+    checkpoint === undefined ||
+    !checkpoints.every((step, index) => step === openShellReplacementCheckpoints[index])
+  ) {
+    return undefined;
+  }
+  return { checkpoint, outcome };
+}
+
 function isTerminalEvent(event: unknown, absolutePath: string): event is TerminalEvent {
   const type = reporterField(event, "type");
   if (type !== "test:pass" && type !== "test:fail") {
@@ -160,7 +257,7 @@ function isTerminalEvent(event: unknown, absolutePath: string): event is Termina
   }
   const data = reporterField(event, "data");
   return (
-    isObject(data) &&
+    isRecord(data) &&
     (data.testType === "suite" || (Number.isInteger(data.line) && data.name !== absolutePath))
   );
 }
@@ -187,7 +284,7 @@ function assertionFailures(
     .filter((event) => reporterField(event, "type") === "test:summary")
     .map((event) => reporterField(event, "data"));
   const [counts] = summaries;
-  if (summaries.length !== 1 || !isObject(counts)) {
+  if (summaries.length !== 1 || !isRecord(counts)) {
     return undefined;
   }
   const { tests, passed, failed, cancelled, skipped, todo, suites } = counts;
@@ -222,13 +319,14 @@ export function readFileEvidence(
     absolutePath: string;
     relativePath: string;
     laneName: string;
+    expectedTests: readonly string[];
     env: NodeJS.ProcessEnv;
     focused: boolean;
   },
   evidence: FileEvidence,
   issues: Issue[],
 ): void {
-  const { root, absolutePath, relativePath, laneName, env, focused } = context;
+  const { root, absolutePath, relativePath, laneName, expectedTests, env, focused } = context;
   const events = parseReporter(output.stdout, output.error?.code === "ETIMEDOUT");
   if (
     focused &&
@@ -290,15 +388,62 @@ export function readFileEvidence(
         optionalReporterField(reporterField(event, "data"), "kind") === "measurement",
     )
     .map((event) => reporterField(reporterField(event, "data"), "measurement"));
-  if (
-    relativePath === "tests/integration/openshell-upstream-real.test.ts" &&
-    ["openshell", "openshell-installers"].includes(laneName)
-  ) {
+  const upstream =
+    relativePath === upstreamOutageCase.entry &&
+    ["openshell", "openshell-installers"].includes(laneName);
+  if (upstream) {
     evidence.unfinishedStage = upstreamUnfinishedStage(events, evidence.measurements);
   }
 
   const terminalEvents = events.filter((event) => isTerminalEvent(event, absolutePath));
   const caseEvents = terminalEvents.filter(({ data }) => data.testType !== "suite");
+  if (upstream && expectedTests.length === 1 && expectedTests[0] === upstreamOutageCase.name) {
+    const interruptions = events.filter(
+      (event) => reporterField(event, "type") === "test:interrupted",
+    );
+    const [interrupted] = interruptions;
+    const [testCase] = caseEvents;
+    if (
+      output.error?.code === "ETIMEDOUT" &&
+      evidence.unfinishedStage === "replacement" &&
+      caseEvents.length === 0 &&
+      interruptions.length === 1 &&
+      optionalReporterField(
+        optionalReporterField(interrupted, "data"),
+        "singleUpstreamOutageCase",
+      ) === true
+    ) {
+      evidence.openShellReplacement = upstreamReplacement(
+        events,
+        evidence.measurements,
+        interrupted,
+        "unfinished",
+      );
+    } else if (
+      !output.error &&
+      !output.signal &&
+      !rootFailure &&
+      interruptions.length === 0 &&
+      terminalEvents.length === 1 &&
+      testCase?.type === "test:fail" &&
+      events.some((event) => reporterField(event, "type") === "test:upstream-outage-attribution") &&
+      testCase.data.file === join(root, upstreamOutageCase.declaration) &&
+      testCase.data.name === upstreamOutageCase.name &&
+      testCase.data.nesting === 0 &&
+      testCase.data.testType === "test"
+    ) {
+      const caseTimedOut =
+        optionalReporterField(testCase.data.error, "failureType") === "testTimeoutFailure";
+      if (!caseTimedOut || (output.status === 1 && evidence.unfinishedStage === "replacement")) {
+        evidence.openShellReplacement = upstreamReplacement(
+          events,
+          evidence.measurements,
+          testCase,
+          caseTimedOut ? "unfinished" : "failed",
+        );
+      }
+    }
+  }
   let coverageAssertions: ReturnType<typeof assertionFailures>;
   if (
     recordsCoverage(process.env.GITHUB_WORKFLOW) &&
@@ -334,6 +479,51 @@ export function readFileEvidence(
       durationMs,
     };
   });
+  const nativeProofEntry =
+    laneName === "openshell-installers" &&
+    nativeFirstAgentWrappers.has(relativePath) &&
+    expectedTests.filter((name) => name === nativeRedeploymentCase).length === 1;
+  const credentialReplacementEntry =
+    laneName === "openshell-policy" &&
+    relativePath === credentialReplacementCase.entry &&
+    expectedTests.length === 1 &&
+    expectedTests[0] === credentialReplacementCase.name;
+  if (
+    (nativeProofEntry || credentialReplacementEntry) &&
+    output.status === 1 &&
+    !output.error &&
+    !output.signal &&
+    !rootFailure &&
+    !events.some((event) => reporterField(event, "type") === "test:interrupted")
+  ) {
+    // The native case is nested alongside other proofs. Policy must have no
+    // siblings at all. In both cases require the actual declaration's terminal.
+    const [terminal, duplicate] = nativeProofEntry
+      ? terminalEvents.filter(({ data }) => data.name === nativeRedeploymentCase)
+      : terminalEvents;
+    const declaration = nativeProofEntry
+      ? "tests/integration/local-first-agent-real.test.mjs"
+      : credentialReplacementCase.declaration;
+    if (
+      !duplicate &&
+      terminal?.type === "test:fail" &&
+      terminal.data.testType === "test" &&
+      terminal.data.file === join(root, declaration) &&
+      terminal.data.nesting === (nativeProofEntry ? 1 : 0)
+    ) {
+      if (nativeProofEntry) {
+        evidence[splitCaseFailure] = nativeProofFailure(
+          evidence.tests,
+          relativePath === nativeFirstAgentComposeEntry,
+        );
+      } else if (terminal.data.name === credentialReplacementCase.name) {
+        const diagnostic = optionalReporterField(evidence.tests[0]?.error, "diagnostic");
+        if (isRecord(diagnostic) && diagnostic.kind === "openshell-credential-replacement") {
+          evidence[splitCaseFailure] = credentialReplacementDiagnostic(diagnostic.stage);
+        }
+      }
+    }
+  }
   // A skipped describe() never registers its tests, so only its suite event shows the skip.
   evidence.skippedSuites = terminalEvents
     .filter(
@@ -344,6 +534,23 @@ export function readFileEvidence(
         data.name !== absolutePath,
     )
     .map(({ data }) => ({ name: data.name, source: suiteSource(root, data) }));
+}
+
+// Read the redacted error on the named case. A sibling may report a different
+// native proof failure, so scanning the file for any usable diagnostic is unsafe.
+function nativeProofFailure(
+  tests: readonly { name: unknown; error?: unknown }[],
+  compose: boolean,
+) {
+  const test = tests.find(({ name }) => name === nativeRedeploymentCase);
+  const diagnostic = optionalReporterField(test?.error, "diagnostic");
+  return isRecord(diagnostic) && diagnostic.kind === "native-first-agent-proof"
+    ? nativeFirstAgentProofDiagnostic(
+        diagnostic.failureStage,
+        undefined,
+        compose ? diagnostic.modelPhase : undefined,
+      )
+    : undefined;
 }
 
 export function validateExpectedTests(
@@ -357,7 +564,7 @@ export function validateExpectedTests(
   }
   const statusByName = new Map<string, TestStatus | "invalid">();
   for (const testCase of tests) {
-    if (!isObject(testCase) || typeof testCase.name !== "string") {
+    if (!isRecord(testCase) || typeof testCase.name !== "string") {
       issues.push(
         issue("invalid-test-evidence", "test evidence contains an invalid case entry", {
           file: path,

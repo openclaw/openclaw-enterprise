@@ -34,6 +34,7 @@ import {
   retryKubectlWrite,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
@@ -53,7 +54,7 @@ import {
   registerBoundedTeardownRejectionCases,
   shortTeardownOptions,
 } from "./kubernetes-teardown-cases.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RetryOptions = {
   sleep: (ms: number) => Promise<unknown>;
@@ -580,18 +581,28 @@ if (args[verb] === "logs") {
           AbortSignal.timeout(5_000),
         );
         assert.equal(result, scenario === "valid" ? "selected container log" : undefined, scenario);
-        const calls: Array<{ args: string[]; credentialPresent: boolean }> =
-          await readJsonLines(callsPath);
+        const calls = await readJsonLines(callsPath);
         assert.ok(calls.length > 0, "the reader must invoke the child process");
-        assert.ok(
-          calls.every((call) => !call.credentialPresent),
-          "unrelated credentials must not reach kubectl",
-        );
-        const logCalls = calls.filter((call) => call.args.includes("logs"));
+        const commandArgs = calls.map((call) => {
+          assert.ok(typeof call === "object" && call !== null && !Array.isArray(call));
+          assert.ok(
+            "credentialPresent" in call && typeof call.credentialPresent === "boolean",
+            "kubectl must record a boolean credentialPresent",
+          );
+          assert.equal(
+            call.credentialPresent,
+            false,
+            "unrelated credentials must not reach kubectl",
+          );
+          assert.ok("args" in call, "kubectl must record its command arguments");
+          return call.args;
+        });
+        expectStringArrays(commandArgs);
+        const logCalls = commandArgs.filter((args) => args.includes("logs"));
         assert.equal(logCalls.length, scenario.startsWith("owner-") ? 0 : 1, scenario);
-        for (const call of logCalls) {
-          assert.ok(call.args.includes("--container=agent"));
-          assert.ok(call.args.includes("harness"));
+        for (const args of logCalls) {
+          assert.ok(args.includes("--container=agent"));
+          assert.ok(args.includes("harness"));
         }
       }
     },
@@ -1957,23 +1968,8 @@ const topologyStandIn = (exported: string[]) => `
     });
     throw new Error("topology setup failed");
   }
-  // The live Slack proof checks both bots before it arranges the topology.
-  export async function slackApi(method, token, query) {
-    return method === "auth.test"
-      ? { team_id: "T0", user_id: token }
-      : {
-          channel: {
-            id: query.channel,
-            is_channel: true,
-            is_private: false,
-            is_im: false,
-            is_mpim: false,
-            is_member: true,
-          },
-        };
-  }
   ${exported
-    .filter((name) => !["arrangeProductionTopology", "slackApi"].includes(name))
+    .filter((name) => name !== "arrangeProductionTopology")
     .map((name) =>
       name.startsWith("requires")
         ? `export const ${name} = {};`
@@ -2002,6 +1998,28 @@ test(
     assert.ok(exported.includes("arrangeProductionTopology"));
     const standIn = join(directory, "topology.mjs");
     await writeFile(standIn, topologyStandIn(exported));
+    const slackWire = new URL("../helpers/slack-web-api.ts", import.meta.url);
+    const slackStandIn = join(directory, "slack-web-api.mjs");
+    await writeFile(
+      slackStandIn,
+      `
+  // The live Slack proof checks both bots before it arranges the topology.
+  export async function slackApi(method, token, query) {
+    return method === "auth.test"
+      ? { team_id: "T0", user_id: token }
+      : {
+          channel: {
+            id: query.channel,
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_member: true,
+          },
+        };
+  }
+    `,
+    );
     const hooks = join(directory, "hooks.mjs");
     await writeFile(
       hooks,
@@ -2009,9 +2027,13 @@ test(
       registerHooks({
         resolve(specifier, context, nextResolve) {
           const resolved = nextResolve(specifier, context);
-          return resolved.url === ${JSON.stringify(helper.href)}
-            ? { url: ${JSON.stringify(pathToFileURL(standIn).href)}, shortCircuit: true }
-            : resolved;
+          if (resolved.url === ${JSON.stringify(helper.href)}) {
+            return { url: ${JSON.stringify(pathToFileURL(standIn).href)}, shortCircuit: true };
+          }
+          if (resolved.url === ${JSON.stringify(slackWire.href)}) {
+            return { url: ${JSON.stringify(pathToFileURL(slackStandIn).href)}, shortCircuit: true };
+          }
+          return resolved;
         },
       });`,
     );
@@ -2297,10 +2319,9 @@ async function fakeKubectlExec(script: string, ...args: string[]) {
 // A loopback port that refuses connections until the test ends. A released port could be
 // taken by a test running in parallel, and the probe would then connect.
 async function refusingLoopbackPort(t: TestContext) {
-  const refusing: { port: number | undefined; release: () => Promise<void> } = await refusingPort();
-  t.after(() => refusing.release());
-  assert.ok(typeof refusing.port === "number");
-  return refusing.port;
+  const { port, release } = await refusingPort();
+  t.after(release);
+  return port;
 }
 
 const quiet = { sleep: async () => {}, log: () => {} };
@@ -2317,8 +2338,7 @@ test("the probe's own refused connection passes a deny check", async (t) => {
 
 test("a connected probe fails a deny check", async (context) => {
   const server = createServer((socket) => socket.end());
-  const port: unknown = await listen(context, server);
-  assert.equal(typeof port, "number");
+  const port = await listen(context, server);
   await assert.rejects(
     assertProbeDenied(
       "open loopback traffic",
@@ -2414,6 +2434,112 @@ test("the inline probe's refused connection passes a deny check", async (t) => {
   );
   assert.deepEqual(denial, { denied: true, code: "ECONNREFUSED" });
 });
+
+test(
+  "the installed two-cluster preflight rejects unsafe inputs without exposing private values",
+  { timeout: 20_000 },
+  async (t): Promise<void> => {
+    const directory = await temporaryDirectory(t, "occ-two-cluster-inputs-");
+    const configurationFile = join(directory, "configuration.json");
+    const serviceKeyFile = join(directory, "missing-service-key.json");
+    const installedTest = fileURLToPath(
+      new URL("../integration/kubernetes-two-cluster-real.test.mjs", import.meta.url),
+    );
+    const env = {
+      HOME: directory,
+      PATH: directory,
+      OCC_TEST_TWO_CLUSTER_CONFIG: configurationFile,
+    };
+    const username = "private-user-marker";
+    const password = "private-password-marker";
+    const requestValue = "private-request-marker";
+    const invalidUrl = "The two-cluster fixture requires a valid apiUrl.";
+    const privateUrl =
+      "The two-cluster fixture apiUrl cannot contain credentials, a query or a fragment.";
+
+    // The absent key file and isolated child keep any unexpected fall-through
+    // from reaching an installed cluster. A valid selection reaches the
+    // mode-specific credential check before the file can be opened.
+    for (const [name, configuration, message] of [
+      [
+        "URL credentials",
+        { apiUrl: syntheticCredentialUrl({ username, password, host: "127.0.0.1" }) },
+        privateUrl,
+      ],
+      [
+        "malformed URL with credentials",
+        {
+          apiUrl: syntheticCredentialUrl({
+            username,
+            password,
+            host: "localhost",
+            port: "invalid-port",
+          }),
+        },
+        invalidUrl,
+      ],
+      [
+        "malformed JSON",
+        `{"apiUrl": "${requestValue}`,
+        "The two-cluster fixture must be a JSON object.",
+      ],
+      ["non-string URL", { apiUrl: [requestValue] }, invalidUrl],
+      ["URL query", { apiUrl: `https://[::1]/?token=${requestValue}` }, privateUrl],
+      ["URL fragment", { apiUrl: `http://localhost/#${requestValue}` }, privateUrl],
+      ["empty URL query", { apiUrl: "https://127.0.0.1/?" }, privateUrl],
+      ["empty URL fragment", { apiUrl: "https://127.0.0.1/#" }, privateUrl],
+      [
+        "nonloopback URL",
+        { apiUrl: "https://192.0.2.1" },
+        "The two-cluster fixture apiUrl must use HTTP or HTTPS on loopback.",
+      ],
+      [
+        "unsupported URL scheme",
+        { apiUrl: "ftp://localhost" },
+        "The two-cluster fixture apiUrl must use HTTP or HTTPS on loopback.",
+      ],
+      [
+        "unsupported auth method",
+        { apiUrl: "http://127.0.0.1", harnessAuthMethod: requestValue },
+        "Unsupported harnessAuthMethod.",
+      ],
+      [
+        "missing default API key",
+        { apiUrl: "http://localhost" },
+        "The selected real-runtime case requires OPENAI_API_KEY.",
+      ],
+      [
+        "missing PAT",
+        { apiUrl: "https://[::1]", harnessAuthMethod: "codex_pat" },
+        "The selected real-runtime case requires CODEX_ACCESS_TOKEN.",
+      ],
+    ] as const) {
+      const input =
+        typeof configuration === "string"
+          ? configuration
+          : JSON.stringify({ serviceKeyFile, ...configuration });
+      await writeFile(configurationFile, input, { mode: 0o600 });
+      await assert.rejects(
+        execute(process.execPath, ["--test", installedTest], {
+          env,
+          encoding: "utf8",
+          signal: t.signal,
+          timeout: 5_000,
+        }),
+        (error: unknown): boolean => {
+          expectExecFailure(error);
+          assert.equal(error.code, 1, name);
+          const diagnostic = error.stdout + error.stderr;
+          for (const [index, marker] of [username, password, requestValue].entries()) {
+            assert.equal(diagnostic.includes(marker), false, `${name} leaked marker ${index + 1}`);
+          }
+          assert.ok(diagnostic.includes(message), name);
+          return true;
+        },
+      );
+    }
+  },
+);
 
 test("an inline deny check fails unless the probe reports a denial", async (t) => {
   const source = await readFile(probeScript, "utf8");

@@ -191,7 +191,7 @@ the same worker and port. Do not select Agent workload Pods as trusted peers.
 Before activating a repository binding, verify the App installation from the
 current worker. Use its mounted signing key and the issuer's CA configuration;
 an operator's `gh` result or an unsigned HTTPS read does not check this path.
-The [installation check](../../assets/openshell-quickstart/verify-github-installation.mjs)
+The [installation check](../../snippets/openshell-quickstart/verify-github-installation.mts)
 uses the worker's signer and issuer request-options factory, but sends only a
 bodyless installation GET. It creates no admission and requests no token.
 
@@ -199,15 +199,18 @@ Set `ISSUER_CA_PATH` to `repository.preparedGitHub.issuerCaPath`, or leave it
 empty if that setting is absent. The example uses the fragment's standard mount
 paths and GitHub.com. Use `namespace` from the quickstart session for the OCE Namespace ID approved in the
 registry. Set `WORKER_POD` to the current worker Pod and `PLATFORM_NS`
-to its Kubernetes namespace, then run from the matching release checkout:
+to its Kubernetes namespace. Run the command from the matching release checkout.
+For a downloaded site tree, set
+`installation_check=docs/assets/openshell-quickstart/verify-github-installation.mjs`
+from the directory that contains `docs/`.
 
 ```bash
 kubectl --context "$CONTEXT" -n "$PLATFORM_NS" get pod "$WORKER_POD" \
   -o jsonpath='{.metadata.uid}{"\n"}{.spec.containers[?(@.name=="worker")].image}{"\n"}{.status.containerStatuses[?(@.name=="worker")].imageID}{"\n"}'
 
 kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -- \
-  node --input-type=module - "$namespace" "${ref:-application}" "${ISSUER_CA_PATH:-}" \
-  < docs/assets/openshell-quickstart/verify-github-installation.mjs
+  node --input-type=module-typescript - "$namespace" "${ref:-application}" "${ISSUER_CA_PATH:-}" \
+  < "${installation_check:-docs/snippets/openshell-quickstart/verify-github-installation.mts}"
 ```
 
 Require `success: true`: HTTP 200, verified TLS and matching App and installation
@@ -262,6 +265,20 @@ GitHub App permissions and normal GitHub branch rules still apply. OCE adds no
 branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision
 to change access; do not rewrite a narrow grant into a broader one in place.
+
+### Work with GitHub issues and pull requests
+
+The runtime bundles a [GitHub REST skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
+in Codex’s standard skill directory. Deploy an image containing the skill and
+ask the Agent to work on a configured repository. Codex can discover the
+instructions automatically.
+
+The skill shows how to choose a REST endpoint and call it with `gh api`.
+The deployed binding and network policy determine which requests succeed.
+For example, posting a conversation comment on a PR requires permission to
+write to the issue comments endpoint. A grant limited to reading issues and
+opening PRs excludes commenting. For a ref-constrained draft, keep using the
+[designated client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
 
 ### Plan for request limits
 

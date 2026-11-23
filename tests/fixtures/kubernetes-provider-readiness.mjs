@@ -8,6 +8,7 @@ import {
   tenant,
   digest,
   preparedAuth,
+  routedGatewayConfiguration,
   routedOptions,
   routedRevision,
   labelSelectorLabels,
@@ -43,6 +44,20 @@ export function providerReadinessFixture({
   sandboxDriver,
   workspaceNodePeerLabels = async ({ revision }) => supervisorPeerLabels(revision.id),
 } = {}) {
+  /** @typedef {import("../../packages/contracts/src/index.ts").SandboxDriver} SandboxDriver */
+  /** @type {Pick<SandboxDriver, "id" | "implementation"> & Partial<SandboxDriver>} */
+  const sandbox = sandboxDriver ?? {
+    id: "sandbox-provider",
+    implementation: "openshell",
+    async provisionHarness(context) {
+      if (provisionHarness !== undefined) {
+        return provisionHarness(context);
+      }
+      assert.fail("activation must only observe the previously provisioned Harness");
+    },
+    ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
+    workspaceNodePeerLabels,
+  };
   const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -67,18 +82,7 @@ export function providerReadinessFixture({
           return true;
         },
       },
-      sandboxDriver: sandboxDriver ?? {
-        id: "sandbox-provider",
-        implementation: "openshell",
-        async provisionHarness(context) {
-          if (provisionHarness !== undefined) {
-            return provisionHarness(context);
-          }
-          assert.fail("activation must only observe the previously provisioned Harness");
-        },
-        ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
-        workspaceNodePeerLabels,
-      },
+      sandboxDriver: sandbox,
     },
   );
   const revision = routedRevision(driver, {
@@ -86,7 +90,7 @@ export function providerReadinessFixture({
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },
-        gateway: { ...routedRevision(driver).configuration.gateway, controlUi: { enabled: false } },
+        gateway: { ...routedGatewayConfiguration(), controlUi: { enabled: false } },
       },
       "info",
     ),
@@ -94,26 +98,26 @@ export function providerReadinessFixture({
   });
   const namespace = kubernetesNamespaceName(tenant.id);
   const agentName = `agent-${digest(revision.agentId)}`;
-  const deployment = driver.deployment(
-    `${agentName}-rev-${digest(revision.id)}`,
-    {
+  const deployment = driver.deployment({
+    name: `${agentName}-rev-${digest(revision.id)}`,
+    ownership: {
       namespaceId: tenant.id,
       agentId: revision.agentId,
       revisionId: revision.id,
       servicePrincipalId: revision.servicePrincipalId,
     },
-    { name: namespace, plane: "execution" },
-    "agent:local",
-    agentName,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
-  const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key", false);
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: agentName,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
+  const labels = {
+    ...deployment.spec.template.metadata.labels,
+    "openclaw.dev/network-profile": "provider-fenced-v1",
+  };
   const requests = [];
   let observe = () => ({ apiVersion: "v1", kind: "PodList", items: [] });
   const core = {
@@ -209,7 +213,8 @@ export function providerReadinessFixture({
     requests,
     core,
     // The Sandbox Driver Compute holds, so a test can add an optional method later.
-    sandbox: driver.sandboxDriver,
+    sandbox,
+    /** @param {string} name */
     pod(name, ready = "True") {
       return {
         apiVersion: "v1",

@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
-import { prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
+import { prepareDevUpImage } from "../../scripts/ci/prepare.ts";
 import { availablePort } from "../helpers/available-port.ts";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",

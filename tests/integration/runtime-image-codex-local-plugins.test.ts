@@ -4,7 +4,7 @@ import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { EgressInstallation } from "../../packages/contracts/src/index.ts";
 import type { FixtureSetup } from "../fixtures/codex-local-plugins/launch.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const names = ["selected", "excluded"];
 const marketplace = '[marketplaces.oce-fixture]\nsource_type = "local"\nsource = "/fixture"\n';
@@ -51,7 +51,8 @@ async function packages(t: TestContext) {
 }
 
 async function dockerCase(t: TestContext) {
-  const { runDocker, image } = await import("../helpers/runtime-image-startup.mjs");
+  const { runDocker } = await import("../helpers/runtime-image-docker.ts");
+  const { image } = await import("../helpers/runtime-image-startup.ts");
   const root = await packages(t);
   const container = `oce-native-boundary-${randomUUID()}`;
   t.after(() => runDocker(["rm", "-f", container]));

@@ -1,24 +1,36 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, rename, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { readFile, rename, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { test, type TestContext } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { stagedCreateTimeout } from "../../scripts/ci/k3d-preparation-diagnostics.ts";
+import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   assertStderrMatch,
   digest,
-  fixtureImageCommands,
+  fixtureImageCommands as imageCommands,
   fixturePreparationMetrics,
+  immutableImage,
+  nodeBaseImage,
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.ts";
-import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
+import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
 import { interceptFixtureDocker, type ImageCommands } from "./ci-prepare-k3d-docker-fixture.ts";
+
+// Reuse Node's compiled modules only among the CLI children of this test file.
+const cacheEnv =
+  process.env.NODE_DISABLE_COMPILE_CACHE || process.env.NODE_V8_COVERAGE
+    ? {}
+    : { NODE_COMPILE_CACHE: fileTemporaryDirectory("k3d-compile-") };
+const fixtureImageCommands: typeof imageCommands = (t, scenario, lane, env) =>
+  imageCommands(t, scenario, lane, { ...cacheEnv, ...env });
 
 // Linux reports an exited but unreaped process as a zombie; it holds nothing.
 function processRunning(pid: number) {
@@ -58,6 +70,24 @@ function diagnosticsReport(text: string) {
 
 async function readDiagnostics(commands: ImageCommands) {
   return diagnosticsReport(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
+}
+
+async function cleanupUnpublishedCluster(commands: ImageCommands, directory: string | undefined) {
+  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+  await commands.cleanupSuccessfully();
+  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+  assert.ok(directory, "expected the owned cluster directory");
+  await assert.rejects(() => stat(directory), { code: "ENOENT" });
+}
+
+async function assertFixtureProbeSkipped(commands: ImageCommands) {
+  const state = await commands.readState();
+  assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
+  assert.equal(state.env, undefined);
+  const calls = await commands.commands();
+  const probes = calls.filter(({ command, args }) => command === "docker" && args[0] === "version");
+  // The only version probe belongs to concurrent PostgreSQL preparation.
+  assert.equal(probes.length, 1);
 }
 
 export function registerFixtureBuildDeadlineCases() {
@@ -388,16 +418,7 @@ export function registerFixtureBuildDeadlineCases() {
       /Fixture image preparation fixture-engine-version was not started: the lane keeps 180000 ms/,
     );
     assert.doesNotMatch(result.stderr + result.stdout, /did not finish building|20 min|cache miss/);
-    const state = await commands.readState();
-    assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
-    assert.equal(state.env, undefined);
-    // The only version probe belongs to concurrent PostgreSQL preparation.
-    assert.equal(
-      (await commands.commands()).filter(
-        ({ command, args }) => command === "docker" && args[0] === "version",
-      ).length,
-      1,
-    );
+    await assertFixtureProbeSkipped(commands);
     await commands.cleanupSuccessfully();
   });
 
@@ -413,22 +434,136 @@ export function registerFixtureBuildDeadlineCases() {
         result.stderr,
         /fixture-engine-version requires a valid finite command timeout/,
       );
-      const state = await commands.readState();
-      assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
-      assert.equal(state.env, undefined);
-      // Concurrent PostgreSQL still owns its existing version probe.
-      assert.equal(
-        (await commands.commands()).filter(
-          ({ command, args }) => command === "docker" && args[0] === "version",
-        ).length,
-        1,
-      );
+      await assertFixtureProbeSkipped(commands);
       await commands.cleanupSuccessfully();
     });
   }
 }
 
+const slackHelmFile = "tests/integration/channel-egress-helm-real.test.ts";
+const proxyCidrsKey = "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS";
+
+async function slackHelmPreparation(t: TestContext) {
+  const commands = await fixtureImageCommands(t, "save-failed", "slack", {
+    NODE_BASE_IMAGE: nodeBaseImage,
+    OPENAI_API_KEY: "synthetic-model-key",
+    OCC_TEST_OPENAI_MODEL: "synthetic-model",
+    OCC_TEST_SLACK_CHANNEL_ID: "synthetic-channel",
+    OCC_TEST_SLACK_SENDER_BOT_TOKEN: "synthetic-sender",
+    SLACK_APP_TOKEN: "synthetic-app",
+    SLACK_BOT_TOKEN: "synthetic-bot",
+    OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+    [proxyCidrsKey]: "10.0.0.0/8",
+  });
+  // The fixture export fails after cluster and PostgreSQL setup. Stage the
+  // file command's prepared inputs directly to keep routing setup out of this test.
+  const lane = await commands.prepare();
+  assert.equal(lane.status, 1);
+  assertStderrMatch(lane.stderr, /synthetic export failure/);
+  const state = await commands.readState();
+  const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
+  assert.ok(cluster && cluster.status === "ready");
+  assert.ok(
+    state.resources.some(({ kind, status }) => kind === "compose-postgres" && status === "ready"),
+  );
+  await writeFile(
+    commands.statePath,
+    JSON.stringify({
+      ...state,
+      env: {
+        OCC_TEST_KUBERNETES_KUBECONFIG: cluster.kubeconfig,
+        OCC_TEST_KUBERNETES_CONTEXT: cluster.context,
+      },
+    }),
+    { mode: 0o600 },
+  );
+  return commands;
+}
+
 export function registerClusterBootstrapCases() {
+  test("Slack Helm file preparation publishes only the local Pod route IPv4 host", async (t) => {
+    const commands = await slackHelmPreparation(t);
+    const result = await commands.prepare(["--file", slackHelmFile], {
+      env: { CI_FIXTURE_SCENARIO: "slack-helm-ready" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const published = (await readFile(commands.githubEnv, "utf8")).split("\n");
+    assert.deepEqual(
+      published.filter((line) => line.startsWith(`${proxyCidrsKey}=`)),
+      [`${proxyCidrsKey}=10.42.3.33/32`],
+    );
+    const proxyReads = async () =>
+      (await commands.commands())
+        .filter(({ args }) =>
+          ["get nodes -o json", "ip route get 10.42.3.34"].includes(
+            args.slice(args[0] === "exec" ? 2 : 4).join(" "),
+          ),
+        )
+        .map(({ command }) => command);
+    assert.deepEqual(await proxyReads(), ["kubectl", "docker"]);
+
+    for (const file of [
+      "tests/integration/harness-topology-k3d-slack-real.test.mjs",
+      "tests/integration/channel-egress-kubernetes-real.test.ts",
+    ]) {
+      const fileEnv = join(dirname(commands.statePath), `${basename(file)}.env`);
+      const peer = await commands.prepare(["--file", file, "--github-env", fileEnv]);
+      assert.equal(peer.status, 0, peer.stderr);
+      assert.doesNotMatch(await readFile(fileEnv, "utf8"), new RegExp(proxyCidrsKey));
+    }
+    assert.deepEqual(await proxyReads(), ["kubectl", "docker"]);
+    assert.equal((await commands.readState()).env?.[proxyCidrsKey], undefined);
+    await commands.cleanupSuccessfully();
+  });
+
+  test("Slack Helm file preparation rejects unsafe inputs before database preparation", async (t) => {
+    const commands = await slackHelmPreparation(t);
+    const prepared = await commands.readState();
+    for (const [scenario, error] of [
+      ["missing-node", /only the owned k3d server to be registered/],
+      ["extra-node", /only the owned k3d server to be registered/],
+      ["invalid-cidr", /canonical bounded IPv4 Pod CIDR/],
+      ["default-route", /route must use cni0/],
+      ["no-route", /Network unreachable/],
+      ["wrong-device", /route must use cni0/],
+      ["wrong-source", /source must be a host in the node Pod CIDR/],
+      ["duplicate-source", /Unable to determine the Slack Helm plugin status proxy source/],
+      ["mismatched-state", /requires a ready, owned single-server CI k3d cluster/],
+    ] as const) {
+      await t.test(scenario, async () => {
+        if (scenario === "mismatched-state") {
+          await writeFile(
+            commands.statePath,
+            JSON.stringify({
+              ...prepared,
+              env: { ...prepared.env, OCC_TEST_KUBERNETES_CONTEXT: "k3d-other" },
+            }),
+          );
+        }
+        const state = await commands.readState();
+        const before = (await commands.commands()).length;
+        const result = await commands.prepare(["--file", slackHelmFile], {
+          env: { CI_FIXTURE_SCENARIO: `slack-helm-${scenario}` },
+        });
+        assert.equal(result.status, 1, result.stderr);
+        assertStderrMatch(result.stderr, error);
+        await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+        assert.deepEqual(await commands.readState(), state);
+        const calls = (await commands.commands()).slice(before);
+        assert.ok(
+          calls.every(({ command }) => command !== "postgres"),
+          "no database queries",
+        );
+        if (scenario === "mismatched-state") {
+          assert.deepEqual(calls, []);
+        }
+      });
+    }
+    await commands.cleanupSuccessfully();
+  });
+
   test("fixture preparation rejects an unknown proxy source before publishing its environment", async (t) => {
     const commands = await fixtureImageCommands(t, "missing-proxy-source");
     const result = await commands.prepare();
@@ -607,12 +742,7 @@ export function registerClusterBootstrapCases() {
       assert.equal(evidence.cluster, cluster.name);
       assert.equal(cluster.status, "planned");
       assert.equal(state.env, undefined);
-      await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-      await commands.cleanupSuccessfully();
-      await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-      const directory = cluster.directory;
-      assert.ok(directory, "expected the owned cluster directory");
-      await assert.rejects(() => stat(directory), { code: "ENOENT" });
+      await cleanupUnpublishedCluster(commands, cluster.directory);
       assert.equal(await readFile(artifactPath, "utf8"), artifactText);
     });
   }
@@ -653,6 +783,27 @@ export function registerClusterCreateCases() {
     for (const pid of await hungK3dProcesses(commands)) {
       assert.equal(processRunning(pid), false, `local child ${pid} must have settled`);
     }
+    // The nested failure must survive truncation without including node output.
+    const reportPath = commands.statePath + ".diagnostics.json";
+    const report = await readDiagnostics(commands);
+    const hint = () => stagedCreateTimeout(commands.statePath);
+    const failure = "k3d create timed out; unconfirmed creation requires reconciliation. ";
+    assert.equal(await hint(), failure + "server-start-line=yes uncordon-observed=yes");
+    await writeFile(
+      reportPath,
+      JSON.stringify({ ...report, containers: [], k3dCreateOutput: null }),
+    );
+    assert.equal(await hint(), failure + "server-start-line=unknown uncordon-observed=unknown");
+    const stale = commands.statePath + ".copy";
+    await writeFile(stale, JSON.stringify(state));
+    await writeFile(stale + ".diagnostics.json", JSON.stringify(report));
+    assert.equal(await stagedCreateTimeout(stale), undefined);
+    await writeFile(reportPath, JSON.stringify({ ...report, preparationId: "stale" }));
+    assert.equal(await hint(), undefined);
+    await writeFile(reportPath, "{");
+    assert.equal(await hint(), undefined);
+    await rename(reportPath, reportPath + ".invalid");
+    assert.equal(await hint(), undefined);
     // The fixture directory is removed by its own hook; no modeled resource
     // deletion is invoked and this test does not establish daemon settlement.
   });
@@ -710,6 +861,70 @@ export function registerClusterCreateCases() {
     const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
     assert.equal(clusters.length, 1);
     assert.equal(clusters[0]?.status, "ready");
+    await commands.cleanupSuccessfully();
+    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+  });
+
+  test("k3d preparation pulls a missing K3s node image with pullImage before the create", async (t) => {
+    // k3d pulls a missing node image itself, once and inside the create's timeout. A
+    // stalled pull then timed out the create, and its partial network blocked the retry.
+    const commands = await fixtureImageCommands(t, "node-image-absent");
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const calls = (await commands.commands()).map(({ command, args }) =>
+      [command, ...args].join(" "),
+    );
+    const inspect = calls.indexOf(
+      `docker image inspect --format {{json .RepoDigests}} ${defaultK3sImage}`,
+    );
+    const pull = calls.indexOf(`docker pull ${defaultK3sImage}`);
+    const create = calls.findIndex((call) => call.startsWith("k3d cluster create "));
+    assert.ok(
+      inspect >= 0 && pull > inspect && create > pull,
+      `the node image must be pulled before the create: ${JSON.stringify({ inspect, pull, create })}`,
+    );
+    const stages = fixturePreparationMetrics(result.stderr)
+      .filter(
+        ({ stage, status }) =>
+          ["k3d-node-image", "k3d-create"].includes(stage) && status !== "started",
+      )
+      .map(({ stage, status }) => `${stage}:${status}`);
+    assert.deepEqual(stages, ["k3d-node-image:passed", "k3d-create:passed"]);
+    await commands.cleanupSuccessfully();
+  });
+
+  test("k3d preparation pulls no K3s node image the engine already holds", async (t) => {
+    const commands = await fixtureImageCommands(t, "success");
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const calls = (await commands.commands()).map(({ args }) => args.join(" "));
+    assert.ok(calls.includes(`image inspect --format {{json .RepoDigests}} ${defaultK3sImage}`));
+    assert.equal(calls.includes(`pull ${defaultK3sImage}`), false);
+    await commands.cleanupSuccessfully();
+  });
+
+  test("k3d preparation fails a failed K3s node image pull before the create", async (t) => {
+    const commands = await fixtureImageCommands(t, "node-image-pull-fails");
+    const result = await commands.prepare();
+    assert.equal(result.status, 1, result.stderr);
+    const calls = (await commands.commands()).map(({ command, args }) =>
+      [command, ...args].join(" "),
+    );
+    assert.ok(calls.includes(`docker pull ${defaultK3sImage}`));
+    assert.equal(
+      calls.some((call) => call.startsWith("k3d cluster create ")),
+      false,
+    );
+    const stages = fixturePreparationMetrics(result.stderr)
+      .filter(
+        ({ stage, status }) =>
+          ["k3d-node-image", "k3d-create"].includes(stage) && status !== "started",
+      )
+      .map(({ stage, status }) => `${stage}:${status}`);
+    assert.deepEqual(stages, ["k3d-node-image:failed"]);
+    // The planned cluster stays registered, so cleanup runs as for any failed stage.
+    const state = await commands.readState();
+    assert.equal(state.resources.find(({ kind }) => kind === "k3d-cluster")?.status, "planned");
     await commands.cleanupSuccessfully();
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
@@ -790,12 +1005,7 @@ export function registerClusterCreateCases() {
     assert.ok(cluster, "expected the k3d cluster cleanup receipt");
     assert.equal(cluster.status, "planned");
     assert.equal(state.env, undefined);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    await commands.cleanupSuccessfully();
-    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-    const directory = cluster.directory;
-    assert.ok(directory, "expected the owned cluster directory");
-    await assert.rejects(() => stat(directory), { code: "ENOENT" });
+    await cleanupUnpublishedCluster(commands, cluster.directory);
   });
 }
 

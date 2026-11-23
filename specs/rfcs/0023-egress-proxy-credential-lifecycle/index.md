@@ -10,6 +10,13 @@ status: Proposed
 
 This proposal requires human review and merge.
 
+The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
+The later proposed [TokenService instance and update amendment](token-service-instance-and-updates.md) revises source ownership records and proxy delivery notifications.
+The proposed [CredentialSource ownership amendment](credential-source-ownership.md) moves Source creation and lifecycle to TokenService.
+The proposed [OAuth client selection amendment](oauth-client-associations.md) separates templates from client selection and defines scope admission.
+The proposed [worker credential configuration amendment](worker-credential-configuration.md) defines the Driver entry points needed to configure a staged target without giving Compute a credential resolver.
+The proposed [Codex device login amendment](codex-device-login.md) moves completed account grants and renewal to TokenService and supplies the dedicated Harness with a Proxy placeholder and trusted account context.
+
 ## Decision
 
 Let an Agent use a provider without giving it the provider credential. If `build-agent` may read GitHub repository `123`, it makes an ordinary request; a trusted sender verifies which execution sent it, checks whether the read is still allowed, and authenticates to GitHub. A child process has the same access as its parent. A different execution needs its own admitted authority.

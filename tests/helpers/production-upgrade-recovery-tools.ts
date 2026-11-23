@@ -1,5 +1,6 @@
 import { execFile, spawn, type ExecFileOptions, type SpawnOptions } from "node:child_process";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 import { withoutShellStartup } from "./environment.ts";
 
@@ -8,6 +9,9 @@ export const helmTargetOverrides = [
   "HELM_KUBECAFILE",
   "HELM_KUBETLS_SERVER_NAME",
   "HELM_KUBEINSECURE_SKIP_TLS_VERIFY",
+  "HELM_KUBETOKEN",
+  "HELM_KUBEASUSER",
+  "HELM_KUBEASGROUPS",
 ];
 export const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 export const controller = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
@@ -18,6 +22,14 @@ export const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(
 
 // The fixture exits 9 only for an armed fault. An interrupted run must reach that fault.
 export const injectedFault = { code: 9 };
+
+export function upgradeDiagnosticLines(stderr: string): string[] {
+  // Progress can precede the diagnostic. Keep all lines from the first diagnostic onward.
+  return stderr
+    .replace(/^(?:Upgrade: [^\n]+\n)+/u, "")
+    .trimEnd()
+    .split("\n");
+}
 
 const executeFile = promisify(execFile);
 
@@ -34,7 +46,7 @@ export function execute(
   });
 }
 
-async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) {
+async function commandPath(name: "helm" | "sleep" | "setsid" | "python3", fallback: string) {
   const { stdout } = await execute("bash", [
     "--noprofile",
     "--norc",
@@ -42,6 +54,14 @@ async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) 
     `command -v ${name}`,
   ]).catch(() => ({ stdout: "" }));
   return stdout.trim() || fallback;
+}
+
+export function skipWithoutHelm(t: TestContext, realHelm: string | null): boolean {
+  if (realHelm) {
+    return false;
+  }
+  t.skip("helm is unavailable to render the real chart");
+  return true;
 }
 
 export async function createRecoveryTools(repository: string) {
@@ -57,7 +77,14 @@ export async function createRecoveryTools(repository: string) {
     sleep: await commandPath("sleep", "/bin/sleep"),
     setsid: await commandPath("setsid", "/usr/bin/setsid"),
   };
-  return { repository, sourceRevision, script, realHelm, shimTools };
+  return {
+    repository,
+    sourceRevision,
+    script,
+    realHelm,
+    realPython: await commandPath("python3", "/usr/bin/python3"),
+    shimTools,
+  };
 }
 
 export type RecoveryTools = Awaited<ReturnType<typeof createRecoveryTools>>;

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mock } from "node:test";
 
 import {
   KubernetesComputeDriver,
@@ -27,6 +28,7 @@ import {
   tenant,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
+import { openShellDriver } from "../integration/sandbox-driver-openshell-fixture.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type AppsApi = InstanceType<KubernetesSdk["AppsV1Api"]>;
@@ -76,6 +78,21 @@ export function lifecycleNamespaceReads(
   };
 }
 
+function stopResourceNotFound() {
+  return Object.assign(new Error("Not found"), { code: 404 });
+}
+
+async function readAbsentStopResource() {
+  throw stopResourceNotFound();
+}
+
+const absentStopResourceReads = {
+  readNamespacedConfigMap: readAbsentStopResource,
+  readNamespacedSecret: readAbsentStopResource,
+  readNamespacedService: readAbsentStopResource,
+  readNamespacedServiceAccount: readAbsentStopResource,
+};
+
 export async function checkContainmentRetirementRetry() {
   const cleanupCalls: Parameters<SandboxCleanup>[0][] = [];
   const deletionCalls: DeleteDeployment[] = [];
@@ -102,55 +119,38 @@ export async function checkContainmentRetirementRetry() {
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
   const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"](
-    deploymentName,
-    {
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     },
-    { name: namespace, plane: "execution" },
-    "agent:local",
-    `agent-${digest(revision.agentId)}`,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   deployment.metadata.uid = "containment-workload-uid";
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   let gatewayReads = 0;
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
 
   // Only Kubernetes transport observations are substituted; retirement and Sandbox dispatch
   // execute through the production driver against a supported containment-only extension.
   Object.assign(driver, {
     apiClients: Promise.resolve({
       core: {
-        async readNamespacedSecret() {
-          throw notFound();
-        },
+        ...absentStopResourceReads,
         ...namespaceReads,
         async listNamespacedPod() {
           assert.equal(deploymentPresent, false);
           return { apiVersion: "v1", kind: "PodList", items: [] };
         },
-        async readNamespacedPersistentVolumeClaim() {
-          throw notFound();
-        },
-        async readNamespacedConfigMap() {
-          throw notFound();
-        },
-        async readNamespacedService() {
-          throw notFound();
-        },
-        async readNamespacedServiceAccount() {
-          throw notFound();
-        },
+        readNamespacedPersistentVolumeClaim: readAbsentStopResource,
       },
       apps: {
         async readNamespacedDeployment({ name }: ReadDeployment) {
@@ -160,7 +160,7 @@ export async function checkContainmentRetirementRetry() {
           if (name === gatewayName) {
             gatewayReads += 1;
           }
-          throw notFound();
+          throw stopResourceNotFound();
         },
         async deleteNamespacedDeployment(request: DeleteDeployment) {
           deletionCalls.push(request);
@@ -168,14 +168,10 @@ export async function checkContainmentRetirementRetry() {
         },
       },
       networking: {
-        async readNamespacedNetworkPolicy() {
-          throw notFound();
-        },
+        readNamespacedNetworkPolicy: readAbsentStopResource,
       },
       objects: {
-        async read() {
-          throw notFound();
-        },
+        read: readAbsentStopResource,
       },
     }),
   });
@@ -295,7 +291,7 @@ export async function checkStopRetainsAgentStorage() {
       apps: {
         async readNamespacedDeployment({ name }: ReadDeployment) {
           if (name !== gatewayName || gatewayDeleted) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(gateway);
         },
@@ -320,7 +316,7 @@ export async function checkStopRetainsAgentStorage() {
         },
         async readNamespacedService({ name }: ReadDeployment) {
           if (name !== gatewayName || serviceDeleted) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(service);
         },
@@ -334,7 +330,7 @@ export async function checkStopRetainsAgentStorage() {
         },
         async readNamespacedServiceAccount({ name }: ReadDeployment) {
           if (name !== gatewayName || accountDeleted) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(account);
         },
@@ -350,19 +346,15 @@ export async function checkStopRetainsAgentStorage() {
           deletions.push(["PersistentVolumeClaim", request]);
           privateClaimDeleted = true;
         },
-        async readNamespacedConfigMap() {
-          throw Object.assign(new Error("Not found"), { code: 404 });
-        },
+        readNamespacedConfigMap: readAbsentStopResource,
       },
       networking: {
-        async readNamespacedNetworkPolicy() {
-          throw Object.assign(new Error("Not found"), { code: 404 });
-        },
+        readNamespacedNetworkPolicy: readAbsentStopResource,
       },
       objects: {
         async read({ kind, metadata }: ReadObject) {
           if (routeDeleted || kind !== route.kind || metadata.name !== route.metadata.name) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(route);
         },
@@ -444,11 +436,10 @@ export async function checkStopPreservesReplacement(
   }
   let raced = false;
   const deletions: string[] = [];
-  const missing = () => Object.assign(new Error("Not found"), { code: 404 });
   const read = (kind: string) => {
     const resource = resources.get(kind);
     if (resource === undefined) {
-      throw missing();
+      throw stopResourceNotFound();
     }
     return structuredClone(resource);
   };
@@ -463,7 +454,7 @@ export async function checkStopPreservesReplacement(
     }
     const resource = resources.get(kind);
     if (resource === undefined) {
-      throw missing();
+      throw stopResourceNotFound();
     }
     for (const field of ["uid", "resourceVersion"] as const) {
       if (
@@ -488,18 +479,17 @@ export async function checkStopPreservesReplacement(
         async listNamespacedPod() {
           return { items: [] };
         },
-        async readNamespacedService() {
+        async readNamespacedService({ name }: ReadDeployment) {
+          if (name !== service.metadata.name) {
+            throw stopResourceNotFound();
+          }
           return read("Service");
         },
         async readNamespacedServiceAccount() {
           return read("ServiceAccount");
         },
-        async readNamespacedConfigMap() {
-          throw missing();
-        },
-        async readNamespacedSecret() {
-          throw missing();
-        },
+        readNamespacedConfigMap: readAbsentStopResource,
+        readNamespacedSecret: readAbsentStopResource,
         async deleteNamespacedService({ body }: DeleteService) {
           remove("Service", body);
         },
@@ -523,7 +513,7 @@ export async function checkStopPreservesReplacement(
       objects: {
         async read({ kind, metadata }: ReadObject) {
           if (kind !== route.kind || metadata.name !== route.metadata.name) {
-            throw missing();
+            throw stopResourceNotFound();
           }
           return read("HTTPRoute");
         },
@@ -578,25 +568,22 @@ export async function checkContainmentStopOrder() {
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
   const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"](
-    deploymentName,
-    {
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     },
-    { name: namespace, plane: "execution" },
-    "agent:local",
-    `agent-${digest(revision.agentId)}`,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   deployment.metadata.uid = "containment-stop-workload-uid";
   const pod = {
     apiVersion: "v1",
@@ -607,22 +594,10 @@ export async function checkContainmentStopOrder() {
       labels: structuredClone(asRecord(asRecord(deployment.spec?.template)?.metadata)?.labels),
     },
   };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   Object.assign(driver, {
     apiClients: Promise.resolve({
       core: {
-        async readNamespacedConfigMap() {
-          throw notFound();
-        },
-        async readNamespacedSecret() {
-          throw notFound();
-        },
-        async readNamespacedService() {
-          throw notFound();
-        },
-        async readNamespacedServiceAccount() {
-          throw notFound();
-        },
+        ...absentStopResourceReads,
         ...namespaceReads,
         async listNamespacedPod(request: ListPods) {
           assert.ok(request.labelSelector);
@@ -648,7 +623,7 @@ export async function checkContainmentStopOrder() {
           if (name === deploymentName && deploymentPresent) {
             return structuredClone(deployment);
           }
-          throw notFound();
+          throw stopResourceNotFound();
         },
         async deleteNamespacedDeployment(request: DeleteDeployment) {
           deletionCalls.push(request);
@@ -682,21 +657,6 @@ export async function checkContainmentStopOrder() {
   }
 }
 
-function stopResourceNotFound() {
-  return Object.assign(new Error("Not found"), { code: 404 });
-}
-
-async function readAbsentStopResource() {
-  throw stopResourceNotFound();
-}
-
-const absentStopResourceReads = {
-  readNamespacedConfigMap: readAbsentStopResource,
-  readNamespacedSecret: readAbsentStopResource,
-  readNamespacedService: readAbsentStopResource,
-  readNamespacedServiceAccount: readAbsentStopResource,
-};
-
 // A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
 function stopOrderFixture(id: string) {
   const driver = new KubernetesComputeDriver(options());
@@ -704,25 +664,22 @@ function stopOrderFixture(id: string) {
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
   const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"](
-    deploymentName,
-    {
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     },
-    { name: namespace, plane: "execution" },
-    "agent:local",
-    `agent-${digest(revision.agentId)}`,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   deployment.metadata.uid = "refused-stop-order-agent-uid";
   const gatewayPod = {
     apiVersion: "v1",
@@ -988,9 +945,7 @@ export async function checkProviderStopTermination() {
         },
       },
       apps: {
-        async readNamespacedDeployment() {
-          throw stopResourceNotFound();
-        },
+        readNamespacedDeployment: readAbsentStopResource,
       },
       objects: {},
     }),
@@ -1028,4 +983,203 @@ export async function checkProviderStopTermination() {
   failCleanup = true;
   await assert.rejects(driver.stopRevision(revision), (error) => error === cleanupFailure);
   assert.equal(cleanupComplete, false);
+}
+
+type HarnessAnswer = "setup" | "serving" | "failed" | "error";
+
+/**
+ * An OpenShell Sandbox kills its workload as soon as its Pod is stopped. A Harness killed in
+ * Doctor or workspace setup leaves the workspace node state locked for every later version, so an
+ * ordinary stop lets a starting Harness finish first. The stop reads the real OpenShell status
+ * through a fake gateway: a Harness that is still setting up exposes nothing, so the gateway
+ * answers its readiness read "unavailable" and its status path 502.
+ */
+function startingOpenShellHarnessStop(harnessId: "codex" | "openclaw" = "codex") {
+  let answers: HarnessAnswer[] = [];
+  const events: string[] = [];
+  const sandbox = openShellDriver({
+    async getService(_workspace, name) {
+      return {
+        sandbox: name,
+        name: "",
+        targetPort: 18_790,
+        authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+        advertisedUrl: "https://harness.openshell.localhost",
+        url: "https://harness.openshell.localhost",
+      };
+    },
+    async serviceCodexReadinessStatus(_url, bearer) {
+      assert.equal(bearer, "test-transport");
+      const answer = answers.shift() ?? assert.fail("unexpected Harness status read");
+      events.push(`status ${answer}`);
+      if (answer === "error") {
+        throw new Error("OpenShell did not answer");
+      }
+      return answer === "serving" ? "serving" : "unavailable";
+    },
+    async serviceWebSocketHandshake(_url, bearer) {
+      assert.equal(bearer, "test-transport");
+      // A dedicated OpenClaw worker whose Agent Gateway is gone never completes the handshake.
+      events.push("status setup");
+      return false;
+    },
+    async getServiceDocument() {
+      return events.at(-1) === "status failed"
+        ? { status: 200, json: { runtimeFailure: { code: "RUNTIME_STARTUP_FAILED" } } }
+        : { status: 502 };
+    },
+  });
+  Object.assign(sandbox, {
+    async cleanup() {
+      events.push("cleanup");
+    },
+  });
+  const driver = new KubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+    { sandboxDriver: sandbox },
+  );
+  const admitted = routedRevision(driver, {
+    id: "revision-starting-harness-stop",
+    sandboxDriverId: sandbox.id,
+  });
+  const revision = { ...admitted, harness: { ...admitted.harness, id: harnessId } };
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  // The Agent transport token is read from its owned Secret, as Compute stores it.
+  type OwnedManifests = {
+    manifest(
+      apiVersion: string,
+      kind: "Secret",
+      name: string,
+      ownership: { namespaceId: string; agentId: string },
+      namespace: { name: string; plane: "control" },
+    ): { metadata: { name: string } };
+  };
+  const transport = (driver as unknown as OwnedManifests).manifest(
+    "v1",
+    "Secret",
+    `transport-${createHash("sha256").update(revision.agentId).digest("hex").slice(0, 12)}`,
+    { namespaceId: revision.namespaceId, agentId: revision.agentId },
+    { name: namespace, plane: "control" },
+  );
+  Object.assign(driver, {
+    apiClients: Promise.resolve({
+      core: {
+        ...absentStopResourceReads,
+        ...lifecycleNamespaceReads(driver, namespace, revision.namespaceId),
+        async readNamespacedSecret({ name }: { name: string }) {
+          if (name !== transport.metadata.name) {
+            throw stopResourceNotFound();
+          }
+          return {
+            ...transport,
+            type: "Opaque",
+            metadata: { ...transport.metadata, uid: "transport-uid", resourceVersion: "1" },
+            data: { "app-server-token": Buffer.from("test-transport").toString("base64") },
+          };
+        },
+        async listNamespacedPod() {
+          return { apiVersion: "v1", kind: "PodList", items: [] };
+        },
+      },
+      apps: { readNamespacedDeployment: readAbsentStopResource },
+      networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
+      objects: {},
+    }),
+  });
+  const stop = (waiting = false) =>
+    withComputeWorkWaiting(
+      async () => waiting,
+      () => withYieldingGatewayDrain(() => driver.stopRevision(revision)),
+    );
+  const run = async (next: HarnessAnswer[], operation: () => Promise<void> = stop) => {
+    answers = next;
+    events.length = 0;
+    await operation();
+    assert.deepEqual(answers, [], "every planned status read happens");
+    return [...events];
+  };
+  const yields = async (next: HarnessAnswer[]) => {
+    answers = next;
+    events.length = 0;
+    await assert.rejects(
+      stop(true),
+      (error) => error instanceof ComputeStopYieldedError && /still starting/u.test(error.message),
+    );
+    assert.deepEqual(answers, [], "every planned status read happens");
+    return [...events];
+  };
+  return { driver, revision, run, stop, yields };
+}
+
+export async function checkStartingHarnessStopWaitsForServing() {
+  const { run } = startingOpenShellHarnessStop();
+  // The Sandbox is deleted only once its Harness has finished setup and serves.
+  assert.deepEqual(await run(["setup", "setup", "serving"]), [
+    "status setup",
+    "status setup",
+    "status serving",
+    "cleanup",
+  ]);
+}
+
+export async function checkFailedHarnessStopEndsWait() {
+  const { run } = startingOpenShellHarnessStop();
+  // A Harness that holds a startup failure has ended its setup: it is stopped then.
+  assert.deepEqual(await run(["setup", "failed"]), ["status setup", "status failed", "cleanup"]);
+}
+
+export async function checkServingHarnessStopsAtOnce() {
+  const { run } = startingOpenShellHarnessStop();
+  assert.deepEqual(await run(["serving"]), ["status serving", "cleanup"]);
+}
+
+export async function checkUnreadHarnessStopsAtOnce() {
+  const { run } = startingOpenShellHarnessStop();
+  // A status read that fails is no reason to hold the stop.
+  assert.deepEqual(await run(["error"]), ["status error", "cleanup"]);
+}
+
+export async function checkStartingHarnessStopYields() {
+  const { run, stop, yields } = startingOpenShellHarnessStop();
+  // The wait does not hold the serial worker: with other Work due, the stop yields before it
+  // deletes anything, and the retry deletes the Sandbox once the Harness serves.
+  assert.deepEqual(await yields(["setup"]), ["status setup"]);
+  assert.deepEqual(await run(["serving"], () => stop(true)), ["status serving", "cleanup"]);
+}
+
+export async function checkStartingHarnessStopBound() {
+  const { run, stop, yields } = startingOpenShellHarnessStop();
+  // The wait is bounded across yielded passes: 120 s after the first starting read, the Sandbox
+  // is deleted as before, though its Harness is still starting.
+  mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  try {
+    assert.deepEqual(await yields(["setup"]), ["status setup"]);
+    mock.timers.setTime(1_000_000 + 119_000);
+    assert.deepEqual(await yields(["setup"]), ["status setup"]);
+    mock.timers.setTime(1_000_000 + 120_000);
+    assert.deepEqual(await run(["setup"], () => stop(true)), ["status setup", "cleanup"]);
+  } finally {
+    mock.timers.reset();
+  }
+}
+
+export async function checkNativeHarnessStopsAtOnce() {
+  const { run, stop } = startingOpenShellHarnessStop("openclaw");
+  // A dedicated OpenClaw worker serves once its node enrolls with the Agent Gateway, which the
+  // stop has already deleted, so its status cannot leave starting: the stop does not read it.
+  assert.deepEqual(await run([], () => stop(true)), ["cleanup"]);
+  assert.deepEqual(await run([]), ["cleanup"]);
+}
+
+export async function checkOtherHarnessStopsDoNotWait() {
+  const { driver, revision, run } = startingOpenShellHarnessStop();
+  // Deleting the Agent retires its revision and removes the workspace, and a refused candidate
+  // must stop at once: neither reads the Harness status.
+  assert.deepEqual(await run([], () => driver.retireRevision(revision)), ["cleanup"]);
+  assert.deepEqual(
+    await run([], () => withYieldingComputeStop(() => driver.stopRevision(revision))),
+    ["cleanup"],
+  );
 }

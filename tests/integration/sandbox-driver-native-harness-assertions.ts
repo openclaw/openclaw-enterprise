@@ -143,6 +143,7 @@ export async function verifyDedicatedCodexStartup({
         ...structuredClone(request.spec),
         template: {
           ...structuredClone(template),
+          resources: withProtobufKinds(template.resources),
           driver_config: withProtobufKinds(template.driver_config),
         },
       },
@@ -351,7 +352,8 @@ export async function verifyDedicatedCodexStartup({
   assert.equal(environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/custom-workspace");
   const kubernetesDriver = structFields(fields(template.driver_config).kubernetes);
   const agentContainer = structFields(structFields(kubernetesDriver.containers).agent);
-  const resources = structFields(agentContainer.resources);
+  assert.equal(agentContainer.resources, undefined);
+  const resources = fields(template.resources);
   assert.deepEqual(structFields(resources.requests)["ephemeral-storage"], { stringValue: "256Mi" });
   assert.deepEqual(structFields(resources.limits)["ephemeral-storage"], { stringValue: "1Gi" });
   const mountValues = record(record(agentContainer.volume_mounts).listValue).values;
@@ -476,13 +478,13 @@ export function verifyNativeOpenClawCreateRequest({
   gatewayClient: Pick<ReturnType<typeof workspaceGatewayClient>, "providers" | "profiles">;
 }): string {
   const template = record(request.spec.template);
-  const pod = structFields(fields(template.driver_config).kubernetes).pod;
+  const kubernetes = structFields(fields(template.driver_config).kubernetes);
   const command = stringArray(request.spec.command);
   const environment = record(request.spec.environment);
   const policy = record(request.spec.policy);
   const filesystem = record(policy.filesystem);
-  assert.equal(template.runtime_class_name, "openshell-skipper");
-  assert.equal(record(structFields(pod).runtime_class_name).stringValue, "openshell-skipper");
+  assert.equal(template.runtime_class_name, undefined);
+  assert.equal(kubernetes.pod, undefined);
   assert.deepEqual(request.serviceExposures, []);
   assert.deepEqual(command.slice(0, RUNTIME_WRAPPER_COMMAND.length), RUNTIME_WRAPPER_COMMAND);
   const wrapper = command[RUNTIME_WRAPPER_COMMAND.length];

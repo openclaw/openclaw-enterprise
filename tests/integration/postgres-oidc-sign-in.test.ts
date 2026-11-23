@@ -10,16 +10,15 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  googleSignIn as googleSignInFixture,
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
   oidcSignIn as oidcSignInFixture,
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn as googleSignInFixture } from "../helpers/google-sign-in.ts";
 import {
   accountPrincipalId,
   authOperation,
@@ -28,7 +27,6 @@ import {
   first,
   injectLocalhost,
   integer,
-  onboarded,
   parseAuthResponse,
   passwordSignIn,
   readAccount,
@@ -41,9 +39,9 @@ import {
   type SessionHeaders,
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import { providerInstanceId } from "../helpers/human-login-transport.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const authSecret = "oidc-sign-in-auth-test-secret-at-least-32-bytes";
 const clientId = "fixture-oidc-client";
@@ -160,19 +158,16 @@ test(
     const {
       admin,
       accounts: { member, disabled, both, stranded },
-    } = onboarded(
-      await authOperation("onboard accounts", () =>
-        onboard({
-          remoteAddress: address(),
-          accounts: {
-            member: { email: "oidc-member@example.test" },
-            disabled: { email: "oidc-disabled@example.test" },
-            both: { email: "oidc-both@example.test" },
-            stranded: { email: "oidc-stranded@example.test" },
-          },
-        }),
-      ),
-      ["member", "disabled", "both", "stranded"],
+    } = await authOperation("onboard accounts", () =>
+      onboard({
+        remoteAddress: address(),
+        accounts: {
+          member: { email: "oidc-member@example.test" },
+          disabled: { email: "oidc-disabled@example.test" },
+          both: { email: "oidc-both@example.test" },
+          stranded: { email: "oidc-stranded@example.test" },
+        },
+      }),
     );
     let adminHeaders: SessionHeaders | undefined;
     const adminSession = () => {
@@ -514,6 +509,23 @@ test(
       assert.equal(detached.statusCode, 200);
       assert.equal(await session(after), null, "detach ends sessions");
       await assertSignIn(memberSubject, member.id);
+
+      // The moved issuer still owns this subject for member. The original issuer
+      // can attach that same opaque subject to a different person independently.
+      await app.close();
+      app = undefined;
+      idp.issuer = fixtureOidcIssuer;
+      idp.tokenAuth = "client_secret_post";
+      app = await composeApp(oidcUpgradeSettings(admin.id));
+      adminHeaders = await signedInHeaders(app, origin, admin, address());
+      await assertRefused({ subject: memberSubject }, "detached original issuer subject");
+      assert.equal((await attach(stranded.id, memberSubject)).statusCode, 200);
+      await assertSignIn(memberSubject, stranded.id);
+      assert.notEqual(
+        await accountPrincipalId(pool, stranded.id),
+        await accountPrincipalId(pool, member.id),
+        "the same subject under different provider instances resolves distinct Principals",
+      );
     });
 
     await t.test("Google and OIDC sign in side by side with distinct instances", async () => {

@@ -6,12 +6,12 @@ import {
 } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import type { RepositoryTransportEmit } from "../../apps/controller/src/composition/repository-credentials/contracts.ts";
 import type {
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   ProtectedRepositoryGitAuthority,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 
@@ -41,7 +41,7 @@ export async function bindDeliveryTransport(
   };
   const proxyRef = { id: identity.id, generation: 1 };
   const closeSender = t.mock.fn(async () => {});
-  const proxy: CredentialProxyDriver = {
+  const proxy: LegacyEgressProxyDriver = {
     ...identity,
     capability: "credential_proxy",
     sourceControl: {

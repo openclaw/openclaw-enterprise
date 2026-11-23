@@ -25,15 +25,15 @@ if [[ -f $RUN_DIR/listener.json ]]; then kube delete -f "$RUN_DIR/listener.json"
 kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip oce-controller-openshell-management --ignore-not-found
 ```
 
-| Created or used during setup                                                                                                    | Cleanup outcome                                                                                            |
-| ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| OCE and OpenShell Helm releases, private listener and recorded network policies                                                 | Commands above remove their managed resources.                                                             |
-| Versioned Installation Secrets, database/authentication/client-TLS Secrets, browser bootstrap claim and Git registry/key inputs | Operator-created inputs remain; remove only this installation's recorded objects after deciding retention. |
-| Backing tenant namespace, tenant RoleBindings and retained workspace/PVC storage                                                | Inspect after Agent deletion; remove only this installation's remaining objects.                           |
-| Kubernetes cluster, shared `oce-system` namespace, GatewayClass, controllers and StorageClasses                                 | Retained for other installations and workloads.                                                            |
-| External database, roles, backups and image registry                                                                            | Retained; use their owners' provisioning records for separate removal.                                     |
+| Created or used during setup                                                                                                        | Cleanup outcome                                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| OCE and OpenShell Helm releases, private listener and recorded network policies                                                     | Commands above remove their managed resources.                                                             |
+| Versioned Installation Secrets, database/authentication/client-TLS Secrets, bootstrap credential Secret and Git registry/key inputs | Operator-created inputs remain; remove only this installation's recorded objects after deciding retention. |
+| Backing tenant namespace, tenant RoleBindings and retained workspace/PVC storage                                                    | Inspect after Agent deletion; remove only this installation's remaining objects.                           |
+| Kubernetes cluster, shared `oce-system` namespace, GatewayClass, controllers and StorageClasses                                     | Retained for other installations and workloads.                                                            |
+| External database, roles, backups and image registry                                                                                | Retained; use their owners' provisioning records for separate removal.                                     |
 
-Helm does not remove all operator-created inputs or retained storage. Inventory the selected namespace before removing the quickstart's versioned Installation Secrets, registry ConfigMaps, App/custody/TLS Secrets, bootstrap claim and other retained volumes:
+Helm does not remove all operator-created inputs or retained storage. Inventory the selected namespace before removing the quickstart's versioned Installation Secrets, registry ConfigMaps, App/custody/TLS Secrets, bootstrap credential Secret and retained volumes:
 
 ```bash
 kube -n "$PLATFORM_NS" get secrets,configmaps,persistentvolumeclaims

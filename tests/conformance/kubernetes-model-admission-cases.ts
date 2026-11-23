@@ -12,6 +12,7 @@ import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
+  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -48,8 +49,10 @@ export function rejectRemovedModelProviderOptions() {
       },
     })),
   ]) {
+    const configured = options({ runtime });
+    assert.ok(Reflect.set(configured, "runtime", { ...configured.runtime, ...extra }));
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, ...extra } })),
+      () => createKubernetesComputeDriver(configured),
       SharedConfigurationValidationError,
     );
   }
@@ -326,24 +329,23 @@ export function renderDedicatedCodexSeccompProfile() {
     embedded = false,
   ) => {
     // Keep the deployment renderer arguments used by the production preparation path.
-    const deployment = computeDriver["deployment"](
-      role,
+    const deployment = computeDriver["deployment"]({
+      name: role,
       ownership,
-      { name: namespace, plane: "execution" },
-      `${role}:local`,
+      namespace: { name: namespace, plane: "execution" },
+      images: { runtime: `${role}:local`, workspaceSetup: options().images.gateway },
+      serviceAccountName: role,
       role,
-      role,
-      {},
-      "info",
-      computeDriver["gatewayConfiguration"](
+      environment: {},
+      loggingLevel: "info",
+      configuration: computeDriver["gatewayConfiguration"](
         routedRevision(computeDriver, { agentId: ownership.agentId }),
         undefined,
         { name: namespace, plane: "execution" },
       ),
       embedded,
-      undefined,
-      preparedAuth(computeDriver, namespace, embedded),
-    );
+      harnessAuth: preparedAuth(computeDriver, namespace, embedded),
+    });
     const pod = asRecord(asRecord(deployment.spec?.template)?.spec);
     const containers = pod?.containers;
     assert.ok(Array.isArray(containers));
@@ -381,23 +383,28 @@ export function renderDedicatedCodexSeccompProfile() {
     "profiles/unconfined",
     { type: "Unconfined" },
   ]) {
+    const configured =
+      typeof codexSeccompProfile === "string"
+        ? options({ runtime: { ...runtime, codexSeccompProfile } })
+        : options({ runtime });
+    if (typeof codexSeccompProfile !== "string") {
+      assert.ok(Reflect.set(configured, "runtime", { ...configured.runtime, codexSeccompProfile }));
+    }
     assert.throws(
-      () =>
-        createKubernetesComputeDriver(options({ runtime: { ...runtime, codexSeccompProfile } })),
+      () => createKubernetesComputeDriver(configured),
       SharedConfigurationValidationError,
     );
   }
 
+  const configured = options({ runtime });
+  assert.ok(
+    Reflect.set(configured, "runtime", {
+      ...configured.runtime,
+      securityContext: { seccompProfile: { type: "Unconfined" } },
+    }),
+  );
   assert.throws(
-    () =>
-      createKubernetesComputeDriver(
-        options({
-          runtime: {
-            ...runtime,
-            securityContext: { seccompProfile: { type: "Unconfined" } },
-          },
-        }),
-      ),
+    () => createKubernetesComputeDriver(configured),
     SharedConfigurationValidationError,
   );
 }
@@ -1560,7 +1567,7 @@ export function validateProjectedServicePrincipalTokens() {
     { mode: "projectedServiceAccountToken", audience: "", expirationSeconds: 900 },
     { mode: "projectedServiceAccountToken", audience: "occ", expirationSeconds: 599 },
     { mode: "projectedServiceAccountToken", audience: "occ", expirationSeconds: 86_401 },
-  ]) {
+  ] satisfies KubernetesComputeDriverOptions["servicePrincipalCredentials"][]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ servicePrincipalCredentials: credentials })),
       SharedConfigurationValidationError,

@@ -4,8 +4,8 @@ import { createServer, request, type IncomingMessage, type Server } from "node:h
 import type { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 import { createRequire } from "node:module";
-import { join } from "node:path";
-import test from "node:test";
+import { dirname, join } from "node:path";
+import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -15,7 +15,7 @@ import {
   redactOutputLine,
   redactFailureDetail,
 } from "../../scripts/ci/failure-redaction.ts";
-import { withEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
@@ -30,6 +30,7 @@ import {
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.ts";
 import { listen } from "../helpers/listen.ts";
+import { hasOrderedDurableCommands } from "../helpers/openshell-durable-command-proof.ts";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -39,7 +40,7 @@ import {
   outageAttemptRead,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { openShellTestDirectory } from "./ci-openshell-fixtures.ts";
 
 function jsonObject(text: string) {
@@ -51,6 +52,101 @@ function jsonObject(text: string) {
 type GatewayPolicyClient = Parameters<typeof assertGatewayPolicyRunSucceeded>[0];
 type GatewayPolicyOutcome = Parameters<typeof assertGatewayPolicyRunSucceeded>[1];
 type PollOnce = Parameters<typeof waitForOpenShellRevisionActivation>[0];
+
+const gatewayCommandNonces = ["gateway-first", "gateway-second"] as const;
+
+function completedRolloutCommand(nonce: string, fields: Record<string, unknown> = {}): string {
+  return (
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        item: {
+          type: "CommandExecution",
+          command: ["sh", "-c", `printf '%s' '${nonce}'`],
+          exit_code: 0,
+          aggregated_output: ` ${nonce}\n`,
+          ...fields,
+        },
+      },
+    }) + "\n"
+  );
+}
+
+test("OpenShell durable proof requires two ordered successful commands in one complete rollout", () => {
+  const [firstNonce, secondNonce] = gatewayCommandNonces;
+  const first = completedRolloutCommand(firstNonce);
+  const second = completedRolloutCommand(secondNonce);
+  const unrelated = '{"type":"session_meta","payload":{}}\n';
+  const unfinished = completedRolloutCommand(secondNonce, {
+    exit_code: null,
+    aggregated_output: null,
+  });
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+  assert.equal(provesCommands(unrelated + first + unfinished + second + '{"partial"'), true);
+  assert.equal(provesCommands(first + second.slice(0, -1)), false, "unflushed second command");
+  assert.equal(provesCommands(first + second), true, "flushed second command");
+  assert.equal(provesCommands(second + first), false, "reversed commands");
+  assert.equal([first, second].some(provesCommands), false, "commands split across files");
+  assert.equal(
+    provesCommands(first + completedRolloutCommand(secondNonce, { exit_code: 1 })),
+    false,
+    "failed second command",
+  );
+  assert.equal(
+    provesCommands(
+      first + completedRolloutCommand(secondNonce, { command: ["sh", ["-c", secondNonce]] }),
+    ),
+    false,
+    "nested argv cannot supply command evidence",
+  );
+});
+
+test("OpenShell durable proof requires exactly two distinct nonblank nonces", () => {
+  const [first, second] = gatewayCommandNonces;
+  const firstRecord = completedRolloutCommand(first);
+  const secondRecord = completedRolloutCommand(second);
+  assert.equal(hasOrderedDurableCommands("", []), false, "no nonces");
+  assert.equal(hasOrderedDurableCommands(firstRecord, [first]), false, "one nonce");
+  assert.equal(
+    hasOrderedDurableCommands(firstRecord + firstRecord, [first, first]),
+    false,
+    "duplicate nonces",
+  );
+  assert.equal(
+    hasOrderedDurableCommands(completedRolloutCommand("") + secondRecord, ["", second]),
+    false,
+    "empty nonce",
+  );
+  assert.equal(
+    hasOrderedDurableCommands(firstRecord + secondRecord + completedRolloutCommand("third"), [
+      first,
+      second,
+      "third",
+    ]),
+    false,
+    "three nonces",
+  );
+});
+
+test("OpenShell durable proof rejects corruption before proof and ignores later records", () => {
+  const pair = gatewayCommandNonces.map((nonce) => completedRolloutCommand(nonce));
+  const good = pair.join("");
+  const provesCommands = (content: string) =>
+    hasOrderedDurableCommands(content, gatewayCommandNonces);
+  for (const bad of [
+    "null\n",
+    "synthetic-canary-invalid-json\n",
+    '{"type":"event_msg","payload":null}\n',
+  ]) {
+    assert.equal([bad, good].some(provesCommands), true, "corrupt sibling first");
+    assert.equal([good, bad].some(provesCommands), true, "corrupt sibling last");
+    assert.equal(provesCommands(bad + good), false, "corruption before commands");
+    assert.equal(provesCommands(pair.join(bad)), false, "corruption between commands");
+    assert.equal(provesCommands(good + bad), true, "corruption after commands");
+  }
+});
 
 test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
   const revisionId = "rev_10000000-0000-4000-8000-000000000003";
@@ -737,9 +833,11 @@ function hasWebSocketServer(value: unknown): value is PeerModule {
   );
 }
 
-function probeWebSocketServer() {
+function probeWebSocketServer(t: TestContext) {
   const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const fromKubernetesClient = createRequire(controller.resolve("@kubernetes/client-node"));
+  // The kubectl stand-in runs the in-Pod client locally using the peer dependency.
+  setEnvironment(t, { NODE_PATH: dirname(dirname(fromKubernetesClient.resolve("ws"))) });
   const websocket: unknown = fromKubernetesClient("ws");
   assert.ok(hasWebSocketServer(websocket), "the Kubernetes client must provide a WebSocket server");
   return websocket.WebSocketServer;
@@ -811,7 +909,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   // Run the actual in-Pod client and probe decision. Only kubectl transport and the
   // app-server peer are fixtures. WebSocket message order, not a sleep, creates the boundary.
   const server = createServer();
-  const WebSocketServer = probeWebSocketServer();
+  const WebSocketServer = probeWebSocketServer(t);
   const peer = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, stream, head) => {
     peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
@@ -1043,7 +1141,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // turn while the command still runs. The in-Pod client waits for that command's completion
   // event up to the fixture's bound, and reports the command's timing when the bound expires.
   const server = createServer();
-  const WebSocketServer = probeWebSocketServer();
+  const WebSocketServer = probeWebSocketServer(t);
   const peer = new WebSocketServer({ server });
   const port = await listen(t, server);
   const directory = await openShellTestDirectory(t);
@@ -1218,7 +1316,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   // before the at-capacity answer leaves the outcome unknown, so no second thread starts. Only
   // the client's exit status and exact stdout receipt allow another turn; stderr never does.
   const server = createServer();
-  const WebSocketServer = probeWebSocketServer();
+  const WebSocketServer = probeWebSocketServer(t);
   const peer = new WebSocketServer({ server });
   const port = await listen(t, server);
   const directory = await openShellTestDirectory(t);
@@ -1324,6 +1422,16 @@ test("a turn the model answered at capacity runs again only for its own final er
         method: "item/completed",
         params: { ...at, item: { ...command, status, exitCode } },
       });
+      const agentReply = (turnId: string, text: string) => ({
+        method: "item/completed",
+        params: { threadId, turnId, item: { id: `reply-${turnId}`, type: "agentMessage", text } },
+      });
+      const reply = agentReply(turn.id, "OCC-TURN-OK");
+      const foreignReply = agentReply("other-turn", "OCC-FOREIGN-REPLY");
+      const finished = {
+        method: "turn/completed",
+        params: { threadId, turn: { ...turn, status: "completed" } },
+      };
       const eventsByScript: Record<string, readonly (object | "close")[]> = {
         capacity: [atCapacity(at)],
         // Our own turn's final error before any action, but not the at-capacity answer.
@@ -1382,16 +1490,9 @@ test("a turn the model answered at capacity runs again only for its own final er
             },
           }),
         ],
-        reply: [
-          {
-            method: "item/completed",
-            params: { ...at, item: { id: "reply", type: "agentMessage", text: "OCC-TURN-OK" } },
-          },
-          {
-            method: "turn/completed",
-            params: { threadId, turn: { ...turn, status: "completed" } },
-          },
-        ],
+        "foreign reply only": [foreignReply, finished],
+        reply: [reply, finished],
+        "reply followed by a foreign reply": [reply, foreignReply, finished],
       };
       assert.ok(script);
       const events = eventsByScript[script];
@@ -1427,6 +1528,12 @@ test("a turn the model answered at capacity runs again only for its own final er
     nativeExecutionSummary(error.stderr);
   const notRetried =
     'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
+
+  await t.test("Gateway replies come from the acknowledged turn", async () => {
+    // A matching terminal can arrive with no reply of its own, and another turn may speak last.
+    assert.equal((await turn(["foreign reply only"])).assistant, "");
+    assert.equal((await turn(["reply followed by a foreign reply"])).assistant, "OCC-TURN-OK");
+  });
 
   // Our turn's final error at capacity before any action: the same turn runs again.
   for (const script of ["capacity", "capacity after a message"]) {

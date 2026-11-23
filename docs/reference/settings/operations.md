@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Worker, Compose, and PostgreSQL settings
 
 ## PostgreSQL connection authentication
@@ -32,7 +37,7 @@ for `https://ossrdbms-aad.database.windows.net/.default`. The SDK handles cachin
 and renewal; OCC does not persist tokens or fall back to a developer login.
 Use `pnpm db:migrate` or `pnpm db:migrate:production` in this mode.
 
-See [operator setup](../../guides/deploy/production-installation.md#azure-postgresql-workload-identity)
+See [operator setup](../../guides/deploy/azure-postgresql.md)
 for deployment-owned identity inputs and chart limits, and
 [PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
 for the available connection proof and its limits.
@@ -59,37 +64,23 @@ pnpm db:migrate --check
 ```
 
 Exit 0 and `migration.checked` identify `empty`, a stage below, or `completed`.
-`prePresetsMain` ends at `0023_runtime_failure_timestamp_validation`;
-`main` also includes `0024_agent_presets`. `repositoryCredentials` adds
-`0025_repository_credentials` and `0026_privileged_function_search_paths`.
-`repositoryRetention`, `workspaceSetup`, and `agentProvisioning` add migrations
-through `0029_agent_provisioning_work`. `backendCompleted` and `providerCompleted`
-are the respective 31-receipt Backend and Provider histories before compatibility.
-`backendTerminology` has the 32 receipts
-through `0031_backend_terminology_compatibility`; `prePluginApprovers` adds
-`0032_credential_sources` for 33 receipts. `preBrokerReceipts` has 34 receipts
-through `0033_agent_plugin_approvers`; `preAgentDeletion` has 35 through
-`0034_repository_broker_receipts`; `preDeploymentProgress` has 36 through
-`0035_agent_deletion_repository_session_evidence`. `preHumanAuthentication` has
-the 37 receipts through `0036_deployment_progress`; `preAgentDeletionTakeover`
-has 38 through `0037_human_authentication`; `preNamespaceDeletionTakeover` has
-39 through `0038_agent_deletion_takeover`; `preRepositoryAccess` has 40 through
-`0039_namespace_deletion_takeover`; `preRestrictionReadLogs` has 41 through
-`0040_repository_access`; `preOAuth` has 42 through
-`0041_restriction_read_logs`; `preCredentialWithdrawals` has 43 through
-`0042_oauth_harness_auth`; `preBrokerReceiptFence` has 44 through
-`0043_credential_withdrawals`; `preModelProbeFailureCause` has 45 through
-`0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`
-has 46 through `0046_model_probe_failure_cause`;
-`preAdministratorCredentialSourceGrants` has 47 through
-`0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
-`0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
-through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
-`preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
-`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
-63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
+History stages end at these migrations (stage, receipt count when specified):
+
+- `prePresetsMain`: `0023_runtime_failure_timestamp_validation`; `main`: `0024_agent_presets`.
+- `repositoryCredentials`: `0025_repository_credentials` and `0026_privileged_function_search_paths`; `repositoryRetention`, `workspaceSetup`, and `agentProvisioning`: through `0029_agent_provisioning_work`.
+- `backendCompleted` and `providerCompleted`: 31 receipts before compatibility; `backendTerminology`: 32, through `0031_backend_terminology_compatibility`.
+- `prePluginApprovers`: 33, `0032_credential_sources`; `preBrokerReceipts`: 34, `0033_agent_plugin_approvers`; `preAgentDeletion`: 35, `0034_repository_broker_receipts`.
+- `preDeploymentProgress`: 36, `0035_agent_deletion_repository_session_evidence`; `preHumanAuthentication`: 37, `0036_deployment_progress`; `preAgentDeletionTakeover`: 38, `0037_human_authentication`.
+- `preNamespaceDeletionTakeover`: 39, `0038_agent_deletion_takeover`; `preRepositoryAccess`: 40, `0039_namespace_deletion_takeover`; `preRestrictionReadLogs`: 41, `0040_repository_access`.
+- `preOAuth`: 42, `0041_restriction_read_logs`; `preCredentialWithdrawals`: 43, `0042_oauth_harness_auth`; `preBrokerReceiptFence`: 44, `0043_credential_withdrawals`.
+- `preModelProbeFailureCause`: 45, `0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`: 46, `0046_model_probe_failure_cause`; `preAdministratorCredentialSourceGrants`: 47, `0047_provisioning_configuration_release`.
+- `preCodexPatSources`: 48, `0048_administrator_credential_source_grants`; `preAgentCredentialSources`: 49, `0049_codex_pat_sources`; `preCredentialWithdrawalRequester`: 50, `0050_agent_credential_sources`.
+- Later `pre*` stages add one receipt each, up to one receipt below `completed`; 60 and 61 have no stage. `catalogAtMigrationCount` in [`scripts/migration-history.mjs`](../../../scripts/migration-history.mjs) lists every stage with its receipt count.
+
 Rerun `--check` after migration and require `completed` from the same release.
+
+SIGINT or SIGTERM uses a second migrator connection to terminate the command's session. Reserve connection capacity. On connection failure, `migration.cancellation-failed` is reported while migration continues. Check history before retry.
+
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source and catalog hashes. Never delete or relabel unsupported preview
 receipts. Empty schemas may be absent or owner-only, with no objects or
@@ -105,6 +96,8 @@ Confirm target and authorization before running `pnpm db:migrate` or
 `pnpm db:migrate:production`. Under one advisory lock, both verify source,
 roles, receipts, definitions and grants. Drizzle applies pending SQL and receipts
 transactionally.
+
+The chart runs the [selected image's migration](../../guides/deploy/separate-database-upgrade.md#run-a-selected-image-migration) in one Node process.
 
 Production `--check` inspects recognized history. [Separate service deployment](../../guides/deploy/separate-database-upgrade.md)
 uses `--require-current`: pending history returns `MIGRATION_HISTORY_PENDING`,
@@ -140,10 +133,11 @@ retained database before considering another attempt.
 Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
 authentication: recreate development Agents, revisions, and provisioning
 requests before migrating` when an Agent draft, any AgentRevision, or a
-provisioning plan still holds a retired `chatgpt_service_account` binding. No
-API deletes an Agent revision or provisioning request on its own: delete each affected
-Agent, which also deletes its Agent revisions and requests, and create it again after
-the upgrade. Changing an Agent's binding does not clear earlier Agent revisions.
+provisioning plan still holds a retired `chatgpt_service_account` binding.
+An authorized operator can clear a draft-only binding if the installed
+controller supports it. No API deletes individual Agent revisions or provisioning
+requests. If the binding cannot be cleared, [deleting the Agent](../agents.md#deletion)
+removes its revisions and associated requests. Recreate it after upgrading.
 
 A provisioning request that never created an Agent survives Agent deletion.
 Let queued or running requests finish. Then, as the migration role, list the
@@ -177,7 +171,7 @@ project and retains its volume.
 
 For unsupported premerge history, retain the old installation and separately
 configure a fresh one, or discard that specific disposable installation. Preserve
-needed database/storage archives and protected bootstrap output first. Archives
+needed database/storage archives and protected bootstrap inputs first. Archives
 are not supported imports into canonical history; whole-database restore also
 restores the unsupported ledger. No general reset, conversion, or reseed exists.
 Recreate selected business data through its owning supported API or import
@@ -186,13 +180,13 @@ removing control-plane storage does not retire external resources or grants.
 
 For Docker or Podman, copy the exact `Cleanup` command printed by the original
 startup. Add `--volumes` before its `--` only when intentionally deleting that
-installation's PostgreSQL, Configuration, and bootstrap volumes. Preserve its
+installation's PostgreSQL and Configuration volumes. Preserve its
 engine connection, environment, project, Compose files, and overrides. For
 example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
 ```sh
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=docker
-./bin/occ dev down --volumes -- -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
+./bin/occ dev down --volumes -- -p "${DEV_COMPOSE_PROJECT:?}" -f compose.yaml &&
 ./bin/occ dev up --key-output /absolute/private/new-installation-key.json -- \
   -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
 ```
@@ -209,9 +203,8 @@ OCC_DEVELOPMENT_STATE_DIRECTORY="$DEV_STATE_DIRECTORY" ./bin/occ dev down
 Start the chosen fresh profile from the canonical source using a new protected
 key-output path. `occ dev up` applies migrations, bootstraps the initial
 administrators/Installation/default Namespace, and checks authenticated
-Installation access. Fresh bootstrap refuses existing output files; an old
-bootstrap volume or key file is not valid output for the new database. Repeating
-bootstrap against an existing Installation verifies it and issues no new key.
+Installation access using locally prepared CLI key JSON. Repeating bootstrap
+verifies the existing Installation without reading inputs or issuing keys.
 
 Use the startup's printed authenticated-check command, or privately select
 `OCC_URL` and `OCC_SERVICE_KEY_FILE` and run:
@@ -220,8 +213,9 @@ Use the startup's printed authenticated-check command, or privately select
 ./bin/occ installation get --output json
 ```
 
-Its Installation ID must match the protected key response's
-`meta.installationId`. Stop on mismatches, missing output, failed migration,
+The authenticated response supplies the server-owned Installation ID; locally
+prepared bootstrap key JSON has no Installation metadata. Stop on unexpected IDs,
+missing credentials, failed migration,
 uncertain bootstrap outcome, or incomplete cleanup. This proves control-plane
 access; qualify worker, Agent, repository, and provider behavior separately.
 
@@ -278,9 +272,9 @@ impose a Namespace-wide Agent limit.
 The root Compose development stack starts PostgreSQL 18.6, migrations,
 bootstrap, API, and worker. `occ dev up` starts the supported development
 profile; the checkout-local `scripts/dev-up` entry point uses the same path.
-Startup validates Compose configuration, waits for services, copies
-the bootstrap service-key response to a private file, and proves authenticated
-access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
+Startup prepares private credential files outside the checkout, validates
+Compose configuration, waits for services, and proves authenticated access with
+the locally prepared CLI key file. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
 Compute. Kubernetes Compute can use a Compose control plane or the
 [Kubernetes-only profile](../../guides/deploy/local-kubernetes-development.md).
 The helper prefers a usable Docker Engine and otherwise selects Podman directly,
@@ -340,28 +334,39 @@ Never give the controller the migrator or administrator URL. The application
 role cannot create schema objects, modify migration history, or rewrite
 immutable audit and Agent revision records.
 
-For database-only debugging, start PostgreSQL and apply migrations using its
-dedicated role:
+Database-only debugging requires a local Docker engine.
 
 ```bash
-docker compose -f compose.postgres.yaml up -d --wait
-
-export OCC_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_enterprise
-pnpm db:migrate
+DEV_POSTGRES_ADDRESS=
+docker compose -f compose.postgres.yaml up -d --wait &&
+address=$(docker compose -f compose.postgres.yaml port postgres 5432) &&
+if [[ $address =~ ^127\.0\.0\.1:[0-9]+$ ]]; then
+  OCC_MIGRATION_DATABASE_URL="postgresql://occ_migrator:occ-migrator-local@$address/openclaw_enterprise" pnpm db:migrate &&
+  DEV_POSTGRES_ADDRESS=$address
+else
+  echo 'PostgreSQL must publish 127.0.0.1:<port>' >&2
+  false
+fi
 ```
 
-Add the application connection URL to the [required development controller environment](development.md#required-development-controller-environment), then initialize before starting the same server manually. Use an
-existing private output directory and an unused absolute filename for fresh
-setup. Retain that directory for credential recovery; subsequent initialization
-does not reissue a key. This path is only for intentional host-process debugging:
+Prepare the controller's [development environment](development.md#required-development-controller-environment),
+[private inputs](../authentication.md#installation-and-account-ownership) and
+[credentials](../../guides/deploy/production-installation-preparation.md#shared-credential-and-configuration-checks).
+Retain files in a private directory outside the checkout. Reinitialization does not reissue keys.
 
 ```bash
-export OCC_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_enterprise
-export OCC_DATABASE_POOL_MAX=10
-export OCC_DEVELOPMENT_CONFIGURATION_ROOT="$(pwd)/.development/configurations"
-export OCC_BOOTSTRAP_SERVICE_KEY_FILE='/absolute/private-directory/initial-admin-service-key.json'
-NODE_ENV=development node scripts/bootstrap-installation.mjs
-NODE_ENV=development node apps/controller/src/server.mjs
+(
+  set -e
+  : "${DEV_POSTGRES_ADDRESS:?Complete database setup in this Bash shell first}"
+  unset OCC_MIGRATION_DATABASE_URL
+  export OCC_DATABASE_URL="postgresql://occ_app:occ-app-local@$DEV_POSTGRES_ADDRESS/openclaw_enterprise"
+  export OCC_DATABASE_POOL_MAX=10
+  export OCC_DEVELOPMENT_CONFIGURATION_ROOT="$(pwd)/.development/configurations"
+  export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE='/absolute/private-directory/admin-password'
+  export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE='/absolute/private-directory/admin-service-key'
+  NODE_ENV=development node scripts/bootstrap-installation.mjs
+  NODE_ENV=development node apps/controller/src/server.mjs
+)
 ```
 
 Installation, Namespace, Agent, native IAM, audit, and controller-work state
@@ -372,13 +377,13 @@ Compose keeps relational OCC metadata in the `occ_postgres_data` named volume
 and native development Configuration documents in the `occ_configuration_data`
 named volume. The configuration volume is mounted only into the controller at
 `/app/.development/configurations`; it is not mounted into the worker or
-runtime containers. Initial service-key output uses a third bootstrap-only
-volume, `occ_bootstrap_data`, at `/var/lib/openclaw/bootstrap`; the API and
-worker do not mount it. For Docker Compute, the printed cleanup command retains
-all three volumes and uses the selected container engine. Podman cleanup retains
+runtime containers. Bootstrap alone receives the two input files as Compose
+secrets at `/run/secrets/admin-password` and `/run/secrets/admin-service-key`;
+migration, API, and worker do not receive them. For Docker Compute, the printed
+cleanup command retains both named volumes and uses the selected container engine. Podman cleanup retains
 the caller's `CONTAINER_CONNECTION` or `CONTAINER_HOST` selection.
 Add `--volumes` before any `--` separator only when
-intentionally deleting them, including the initial credential delivery copy.
+intentionally deleting those volumes. Private credential files are separate.
 [Kubernetes development cleanup](../../guides/deploy/local-kubernetes-development.md#stop-and-clean-up)
 always deletes the selected profile's volumes.
 

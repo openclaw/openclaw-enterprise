@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { PermissionAction, ResourceKind } from "../../packages/contracts/src/index.ts";
 import {
   AgentReadSchema,
   AgentSchema,
@@ -7,10 +8,9 @@ import {
   NamespaceSchema,
   NamespaceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { tenantANamespaceId, tenantRequest as request } from "../helpers/tenant-reader-app.ts";
-import { ROUTE_NOT_FOUND, ROUTE_TRAILING_SLASH } from "../helpers/refusal-text.mjs";
 import {
   bootstrap,
   createAgent,
@@ -25,7 +25,8 @@ import {
 } from "./occ-api-security-fixture.ts";
 
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
-type RouteProbe = readonly [method: string, suffix: string, body?: unknown];
+type DenialTarget = readonly [action: PermissionAction, kind: ResourceKind, id?: string];
+type RouteProbe = readonly [method: string, suffix: string, denial: DenialTarget, body?: unknown];
 
 export function registerResourceAuthorityCases() {
   test("existing namespace adoption requires installation administration and waits for provisioning", async () => {
@@ -289,8 +290,8 @@ export function registerExactResourceCases() {
     // A path no route has gets route text, not "resource not found", and the same answer for a
     // readable and an unknown Agent (finding D764).
     for (const [suffix, message] of [
-      ["/", ROUTE_TRAILING_SLASH],
-      ["/no-such-route", ROUTE_NOT_FOUND],
+      ["/", "No API route has this path: remove the trailing slash."],
+      ["/no-such-route", "No API route has this path. Check it against the API reference."],
     ] as const) {
       const answers: Array<readonly [number, ReturnType<typeof responseError>]> = [];
       for (const id of [agentA.id, unknownAgentId]) {
@@ -362,83 +363,185 @@ export function registerExactResourceCases() {
     const reader = fixture.tenantAReader;
     const readerApp = fixture.createApp(reader);
 
-    // The reader holds no grant in Tenant B. Every target below must answer the same audited
-    // 403 whether the Namespace or Agent exists, so a refusal never reveals which ids are real.
+    // The reader holds no grant in Tenant B. Compare each operation's actual error and
+    // metadata across existing and missing targets, including the exact grant it denied.
     const namespaceRoutes: readonly RouteProbe[] = [
-      ["GET", "agents/repository-options"],
-      ["GET", `agents/provision/${child("work")}`],
-      ["POST", `agents/provision/${child("work")}/retry`],
-      ["GET", "presets"],
-      ["POST", "agents", { name: "probe", configurationId: agent.configurationId }],
-      ["POST", "configurations", { kind: "agent", values: {} }],
-      ["PATCH", `configurations/${child("cfg")}`, { values: {} }],
-      ["DELETE", `configurations/${child("cfg")}`],
-      ["POST", "secrets", { name: "probe", value: "probe-value" }],
-      ["PATCH", `secrets/${child("sec")}`, { value: "probe-value" }],
-      ["DELETE", `secrets/${child("sec")}`],
-      ["POST", "credential-sources", { name: "probe", type: "openai" }],
-      ["PATCH", `credential-sources/${child("cs")}`, {}],
-      ["DELETE", `credential-sources/${child("cs")}`],
-      ["POST", "presets", { name: "probe", template: {} }],
-      ["PATCH", `presets/${child("pre")}`, { name: "probe" }],
-      ["DELETE", `presets/${child("pre")}`],
-      ["POST", "service-accounts", { name: "probe" }],
-      ["POST", `service-accounts/${child("sa")}/credentials`, {}],
+      ["GET", "agents/repository-options", ["create", "agent"]],
+      ["GET", `agents/provision/${child("work")}`, ["create", "agent"]],
+      ["POST", `agents/provision/${child("work")}/retry`, ["create", "agent"]],
+      ["GET", "presets", ["read", "namespace"]],
+      [
+        "POST",
+        "agents",
+        ["create", "agent"],
+        { name: "probe", configurationId: agent.configurationId },
+      ],
+      ["POST", "configurations", ["create", "configuration"], { kind: "agent", values: {} }],
+      [
+        "PATCH",
+        `configurations/${child("cfg")}`,
+        ["update", "configuration", child("cfg")],
+        { values: {} },
+      ],
+      ["DELETE", `configurations/${child("cfg")}`, ["delete", "configuration", child("cfg")]],
+      ["POST", "secrets", ["create", "secret"], { name: "probe", value: "probe-value" }],
+      [
+        "PATCH",
+        `secrets/${child("sec")}`,
+        ["update", "secret", child("sec")],
+        { value: "probe-value" },
+      ],
+      ["DELETE", `secrets/${child("sec")}`, ["delete", "secret", child("sec")]],
+      [
+        "POST",
+        "credential-sources",
+        ["create", "credential_source"],
+        { name: "probe", type: "openai" },
+      ],
+      [
+        "PATCH",
+        `credential-sources/${child("cs")}`,
+        ["update", "credential_source", child("cs")],
+        {},
+      ],
+      ["DELETE", `credential-sources/${child("cs")}`, ["delete", "credential_source", child("cs")]],
+      ["POST", "presets", ["create", "preset"], { name: "probe", template: {} }],
+      ["PATCH", `presets/${child("pre")}`, ["update", "preset", child("pre")], { name: "probe" }],
+      ["DELETE", `presets/${child("pre")}`, ["delete", "preset", child("pre")]],
+      ["POST", "service-accounts", ["create", "service_account"], { name: "probe" }],
+      [
+        "POST",
+        `service-accounts/${child("sa")}/credentials`,
+        ["update", "service_account", child("sa")],
+        {},
+      ],
       [
         "PATCH",
         `service-accounts/${child("sa")}/credential`,
+        ["update", "service_account", child("sa")],
         { kind: "api_key", secretRef: { name: "probe", key: "probe" } },
       ],
-      ["DELETE", `service-accounts/${child("sa")}`],
-      ["DELETE", ""],
+      ["DELETE", `service-accounts/${child("sa")}`, ["delete", "service_account", child("sa")]],
+      ["DELETE", "", ["delete", "namespace"]],
     ];
     const agentRoutes: readonly RouteProbe[] = [
-      ["GET", ""],
-      ["GET", `revisions/${missingRevisionId}`],
-      ["GET", `deployments/${missingRevisionId}`],
-      ["GET", "repository-options"],
-      ["PATCH", "", { configurationId: agent.configurationId }],
-      ["POST", "deploy"],
-      ["POST", "stop"],
-      ["POST", `credential-sources/${child("cs")}/withdraw`],
-      ["DELETE", ""],
+      ["GET", "", ["read", "agent"]],
+      ["GET", `revisions/${missingRevisionId}`, ["read", "agent_revision", missingRevisionId]],
+      ["GET", `deployments/${missingRevisionId}`, ["read", "agent_revision", missingRevisionId]],
+      ["GET", "repository-options", ["update", "agent"]],
+      ["PATCH", "", ["update", "agent"], { configurationId: agent.configurationId }],
+      ["POST", "deploy", ["deploy", "agent"]],
+      ["POST", "stop", ["operate", "agent"]],
+      ["POST", `credential-sources/${child("cs")}/withdraw`, ["operate", "agent"]],
+      ["DELETE", "", ["delete", "agent"]],
     ];
     const probes = [
-      ...namespaceRoutes.flatMap(([method, suffix, body]) =>
+      ...namespaceRoutes.map(([method, suffix, [action, kind, id], body]) =>
         [namespace.id, missingNamespaceId].map((namespaceId) => ({
           method,
           body,
+          namespaceId,
+          agentId: undefined,
           pathname: `/namespaces/${namespaceId}${suffix ? `/${suffix}` : ""}`,
+          authorization: { action, resource: { kind, id: id ?? namespaceId, namespaceId } },
         })),
       ),
-      ...agentRoutes.flatMap(([method, suffix, body]) =>
-        [
-          [namespace.id, agent.id],
-          [namespace.id, missingAgentId],
-          [missingNamespaceId, missingAgentId],
-        ].map(([namespaceId, agentId]) => ({
+      ...agentRoutes.map(([method, suffix, [action, kind, id], body]) =>
+        (
+          [
+            [namespace.id, agent.id],
+            [namespace.id, missingAgentId],
+            [missingNamespaceId, missingAgentId],
+          ] as const
+        ).map(([namespaceId, agentId]) => ({
           method,
           body,
+          namespaceId,
+          agentId,
           pathname: `/namespaces/${namespaceId}/agents/${agentId}${suffix ? `/${suffix}` : ""}`,
+          authorization: { action, resource: { kind, id: id ?? agentId, namespaceId } },
         })),
       ),
     ];
 
-    const leaks: string[] = [];
-    for (const { method, pathname, body } of probes) {
-      const auditCount = fixture.auditSink.events.length;
-      const result = await request(readerApp, pathname, {
-        method,
-        ...(body === undefined ? {} : { body }),
-      });
-      const denials = fixture.auditSink.events
-        .slice(auditCount)
-        .filter((event) => event.kind === "authorization_denial" && event.actorId === reader.id);
-      if (result.response.status !== 403 || denials.length !== 1) {
-        leaks.push(`${method} ${pathname}: ${result.response.status}, ${denials.length} denials`);
+    for (const variants of probes) {
+      let reference:
+        { error: ReturnType<typeof responseError>; headers: Record<string, string> } | undefined;
+      for (const { method, pathname, body, namespaceId, agentId, authorization } of variants) {
+        const label = `${method} ${pathname}`;
+        const auditCount = fixture.auditSink.events.length;
+        const result = await request(readerApp, pathname, {
+          method,
+          ...(body === undefined ? {} : { body }),
+        });
+        const denials = fixture.auditSink.events
+          .slice(auditCount)
+          .filter((event) => event.kind === "authorization_denial" && event.actorId === reader.id);
+        assert.equal(result.response.status, 403, label);
+        assert.equal(denials.length, 1, label);
+        const denial = denials[0];
+        assert.equal(denial?.requestId, result.response.headers.get("x-request-id"), label);
+        assert.equal(denial?.installationId, installationId, label);
+        assert.equal(denial?.namespaceId, namespaceId, label);
+        assert.equal(denial?.outcome, "denied", label);
+        assert.deepEqual(
+          denial?.authorization,
+          { principalId: reader.id, ...authorization },
+          label,
+        );
+
+        const error = responseError(result.payload);
+        assert.equal(error.code, "FORBIDDEN", label);
+        // A missing grant carries no resource counts, detail paths, or other stored metadata.
+        assert.deepEqual(Object.keys(error).sort(), ["code", "message"], label);
+        const normalize = (value: string) => {
+          const normalized = value.replaceAll(namespaceId, "<namespaceId>");
+          return agentId === undefined ? normalized : normalized.replaceAll(agentId, "<agentId>");
+        };
+        const headers = new Headers(result.response.headers);
+        assert.equal(headers.get("cache-control"), "no-store", label);
+        assert.equal(headers.get("content-type"), "application/json; charset=utf-8", label);
+        assert.equal(headers.get("x-content-type-options"), "nosniff", label);
+        // Only the validated request ID and a valid transport timestamp vary per response.
+        // Keep every other header, including Content-Length, in the equivalence check.
+        const date = headers.get("date");
+        if (date !== null) {
+          assert.equal(new Date(date).toUTCString(), date, label);
+        }
+        headers.delete("date");
+        headers.delete("x-request-id");
+        const responseHeaders = Object.fromEntries(headers);
+        const requestedIds = new Set(pathname.split("/"));
+        if (
+          body !== null &&
+          typeof body === "object" &&
+          "configurationId" in body &&
+          typeof body.configurationId === "string"
+        ) {
+          requestedIds.add(body.configurationId);
+        }
+        // Do not erase every resource-shaped ID: an ID read from stored state must stay visible.
+        const disclosedIds =
+          JSON.stringify({ error, headers: responseHeaders }).match(
+            /\b[a-z][a-z0-9_]*_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/g,
+          ) ?? [];
+        for (const id of disclosedIds) {
+          assert.ok(requestedIds.has(id), `${label}: an unrequested resource ID was disclosed`);
+        }
+        const observed = {
+          error: { ...error, message: normalize(error.message) },
+          headers: Object.fromEntries(
+            Object.entries(responseHeaders).map(([name, value]) => [name, normalize(value)]),
+          ),
+        };
+        if (reference === undefined) {
+          reference = observed;
+        } else {
+          assert.deepEqual(observed.error, reference.error, `${label}: denial error differs`);
+          assert.deepEqual(observed.headers, reference.headers, `${label}: denial headers differ`);
+        }
       }
     }
-    assert.deepEqual(leaks, []);
   });
 }
 

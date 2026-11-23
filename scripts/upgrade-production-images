@@ -15,7 +15,7 @@ Usage: scripts/upgrade-production-images \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
   [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
   [--migration-history-checked] [--recover-helm --recovery-reviewed] \
-  [--collector-config-reviewed] [--preflight-only]
+  [--collector-config-reviewed] [--preflight-only | --migration-check-only | --migration-apply-only] [--verbose]
 
 Select at least one image. Candidate files contain reviewed settings changes;
 image fields are selected only by the image flags. A controller-only upgrade
@@ -28,6 +28,13 @@ with the operator. Preserve it separately from backups of the evidence directory
 Use --preflight-only to check the candidate before the maintenance window. It
 creates temporary Jobs and requires confirmed cleanup before quiescence;
 its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
+Use --migration-check-only with a controller image to check migration history
+for reviewed candidate Helm values. It uses the deployed revision's migrator
+connection inputs and confirms cleanup of one temporary Job before reporting
+success. This check requires Kubernetes access and does not use OCC credentials.
+Use --migration-apply-only with the original arguments and evidence after a
+separate database deployment pauses. It applies and verifies the selected
+image's migrations while the writers remain stopped. Resume Helm separately.
 After interruption, settle the original helper, children and remote operations.
 Then, from the original checkout, clean up only its recorded preflight resources:
   scripts/upgrade-production-images --cleanup-preflight \
@@ -45,12 +52,24 @@ It needs exact Agent read/operate and active AgentRevision read permissions.
 --timeout-seconds bounds each wait (default 900, at most 86400).
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
+Progress appears on stderr. Native scale and rollout output stays in the private
+evidence directory; use --verbose to show native command output as well.
 EOF
 }
 
 warn() {
   printf 'upgrade-production-images: %s\n' "$1" >&2
 }
+
+# A closed diagnostic pipe must not stop the upgrade or replace a native status.
+progress() (
+  trap '' PIPE
+  local timestamp=''
+  TZ=UTC0 builtin printf -v timestamp '%(%Y-%m-%dT%H:%M:%SZ)T' -1 2>/dev/null ||
+    timestamp=$(command date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
+    timestamp=''
+  printf 'Upgrade: %s%s\n' "$1" "${timestamp:+ [$timestamp]}" >&2 2>/dev/null || true
+)
 
 die() {
   warn "$1"
@@ -69,6 +88,18 @@ native_command_failed() {
     warn "could not append native-command-failures.tsv in the evidence directory." || true
   warn "$operation for $component exited $status; inspect native-command-failures.tsv and reconcile live state before resuming." || true
   exit "$status"
+}
+
+native_output() {
+  local operation=$1 component=$2 output=$3
+  shift 3
+  if ((verbose)); then
+    "$@" || native_command_failed "$?" "$operation" "$component"
+  else
+    {
+      "$@" || native_command_failed "$?" "$operation" "$component"
+    } >"$evidence_dir/$output"
+  fi
 }
 
 require_command() {
@@ -96,6 +127,327 @@ require_private_file() {
   require_regular_file "$path"
   mode=$(private_file_mode "$path")
   (((8#$mode & 077) == 0)) || die "$path must not grant group or other permissions."
+}
+
+# A sibling preserves the relative path base used by Kubernetes client configuration.
+pin_execution_kubeconfig() {
+  python3 - "$1" "$2" "$3" "$4" 3<<<"$5" <<'PYTHON'
+import base64
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+
+
+def load_kubeconfig(content):
+    # Match the profiled preview's decoder. Without merging, local config view
+    # keeps references relative to the declared kubeconfig, which we rebase below.
+    return json.loads(subprocess.check_output(
+        ["kubectl", "--kubeconfig", "/dev/stdin", "config", "view", "--merge=false", "--raw", "-o", "json"],
+        input=content,
+        env={**os.environ, "KUBECTL_KUBERC": "false"},
+        stderr=subprocess.DEVNULL,
+    ))
+
+def selected_config_entry(entries, name, field):
+    matches = [entry[field] for entry in entries or [] if entry["name"] == name]
+    if len(matches) != 1:
+        raise ValueError(f"the selected Kubernetes {field} is missing or ambiguous")
+    return matches[0]
+
+
+def pin_selected_server_ca(config, context, parent, approved_ca):
+    cluster = selected_config_entry(config.get("clusters"), context["cluster"], "cluster")
+    ca_path = cluster.get("certificate-authority")
+    ca_data = cluster.get("certificate-authority-data")
+    if ca_path and ca_data:
+        raise ValueError("the selected cluster cannot use both a certificate-authority file and inline CA data")
+    if (ca_path or ca_data) and cluster.get("insecure-skip-tls-verify"):
+        raise ValueError("the selected cluster cannot combine CA material and insecure TLS verification")
+    if not ca_path:
+        if approved_ca is not None:
+            raise ValueError("the approved external server CA does not match the selected cluster")
+        return False
+    if approved_ca is None:
+        raise ValueError("the selected cluster's external server CA was not approved")
+
+    # Follow a configured CA symlink just as Kubernetes does. The bytes from
+    # this single open are checked and then embedded, so no client reopens it.
+    path = ca_path if os.path.isabs(ca_path) else os.path.normpath(parent / ca_path)
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError("the selected external server CA must be a readable regular file")
+            content = source.read()
+    except FileNotFoundError:
+        raise ValueError("the selected external server CA changed after approval (file is missing)") from None
+    if hashlib.sha256(content).hexdigest() != approved_ca:
+        raise ValueError("the selected external server CA changed after approval")
+    cluster["certificate-authority-data"] = base64.b64encode(content).decode("ascii")
+    del cluster["certificate-authority"]
+    return True
+
+
+def relocated_config(config, parent, evidence):
+    def rebase(section, key, *, path_command=False):
+        value = section.get(key)
+        if value and not os.path.isabs(value) and (not path_command or "/" in value):
+            section[key] = os.path.normpath(parent / value)
+
+    for entry in config.get("clusters") or []:
+        rebase(entry["cluster"], "certificate-authority")
+    for entry in config.get("users") or []:
+        user = entry["user"]
+        for key in ("client-certificate", "client-key", "tokenFile"):
+            rebase(user, key)
+        if user.get("exec"):
+            rebase(user["exec"], "command", path_command=True)
+    encoded = json.dumps(config).encode()
+    directory = Path(tempfile.mkdtemp(prefix=".kubeconfig-pin.", dir=evidence))
+    execution = directory / "kubeconfig"
+    try:
+        with execution.open("xb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fchmod(output.fileno(), 0o400)
+            os.fsync(output.fileno())
+        return execution, encoded, directory
+    except BaseException:
+        execution.unlink(missing_ok=True)
+        directory.rmdir()
+        raise
+
+def physical_parent(parent, system_owner):
+    physical = parent.resolve(strict=True)
+    if parent == physical:
+        return physical
+    for component in (parent, *parent.parents):
+        if not component.is_symlink():
+            continue
+        if component.lstat().st_uid != system_owner or any(
+            ancestor.stat().st_uid != system_owner or ancestor.stat().st_mode & 0o022
+            for ancestor in component.parents
+        ):
+            raise ValueError("kubeconfig directory has an untrusted alias")
+        target = component.parent.resolve(strict=True) / os.readlink(component)
+        if any(path.is_symlink() for path in (target, *target.parents)):
+            raise ValueError("kubeconfig directory has an indirect alias")
+    return physical
+
+
+try:
+    with os.fdopen(3, encoding="utf-8") as approval_file:
+        approval = json.load(approval_file)
+    verify_server_ca = approval.get("verifyServerCa", False)
+    expected = approval["kubeconfig"] if verify_server_ca else approval.get("kubeconfig")
+    evidence, context_name, check_exec = sys.argv[2:]
+    original = Path(os.path.abspath(sys.argv[1]))
+    parent = original.parent
+    uid = os.geteuid()
+    system_owner = Path("/").stat().st_uid
+    owners = {uid, system_owner}
+    physical = physical_parent(parent, system_owner)
+    if Path(sys.argv[1]).parent.resolve(strict=True) != physical:
+        raise ValueError("kubeconfig directory changed while resolving the original path")
+    for ancestor in physical.parents:
+        info = ancestor.stat()
+        if info.st_uid not in owners or info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+            raise ValueError("kubeconfig directory has an unsafe ancestor")
+
+    directory = os.open(physical, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(directory)
+        required = stat.S_IWUSR | stat.S_IXUSR
+        if info.st_uid not in owners or info.st_mode & 0o022:
+            raise ValueError("kubeconfig needs a directory protected from other writers")
+        can_create_sibling = info.st_uid == uid and info.st_mode & required == required
+        if not (os.path.samestat(info, physical.stat()) and os.path.samestat(info, parent.stat())):
+            raise ValueError("kubeconfig directory changed")
+        # Keep the original logical origin for Kubernetes' relative file resolution.
+        with os.fdopen(os.open(original.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                               dir_fd=directory), "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
+                raise ValueError("kubeconfig must be an owner-only regular file")
+            content = source.read()
+        source_digest = hashlib.sha256(content).hexdigest()
+        if (verify_server_ca or expected is not None) and source_digest != expected:
+            raise ValueError("kubeconfig changed after approval")
+
+        config = load_kubeconfig(content)
+        context = selected_config_entry(config.get("contexts"), context_name, "context")
+        user_name = context.get("user")
+        user = selected_config_entry(config.get("users"), user_name, "user") if user_name else {}
+        if check_exec == "1" and "exec" in user:
+            raise ValueError(
+                "the selected Kubernetes user uses an exec credential plugin while kubectl preferences are enabled. "
+                "Use a token or client certificate under your approved credential policy"
+            )
+        # A provider can rotate a credential that the private snapshot cannot preserve.
+        if "auth-provider" in user:
+            raise ValueError(
+                "the selected Kubernetes user uses a built-in auth-provider. "
+                "Use a token or client certificate"
+            )
+        has_external_ca = verify_server_ca and pin_selected_server_ca(
+            config, context, parent, approval.get("kubeconfig server CA")
+        )
+        if check_exec == "1":
+            # Give both clients only the checked target and its selected credentials.
+            cluster_name = context["cluster"]
+            cluster = selected_config_entry(config.get("clusters"), cluster_name, "cluster")
+            config["clusters"] = [{"name": cluster_name, "cluster": cluster}]
+            config["contexts"] = [{"name": context_name, "context": context}]
+            config["current-context"] = context_name
+            config["users"] = [{"name": user_name, "user": user}] if user_name else []
+            content = json.dumps(config).encode()
+        fd = None
+        if can_create_sibling and not has_external_ca:
+            name = ".occ-upgrade-kubeconfig." + uuid.uuid4().hex
+            try:
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                             dir_fd=directory)
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    raise
+        if fd is not None:
+            try:
+                with os.fdopen(fd, "wb") as snapshot:
+                    snapshot.write(content)
+                    snapshot.flush()
+                    os.fchmod(snapshot.fileno(), 0o400)
+                    os.fsync(snapshot.fileno())
+                execution, encoded, private_parent = parent / name, content, None
+            except BaseException:
+                os.unlink(name, dir_fd=directory)
+                raise
+        else:
+            execution, encoded, private_parent = relocated_config(config, parent, evidence)
+        print(json.dumps({"path": str(execution), "sha256": hashlib.sha256(encoded).hexdigest(),
+                          "sourceSha256": source_digest,
+                          "directory": str(private_parent) if private_parent else None}))
+    finally:
+        os.close(directory)
+except ValueError as error:
+    sys.exit(f"Cannot pin the approved kubeconfig: {error}. Review a fresh plan.")
+except (KeyError, OSError, TypeError, subprocess.CalledProcessError):
+    sys.exit("Cannot pin the approved kubeconfig. Check its private directory and review a fresh plan.")
+PYTHON
+}
+
+read_original_upgrade_parameters() {
+  python3 - "$upgrade_evidence_dir" "$kubeconfig" "$context" "$namespace" "$release" <<'PYTHON'
+import json
+import os
+import re
+import runpy
+import sys
+
+state = runpy.run_path("scripts/upgrade-preflight-state.py")
+try:
+    root, physical = state["directory"](sys.argv[1])
+    if state["identity"](os.fstat(8)) != physical:
+        raise ValueError
+    values = state["parameters"](root)
+    if values["arguments"][:4] != sys.argv[2:6]:
+        raise ValueError
+    if state["journal"](root)["parametersSha256"] != state["digest"](values):
+        raise ValueError
+    profiled = values.get("profiled")
+    if not isinstance(profiled, bool):
+        sys.exit("The original run has no verifiable target origin. Use its original release checkout and evidence.")
+    if "kubeconfigServerCaSha256" in values and not profiled:
+        raise ValueError
+    for key in ("kubeconfigSha256", "kubeconfigServerCaSha256"):
+        if key in values and re.fullmatch(r"[0-9a-f]{64}", values[key]) is None:
+            raise ValueError
+    if "kubeconfigSha256" not in values:
+        raise ValueError
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("Cannot read the original private parameters and Kubernetes target for this evidence directory.")
+print(json.dumps(values, sort_keys=True))
+PYTHON
+}
+
+select_recovery_target() {
+  local recorded current
+  if jq -e '.profiled == true' <<<"$original_parameters" >/dev/null; then
+    recorded=$(jq -cS '
+      {kubeconfig: .kubeconfigSha256} +
+      (if has("kubeconfigServerCaSha256") then {"kubeconfig server CA": .kubeconfigServerCaSha256} else {} end)
+    ' <<<"$original_parameters")
+    if [[ -n "$approved_upgrade_inputs" ]]; then
+      current=$(jq -cS \
+        'with_entries(select(.key == "kubeconfig" or .key == "kubeconfig server CA"))' <<<"$approved_upgrade_inputs")
+      [[ "$current" == "$recorded" ]] ||
+        die "The approved Kubernetes target differs from the original run's kubeconfig or external server CA."
+    fi
+    approved_upgrade_inputs=$recorded
+  elif [[ -n "$approved_upgrade_inputs" ]]; then
+    # A raw-owned run has no recorded external CA. Preserve its receipt while
+    # verifying the kubeconfig and the profiled recovery's current CA approval.
+    [[ "$(jq -er .kubeconfig <<<"$approved_upgrade_inputs")" == "$(jq -er .kubeconfigSha256 <<<"$original_parameters")" ]] ||
+      die "The approved kubeconfig differs from the original run."
+  fi
+}
+
+setup_execution_kubeconfig() {
+  execution_kubeconfig=$kubeconfig
+  if [[ -z "$approved_upgrade_inputs" ]] && ((check_kubectl_exec == 0)); then
+    return 0
+  fi
+  local binding kubeconfig_binding
+  kubeconfig_binding='{}'
+  if [[ -n "$approved_upgrade_inputs" ]]; then
+    kubeconfig_binding=$(jq -ce '. + {verifyServerCa: true}' <<<"$approved_upgrade_inputs")
+  elif [[ -n "$original_parameters" ]]; then
+    kubeconfig_binding=$(jq -ce '{kubeconfig: .kubeconfigSha256}' <<<"$original_parameters")
+  fi
+  binding=$(pin_execution_kubeconfig "$kubeconfig" "$upgrade_evidence_dir" "$context" \
+    "$check_kubectl_exec" "$kubeconfig_binding")
+  execution_kubeconfig=$(jq -er '.path' <<<"$binding")
+  kubeconfig_snapshot_directory=$(jq -r '.directory // ""' <<<"$binding")
+  execution_kubeconfig_source_sha=$(jq -er '.sourceSha256' <<<"$binding")
+  python3 - "$execution_kubeconfig" 3<<<"$binding" <<'PYTHON'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+try:
+    with os.fdopen(3, encoding="utf-8") as input_binding:
+        snapshot = json.load(input_binding)
+    with os.fdopen(os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as config:
+        info = os.fstat(config.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o400:
+            raise ValueError
+        if sys.argv[1] != snapshot["path"] or hashlib.sha256(config.read()).hexdigest() != snapshot["sha256"]:
+            raise ValueError
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("The approved kubeconfig snapshot changed. Review the original target before proceeding.")
+PYTHON
+  # Retain the locator privately if interrupted children may still use the snapshot.
+  kubeconfig_snapshot_receipt=$(mktemp "$upgrade_evidence_dir/kubeconfig-snapshot.XXXXXXXX")
+  printf '%s\n' "$execution_kubeconfig" >"$kubeconfig_snapshot_receipt"
+}
+
+release_kubeconfig_snapshot() {
+  if [[ "$execution_kubeconfig" != "$kubeconfig" ]]; then
+    rm -f -- "$execution_kubeconfig" || return 1
+    if [[ -n "$kubeconfig_snapshot_directory" ]]; then
+      rmdir -- "$kubeconfig_snapshot_directory" || return 1
+    fi
+    if [[ -n "$kubeconfig_snapshot_receipt" ]]; then
+      rm -f -- "$kubeconfig_snapshot_receipt"
+    fi
+  fi
 }
 
 # Input checks set LC_ALL=C locally: under a locale such as en_US.UTF-8, bash
@@ -302,8 +654,9 @@ matches_yaml() {
 }
 
 require_mutable_installation_secret() {
+  local next_step=$2
   jq -e '.immutable != true' "$1" >/dev/null ||
-    die "Installation Secret $installation_secret is immutable and the candidate requires different data. Choose a candidate that preserves the live Installation configuration or defer this upgrade."
+    die "Installation Secret $installation_secret is immutable and the candidate requires different data. $next_step"
 }
 
 check_installation_update_access() {
@@ -427,6 +780,9 @@ timeout_seconds=900
 doctor_heap_mib=384
 resume=0
 preflight_only=0
+migration_check_only=0
+migration_apply_only=0
+verbose=0
 migration_history_checked=0
 recover_helm=0
 recovery_reviewed=0
@@ -435,6 +791,8 @@ cleanup_only=0
 previous_process_settled=0
 evidence_unrestored=0
 cleanup_conflicting_args=0
+channel_egress_one_off=0
+channel_egress_enabled=false
 
 while (($#)); do
   case "$1" in
@@ -442,6 +800,7 @@ while (($#)); do
     *) cleanup_conflicting_args=1 ;;
   esac
   case "$1" in
+    --channel-egress-one-off) channel_egress_one_off=1; shift ;;
     --cleanup-preflight) cleanup_only=1; shift ;;
     --previous-process-settled) previous_process_settled=1; shift ;;
     --evidence-unrestored) evidence_unrestored=1; shift ;;
@@ -480,6 +839,18 @@ while (($#)); do
       preflight_only=1
       shift
       ;;
+    --migration-check-only)
+      migration_check_only=1
+      shift
+      ;;
+    --migration-apply-only)
+      migration_apply_only=1
+      shift
+      ;;
+    --verbose)
+      verbose=1
+      shift
+      ;;
     --resume)
       resume=1
       shift
@@ -511,6 +882,43 @@ while (($#)); do
   esac
 done
 
+check_kubectl_preferences() {
+  if [[ "${KUBECTL_KUBERC:-}" == false || "${KUBERC:-}" == off ]]; then
+    return
+  fi
+  python3 - <<'PYTHON' || exit 2
+import os
+from pathlib import Path
+
+try:
+    if not os.environ.get("KUBERC"):
+        (Path(os.environ.get("HOME", "")) / ".kube" / "kuberc").lstat()
+except FileNotFoundError:
+    pass
+except OSError:
+    raise SystemExit("Cannot inspect default kubectl preferences. Follow your approved procedure and credential policy.")
+else:
+    raise SystemExit("Active kubectl preferences are unsupported for this upgrade. Follow your approved procedure and credential policy.")
+PYTHON
+  # A policy can appear after this check. Only a pinned config without a
+  # runnable credential plugin may reach live clients with defaults suppressed.
+  check_kubectl_exec=1
+}
+
+admit_live_kubeconfig() {
+  setup_execution_kubeconfig
+  export KUBECTL_KUBERC=false KUBERC=off
+}
+
+approved_upgrade_inputs=${OCC_UPGRADE_APPROVED_INPUTS:-}
+unset OCC_UPGRADE_APPROVED_INPUTS
+original_parameters=
+check_kubectl_exec=0
+execution_kubeconfig_source_sha=
+execution_kubeconfig=$kubeconfig
+kubeconfig_snapshot_directory=
+kubeconfig_snapshot_receipt=
+
 # The cleanup path consumes original identity evidence only. It never prepares or
 # resumes an upgrade and needs no OCC credential or candidate image inputs.
 if ((cleanup_only)); then
@@ -525,13 +933,19 @@ if ((cleanup_only)); then
   for command in python3 jq kubectl node mktemp; do
     require_command "$command"
   done
+  check_kubectl_preferences
   umask 077
   exec 8<"$evidence_dir" || die "cannot open the original evidence directory." 2
   python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
     die "cannot lock the original evidence directory; a helper or child may still be running." 2
+  require_private_file "$kubeconfig"
+  upgrade_evidence_dir=$evidence_dir
   cleanup_state=$(python3 scripts/upgrade-preflight-state.py inspect "$evidence_dir" \
     "$kubeconfig" "$context" "$namespace" "$release") ||
     die "invalid preflight recovery evidence; no Kubernetes cleanup was attempted." 2
+  original_parameters=$(read_original_upgrade_parameters) ||
+    die "invalid preflight recovery target; no Kubernetes cleanup was attempted." 2
+  select_recovery_target
   resources_text=$(jq -r '.resources[]' <<<"$cleanup_state") || die "cannot read cleanup resources." 2
   children_text=$(jq -r '.children[]' <<<"$cleanup_state") || die "cannot read cleanup children." 2
   unknown_count=$(jq '.unknown | length' <<<"$cleanup_state") || die "cannot read uncertain creates." 2
@@ -545,7 +959,13 @@ if ((cleanup_only)); then
   while IFS= read -r entry; do
     [[ -z "$entry" ]] || preflight_children+=("$entry")
   done <<<"$children_text"
-  kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
+  # Leave the pinned config in private evidence if a child may still be active.
+  trap 'release_kubeconfig_snapshot || true' EXIT
+  trap 'trap - EXIT; exit 129' HUP
+  trap 'trap - EXIT; exit 130' INT
+  trap 'trap - EXIT; exit 143' TERM
+  admit_live_kubeconfig
+  kube=(kubectl --kubeconfig "$execution_kubeconfig" --context "$context")
   # Keep each cleanup's result and observations separate from original receipts.
   evidence_dir=$(mktemp -d "$evidence_dir/preflight-cleanup.XXXXXXXX")
   # Do not rerun cleanup in an EXIT trap: a signal may leave a remote operation
@@ -567,11 +987,18 @@ fi
 ((previous_process_settled == 0 && evidence_unrestored == 0)) ||
   die "--previous-process-settled and --evidence-unrestored require --cleanup-preflight." 2
 
-# Helm reads these independently of --kubeconfig/--kube-context. Keep its
-# endpoint and TLS settings bound to the same selected file as kubectl.
-for variable in HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY; do
-  [[ -z "${!variable:-}" ]] ||
-    die "unset $variable; configure the endpoint and TLS settings in the selected kubeconfig before starting or resuming an upgrade."
+# Use the same release history for preparation, upgrade, and recovery.
+[[ "${HELM_DRIVER:-secret}" == secret ]] ||
+  die "unset HELM_DRIVER or set it to secret; the upgrade requires Helm release Secrets in the selected cluster."
+
+# Helm reads these independently of --kubeconfig/--kube-context. Bind both
+# clients' connection settings and credentials to the selected kubeconfig.
+# Expand only a fixed marker so Bash tracing cannot expose an override's value.
+for variable in \
+  HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY \
+  HELM_KUBETOKEN HELM_KUBEASUSER HELM_KUBEASGROUPS; do
+  [[ -z "${!variable:+present}" ]] ||
+    die "unset $variable before starting or resuming an upgrade. Use the selected kubeconfig for Kubernetes connection settings and credentials."
 done
 
 [[ -z "$verify_agent" && -z "$verify_agent_namespace" || -n "$verify_agent" && -n "$verify_agent_namespace" ]] ||
@@ -579,12 +1006,38 @@ done
 [[ -z "$verify_agent" || -z "$runtime_image" ]] ||
   die "--verify-agent cannot be combined with --runtime-image, which selects new Agent revisions."
 
+if ((channel_egress_one_off)); then
+  [[ -n "$controller_image" && -z "$runtime_image" && -z "$verify_agent" &&
+     -n "$requested_values" && -n "$requested_installation" ]] && ((migration_check_only == 0)) ||
+    die "the channel one-off requires a controller image and both prepared candidate files; runtime replacement and continuity verification are separate operations."
+fi
+
+if ((migration_apply_only)); then
+  ((resume == 0 && preflight_only == 0 && migration_check_only == 0 && migration_history_checked == 0 &&
+    recover_helm == 0 && recovery_reviewed == 0)) ||
+    die "--migration-apply-only uses the original handoff inputs without resume or recovery flags."
+  # Apply consumes the same frozen inputs and original directory as resume.
+  resume=1
+fi
 ((resume == 0 || preflight_only == 0)) || die "--resume cannot be combined with --preflight-only."
 ((recover_helm == 0 || (resume && migration_history_checked && recovery_reviewed))) ||
   die "--recover-helm requires --resume --migration-history-checked --recovery-reviewed."
 ((recovery_reviewed == 0 || recover_helm)) || die "--recovery-reviewed requires --recover-helm."
 
-for input in kubeconfig context namespace release values installation source_revision evidence_dir; do
+if ((migration_check_only)); then
+  [[ -n "$controller_image" && -z "$broker_image" && -z "$runtime_image" &&
+     -z "$requested_installation" && -z "$verify_agent" && -z "$controller_compatibility_results" ]] &&
+    ((resume == 0 && preflight_only == 0 && collector_config_reviewed == 0)) ||
+    die "--migration-check-only requires a controller image and accepts candidate Helm values only. Use the normal upgrade for startup, continuity, or recovery options."
+fi
+
+required_inputs=(kubeconfig context namespace release values source_revision evidence_dir)
+if ((migration_check_only)); then
+  installation=
+else
+  required_inputs+=(installation)
+fi
+for input in "${required_inputs[@]}"; do
   [[ -n "${!input}" ]] || die "--${input//_/-} is required."
 done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
@@ -697,7 +1150,7 @@ def existing_output(path):
 
 # A mount can expose a verified directory under a different physical path.
 chart_root = os.path.abspath(chart_path)
-for path in (evidence, values, installation):
+for path in filter(None, (evidence, values, installation)):
     try:
         if os.path.commonpath((chart_root, os.path.realpath(path))) == chart_root:
             sys.exit(2)
@@ -733,6 +1186,8 @@ if ((resume)); then
   (((8#$mode & 077) == 0)) || die "the evidence directory must not grant group or other permissions."
 else
   [[ ! -e "$evidence_dir" ]] || die "--evidence-dir must not already exist."
+  [[ ! -e "${evidence_dir}.migration-state.json" && ! -L "${evidence_dir}.migration-state.json" ]] ||
+    die "the evidence path has an original separate migration journal; reconcile that operation."
   ((migration_history_checked == 0)) || die "--migration-history-checked is only valid with --resume."
 fi
 
@@ -743,7 +1198,7 @@ fi
 
 require_private_file "$kubeconfig"
 require_private_file "$values"
-require_private_file "$installation"
+((migration_check_only)) || require_private_file "$installation"
 [[ -z "$requested_values" ]] || require_private_file "$requested_values"
 [[ -z "$requested_installation" ]] || require_private_file "$requested_installation"
 # The protected baselines are replaced during execution; candidate inputs must
@@ -756,17 +1211,24 @@ for index, path in enumerate(paths):
         if os.path.samefile(path, other):
             sys.exit("Baseline and candidate inputs must be distinct files.")
 PYTHON
-: "${OCC_URL:?Set OCC_URL to the trusted HTTPS OCC origin.}"
-[[ "$OCC_URL" == https://* ]] || die "OCC_URL must use HTTPS."
-: "${OCC_SERVICE_KEY_FILE:?Set OCC_SERVICE_KEY_FILE to a protected service-key response.}"
-require_private_file "$OCC_SERVICE_KEY_FILE"
-if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
-  require_regular_file "$OCC_CA_BUNDLE"
+occ_url=
+occ_ca=
+if ((migration_check_only == 0)); then
+  : "${OCC_URL:?Set OCC_URL to the trusted HTTPS OCC origin.}"
+  [[ "$OCC_URL" == https://* ]] || die "OCC_URL must use HTTPS."
+  : "${OCC_SERVICE_KEY_FILE:?Set OCC_SERVICE_KEY_FILE to a protected service-key response.}"
+  require_private_file "$OCC_SERVICE_KEY_FILE"
+  if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
+    require_regular_file "$OCC_CA_BUNDLE"
+  fi
+  occ_url=$OCC_URL
+  occ_ca=${OCC_CA_BUNDLE:-}
+  [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
 fi
 for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
-[[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
+check_kubectl_preferences
 
 umask 077
 if ((resume == 0)); then
@@ -777,7 +1239,23 @@ exec 8<"$evidence_dir"
 python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
   die "the evidence directory is locked by another helper or child."
 mkdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
-trap 'rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+finish_migration_apply() {
+  local migration_state
+  # A create or DELETE without a settled result still belongs to its original
+  # journal. General preflight cleanup would bypass that ownership record.
+  if ! migration_state=$(python3 scripts/upgrade-preflight-state.py migration-status "$upgrade_evidence_dir") ||
+      ! jq -e 'all(.[]; .state == "settled" or .state == "cleaned")' <<<"$migration_state" >/dev/null; then
+    warn "migration Job observation or cleanup is unresolved; retain the evidence lock and kubeconfig snapshot. Keep writers stopped." || true
+    return
+  fi
+  release_kubeconfig_snapshot || return 0
+  rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true
+}
+if ((migration_apply_only)); then
+  trap finish_migration_apply EXIT
+else
+  trap 'release_kubeconfig_snapshot || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+fi
 
 # An interrupted caller does not establish that its child or remote operation stopped.
 # Keep the lock and preflight resources until the operator reconciles that work.
@@ -790,34 +1268,54 @@ trap 'interrupted_upgrade 129' HUP
 trap 'interrupted_upgrade 130' INT
 trap 'interrupted_upgrade 143' TERM
 
-# Bind resume to the original physical directory, inputs and chart. The
-# separate dispatch journal protects against restoring stale evidence in place.
-# Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" <<'PYTHON'
+# Bind recovery to its original physical directory and Kubernetes target.
+if ((resume)); then
+  original_parameters=$(read_original_upgrade_parameters) ||
+    die "resume evidence directory or private parameters changed; use the original evidence directory."
+  select_recovery_target
+fi
+admit_live_kubeconfig
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig_source_sha" "$channel_egress_one_off" 3<<<"$approved_upgrade_inputs" 4<<<"$original_parameters" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+with os.fdopen(3, encoding="utf-8") as approval_file:
+    approval = approval_file.read().strip()
+with os.fdopen(4, encoding="utf-8") as original_file:
+    original_parameters = original_file.read().strip()
+approved = json.loads(approval) if approval else None
+original = json.loads(original_parameters) if original_parameters else None
+kubeconfig_sha = sys.argv[21] or digest(sys.argv[1])
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+parameters = {"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": kubeconfig_sha, "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}
+parameters["channelEgressOneOff"] = sys.argv[22] == "1"
+if parameters["channelEgressOneOff"]:
+    parameters["channelEgressScriptSha256"] = digest("scripts/upgrade-channel-egress")
+    parameters["channelDependenciesSha256"] = digest("scripts/setup-channel-egress")
+# Keep recovery's original operation mode in its parameter and dispatch identity.
+parameters["profiled"] = original["profiled"] if original is not None else approved is not None
+if parameters["profiled"] and approved and approved.get("kubeconfig server CA") is not None:
+    parameters["kubeconfigServerCaSha256"] = approved["kubeconfig server CA"]
+print(json.dumps(parameters, sort_keys=True))
 PYTHON
 )
+migration_progress='{}'
 if ((resume)); then
-  require_private_file "$evidence_dir/parameters.json"
-  original_parameters=$(python3 - "$evidence_dir/parameters.json" <<'PYTHON'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as source:
-    values = json.load(source)
-values.pop("pairEvidence", None)
-values.pop("preparedEvidence", None)
-values.pop("dispatchJournal", None)
-print(json.dumps(values, sort_keys=True))
-PYTHON
-  )
   [[ "$parameters" == "$original_parameters" ]] || die "resume evidence directory, inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; use the original evidence directory and investigate before continuing."
   [[ ! -e "$evidence_dir/completed" && ! -L "$evidence_dir/completed" ]] ||
     die "a completion marker exists; this upgrade cannot be resumed. Preserve its evidence and investigate if completion was unexpected."
   [[ -f "$evidence_dir/prepared" ]] || die "evidence is not a prepared deployment. Inspect it and any remaining temporary preflight resources, then start with a new evidence directory."
+  migration_status_args=()
+  if ((migration_apply_only)); then
+    migration_status_args=(--require-protected-parent)
+  fi
+  migration_progress=$(python3 scripts/upgrade-preflight-state.py migration-status "$upgrade_evidence_dir" "${migration_status_args[@]}") ||
+    die "cannot use the original separate migration journal; preserve both evidence locations and reconcile the operation."
+  if ((migration_apply_only == 0)); then
+    jq -e 'length == 0 or (.verify.state == "cleaned" and .verify.history == "completed")' <<<"$migration_progress" >/dev/null ||
+      die "separate database Job outcomes or cleanup are unresolved, or verification has not confirmed completed history. Reconcile with migration apply before resuming Helm."
+  fi
 fi
 
 dispatch_journal=
@@ -850,8 +1348,8 @@ if ((resume == 0)); then
   python3 scripts/upgrade-preflight-state.py init "$evidence_dir"
 fi
 
-kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
-helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
+kube=(kubectl --kubeconfig "$execution_kubeconfig" --context "$context")
+helm_args=(--kubeconfig "$execution_kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
 
 # Only a successful create acknowledgement establishes Job or dependency cleanup ownership.
@@ -872,6 +1370,10 @@ unconfirmed_preflight() {
   else
     reason="kubectl reported an error for the create; see $errors in the evidence directory."
   fi
+  if ((migration_check_only && status != 3)); then
+    trap - EXIT
+    die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted. $reason Preserve $upgrade_evidence_dir and reconcile the original Job create before starting another check. The evidence lock is retained."
+  fi
   if ((resume)); then
     # The remote create may still be running; keep the original recovery lock.
     trap - EXIT
@@ -888,6 +1390,10 @@ create_preflight() {
   local attempt=.
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
   python3 scripts/upgrade-preflight-state.py started "$upgrade_evidence_dir" "$attempt" "$slot" || return 3
+  create_owned_resource "$@"
+}
+
+create_owned_resource() {
   local errors="$evidence_dir/$2"
   local statuses
   # Validate the opaque UID before Bash can strip newlines or NULs, and build
@@ -923,7 +1429,7 @@ PYTHON
 acknowledge_preflight() {
   local slot=$1 resource=$2 delete_options=$3
   preflight_resources+=("$resource $delete_options")
-  python3 - "$evidence_dir" "$slot" "$resource" 3<<<"$delete_options" 2>/dev/null <<'PYTHON' ||
+  python3 - "$evidence_dir" "$slot" "$resource" 3<<<"$delete_options" 2>/dev/null <<'PYTHON'
 import json, os, sys
 root, slot, resource = sys.argv[1:]
 with os.fdopen(3, encoding="utf-8") as options:
@@ -955,10 +1461,16 @@ try:
 finally:
     os.close(directory)
 PYTHON
+}
+
+acknowledge_preflight_check() {
+  acknowledge_preflight "$@" ||
     die "preflight create acknowledged, but local identity evidence could not be confirmed; no OCC writer was stopped."
 }
 source scripts/lib/upgrade-preflight-cleanup.sh
-trap 'cleanup_preflight || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+if ((migration_apply_only == 0)); then
+  trap 'cleanup_preflight || true; release_kubeconfig_snapshot || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+fi
 
 # Read the current Job and validate the child against its original controller and UID.
 read_preflight_child() {
@@ -973,12 +1485,24 @@ read_preflight_child() {
     "$evidence_dir/preflight-$component-pods.json" "$previous_uid"
 }
 
+read_preflight_logs() {
+  local container=$1 pod=$2 errors=$3
+  # Bash drops NUL bytes; reject them before they can change a result marker.
+  "${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$container" \
+    2>"$errors" | python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+if b"\0" in data:
+    sys.exit(1)
+sys.stdout.buffer.write(data)'
+}
+
 # All preflight components share UID-bound creation, observation, and cleanup.
 # The migration check keeps the initializer's database identity; API and worker
 # use the candidate configuration and their own startup identities.
 run_preflight_jobs() {
-  local components=("$@") job_uids=()
-  local component job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
+  local components=("$@") job_uids=() builder=()
+  local component preflight_input job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
   local index=0 writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
   # Leave room for the suffix; a trailing dot would create an invalid DNS label.
@@ -986,15 +1510,26 @@ run_preflight_jobs() {
   job_prefix=${job_prefix%.}
   for component in "${components[@]}"; do
     job="$job_prefix-upgrade-preflight-$component-$suffix"
-    node scripts/upgrade-startup-preflight.ts "${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl" \
-      "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret" \
-      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
-      >"$evidence_dir/preflight-$component-job.json" ||
+    if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+      builder=(migration-job "$evidence_dir/preflight-rendered.jsonl" "$job" "$namespace" "$release"
+        "$selected_controller" "$timeout_seconds" check-installation "$guarded_migration_id")
+    else
+      preflight_input=none
+      if [[ "$component" == api ]]; then
+        preflight_input=$drafts_flag
+      elif [[ "$component" == worker && -n "${channel_targets:-}" ]]; then
+        preflight_input=channel-targets
+      fi
+      builder=("${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl"
+        "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret"
+        "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$preflight_input")
+    fi
+    node scripts/upgrade-startup-preflight.ts "${builder[@]}" >"$evidence_dir/preflight-$component-job.json" ||
       die "cannot build the $component startup preflight Job from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
     delete_options=$(create_preflight "$component" "$evidence_dir/preflight-$component-job.json" \
       "preflight-$component-job-create.err") ||
       unconfirmed_preflight "job.batch/$job" "preflight-$component-job-create.err" $?
-    acknowledge_preflight "$component" "job.batch/$job" "$delete_options"
+    acknowledge_preflight_check "$component" "job.batch/$job" "$delete_options"
     job_uids+=("$(jq -er '.preconditions.uid' <<<"$delete_options")")
   done
   # Wait for every Pod and save each one's status and log before reporting, so a
@@ -1029,7 +1564,7 @@ run_preflight_jobs() {
           preflight_children+=("$job_uid $pod $pod_uid")
           delete_options=$(jq -cn --arg uid "$pod_uid" \
             '{apiVersion:"v1",kind:"DeleteOptions",propagationPolicy:"Background",preconditions:{uid:$uid}}')
-          acknowledge_preflight "$component-pod" "pod/$pod" "$delete_options"
+          acknowledge_preflight_check "$component-pod" "pod/$pod" "$delete_options"
         fi
         phase=$(node scripts/upgrade-startup-preflight.ts phase "$evidence_dir/preflight-$component-status.json" \
           "$evidence_dir/preflight-$component-job-status.json")
@@ -1057,15 +1592,10 @@ run_preflight_jobs() {
           (.state.terminated.exitCode | type == "number" and . != 0))' <<<"$child" >/dev/null; then
         log_container=assemble-api-ca
       fi
-      # Bash drops NUL bytes; reject them before they can change a result marker.
-      logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$log_container" \
-        2>"$evidence_dir/preflight-$component-logs.err" |
-        python3 -c 'import sys
-data = sys.stdin.buffer.read()
-if b"\0" in data:
-    sys.exit(1)
-sys.stdout.buffer.write(data)') || logs_status=$?
+      logs=$(read_preflight_logs "$log_container" "$pod" "$evidence_dir/preflight-$component-logs.err") ||
+        logs_status=$?
       if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        identity_valid=0
         logs=
         message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
       else
@@ -1084,13 +1614,20 @@ sys.stdout.buffer.write(data)') || logs_status=$?
         fi
       fi
     fi
+    if (( ! identity_valid )) && [[ "$phase" == Pending:* ]]; then
+      message+=" Last scheduler report for the original Pod: ${phase#Pending:}"
+    fi
     if [[ -z "$message" ]]; then
       case "$phase" in
         JobFailed)
           message="the $component startup preflight Job failed; see preflight-$component-job-status.json. No ${writer_qualifier}OCC writer was stopped."
           ;;
         Succeeded)
-          if [[ "$component" == migration ]]; then
+          if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+            migration_history_result migration.checked-for-installation \
+              "$evidence_dir/preflight-migration.log" >/dev/null 2>&1 ||
+              message="the selected controller image did not report a successful guarded database migration check; no ${writer_qualifier}OCC writer was stopped. Inspect preflight-migration.log in $evidence_dir and select an image that supports --check-for-installation."
+          elif [[ "$component" == migration ]]; then
             jq -Rse 'split("\n") | any(.[]; try (fromjson |
               .event == "migration.checked" and (.history | type == "string")) catch false)' \
               "$evidence_dir/preflight-$component.log" >/dev/null 2>&1 ||
@@ -1106,6 +1643,13 @@ sys.stdout.buffer.write(data)') || logs_status=$?
             ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
             message="the api startup preflight succeeded without checking the Agent drafts; no ${writer_qualifier}OCC writer was stopped."
           fi
+          if [[ -z "$message" && "$component" == worker && -n "${channel_targets:-}" ]] &&
+            grep -qx channel-direct-egress-guard-unavailable "$evidence_dir/preflight-worker.log"; then
+            warn "the selected controller image cannot forecast the channel direct-egress guard before the upgrade. The Worker runs the guard during activation."
+          elif [[ -z "$message" && "$component" == worker && -n "${channel_targets:-}" ]] &&
+            ! grep -qx channel-direct-egress-guard-no-refusal "$evidence_dir/preflight-worker.log"; then
+            message="the worker startup preflight succeeded without reporting the channel direct-egress guard result; no ${writer_qualifier}OCC writer was stopped."
+          fi
           ;;
         Stuck:*)
           message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no ${writer_qualifier}OCC writer was stopped."
@@ -1120,7 +1664,9 @@ sys.stdout.buffer.write(data)') || logs_status=$?
             draft_refusals=$(node scripts/upgrade-startup-preflight.ts refusals \
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
-          if [[ "$component" == migration ]]; then
+          if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+            message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."
+          elif [[ "$component" == migration ]]; then
             message="the selected controller image could not confirm database migration compatibility. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No additional OCC writer was stopped; reconcile the database history, migrator access, or database connectivity before retrying."
           elif [[ -n "$draft_refusals" ]]; then
             message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
@@ -1129,6 +1675,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
           elif [[ "$component" == api && -n "$drafts" ]] &&
             grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
             message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
+          elif [[ "$component" == worker ]] &&
+            grep -q '^Channel direct-egress guard preflight ' "$evidence_dir/preflight-worker.log"; then
+            refusal=$(grep -m 1 '^Channel direct-egress guard preflight ' "$evidence_dir/preflight-worker.log" | cut -c 1-600)
+            message="$refusal No ${writer_qualifier}Agent or OCC writer was stopped. The old release keeps serving. Start again with a new evidence directory after resolving the error."
           elif [[ -n "$name_refusal" ]]; then
             message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
           elif [[ -n "$refusal" ]]; then
@@ -1147,6 +1697,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
             [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
             if ((resume)); then
               message="the $component application identity preflight failed: ${message}No additional OCC writer was stopped. Preserve the original evidence and writer freeze; reconcile the application connection before --resume."
+            elif grep -q '^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\.' \
+              "$evidence_dir/preflight-$component.log"; then
+              # Not an Installation refusal: the database, its sign-in or the egress that reaches it.
+              message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the database, the chart's database values (database.cidrs) or the network policies that admit this Pod's database egress, then start again with a new evidence directory."
             else
               message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
             fi
@@ -1164,6 +1718,38 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
   fi
 }
 
+# Bind the retained migration connection before running its guarded check.
+# Keep Secret identity metadata only.
+check_separate_migration_preconditions() {
+  local writer_qualifier=$1 secret_names name decision identities
+  require_immutable_image "selected controller" "$selected_controller"
+  python3 scripts/upgrade-preflight-state.py migration-status "$upgrade_evidence_dir" \
+    --require-protected-parent >/dev/null ||
+    die "cannot use the protected separate migration journal location; no ${writer_qualifier}OCC writer was stopped."
+  rendered_helm_hooks "$upgrade_evidence_dir/before-helm-status.json" >"$evidence_dir/preflight-installed-hooks.jsonl" ||
+    die "cannot read the deployed Helm revision's initialization hook; no ${writer_qualifier}OCC writer was stopped."
+  secret_names=$(node scripts/upgrade-startup-preflight.ts migration-database \
+    "$evidence_dir/preflight-installed-hooks.jsonl" "$evidence_dir/preflight-rendered.jsonl" "$release" "$namespace") ||
+    die "cannot confirm the retained migrator connection; no ${writer_qualifier}OCC writer was stopped."
+  while IFS= read -r name; do
+    decision=$(named_access_review get "" secrets "$name" 15) ||
+      die "cannot verify Kubernetes get access to migration Secret $namespace/$name. Enable the exact SelfSubjectAccessReview and retry. No ${writer_qualifier}OCC writer was stopped."
+    [[ "$decision" == true ]] ||
+      die "Kubernetes denied get on migration Secret $namespace/$name. Obtain get access to this Secret and retry. No ${writer_qualifier}OCC writer was stopped."
+  done <<<"$secret_names"
+  if ((resume)); then
+    recheck_migration_secrets "$secret_names"
+  else
+    identities=$(migration_secret_identities "$secret_names") ||
+      die "cannot confirm the migrator and database CA Secret identities; no OCC writer was stopped."
+    printf '%s\n' "$identities" >"$upgrade_evidence_dir/migration-secret-identities.json"
+  fi
+}
+
+migration_mode() {
+  node scripts/upgrade-startup-preflight.ts migration-mode "$1" "$release"
+}
+
 # Before any writer stops, start the selected controller image on the candidate
 # Installation the way the API and worker start: the rendered chart's env, mounts
 # and service account, with the candidate Installation in a temporary Secret.
@@ -1172,16 +1758,20 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local preflight_action=${1:-job} attempt=. writer_qualifier=''
+  local preflight_action=${1:-job} expected_migration=${2:-} attempt=. writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
   local suffix secret delete_options
-  local drafts='' drafts_flag=none drafts_status=0
+  local drafts='' channel_targets='' drafts_flag=none drafts_status=0 guarded_migration_id=''
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ "$preflight_action" == job && -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
+    if [[ "$channel_egress_enabled" == true ]]; then
+      channel_targets="$evidence_dir/inventory/channel-targets.json.gz"
+    fi
     node scripts/upgrade-startup-preflight.ts drafts "$agent_drafts" "$candidate_installation" \
-      "$drafts" >/dev/null || drafts_status=$?
+      "$drafts" "$channel_targets" >/dev/null || drafts_status=$?
+    [[ -s "$channel_targets" ]] || channel_targets=''
     if ((drafts_status == 3)); then
       warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
       drafts=
@@ -1194,6 +1784,14 @@ preflight_startup() {
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no ${writer_qualifier}OCC writer was stopped."
+  upgrade_migration=$(migration_mode "$evidence_dir/preflight-rendered.jsonl") ||
+    die "cannot identify the rendered upgrade migration mode; no ${writer_qualifier}OCC writer was stopped."
+  [[ -z "$expected_migration" || "$upgrade_migration" == "$expected_migration" ]] ||
+    die "the Helm retry render changed the submitted migration mode. Preserve the original evidence and reconcile before retrying."
+  if [[ "$upgrade_migration" == separate ]]; then
+    check_separate_migration_preconditions "$writer_qualifier"
+    guarded_migration_id=$installation_id
+  fi
   if [[ "$preflight_action" == job ]]; then
     # Helm's server-side dry-run renders the release but does not submit each
     # Certificate for admission. Check these before creating the startup Jobs.
@@ -1208,10 +1806,11 @@ preflight_startup() {
     if ((certificate_count > 0)); then
       # Server-side apply sends even unchanged objects for admission. Ignore field
       # ownership conflicts in the dry-run only; Helm does not use server-side apply.
-      "${kube[@]}" --request-timeout=20s --namespace "$namespace" apply --dry-run=server \
+      # Allow the webhook's maximum 30s deadline plus time for the API response.
+      "${kube[@]}" --request-timeout=45s --namespace "$namespace" apply --dry-run=server \
         --server-side --force-conflicts --field-manager=occ-upgrade-preflight \
         --filename "$certificates" >/dev/null 2>"$evidence_dir/preflight-certificates.err" ||
-        die "certificate admission preflight failed; no ${writer_qualifier}OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
+        die "certificate admission preflight failed. No ${writer_qualifier}OCC writer was stopped. Inspect preflight-certificates.err in the evidence directory. If the webhook call timed out, check reachability from the Kubernetes API server to the cert-manager webhook."
     fi
   fi
   node scripts/upgrade-startup-preflight.ts networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
@@ -1225,19 +1824,20 @@ preflight_startup() {
     delete_options=$(create_preflight networkpolicy "$evidence_dir/preflight-networkpolicy.json" \
       preflight-networkpolicy-create.err) ||
       unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
-    acknowledge_preflight networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
+    acknowledge_preflight_check networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.ts secret "$candidate_installation" \
-    "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
+    "$installation_key" "$secret" "$namespace" "$release" "$drafts" "$channel_targets" |
     create_preflight secret - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
-  acknowledge_preflight secret "secret/$secret" "$delete_options"
+  acknowledge_preflight_check secret "secret/$secret" "$delete_options"
   if [[ "$preflight_action" == identity-job ]]; then
     run_preflight_jobs migration api worker
   else
     run_preflight_jobs api worker migration
   fi
   cleanup_preflight || die "startup preflight cleanup is incomplete; no ${writer_qualifier}OCC writer was stopped."
+  recheck_prepared_migration_secrets
   touch "$evidence_dir/startup-preflight-passed"
 }
 
@@ -1250,7 +1850,7 @@ preflight_resume() {
   preflight_children=()
   preflight_consumer_unknown=0
   jq -n --arg id "$installation_id" '{id: $id, name: ""}' >"$evidence_dir/installation.json"
-  preflight_startup identity-job
+  preflight_startup identity-job "${1:-}"
 }
 
 validate_controller_compatibility() {
@@ -1348,7 +1948,7 @@ verify_agent_continuity() {
 
 # Inventory is an authorized, complete view. Missing collections are not an empty fleet.
 read_restart_inventory() {
-  local destination=$1
+  local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
   jq -es --arg installationId "$installation_id" '
@@ -1373,17 +1973,26 @@ read_restart_inventory() {
   if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$destination" >/dev/null; then
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
-  if [[ -z "$runtime_image" ]]; then
-    local refusals
-    refusals=$(jq -r '
+  if [[ -z "$runtime_image" && "$channel_egress_enabled" != true ]]; then
+    local assessment refusals original_worker_only
+    assessment=$(jq -c '
       [.namespaces[] as $namespace | $namespace.agents[] |
         select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
         select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
         {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
          reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
-      .[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"
+      {originalWorkerOnly: all(.[]; .reason == "original-worker-required"),
+       refusals: ([.[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"] | join("\n"))}
     ' "$destination")
-    [[ -z "$refusals" ]] || die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
+    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly
+    if [[ -z "$refusals" ]]; then
+      return
+    fi
+    if ((preflight_rehearsal)) && [[ "$original_worker_only" == true ]]; then
+      retained_revision_blockers=$refusals
+      return
+    fi
+    die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
 $refusals
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
   fi
@@ -1410,6 +2019,393 @@ record_deployed_helm_status() {
     die "$refusal"
 }
 
+recheck_migration_release() {
+  local phase=$1 original_status=$2
+  record_deployed_helm_status "$phase" "cannot confirm the deployed Helm release for migration."
+  jq -e --slurpfile original "$original_status" '
+    .version == $original[0].version and .hooks == $original[0].hooks
+  ' "$evidence_dir/$phase-helm-status.json" >/dev/null ||
+    die "the deployed Helm revision or hooks changed; reconcile the original release before continuing migration."
+}
+
+rendered_helm_hooks() {
+  jq -ers '
+    select(length == 1) | .[0].hooks |
+    select(type == "array" and length > 0 and all(.[]; (.manifest | type == "string" and length > 0))) |
+    .[].manifest + "\n---"
+  ' "$1" | yq -p=yaml -o=json -I=0 '.' -
+}
+
+migration_history_result() {
+  # kubectl combines stdout with the migrator's stderr telemetry. Ignore only
+  # the stock telemetry record, then count result events before checking history.
+  jq -Rser --arg event "$1" '
+    def stock_telemetry:
+      keys == ["event", "service", "severity", "time"] and
+      .service == "occ-migration" and .severity == "INFO" and
+      (.time | type == "string" and
+        test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z\\z"));
+    [split("\n")[] | (try fromjson catch empty) |
+      select(type == "object" and .event == $event) |
+      select(stock_telemetry | not)] |
+    select(length == 1) | .[0].history |
+    select(type == "string" and . != "empty" and test("\\A[A-Za-z][A-Za-z0-9]{0,79}\\z"))
+  ' "$2"
+}
+
+capture_migration_check_values() {
+  # Use the same descriptor checks as the private profile and evidence readers.
+  python3 - "$evidence_dir" "$values" "$requested_values" 2>/dev/null <<'PYTHON' ||
+import os, shutil, stat, sys
+
+directory, baseline, candidate = sys.argv[1:]
+for path, name in ((baseline, "before-values.yaml"), (candidate, "requested-values.yaml")):
+    if not path:
+        continue
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or before.st_mode & 0o077:
+            sys.exit(1)
+        with open(os.path.join(directory, name), "xb") as snapshot:
+            shutil.copyfileobj(source, snapshot)
+        after = os.fstat(source.fileno())
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            sys.exit(1)
+PYTHON
+    die "cannot capture the original migration check values as private regular files."
+}
+
+check_migration() {
+  local evidence_dir suffix history selected_controller=$controller_image
+  # The shared Job runner also builds startup Jobs. The migration branch
+  # uses only the rendered initializer, image, target and timeout.
+  local installation_secret='' secret='' drafts_flag=none
+  evidence_dir=$(mktemp -d "$upgrade_evidence_dir/migration-preflight.XXXXXXXX")
+  capture_migration_check_values
+  record_deployed_helm_status before "the migration check requires a deployed Helm release with matching identity."
+  rendered_helm_hooks "$evidence_dir/before-helm-status.json" >"$evidence_dir/installed-hooks.jsonl" ||
+    die "cannot read the deployed Helm revision's initialization hook."
+
+  # Use reviewed values for the candidate and the explicitly selected image.
+  # Helm template renders the chart without submitting a release or hook.
+  local input_values="$evidence_dir/before-values.yaml"
+  [[ -z "$requested_values" ]] || input_values="$evidence_dir/requested-values.yaml"
+  matches_yaml "$input_values" "$input_values" || die "candidate values must be a YAML object."
+  CONTROLLER_IMAGE="$controller_image" yq '.images.controller = strenv(CONTROLLER_IMAGE)' \
+    "$input_values" >"$evidence_dir/candidate-values.yaml"
+  helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
+    --values "$evidence_dir/candidate-values.yaml" >"$evidence_dir/rendered.yaml" \
+    2>"$evidence_dir/render-error.log" ||
+    die "cannot render the candidate chart for the migration check. See render-error.log in $evidence_dir."
+  yq -p=yaml -o=json -I=0 '.' "$evidence_dir/rendered.yaml" >"$evidence_dir/preflight-rendered.jsonl" ||
+    die "cannot read the rendered chart for the migration check."
+  node scripts/upgrade-startup-preflight.ts migration-database "$evidence_dir/installed-hooks.jsonl" \
+    "$evidence_dir/preflight-rendered.jsonl" "$release" "$namespace" >/dev/null ||
+    die "migration check refused before creating a Job."
+
+  suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  python3 scripts/upgrade-preflight-state.py register "$upgrade_evidence_dir" "${evidence_dir##*/}" "$suffix" false ||
+    die "cannot record the migration check creation plan; no Job was created."
+  recheck_migration_release pre-create "$evidence_dir/before-helm-status.json"
+  run_preflight_jobs migration
+  cleanup_preflight || die "migration check Job cleanup is incomplete; inspect $evidence_dir."
+  recheck_migration_release after "$evidence_dir/before-helm-status.json"
+  history=$(migration_history_result migration.checked "$evidence_dir/preflight-migration.log") ||
+    die "the installed database check did not report one nonempty, recognized migration history. See preflight-migration.log in $evidence_dir."
+  printf '%s\n' "$history" >"$upgrade_evidence_dir/migration-check-passed"
+  printf 'Migration check passed (history: %s). The temporary Job and its Pod are gone. Evidence: %s\n' \
+    "$history" "$evidence_dir"
+}
+
+require_migration_handoff() {
+  local handoff="$upgrade_evidence_dir/database-migration-handoff.json"
+  [[ -e "$handoff" || -L "$handoff" ]] ||
+    die "the original separate database deployment handoff is missing. Keep both writers stopped and reconcile before retrying Helm."
+  require_private_file "$handoff"
+  jq -es '
+    length == 1 and (.[0] | keys == ["api","worker"] and all(.[]; keys == ["generation","uid"] and
+      (.uid | type == "string" and length > 0) and (.generation | type == "number" and . > 0 and floor == .)))
+  ' "$handoff" >/dev/null || die "the separate database handoff has invalid writer identities."
+}
+
+require_migration_handoff_writer() {
+  local component=$1 observed=$2 handoff="$upgrade_evidence_dir/database-migration-handoff.json"
+  jq -e --arg release "$release" --arg component "$component" --slurpfile handoff "$handoff" '
+    .metadata.labels["app.kubernetes.io/instance"] == $release and
+    .metadata.labels["app.kubernetes.io/component"] == $component and
+    .metadata.deletionTimestamp == null and .spec.replicas == 0 and
+    (.metadata | {uid, generation}) == $handoff[0][$component]
+  ' "$observed" >/dev/null ||
+    die "the $component Deployment changed during the separate database deployment. Preserve the evidence and reconcile the writer."
+}
+
+require_migration_writers_stopped() {
+  local component
+  require_migration_handoff
+  for component in api worker; do
+    "${kube[@]}" --request-timeout=15s --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
+      >"$evidence_dir/migration-$component-deployment.json" ||
+      die "cannot read the stopped $component Deployment; keep writers stopped."
+    require_migration_handoff_writer "$component" "$evidence_dir/migration-$component-deployment.json"
+  done
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get pods \
+    --selector "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$release" \
+    --output json >"$evidence_dir/migration-writer-pods.json" ||
+    die "cannot verify the absence of writer Pods; keep the maintenance window active."
+  jq -e '.items | type == "array" and all(.[]; .metadata.labels["app.kubernetes.io/component"] | . != "api" and . != "worker")' \
+    "$evidence_dir/migration-writer-pods.json" >/dev/null ||
+    die "a writer Pod still exists; reconcile quiescence before migration."
+}
+
+require_settled_initializers() {
+  local purpose=$1
+  # An active Job can create a Pod even if its current Pod inventory is empty.
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get jobs \
+    --selector "app.kubernetes.io/instance=$release,app.kubernetes.io/component=initialization" \
+    --output json >"$evidence_dir/current-initialization-jobs.json"
+  jq -e '.items | type == "array" and all(.[]; any(.status.conditions[]?; (.type == "Complete" or .type == "Failed") and .status == "True"))' \
+    "$evidence_dir/current-initialization-jobs.json" >/dev/null || die "an initialization Job is still active; wait for it to finish before $purpose."
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get pods \
+    --selector "app.kubernetes.io/instance=$release,app.kubernetes.io/component=initialization" \
+    --output json >"$evidence_dir/current-initialization-pods.json"
+  jq -e '.items | type == "array" and all(.[]; .status.phase == "Succeeded" or .status.phase == "Failed")' \
+    "$evidence_dir/current-initialization-pods.json" >/dev/null || die "an initialization Pod is still active; wait for it to terminate before $purpose."
+}
+
+require_unchanged_helm_status() {
+  helm status "$release" "${helm_args[@]}" --output json >"$1"
+  # Helm 4 includes live resources that change during quiescence. Compare
+  # every other release field before this attempt writes candidate settings.
+  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
+    (del(.info.resources)) == ($observed[0] | del(.info.resources))
+  ' "$1" >/dev/null ||
+    die "the Helm release changed before submission; API and worker remain stopped; this attempt made no candidate writes; investigate before continuing."
+}
+
+migration_secret_identities() {
+  local secret_names=$1 name
+  # Keep only identity metadata from the exact Secrets. Never write Secret data
+  # to the evidence directory or include it in a diagnostic.
+  while IFS= read -r name; do
+    "${kube[@]}" --request-timeout=15s --namespace "$namespace" get "secret/$name" --output json |
+      jq -ce --arg name "$name" --arg namespace "$namespace" '
+        .metadata | select(.name == $name and .namespace == $namespace and .deletionTimestamp == null and
+          (.uid | type == "string" and length > 0) and
+          (.resourceVersion | type == "string" and length > 0)) |
+        {name, uid, resourceVersion}
+      ' || return 1
+  done <<<"$secret_names" | jq -ces 'select(length > 0) | sort_by(.name)'
+}
+
+recheck_migration_secrets() {
+  local secret_names=$1 observed
+  observed=$(migration_secret_identities "$secret_names") ||
+    die "cannot confirm the original migrator and database CA Secret identities. Reconcile the database target under exclusive maintenance control."
+  printf '%s\n' "$observed" | cmp -s - "$upgrade_evidence_dir/migration-secret-identities.json" ||
+    die "the migrator or database CA Secret changed during the separate database deployment. Reconcile the database target under exclusive maintenance control."
+}
+
+recheck_prepared_migration_secrets() {
+  local identity_file="$upgrade_evidence_dir/migration-secret-identities.json" secret_names
+  [[ -e "$identity_file" ]] || return 0
+  secret_names=$(jq -er '.[].name' "$identity_file")
+  recheck_migration_secrets "$secret_names"
+}
+
+migration_terminal_phase() {
+  jq -er --arg pod "$(jq -r '.status.phase' "$evidence_dir/preflight-migration-status.json")" '
+    [.status.conditions[]? | select(.status == "True") | .type] |
+    if index("Complete") and index("Failed") then error("contradictory migration Job conditions")
+    elif index("Complete") and $pod == "Succeeded" then "Succeeded"
+    elif index("Failed") and ($pod == "Failed" or $pod == "Succeeded") then "Failed"
+    else "Running" end
+  ' "$evidence_dir/preflight-migration-job-status.json"
+}
+
+migration_receipt_failed() {
+  local journal
+  journal=$(jq -er '.evidenceDirectory.path + ".migration-state.json"' <<<"$parameters") ||
+    journal="the original evidence directory's sibling .migration-state.json file"
+  die "$1 Both OCC writers (API and worker) are stopped. The migration Job may have executed SQL. Preserve the original evidence directory $upgrade_evidence_dir, including $evidence_dir, and the sibling migration journal at $journal. Reconcile the original operation and keep writers stopped. Do not submit another apply Job."
+}
+
+observe_migration_job() {
+  local job=$1 job_uid=$2 pod=$3 pod_uid=$4 child phase logs
+  local deadline=$((SECONDS + timeout_seconds))
+  while true; do
+    child=$(read_preflight_child migration "$job" "$job_uid" "$pod_uid" 15s) ||
+      die "cannot confirm the original migration Job and Pod identity. Preserve the evidence and keep writers stopped."
+    if [[ -n "$child" ]]; then
+      if [[ -z "$pod_uid" ]]; then
+        pod=$(jq -er '.metadata.name' <<<"$child")
+        pod_uid=$(jq -er '.metadata.uid' <<<"$child")
+        acknowledge_preflight migration-pod "pod/$pod" "$(migration_delete_options "$pod_uid")" ||
+          migration_receipt_failed "Observed the original migration Pod pod/$pod for Job job.batch/$job, but local identity evidence could not be confirmed."
+      fi
+      printf '%s\n' "$child" >"$evidence_dir/preflight-migration-status.json"
+      phase=$(node scripts/upgrade-startup-preflight.ts phase "$evidence_dir/preflight-migration-status.json" \
+        "$evidence_dir/preflight-migration-job-status.json")
+      case "$phase" in
+        Stuck:*) die "the migration Job cannot start (${phase#Stuck:}); preserve its evidence and keep writers stopped." ;;
+      esac
+      terminal_phase=$(migration_terminal_phase) ||
+        die "cannot confirm terminal migration Job status; keep writers stopped."
+      [[ "$terminal_phase" == Running ]] || break
+    fi
+    ((SECONDS < deadline)) || die "migration Job observation expired; reconcile the same Job with migration apply and keep writers stopped."
+    sleep 2
+  done
+  if ! logs=$(read_preflight_logs migration "$pod" "$evidence_dir/preflight-migration-logs.err"); then
+    [[ "$terminal_phase" == Failed ]] ||
+      die "cannot read the original migration Pod logs. Keep writers stopped and repeat migration apply to observe the same Job and Pod."
+    logs=
+  fi
+  child=$(read_preflight_child migration "$job" "$job_uid" "$pod_uid" 15s) ||
+    die "cannot bind migration logs to the original Job and Pod; discarded unconfirmed output."
+  [[ -n "$child" ]] || die "the original migration Pod disappeared before log verification; keep writers stopped."
+  printf '%s\n' "$child" >"$evidence_dir/preflight-migration-status.json"
+  [[ $(migration_terminal_phase) == "$terminal_phase" ]] ||
+    die "migration Job terminal status changed during log verification; keep writers stopped."
+  printf '%s\n' "$logs" >"$evidence_dir/preflight-migration.log"
+}
+
+migration_delete_options() {
+  jq -cn --arg uid "$1" '{apiVersion:"v1",kind:"DeleteOptions",propagationPolicy:"Foreground",preconditions:{uid:$uid}}'
+}
+
+migration_stage_state() {
+  python3 scripts/upgrade-preflight-state.py "$@" ||
+    die "cannot use the original separate migration journal; preserve both evidence locations and reconcile the operation."
+}
+
+run_migration_stage() {
+  local stage=$1 rendered=$2 secret_names=$3
+  local progress record state attempt evidence_dir job job_uid pod pod_uid deletion history suffix job_prefix terminal_phase
+  local preflight_resources=() preflight_children=() cleanup_mode=delete
+  local history_event=migration.completed
+  if [[ "$stage" == verify ]]; then
+    history_event=migration.checked
+  fi
+  progress=$(migration_stage_state migration-status "$upgrade_evidence_dir")
+  record=$(jq -c --arg stage "$stage" '.[$stage]' <<<"$progress")
+  state=$(jq -r '.state // "new"' <<<"$record")
+  attempt=$(jq -r --arg stage "$stage" '.attempt // $stage' <<<"$record")
+  history=$(jq -r '.history // ""' <<<"$record")
+  if [[ "$state" == cleaned ]]; then
+    [[ "$stage" == verify && "$history" == verificationFailed ]] || return 0
+    attempt="verify-$(jq -er '.index + 1' <<<"$record")"
+    state=new
+  fi
+  evidence_dir="$upgrade_evidence_dir/migration-deploy-$attempt"
+  if [[ "$state" == new ]]; then
+    [[ -d "$evidence_dir" ]] || mkdir -m 700 "$evidence_dir"
+    suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+    job_prefix=${release:0:26}
+    job="${job_prefix%.}-upgrade-preflight-migration-$suffix"
+    node scripts/upgrade-startup-preflight.ts migration-job "$rendered" "$job" "$namespace" \
+      "$release" "$selected_controller" "$timeout_seconds" "$stage" "$installation_id" >"$evidence_dir/preflight-migration-job.json"
+    recheck_migration_release pre-create "$upgrade_evidence_dir/before-helm-status.json"
+    require_settled_initializers "starting the separate database Job"
+    recheck_migration_secrets "$secret_names"
+    require_migration_writers_stopped
+    migration_stage_state migration-begin "$upgrade_evidence_dir" "$attempt" "$job"
+    if ! deletion=$(create_owned_resource "$evidence_dir/preflight-migration-job.json" preflight-migration-create.err); then
+      die "the $stage Job create outcome is unknown. Preserve the sibling migration journal and Job evidence; reconcile the original create and keep writers stopped."
+    fi
+    acknowledge_preflight migration "job.batch/$job" "$deletion" ||
+      migration_receipt_failed "preflight create acknowledged, but local identity evidence could not be confirmed for the original $stage Job job.batch/$job. Kubernetes accepted the create."
+    record=$(migration_stage_state migration-status "$upgrade_evidence_dir" |
+      jq -ce --arg stage "$stage" '.[$stage]')
+    state=creating
+  fi
+  job=$(jq -er '.name' <<<"$record")
+  job_uid=$(jq -er '.job.uid' <<<"$record") ||
+    die "the $stage Job create outcome is unknown. Reconcile the original create and keep writers stopped."
+  pod=$(jq -r '.pod.name // ""' <<<"$record")
+  pod_uid=$(jq -r '.pod.uid // ""' <<<"$record")
+  if [[ "$state" == creating ]]; then
+    observe_migration_job "$job" "$job_uid" "$pod" "$pod_uid"
+    history=
+    if [[ "$terminal_phase" == Succeeded ]]; then
+      history=$(migration_history_result "$history_event" "$evidence_dir/preflight-migration.log") || history=
+    fi
+    if [[ "$stage" == verify ]]; then
+      [[ "$history" == completed ]] || history=verificationFailed
+    elif [[ -z "$history" ]]; then
+      die "the apply Job did not succeed with a valid migration result. Preserve its evidence, reconcile the database outcome, and keep writers stopped."
+    fi
+    migration_stage_state migration-settled "$upgrade_evidence_dir" "$attempt" "$history"
+    record=$(migration_stage_state migration-status "$upgrade_evidence_dir" |
+      jq -ce --arg stage "$stage" '.[$stage]')
+    pod=$(jq -er '.pod.name' <<<"$record")
+    pod_uid=$(jq -er '.pod.uid' <<<"$record")
+    state=settled
+  fi
+  if [[ "$state" == settled ]]; then
+    migration_stage_state migration-cleaning "$upgrade_evidence_dir" "$attempt"
+  else
+    # A previous attempt may already have sent DELETE. Reconcile its absence.
+    cleanup_mode=observe-only
+  fi
+  preflight_resources=("job.batch/$job $(migration_delete_options "$job_uid")")
+  preflight_children=("$job_uid $pod $pod_uid")
+  cleanup_preflight "$cleanup_mode" || die "the migration Job or Pod cleanup is unresolved; preserve its evidence and keep writers stopped."
+  migration_stage_state migration-cleaned "$upgrade_evidence_dir" "$attempt"
+  [[ "$history" != verificationFailed ]] ||
+    die "the migration verification Job did not report completed history. Keep writers stopped. After investigating, repeat migration apply to retry verification only."
+}
+
+apply_database_migration() {
+  local secret_names
+  [[ ! -e "$evidence_dir/helm-started" && ! -L "$evidence_dir/helm-started" ]] ||
+    die "Helm submission was already recorded; use upgrade recovery with the original evidence."
+  local rendered_json="$evidence_dir/migration-rendered.jsonl"
+  yq -p=yaml -o=json -I=0 '.' "$rendered" >"$rendered_json" ||
+    die "cannot read the rendered chart for migration apply."
+  [[ $(migration_mode "$rendered_json") == separate ]] ||
+    die "migration apply requires a prepared separate database deployment."
+  require_private_file "$evidence_dir/database-migration-handoff.json"
+  require_immutable_image "prepared controller" "$selected_controller"
+  rendered_helm_hooks "$evidence_dir/before-helm-status.json" >"$evidence_dir/migration-installed-hooks.jsonl" ||
+    die "cannot read the original deployed Helm revision's initialization hook."
+  secret_names=$(node scripts/upgrade-startup-preflight.ts migration-database \
+    "$evidence_dir/migration-installed-hooks.jsonl" "$rendered_json" "$release" "$namespace") ||
+    die "migration apply refused before creating a Job."
+  recheck_migration_release pre-apply "$evidence_dir/before-helm-status.json"
+  require_migration_writers_stopped
+  recheck_migration_secrets "$secret_names"
+  run_migration_stage apply "$rendered_json" "$secret_names"
+  run_migration_stage verify "$rendered_json" "$secret_names"
+  recheck_migration_release post-verification "$evidence_dir/before-helm-status.json"
+  recheck_migration_secrets "$secret_names"
+  require_migration_writers_stopped
+  printf 'Database migration verified and its Jobs and Pods are gone. Keep writers stopped. Resume the original upgrade with --migration-history-checked.\n'
+}
+
+# The profiled apply approves the input bytes. Check the native copies that
+# the candidate builder will consume, before they can influence cluster writes.
+verify_approved_upgrade_inputs() {
+  [[ -n "$approved_upgrade_inputs" ]] || return 0
+  python3 - "$@" 3<<<"$approved_upgrade_inputs" <<'PYTHON'
+import hashlib
+import json
+import os
+import sys
+
+try:
+    with os.fdopen(3, encoding="utf-8") as approval:
+        digests = json.load(approval)
+    for role, path in zip(sys.argv[1::2], sys.argv[2::2]):
+        with open(path, "rb") as source:
+            actual = hashlib.sha256(source.read()).hexdigest()
+        if actual != digests[role]:
+            sys.exit("An upgrade input changed after approval. Review a fresh plan.")
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("Cannot verify the approved upgrade inputs. Review a fresh plan.")
+PYTHON
+}
+
 prepare_upgrade() {
 mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
@@ -1423,6 +2419,13 @@ cp "$values" "$evidence_dir/before-values.yaml"
 cp "$installation" "$evidence_dir/before-installation.yaml"
 [[ -z "$requested_values" ]] || cp "$requested_values" "$evidence_dir/requested-values.yaml"
 [[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
+approved_copies=("baseline Helm values" "$evidence_dir/before-values.yaml"
+  "baseline Installation" "$evidence_dir/before-installation.yaml")
+[[ -z "$requested_values" ]] ||
+  approved_copies+=("candidate Helm values" "$evidence_dir/requested-values.yaml")
+[[ -z "$requested_installation" ]] ||
+  approved_copies+=("candidate Installation" "$evidence_dir/requested-installation.yaml")
+verify_approved_upgrade_inputs "${approved_copies[@]}"
 
 if ! preprovisioned_namespace=$(yq -r '(.preprovisionedNamespace // {} | length) > 0' \
   "$evidence_dir/before-values.yaml" 2>"$evidence_dir/preprovisioned-namespace.err") ||
@@ -1461,9 +2464,9 @@ jq -er --arg key "$installation_key" '.data[$key]' "$live_installation_secret" |
     >"$evidence_dir/before-live-installation.yaml"
 
 matches_yaml "$evidence_dir/before-values.yaml" "$evidence_dir/before-live-values.yaml" ||
-  die "the protected Helm values differ from the live release; refresh --values before upgrading."
+  die "the protected Helm values differ from the live release. Verify the selected target and privately compare before-values.yaml to before-live-values.yaml in the evidence directory before refreshing --values."
 matches_yaml "$evidence_dir/before-installation.yaml" "$evidence_dir/before-live-installation.yaml" ||
-  die "the protected Installation YAML differs from the live Secret; refresh --installation before upgrading."
+  die "the protected Installation YAML differs from the live Secret. Verify the selected target and privately compare before-installation.yaml to before-live-installation.yaml in the evidence directory before refreshing --installation."
 
 # The bundled Collector reads an operator-created Secret that Helm never
 # updates. Stop before mutation when it still holds another revision's shared
@@ -1496,16 +2499,24 @@ installation_id=$(jq -er '.id' "$evidence_dir/installation.json")
 [[ "$installation_id" == "$cluster_installation_id" ]] ||
   die "OCC Installation $installation_id does not match Kubernetes Installation $cluster_installation_id."
 
+if ((channel_egress_one_off)); then
+  channel_egress_enabled=$(python3 scripts/upgrade-channel-egress validate \
+    --before-values "$evidence_dir/before-values.yaml" --before-installation "$evidence_dir/before-installation.yaml" \
+    --values "$evidence_dir/requested-values.yaml" --installation "$evidence_dir/requested-installation.yaml" \
+    --namespace "$namespace" --release "$release") || die "invalid one-off channel transition."
+fi
+
 [[ -z "$verify_agent" ]] || verify_agent_continuity before
 
 targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
-read_restart_inventory "$inventory"
+retained_revision_blockers=
+read_restart_inventory "$inventory" "$preflight_only"
 normalize_restart_inventory "$inventory" >"$evidence_dir/inventory/restart-preflight.json"
 
-if [[ -z "$runtime_image" ]]; then
+if [[ -z "$runtime_image" && "$channel_egress_enabled" != true ]]; then
   # This path does not replace Agent revisions. Read the exact active snapshot,
   # not the current draft, before stopping the worker that will maintain it.
   jq -c '.namespaces[] as $namespace | $namespace.agents[] |
@@ -1536,7 +2547,7 @@ if [[ -z "$runtime_image" ]]; then
   done <"$evidence_dir/inventory/active-revisions.jsonl"
 fi
 
-if [[ -n "$runtime_image" ]]; then
+if [[ -n "$runtime_image" || "$channel_egress_enabled" == true ]]; then
   # shellcheck disable=SC2016 # $namespace is a jq variable.
   unrevisioned_agents='.namespaces[] as $namespace | $namespace.agents[] |
     select(.status == "active" and .desiredRuntimeState == "running" and (.activeRevisionId == null))'
@@ -1576,7 +2587,7 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
   agent_drafts="$evidence_dir/inventory/agent-drafts.jsonl"
   : >"$agent_drafts"
   while IFS= read -r target; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode
     prefix="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id")"
     "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null \
       >"$prefix.agent.json" ||
@@ -1588,18 +2599,21 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
       >"$prefix.configuration.json" ||
       die "cannot read Configuration $configuration_id of Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
     jq -ec --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
-      --arg configurationId "$configuration_id" --slurpfile agent "$prefix.agent.json" '
+      --arg configurationId "$configuration_id" --arg executionMode "$execution_mode" \
+      --slurpfile agent "$prefix.agent.json" '
       select(.id == $configurationId and (.values | type) == "object") |
       {namespaceId: $namespaceId, agentId: $agentId, name: $agent[0].name,
-        configurationId: $configurationId, values: .values}
+        configurationId: $configurationId, executionMode: $executionMode, values: .values}
     ' "$prefix.configuration.json" >>"$agent_drafts" ||
       die "OCC returned no values for Configuration $configuration_id of Agent $agent_id; no cluster changes were made."
   done <"$targets"
 
+  if [[ -n "$runtime_image" ]]; then
   current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$evidence_dir/before-installation.yaml")
   current_agent=$(yq -er '.drivers.compute.configuration.images.agent' "$evidence_dir/before-installation.yaml")
   [[ "$runtime_image" != "$current_gateway" || "$runtime_image" != "$current_agent" ]] ||
     die "both runtime image slots already select the candidate digest."
+  fi
 fi
 
 current_controller=$(yq -er '.images.controller' "$evidence_dir/before-values.yaml")
@@ -1616,6 +2630,7 @@ selected_controller=${controller_image:-$current_controller}
 if [[ -n "$controller_compatibility_results" ]]; then
   require_regular_file "$controller_compatibility_results"
   cp "$controller_compatibility_results" "$evidence_dir/controller-compatibility-results.json"
+  verify_approved_upgrade_inputs "controller compatibility receipt" "$evidence_dir/controller-compatibility-results.json"
   validate_controller_compatibility
 fi
 
@@ -1633,9 +2648,17 @@ else
 fi
 matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
 matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
+if ((channel_egress_one_off)); then
+  # This validator checks only the named channel transformation. All live-input,
+  # Installation identity, Secret ownership and migration checks still run.
+  channel_egress_enabled=$(python3 scripts/upgrade-channel-egress validate \
+    --before-values "$evidence_dir/before-values.yaml" --before-installation "$evidence_dir/before-installation.yaml" \
+    --values "${candidate_values}.requested" --installation "${candidate_installation}.requested" \
+    --namespace "$namespace" --release "$release") || die "invalid one-off channel transition."
+else
 # Keep all settings protected except the supported database phase, proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
-values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
+values_guard='del(.installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
 # The chart refuses the retired agentNativeAdmin.sharedCookieDomain whatever its
@@ -1651,7 +2674,7 @@ if jq -e --slurpfile candidate "$evidence_dir/candidate-values-guard.json" '
   project_yaml "$evidence_dir/before-values.yaml" "$values_guard | del(.agentNativeAdmin.sharedCookieDomain)" "$evidence_dir/values-guard.json"
 fi
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
-  die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; the retired agentNativeAdmin.sharedCookieDomain may be removed."
+  die "candidate values change a protected setting; only database.upgradeMigration or a validated immutable Installation Secret reference may change; the retired agentNativeAdmin.sharedCookieDomain may be removed."
 jq -e '.agentNativeAdmin | type == "object" and has("sharedCookieDomain") | not' \
   "$evidence_dir/candidate-values-guard.json" >/dev/null ||
   die "the chart no longer accepts agentNativeAdmin.sharedCookieDomain; it derives the session cookie scope from auth.baseUrl and agentNativeAdmin.domain. Pass --candidate-values with a private copy of the values that omits only that key. No cluster changes were made."
@@ -1681,6 +2704,7 @@ if ! cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-ins
     end
   ' "$evidence_dir/installation-guard.json" >/dev/null ||
     die "candidate Installation changes a protected setting; only an unchanged Plugin Driver registration wrapped in an array or the curated Plugin Driver selection may change."
+fi
 fi
 mv "${candidate_values}.requested" "$candidate_values"
 mv "${candidate_installation}.requested" "$candidate_installation"
@@ -1809,7 +2833,8 @@ fi
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
   if [[ ! -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
-    require_mutable_installation_secret "$live_installation_secret"
+    require_mutable_installation_secret "$live_installation_secret" \
+      "Stage a versioned immutable successor with the final candidate Installation configuration. Pass --candidate-values with installation.secretName set to the successor and use a fresh evidence directory. See docs/guides/deploy/immutable-installation-upgrade.md."
     check_installation_update_access
   fi
   touch "$evidence_dir/installation-changed"
@@ -1823,6 +2848,18 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   printf '%s\n' "$installation_checksum" >"$evidence_dir/installation-checksum"
 fi
 
+if [[ "$channel_egress_enabled" == true ]]; then
+  warn "The channel direct-egress forecast covers a single Worker guard. Activation checks Envoy inspection and listener conflicts after Agent Stop."
+  python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
+    --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" ||
+    die "Envoy dependencies are not ready; no Agent or OCC writer was stopped."
+fi
+
+if [[ "$channel_egress_enabled" == true ]]; then
+  : >"$targets"
+  target_count=0
+fi
+progress "Checking the candidate release and startup."
 helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "$values" "${helm_args[@]}")
 candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
 rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
@@ -1830,8 +2867,15 @@ preflight_startup
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
 fi
+if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
+  touch "$evidence_dir/preflight-blocked-original-worker" ||
+    die "cannot record the original-worker blocker in the evidence directory."
+  die "Candidate startup and migration checks passed and temporary resources are gone. The upgrade remains blocked because retained Agent revisions require their original worker:
+$retained_revision_blockers
+Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
+fi
 if ((preflight_only)); then
-  printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'
+  printf 'Preflight passed; no OCC writer was stopped. Deploy during the maintenance window with the same reviewed inputs and fresh evidence.\n'
   exit 0
 fi
 printf '%s\n' "$installation_id" >"$evidence_dir/installation-id"
@@ -1846,17 +2890,36 @@ fi
 touch "$evidence_dir/prepared"
 }
 
+if ((migration_check_only)); then
+  progress "Checking the selected controller image against installed migration history."
+  check_migration
+  exit 0
+fi
+
 if ((resume == 0)); then
+  progress "Preparing the upgrade."
   prepare_upgrade
 fi
 
+progress "Reconciling prepared upgrade state."
 candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
 python3 scripts/upgrade-evidence.py verify "$evidence_dir" ||
   die "prepared upgrade evidence changed; investigate before continuing."
-helm_attempt=$(python3 scripts/upgrade-helm-state.py select "$evidence_dir")
+verified_attempt=$(python3 scripts/upgrade-helm-state.py select "$evidence_dir")
+if ((resume == 0)) && [[ "$helm_attempt" != "$verified_attempt" ]]; then
+  die "the verified Helm attempt changed after startup preflight; investigate before continuing."
+fi
+helm_attempt=$verified_attempt
 candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
+rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 targets="$evidence_dir/targets.jsonl"
+if ((channel_egress_one_off)); then
+  channel_egress_enabled=$(python3 scripts/upgrade-channel-egress validate \
+    --before-values "$evidence_dir/before-values.yaml" --before-installation "$evidence_dir/before-installation.yaml" \
+    --values "$evidence_dir/requested-values.yaml" --installation "$evidence_dir/requested-installation.yaml" \
+    --namespace "$namespace" --release "$release") || die "invalid recorded one-off channel transition."
+fi
 dispatch_prefix() {
   printf '%s/dispatch/%s' "$evidence_dir" "$(json_file_name "$1--$2")"
 }
@@ -1965,22 +3028,29 @@ if [[ ! -f "$evidence_dir/helm-started" ]]; then
     die "the Helm release revision changed before this upgrade started."
 fi
 
+if ((migration_apply_only)); then
+  progress "Applying and verifying the separate database migration."
+  apply_database_migration
+  exit 0
+fi
+
 helm_complete=0
 recovered_revision=
 if [[ -e "$evidence_dir/helm-recovery" || -L "$evidence_dir/helm-recovery" ]]; then
-  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace") ||
+  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace") ||
     die "Helm recovery is unresolved; preserve its evidence and reconcile manually. Do not replay recovery."
   helm_complete=1
 elif ((recover_helm)); then
   matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation" ||
     die "Helm recovery requires the exact candidate Installation."
-  recovery_attempt=$(python3 scripts/upgrade-helm-state.py check-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace") ||
+  recovery_attempt=$(python3 scripts/upgrade-helm-state.py check-recovery "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace") ||
     die "Helm recovery preconditions failed; no recovery preflight or rollback was started."
   rendered="$evidence_dir/helm-attempts/$recovery_attempt/rendered.yaml"
   preflight_resume
-  python3 scripts/upgrade-helm-state.py recover "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace" ||
+  recheck_prepared_migration_secrets
+  python3 scripts/upgrade-helm-state.py recover "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace" ||
     die "Helm recovery did not complete; preserve its evidence and reconcile before further action."
-  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace")
+  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace")
   helm_complete=1
 fi
 if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
@@ -2007,41 +3077,52 @@ fi
 if ((helm_complete)) && ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
   die "Helm selected the candidate but the live Installation Secret does not; investigate before continuing."
 fi
+retry_separate_handoff=0
+retry_migration=''
 if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
   ((migration_history_checked)) || die "Helm's outcome is unresolved. Inspect the release and initialization Job, run the candidate migration --check against the retained database, then resume with --migration-history-checked."
-  # A Job with no running Pods can still create a new Pod. Require both the
-  # Job and its Pods to be terminal before another migration may start.
-  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get jobs \
-    --selector "app.kubernetes.io/instance=$release,app.kubernetes.io/component=initialization" \
-    --output json >"$evidence_dir/current-initialization-jobs.json"
-  jq -e 'all(.items[]; any(.status.conditions[]?; (.type == "Complete" or .type == "Failed") and .status == "True"))' \
-    "$evidence_dir/current-initialization-jobs.json" >/dev/null || die "an initialization Job is still active; wait for it to finish before retrying Helm."
-  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get pods \
-    --selector "app.kubernetes.io/instance=$release,app.kubernetes.io/component=initialization" \
-    --output json >"$evidence_dir/current-initialization-pods.json"
-  jq -e 'all(.items[]; .status.phase == "Succeeded" or .status.phase == "Failed")' \
-    "$evidence_dir/current-initialization-pods.json" >/dev/null || die "an initialization Pod is still active; wait for it to terminate before retrying Helm."
+  require_settled_initializers "retrying Helm"
+  retry_migration=$(yq -p=yaml -o=json -I=0 '.' "$rendered" | migration_mode /dev/stdin) ||
+    die "cannot identify the submitted upgrade migration mode; preserve the original evidence before retrying."
+  # An intent can outlive a rejected submission. Until Helm advances past the
+  # original revision, keep the same separate-migration writers stopped.
+  original_revision=$(jq -ers '
+    select(length == 1) | .[0].version | select(type == "number" and . > 0 and floor == .)
+  ' "$evidence_dir/before-helm-status.json") || die "cannot identify the original Helm revision."
+  if [[ "$retry_migration" == separate ]] &&
+    jq -e --argjson revision "$original_revision" '.version == $revision' \
+    "$evidence_dir/current-helm-status.json" >/dev/null; then
+    retry_separate_handoff=1
+    require_migration_writers_stopped
+  fi
 fi
 
 if ((helm_complete == 0)); then
   replace_installation_secret=0
   if [[ -f "$evidence_dir/installation-changed" ]] &&
     ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
-    require_mutable_installation_secret "$live_secret"
+    require_mutable_installation_secret "$live_secret" \
+      "The prepared upgrade is bound to the recorded Installation Secret. Keep the maintenance freeze and preserve the original inputs and evidence. See docs/guides/deploy/production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable."
     replace_installation_secret=1
   fi
   if [[ -f "$evidence_dir/helm-started" ]]; then
     # Every submitted retry has a fresh hook identity; retain earlier attempts.
     helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "$values" "${helm_args[@]}")
     candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
+    rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
   fi
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
   fi
   if ((resume)); then
-    rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
-    preflight_resume
+    preflight_resume "$retry_migration"
   fi
+  if [[ "$channel_egress_enabled" == true ]]; then
+    python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
+      --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" ||
+      die "Envoy dependencies changed before Agent Stop."
+  fi
+  progress "Checking and stopping OCC writers."
   # Stop the old database writers before the migration hook. Other writers and
   # autoscalers must already be stopped by the operator's maintenance window.
   deadline=$((SECONDS + timeout_seconds))
@@ -2049,16 +3130,19 @@ if ((helm_complete == 0)); then
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
   }
-  upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
   handoff="$evidence_dir/database-migration-handoff.json"
   separate_handoff=0
   if [[ "$upgrade_migration" == separate && ! -f "$evidence_dir/helm-started" ]]; then
     separate_handoff=1
     if [[ -e "$handoff" || -L "$handoff" ]]; then
-      require_private_file "$handoff"
+      require_migration_handoff
     fi
+  elif ((retry_separate_handoff)); then
+    require_migration_handoff
   fi
-  # Validate both writers before stopping either one.
+  # Observe ownership before Agent operations, then refresh resource versions
+  # after potentially long Stops before constructing the writer scale patches.
+  observe_quiescence_writers() {
   for component in api worker; do
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
@@ -2072,11 +3156,8 @@ if ((helm_complete == 0)); then
       .metadata.deletionTimestamp == null and
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
-    if ((separate_handoff)) && [[ -f "$handoff" ]]; then
-      jq -e --arg component "$component" --slurpfile handoff "$handoff" '
-        .spec.replicas == 0 and (.metadata | {uid, generation}) == $handoff[0][$component]
-      ' "$evidence_dir/current-$component-deployment.json" >/dev/null ||
-        die "The $component Deployment changed during the separate database deployment. Preserve the database and reconcile the writer before resuming."
+    if ((retry_separate_handoff)) || { ((separate_handoff)) && [[ -f "$handoff" ]]; }; then
+      require_migration_handoff_writer "$component" "$evidence_dir/current-$component-deployment.json"
     fi
     # Test and scale atomically: a replacement or concurrent edit must not be stopped.
     jq '[
@@ -2086,6 +3167,23 @@ if ((helm_complete == 0)); then
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
   done
+  }
+  observe_quiescence_writers
+  if [[ "$channel_egress_enabled" == true ]]; then
+    if jq -e '.spec.replicas == 0' "$evidence_dir/current-api-deployment.json" >/dev/null; then
+      ((resume)) && jq -e '.spec.replicas == 0' "$evidence_dir/current-worker-deployment.json" >/dev/null ||
+        die "Restore OCC API access before resuming partial quiescence; no additional Agent or writer was changed."
+      python3 scripts/upgrade-channel-egress verify-stopped --evidence-dir "$evidence_dir" \
+        --occ "$occ" --timeout-seconds "$timeout_seconds" ||
+        die "The quiesced upgrade lacks confirmed Agent Stop evidence; inspect the original journal and inventory."
+    else
+      python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
+        --occ "$occ" --timeout-seconds "$timeout_seconds" ||
+        die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
+      deadline=$((SECONDS + timeout_seconds))
+      observe_quiescence_writers
+    fi
+  fi
   # Refresh before the first stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
@@ -2098,9 +3196,16 @@ if ((helm_complete == 0)); then
     fi
     read_restart_inventory "$evidence_dir/inventory/before-stop.json"
     normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
+    if [[ "$channel_egress_enabled" == true ]]; then
+      python3 scripts/upgrade-channel-egress check-stopped-inventory \
+        "$evidence_dir/inventory/restart-preflight.json" "$evidence_dir/inventory/before-stop-selection.json" ||
+        die "the fleet changed outside the recorded Agent Stops; OCC writers remain unchanged."
+    else
     cmp -s "$evidence_dir/inventory/restart-preflight.json" "$evidence_dir/inventory/before-stop-selection.json" ||
       die "the deployment inventory selections or repository restart assessments changed after preparation; no additional OCC writer was stopped. Reconcile the fleet and prepare a new upgrade under exclusive maintenance ownership."
+    fi
   fi
+  recheck_prepared_migration_secrets
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
     # A stopped worker cannot receive a prospective assessment. Reconcile its
@@ -2110,9 +3215,9 @@ if ((helm_complete == 0)); then
     fi
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
-      --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" ||
-      native_command_failed "$?" quiescence-scale "$component"
+    native_output quiescence-scale "$component" "quiescence-$component.txt" \
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+      --type json --patch-file "$evidence_dir/quiescence-$component-patch.json"
   done
   while true; do
     quiescence_remaining
@@ -2126,6 +3231,11 @@ if ((helm_complete == 0)); then
     ((SECONDS < deadline)) || die "OCC Pods did not terminate before the timeout; migration was not started."
     sleep 2
   done
+  if ((retry_separate_handoff)); then
+    require_unchanged_helm_status "$evidence_dir/pre-resume-helm-status.json"
+    require_settled_initializers "retrying Helm"
+    require_migration_handoff
+  fi
   for component in api worker; do
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
@@ -2135,9 +3245,13 @@ if ((helm_complete == 0)); then
       .metadata.deletionTimestamp == null and .spec.replicas == 0
     ' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
       die "OCC identity or replicas changed during quiescence; migration was not started."
+    if ((retry_separate_handoff)); then
+      require_migration_handoff_writer "$component" "$evidence_dir/quiescence-$component-deployment.json"
+    fi
   done
 
   if ((separate_handoff)) && { [[ ! -f "$handoff" ]] || ((migration_history_checked == 0)); }; then
+    recheck_prepared_migration_secrets
     if [[ ! -f "$handoff" ]]; then
       staged_handoff=$(mktemp "$evidence_dir/database-migration-handoff.XXXXXXXX")
       jq -nes --slurpfile api "$evidence_dir/quiescence-api-deployment.json" \
@@ -2147,13 +3261,27 @@ if ((helm_complete == 0)); then
       ' >"$staged_handoff" || die "Cannot record the stopped Deployment generations."
       mv "$staged_handoff" "$handoff"
     fi
-    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run node scripts/migrate-production.mjs in the selected controller image against this Installation with the dedicated migrator credential. Confirm --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
+    migration_instruction="Use occ installation upgrade migration apply RUN --profile PROFILE with the original evidence directory and candidate options."
+    if ((channel_egress_one_off)); then
+      migration_instruction="Repeat the original scripts/upgrade-channel-egress run command with --migration-apply-only and without --resume, preserving all original inputs."
+    fi
+    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers stopped. $migration_instruction After verification, resume the original run with --migration-history-checked. The Helm hook independently requires the complete candidate schema." 3
   fi
 
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
+  if ((separate_handoff)) && [[ "$migration_progress" != "{}" ]]; then
+    recheck_migration_release pre-resume "$evidence_dir/before-helm-status.json"
+  fi
+  recheck_prepared_migration_secrets
+  progress "Applying reviewed settings and the Helm release."
   install_atomically "$candidate_values" "$values"
   if [[ -f "$evidence_dir/installation-changed" ]]; then
     install_atomically "$candidate_installation" "$installation"
     if ((replace_installation_secret)); then
+      recheck_prepared_migration_secrets
       python3 - "$live_secret" "$candidate_installation" "$installation_key" <<'PYTHON' |
 import base64, json, sys
 with open(sys.argv[1]) as f:
@@ -2167,32 +3295,30 @@ PYTHON
           >"$evidence_dir/installation-secret-apply.txt"
     fi
   fi
-  # The marker precedes the request, so a crash cannot turn an unknown Helm
-  # outcome into an automatic retry or an unsafe return to the old image.
-  if [[ "$repository_enabled" == true ]]; then
-    verify_pair_nodes
-  fi
-  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
-  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    . == $observed[0]
-  ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
-    die "the Helm release changed before submission; investigate before continuing."
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi
+  recheck_prepared_migration_secrets
+  # The marker precedes the request, so a crash cannot turn an unknown Helm
+  # outcome into an automatic retry or an unsafe return to the old image.
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
+  helm_status=0
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
-      --values "$values" --wait --timeout 5m ||
-      native_command_failed "$?" helm-upgrade release
+      --values "$values" --wait --timeout 5m || helm_status=$?
   } >"$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt"
+  if ((verbose)); then
+    cat "$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt" || true
+  fi
+  ((helm_status == 0)) || native_command_failed "$helm_status" helm-upgrade release
 fi
 
+progress "Waiting for OCC recovery."
 for component in api worker; do
   deployment="openclaw-enterprise-$component"
-  "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s ||
-    native_command_failed "$?" rollout-status "$component"
+  native_output rollout-status "$component" "rollout-$component.txt" \
+    "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s
   "${kube[@]}" --namespace "$namespace" get "deployment/$deployment" --output json \
     >"$evidence_dir/after-$component-deployment.json"
   # The broker-enabled worker may be an ordinary container on the existing
@@ -2228,7 +3354,7 @@ for component in api worker; do
 done
 
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
-  python3 scripts/upgrade-helm-state.py verify-installation "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace" ||
+  python3 scripts/upgrade-helm-state.py verify-installation "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace" ||
     die "the deployed Installation consumers do not match the staged reference."
   verify_installation_switch
 fi
@@ -2301,7 +3427,22 @@ if [[ "$repository_enabled" == true ]]; then
   done
 fi
 
+if [[ "$channel_egress_enabled" == true ]]; then
+  channel_gateway=$(yq -er '.drivers.compute.configuration.runtime.channelEgress.gatewayName' "$candidate_installation")
+  channel_envoy_namespace=$(yq -er '.drivers.compute.configuration.runtime.channelEgress.envoyNamespace' "$candidate_installation")
+  progress "Waiting for the installed channel fleet before Agent deployment."
+  "${kube[@]}" --namespace "$namespace" wait "gateway/$channel_gateway" \
+    --for=condition=Programmed --timeout="${timeout_seconds}s" >"$evidence_dir/channel-gateway-ready.txt"
+  "${kube[@]}" --namespace "$channel_envoy_namespace" wait pods \
+    --selector "gateway.envoyproxy.io/owning-gateway-name=$channel_gateway,gateway.envoyproxy.io/owning-gateway-namespace=$namespace" \
+    --for=condition=Ready --timeout="${timeout_seconds}s" >"$evidence_dir/channel-fleet-ready.txt"
+  python3 scripts/upgrade-channel-egress deploy --evidence-dir "$evidence_dir" \
+    --occ "$occ" --timeout-seconds "$timeout_seconds" ||
+    die "Agent Deploy is incomplete; inspect the original journal, revision history and audit records. Do not blindly resubmit."
+fi
+
 if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
+  progress "Reconciling and deploying Agent revisions."
   confirmed_deployment_status() {
     local namespace_id=$1 agent_id=$2 revision=$3
     "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$revision" </dev/null |
@@ -2464,17 +3605,44 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
+# At the timeout, name each Agent whose deployment had not succeeded: its ID, its name and the
+# last status read (none when the deadline passed before the first poll), so the operator
+# knows which Agent to inspect.
+incomplete_agents() {
+  local namespace_id agent_id status agent_name observed
+  while IFS=' ' read -r namespace_id agent_id status; do
+    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
+    observed="no status read"
+    [[ -z "$status" ]] || observed="last status $status"
+    printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
+  done
+}
+
 pending=$target_count
+if ((target_count > 0)); then
+  progress "Checking Agent readiness and OpenClaw Doctor."
+fi
+incomplete=()
+while IFS= read -r deployment; do
+  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId
+  incomplete+=("$namespace_id $agent_id")
+done <"$deployments"
 while ((pending > 0)); do
-  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
+  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
   pending=0
   failed=0
+  incomplete=()
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
     status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
     case "$status" in
-      queued | running) ((pending += 1)) ;;
+      queued | running)
+        ((pending += 1))
+        incomplete+=("$namespace_id $agent_id $status")
+        ;;
       succeeded) ;;
       failed) failed=1 ;;
     esac
@@ -2836,6 +4004,7 @@ done <"$doctor_targets"
 ((pod_changed == 0)) ||
   die "at least one Agent's gateway or agent Pod did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's revision Pods are Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
 
+progress "Verifying upgrade completion."
 [[ -z "$verify_agent" ]] || verify_agent_continuity after
 
 if [[ "$repository_enabled" == true ]]; then
@@ -2875,7 +4044,9 @@ jq -e --arg recovered "$recovered_revision" --slurpfile submission "$evidence_di
   : >"$evidence_dir/completed"
 ) ||
   die "could not record upgrade completion; preserve the evidence and investigate before recovery."
-if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
+if [[ "$channel_egress_enabled" == true ]]; then
+  printf 'Upgrade and channel transition complete. See channel-agent-operations.json in the evidence directory for Agent deployment results.\n'
+elif [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then
   printf 'Upgraded runtime image; controller image remained unchanged and %s running Agents selected new revisions.\n' "$target_count"

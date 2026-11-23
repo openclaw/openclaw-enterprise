@@ -1,15 +1,15 @@
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
+import { unexpectedNodeEnrollment } from "../helpers/kubernetes-compute.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { TestContext } from "node:test";
 import { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
-import type { GatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import type {
   HarnessAuthSnapshot,
   RevisionHarnessDescriptor,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.mjs";
+import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.ts";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
@@ -29,6 +29,8 @@ import {
   routedRevision,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 
+export { unexpectedNodeEnrollment };
+
 type CoreApi = Parameters<typeof resolveKubernetesNamespace>[0];
 type NamespaceList = Awaited<ReturnType<CoreApi["listNamespace"]>>;
 type NamespaceRecord = NamespaceList["items"][number] & {
@@ -37,9 +39,7 @@ type NamespaceRecord = NamespaceList["items"][number] & {
 };
 
 async function namespaceCore(t: TestContext, listNamespace: CoreApi["listNamespace"]) {
-  const { kubeconfigPath, context }: { kubeconfigPath: string; context: unknown } =
-    await writeSafeKubeconfig(t);
-  assert.ok(typeof context === "string");
+  const { kubeconfigPath, context } = await writeSafeKubeconfig(t);
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     { mode: "kubeconfig", kubeconfigPath, context },
     (message) => new Error(message),
@@ -66,14 +66,6 @@ export function checkNamespaceNames() {
 
   // Distinct tenant identifiers retain distinct opaque placements.
   assert.notEqual(kubernetesNamespaceName("Team A"), kubernetesNamespaceName("Team-A"));
-}
-
-// Admission may inspect whether node enrollment is available, but it must not start enrollment.
-export function unexpectedNodeEnrollment(): GatewayNodeEnrollment {
-  async function unexpected(): Promise<never> {
-    assert.fail("unexpected node enrollment");
-  }
-  return { createSetup: unexpected, observeSetup: unexpected, isConnected: unexpected };
 }
 
 export async function checkDedicatedRuntimeWorkspaceTransport() {

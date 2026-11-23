@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
+import { chartTooling, helmTemplate } from "../helpers/production-chart.ts";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -33,7 +33,7 @@ function baseInput(overrides = {}) {
       controllerImage: `registry.example.invalid/openclaw-enterprise/controller@sha256:${digestA}`,
       authBaseUrl: "https://console.oce.example.internal",
       adminEmail: "admin@example.invalid",
-      bootstrapPasswordClaimName: "occ-bootstrap-admin-password",
+      bootstrapCredentialsSecretName: "occ-bootstrap-credentials",
       apiClients: [{ namespace: "operator-tools", podLabels: { app: "occ-operator" } }],
       databaseCidrs: ["192.0.2.10/32"],
       clusterCidrs: ["192.0.2.11/32"],
@@ -57,7 +57,8 @@ function baseInput(overrides = {}) {
       transportSecretPrefix: "openclaw-agent-transport",
     },
     channels: {
-      managedSlackProxy: true,
+      managedEgress: true,
+      excludedCidrs: ["10.0.0.0/8", "192.0.2.11/32"],
     },
     ...overrides,
   };

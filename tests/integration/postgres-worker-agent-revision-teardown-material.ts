@@ -5,12 +5,14 @@ import type {
   ComputeDriver,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/controller-work.ts";
+import { repositoryCleanupWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { deferWork, makeWorkDue } from "../helpers/postgres-worker-revision-queue.ts";
 import {
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { required, type RevisionSetup } from "./postgres-worker-agent-revision-teardown-fixture.ts";
 
 export function testMaterialRepair(setup: RevisionSetup) {
@@ -312,11 +314,16 @@ export function testMaterialRepair(setup: RevisionSetup) {
       const observed: (readonly RepositoryCredentialRuntimeBinding[])[] = [];
       const stopped: string[] = [];
       const callsBeforeRestart = repository.calls.length;
+      const cleanupKey = repositoryCleanupWorkKey(candidate.id, "sessions");
+      const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
       await fixture.start(
         {
           ...fixture.compute,
           async stopRevision(revision) {
             stopped.push(revision.id);
+            // Hold the session row as queued after Stop transfers its obligation so the read
+            // sees the newly queued work before it can be claimed again.
+            await deferWork(fixture.observerPool, cleanupKey);
             return fixture.compute.stopRevision(revision);
           },
           async prepareRevision(revision, deploymentContext) {
@@ -388,19 +395,33 @@ export function testMaterialRepair(setup: RevisionSetup) {
         [missing.sessionId],
       );
       assert.equal(recoveryCalls.filter(({ operation }) => operation === "open").length, 1);
-      await waitFor("session-only repair cleanup to settle", async () => {
-        const cleanup = await fixture.observerPool.query<{ state: ControllerWorkState }>(
-          `SELECT state FROM occ.controller_work
-           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-        );
-        return cleanup.rowCount === 1 && cleanup.rows[0]?.state === "succeeded" ? true : undefined;
-      });
+      const cleanupWork = { id: candidate.id, idempotencyKey: cleanupKey };
+      await fixture.work(cleanupWork, "succeeded");
+      const repairedCleanup = required(await queue.findWork(cleanupKey), "repair cleanup work");
+      assert.ok(repairedCleanup.attemptCount > 0);
       assert.deepEqual(stopped, []);
       assert.equal(
         required(await fixture.currentAgent(owner), "fixture Agent").activeRevisionId,
         candidate.id,
       );
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).cleanup, null);
+
+      // Stop reuses the repair's completed row. Its earlier claim does not start a new disposal.
+      const stop = await fixture.requestStop(owner);
+      await fixture.work(stop, "succeeded");
+      const queued = required(await queue.findWork(cleanupKey), "requeued session cleanup work");
+      assert.equal(queued.state, "queued");
+      assert.equal(queued.attemptCount, repairedCleanup.attemptCount);
+      assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).cleanup, {
+        status: "queued",
+        nextAttemptAt: queued.availableAt.toISOString(),
+      });
+      await makeWorkDue(fixture.observerPool, cleanupKey);
+      await fixture.work(cleanupWork, "succeeded");
+      assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).cleanup, {
+        status: "succeeded",
+        nextAttemptAt: null,
+      });
     },
   );
 

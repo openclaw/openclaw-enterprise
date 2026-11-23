@@ -49,8 +49,9 @@ OpenShell Drivers with Credential Proxy and gateway routing.`
   `delete`.
 - **Tenant access is unchanged.** Grant the worker and API
   [tenant RoleBindings](../../../guides/deploy/production-agents.md#grant-tenant-rolebindings)
-  in the bound namespace. Compute still applies its quota, limit range and
-  NetworkPolicies there.
+  in the bound namespace. [Check workspace reads](#check-the-workers-named-reads)
+  before granting the ordinary worker role. Compute still applies its quota,
+  limit range and NetworkPolicies there.
 
 ## Prepare the namespace
 
@@ -64,7 +65,9 @@ Create the namespace with the derived name. Compute refuses it unless it is
 | Label      | `app.kubernetes.io/managed-by`                             | `openclaw-enterprise`                                                          |
 | Label      | `openclaw.dev/namespace`, `openclaw.dev/gateway-namespace` | the Namespace ID                                                               |
 | Label      | `openclaw-enterprise.io/gateway`                           | first 12 hexadecimal characters of SHA-256(`<gatewayNamespace>/<gatewayName>`) |
-| Label      | `pod-security.kubernetes.io/enforce`, `audit`, `warn`      | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/enforce`                       | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/audit`                         | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/warn`                          | `restricted`                                                                   |
 
 The gateway label is the selector of the Gateway's `https` listener; see
 [Gateway routing](../../gateway-routing.md). Also add the OpenShell Sandbox
@@ -77,6 +80,37 @@ in the namespace. Give each one the label
 `openclaw.dev/namespace` and the annotation `openclaw.dev/namespace-id`, both
 set to the Namespace ID. Their NetworkPolicies must use
 `networking.k8s.io/v1` and declare a `spec`.
+
+### Check the worker's named reads
+
+If the workspace declares both objects below, check access **before** binding
+the ordinary tenant-worker role or starting reconciliation. That role lacks
+these reads. The workspace RoleBinding grants access to the Gateway, not the worker.
+
+Stage the objects and the worker's read grants in the bound tenant; these two
+checks need no `bind` or `escalate` grant. Confirm the tenant name and UID.
+Use your installation's control-plane namespace and an operator context without
+preset impersonation: `--as` does not clear inherited groups. The operator must
+already be allowed to impersonate the worker ServiceAccount:
+
+```bash
+(
+  worker="system:serviceaccount:${CONTROL_PLANE_NAMESPACE:?set the control-plane namespace}:openclaw-enterprise-worker"
+  read_workspace() {
+    kubectl --kubeconfig "${KUBECONFIG_FILE:?set the kubeconfig file}" \
+      --context "${CONTEXT:?set the context}" --namespace "${TENANT_NAMESPACE:?set the bound tenant namespace}" \
+      --as="$worker" get "$1.v1.rbac.authorization.k8s.io/openshell-workspace-sandbox" -o name
+  }
+  role=$(read_workspace roles) || exit 1
+  binding=$(read_workspace rolebindings) || exit 1
+  printf '%s\n' "$role" "$binding"
+)
+```
+
+Continue only if both names print and the command succeeds. A forbidden `get`
+naming the worker means it lacks that read. For `NotFound`, check the context,
+tenant and object. An impersonation or discovery error leaves access unknown;
+ask an authorized operator to check. Success does not verify contents or readiness.
 
 ## Runtime behavior
 

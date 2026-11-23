@@ -28,6 +28,7 @@ import type {
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import {
   accessBindingPostRequests,
   apiRequests,
@@ -56,6 +57,7 @@ import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-account
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
@@ -2217,7 +2219,7 @@ test("a saved Configuration's summary keeps the Secret name while it rereads it"
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   // The reread can reach this route after the status shows, so wait for it rather than count
   // (finding 2223); the name must stay while the reread is held.
-  await rereading;
+  await within(rereading, "the rebuilt summary's held Secret reread");
   assert.ok(reads >= 2, "the rebuilt summary rereads the Secret");
   assert.equal(await name.isVisible(), true);
   assert.deepEqual(await metadataLoading.jsonValue(), []);
@@ -2249,7 +2251,7 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
   await waitForEnabled(plugins);
   await page.getByRole("button", { name: "Disable Slack" }).click();
-  await refreshing;
+  await within(refreshing, "the held Configuration refresh");
   assert.equal(await plugins.isDisabled(), true);
   assert.equal(
     await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
@@ -2267,11 +2269,12 @@ test("a Configuration save that lands late does not move the cards below the edi
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Late save");
   const agent = await fixture.createAgent(namespace.id, "Late Save", nativeValues("before"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = configurationPath({ namespace, agent });
   const page = await openTab(t, fixture, namespace, agent, "configuration", {
-    viewport: { width: 1280, height: 800 },
+    viewport: { width: 1280, height: 1000 },
     // The save lands 900 ms after the click.
     beforeLogin: (routed) =>
-      routed.route(`**/namespaces/${namespace.id}/configurations/*`, async (route) => {
+      routed.route(`**${path}`, async (route) => {
         if (route.request().method() === "PATCH") {
           await new Promise((resolve) => setTimeout(resolve, 900));
         }
@@ -2283,12 +2286,19 @@ test("a Configuration save that lands late does not move the cards below the edi
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
   const save = page.getByRole("button", { name: "Save Configuration" });
+  const danger = page.getByRole("heading", { name: "Danger zone", exact: true });
+  const dangerOffset = () =>
+    danger.evaluate((heading) => heading.getBoundingClientRect().top - globalThis.innerHeight);
   // A reader scrolls the editor's actions into view, then saves once the page is still.
   await save.evaluate((control) => control.scrollIntoView({ block: "center" }));
   await page.evaluate(() => globalThis.document.fonts.ready);
   await new Promise((resolve) => setTimeout(resolve, 500));
+  const before = await dangerOffset();
+  assert.ok(before >= 0, `Danger zone starts below the viewport (offset: ${before}px)`);
   await page.evaluate(recordLayoutShifts);
+  const patched = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
   await save.click();
+  assert.equal((await patched).status(), 200);
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   await new Promise((resolve) => setTimeout(resolve, 500));
   // The tab and the cards below it. Headless Chromium also reports the body itself when the
@@ -2298,13 +2308,20 @@ test("a Configuration save that lands late does not move the cards below the edi
     .filter((entry) => entry.sources.some((source) => !source.node.startsWith("BODY.")))
     .reduce((sum, entry) => sum + entry.value, 0);
   t.diagnostic(`shift ${shift}: ${JSON.stringify(shifts)}`);
+  const after = await dangerOffset();
+  assert.ok(after >= 0, `Danger zone stays below the viewport after saving (offset: ${after}px)`);
   assert.ok(shift < 0.01, `shift ${shift}`);
   // The saved summary's next step is in view, where Save Configuration was.
-  assert.equal(
-    await page.evaluate(() => globalThis.document.activeElement?.textContent),
-    "Edit Configuration",
-  );
-  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  assert.equal(await edit.isVisible(), true);
+  const editView = await edit.evaluate((control) => {
+    const { top, bottom } = control.getBoundingClientRect();
+    return {
+      focused: globalThis.document.activeElement === control,
+      inView: top >= 0 && bottom <= globalThis.innerHeight,
+    };
+  });
+  assert.deepEqual(editView, { focused: true, inView: true });
 });
 
 // A deployed Agent's Configuration tab with an unsaved edit in the JSON editor.
