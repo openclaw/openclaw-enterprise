@@ -15,14 +15,25 @@ import {
 } from "../helpers/ci-runner-fixture.ts";
 
 const reporter = new URL("../helpers/openshell-plugin-install-reporter.ts", import.meta.url).href;
-const stages = new URL("../helpers/openshell-stage.mjs", import.meta.url).href;
+const stages = new URL("../helpers/openshell-stage.ts", import.meta.url).href;
 const progress = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url).href;
 const caseName = "OpenShell installs selected Codex plugins before WebSocket startup";
 const sentinel = "invented-plugin-diagnostic-sentinel";
 const incomplete =
   "OpenShell plugin installation did not complete one exact passing case; child details withheld.";
 
-for (const scenario of ["failure", "timeout", "success", "skip", "todo", "extra-pass"] as const) {
+for (const scenario of [
+  "installation",
+  "exposure-auth",
+  "plugin-check",
+  "plugin-teardown",
+  "failure",
+  "timeout",
+  "success",
+  "skip",
+  "todo",
+  "extra-pass",
+] as const) {
   test(`plugin reporter preserves strict ${scenario} through the Node and CI transports`, async (t) => {
     const root = await createRunnerFixture(t);
     const child = join(root, "child.test.ts");
@@ -31,15 +42,24 @@ for (const scenario of ["failure", "timeout", "success", "skip", "todo", "extra-
     await writeFile(
       child,
       `import test from "node:test";
+import assert from "node:assert/strict";
 import { runOpenShellStage } from ${JSON.stringify(stages)};
 import { openShellProgressPrefix, emitOpenShellProgress } from ${JSON.stringify(progress)};
 test(${JSON.stringify(caseName)}, ${JSON.stringify({ skip: scenario === "skip", todo: scenario === "todo" })}, async (t) => {
   await runOpenShellStage(t, "installation", async () => {
+    if (${JSON.stringify(scenario)} === "installation") assert.fail(${JSON.stringify(sentinel)});
     ${scenario === "success" ? 'for (let index = 0; index < 1024; index += 1) emitOpenShellProgress("installation", "started");' : ""}
   });
   await runOpenShellStage(t, "exposure-auth", async () => {
+    if (${JSON.stringify(scenario)} === "exposure-auth") assert.fail(${JSON.stringify(sentinel)});
     ${scenario === "timeout" ? 'process.stdout.write(openShellProgressPrefix + JSON.stringify({kind: "openshell-stage", stage: "installation", outcome: "failed"})); await new Promise(resolve => setTimeout(resolve, 60_000));' : ""}
   });
+  if (${scenario.startsWith("plugin-") || scenario === "success"}) {
+    await runOpenShellStage(t, "plugin-check", async () => {
+      if (${scenario === "plugin-teardown"}) t.after(() => t.diagnostic('openclaw-ci-measurement {"kind":"openshell-fixture-teardown","outcome":"failed"}'));
+      if (${scenario !== "success"}) assert.equal(${JSON.stringify(sentinel)}, "expected", "the inspected artifact policy must be active");
+    });
+  }
   emitOpenShellProgress("installation", "started");
   emitOpenShellProgress("exposure-auth", "failed");
   console.log(${JSON.stringify(sentinel)});
@@ -96,6 +116,18 @@ test("plugin wrapper", () => runPluginInstallCase(${JSON.stringify(child)}, ${sc
       assert.doesNotMatch(run.stderr, /Last reported OpenShell stage/);
       return;
     }
+    if (["installation", "exposure-auth", "plugin-check", "plugin-teardown"].includes(scenario)) {
+      const failedStage = scenario === "plugin-teardown" ? "plugin-check" : scenario;
+      const teardown =
+        scenario === "plugin-teardown"
+          ? " OpenShell plugin installation fixture teardown failed."
+          : "";
+      assert.equal(
+        message,
+        `OpenShell plugin installation assertion failed (ERR_ASSERTION)${teardown}\nLast reported OpenShell stage was ${failedStage} (failed).`,
+      );
+      return;
+    }
     const summary =
       scenario === "timeout"
         ? "OpenShell plugin installation child timed out; child details withheld."
@@ -115,12 +147,14 @@ function stageFrame(stage: string, outcome: string) {
   return `openclaw-ci-progress ${JSON.stringify({ kind: "openshell-stage", stage, outcome })}\n`;
 }
 
-test("the Node reporter forwards at most the four ordered plugin checkpoints", async () => {
+test("the Node reporter forwards at most the six ordered plugin checkpoints", async () => {
   const start = stageFrame("installation", "started");
   const installed = stageFrame("installation", "passed");
   const exposure = stageFrame("exposure-auth", "started");
   const exposed = stageFrame("exposure-auth", "passed");
-  const completed = start + installed + exposure + exposed;
+  const checking = stageFrame("plugin-check", "started");
+  const checked = stageFrame("plugin-check", "passed");
+  const completed = start + installed + exposure + exposed + checking + checked;
   const events = async function* () {
     yield {
       type: "test:stdout",
@@ -132,7 +166,11 @@ test("the Node reporter forwards at most the four ordered plugin checkpoints", a
           start +
           exposure +
           exposed +
-          stageFrame("exposure-auth", "failed").repeat(1024),
+          stageFrame("exposure-auth", "failed").repeat(1024) +
+          checking +
+          checked +
+          checked +
+          stageFrame("plugin-check", "failed").repeat(1024),
       },
     };
     yield { type: "test:pass", data: { name: caseName, nesting: 0, details: { type: "test" } } };

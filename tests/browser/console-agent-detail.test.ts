@@ -40,6 +40,7 @@ import {
   grantSecretOperate,
   hasFocus,
   holdRequests,
+  inViewport,
   isMaskedSecretValue,
   login,
   MEMBER_WRITE,
@@ -55,6 +56,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledView,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
@@ -69,8 +71,9 @@ import {
   trackSettledFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
+import { responseTo } from "./console-action-helpers.ts";
+import { refocusHeld, tagView, viewTag } from "./console-refocus-helpers.ts";
 import {
   withholdPermissionSummary,
   agentStopRequests,
@@ -78,18 +81,15 @@ import {
   configurationPatchRequests,
 } from "./console-agents-test-support.ts";
 import {
-  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SOURCES_DENIED,
   AGENT_UPDATE_DENIED,
   CONFIGURATION_EDITS_PENDING,
-  CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
   CONFIGURATION_SAVE_DENIED,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
-  NEW_SECRET_OPERATE_DENIED,
-  NEW_SECRET_OPERATE_REMEDY,
+  RELOAD_DRAFT_BEFORE_SAVING,
   RESOURCE_CONFLICT,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
@@ -104,13 +104,20 @@ import {
   credentialCheckedAtDeploy,
   namespaceListDenied,
   notIncluded,
-  secretOperateRefused,
   stopRefused,
   stopStatusRefreshFailed,
-  PLUGINS_READ_ONLY,
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  CONFIGURATION_UPDATE_DENIED,
+  NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
+  secretOperateRefused,
+  PLUGINS_READ_ONLY,
+} from "../helpers/refusal-access.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -1247,8 +1254,15 @@ test("A refused harness grant read leaves an administrator's Deploy alone", asyn
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
 });
 
-for (const focus of ["status", "editor", "navigation"]) {
-  test(`Configuration save conflict preserves ${focus} focus`, async (t) => {
+for (const [focus, refocus] of [
+  ["status", false],
+  ["editor", false],
+  ["navigation", false],
+  ["status", true],
+  ["navigation", true],
+] as const) {
+  const when = refocus ? " during a tab return" : "";
+  test(`Configuration save conflict preserves ${focus} focus${when}`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Conflict focus", { ready: true });
@@ -1271,7 +1285,10 @@ for (const focus of ["status", "editor", "navigation"]) {
     const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const url = new URL(path, fixture.origin).href;
     const held = await holdRequests(t, page, url, { method: "PATCH", once: true });
-    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+    await waitForEnabled(save);
+    await save.focus();
+    await page.keyboard.press("Enter");
     await held.requested;
     assert.equal(await hasFocus(page.getByText("Checking Configuration…", { exact: true })), true);
     const navigation = page.getByRole("link", { name: "Agents", exact: true });
@@ -1279,7 +1296,7 @@ for (const focus of ["status", "editor", "navigation"]) {
       // Read-only JSON must still support keyboard selection while the write is pending.
       await editor.click();
       await editor.press("ControlOrMeta+a");
-    } else if (focus === "navigation") {
+    } else if (focus === "navigation" && !refocus) {
       await navigation.focus();
     }
     const selection = () =>
@@ -1302,29 +1319,48 @@ for (const focus of ["status", "editor", "navigation"]) {
     );
     const before = await fixture.request("GET", path);
     assert.equal(before.status, 200);
-    const response = page.waitForResponse(
-      (reply) => reply.request().method() === "PATCH" && reply.url() === url,
-    );
-    held.release();
-    assert.equal((await response).status(), 409);
+    const releaseConflict = async () => {
+      const response = responseTo(page, "PATCH", url);
+      held.release();
+      assert.equal((await response).status(), 409);
+      // The alert's DOM updates while the inert view is absent from the accessibility tree.
+      await page.locator('#configuration-editor-feedback[role="alert"]').waitFor();
+    };
+    if (refocus) {
+      await tagView(page);
+      const session = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+      await refocusHeld(t, page, async () => {
+        if (focus === "navigation") {
+          await navigation.focus();
+          assert.equal(await hasFocus(navigation), true);
+          // A later blur must not give the save permission to reclaim focus.
+          await navigation.blur();
+        }
+        await releaseConflict();
+      });
+      assert.equal((await session).status(), 200);
+      assert.equal(await viewTag(page), "kept");
+    } else {
+      await releaseConflict();
+    }
     const reload = page.getByRole("button", { name: "Reload draft", exact: true });
     await reload.waitFor();
-    await page
-      .getByRole("alert")
-      .filter({ hasText: "The saved Configuration changed while you were editing." })
-      .waitFor();
+    const alert = page.getByRole("alert").filter({ hasText: RELOAD_DRAFT_BEFORE_SAVING });
+    await alert.waitFor();
     assert.equal(await editor.inputValue(), draft);
     assert.equal(await editor.getAttribute("readonly"), "");
-    assert.equal(
-      await page.getByRole("button", { name: "Save Configuration", exact: true }).isDisabled(),
-      true,
-    );
+    assert.equal(await save.isDisabled(), true);
     const after = await fixture.request("GET", path);
     assert.equal(after.status, 200);
     assert.deepEqual(after.data, before.data);
     assert.deepEqual(after.data.values, nativeValues("concurrent edit"));
     if (focus === "status") {
+      assert.equal(await reload.isEnabled(), true);
+      assert.equal(await accessibleDescription(reload), RELOAD_DRAFT_BEFORE_SAVING);
       assert.equal(await hasFocus(reload), true);
+      assert.equal(await inViewport(alert), true);
+    } else if (focus === "navigation" && refocus) {
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
     } else {
       assert.equal(await hasFocus(focus === "editor" ? editor : navigation), true);
       assert.deepEqual(await page.evaluate(() => [scrollX, scrollY]), scroll);
@@ -2470,12 +2506,15 @@ for (const viewport of [
     );
     assert.deepEqual(listShifts, []);
 
-    // An empty Namespace does not invite creating under the note.
+    // With no readable Agents in this Namespace, the list scope is clear under the note.
     await page.goto(`${fixture.origin}/console/agents?namespace=${empty.id}`);
-    await page.getByRole("heading", { name: "No Agents are shared with you" }).waitFor();
+    assert.equal(
+      await page.getByRole("heading", { name: /^No Agents/ }).textContent(),
+      "No Agents to show",
+    );
     await note.waitFor();
     await page
-      .getByText("Agents in this Namespace that are shared with you appear here.")
+      .getByText("Agents you can read in this Namespace appear here.", { exact: true })
       .waitFor();
     assert.equal(await page.getByText(/Create an Agent in this Namespace/).count(), 0);
 
@@ -2489,6 +2528,7 @@ for (const viewport of [
 }
 
 test("a version editor without Agent update can recover a failed deployment from the draft", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Version editor");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -2748,10 +2788,76 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // Draft-only tabs open on this Agent. Back returns to the saved version's shortcut.
+  const snapshotUrl = page.url();
+  for (const name of ["Credentials", "Repositories"]) {
+    await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+    const link = snapshot.getByRole("link", { name: `Draft ${name.toLowerCase()}` });
+    assert.equal(await link.isVisible(), true);
+    await link.press("Enter");
+    await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+    const selected = page.getByRole("tab", { name, selected: true });
+    assert.equal(await hasFocus(selected), true);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
+    await page.goBack();
+    await page.waitForURL(snapshotUrl);
+    await link.waitFor();
+    await page.locator(settledView).waitFor();
+    assert.ok(await hasFocus(link), name);
+  }
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
+  const draftLinks = snapshot.getByRole("link", { name: /^Draft / });
+  const permissionUrl = `${fixture.origin}${path}/permissions`;
+  await t.test("losing a snapshot shortcut on refocus preserves keyboard position", async () => {
+    const tab = page.getByRole("tab", { name: "Configuration", exact: true });
+    const navigation = page.getByRole("link", { name: "Agents", exact: true });
+    for (const moveFocus of [true, false]) {
+      await page.goto(snapshotUrl);
+      await page.locator(settledView).waitFor();
+      await draftLinks.first().focus();
+      const restore = revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+      const permissions = await holdRequests(t, page, permissionUrl, {
+        once: true,
+        afterServer: true,
+      });
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+      await permissions.requested;
+      // The sidebar stays active while the Controller rechecks the snapshot.
+      if (moveFocus) {
+        await navigation.focus();
+      }
+      permissions.release();
+      await page.locator(settledView).waitFor();
+      restore();
+      assert.equal(await draftLinks.count(), 0);
+      assert.ok(await hasFocus(moveFocus ? navigation : tab), moveFocus ? "sidebar" : "tab");
+    }
+  });
+
+  // A fresh grant does not clear this tab's 403 on the exact saved Configuration.
+  await page.goto(snapshotUrl);
+  await draftLinks.first().waitFor();
+  const restore = revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const denied = page.waitForResponse(fixture.origin + configurationPath);
+  await draftLinks.first().click();
+  assert.equal((await denied).status(), 403);
+  await page.getByRole("heading", { name: "Configuration unavailable" }).waitFor();
+  restore();
+  const granted = page.waitForResponse(permissionUrl);
+  await page.goBack();
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await granted).json()).data
+      .configurationRead,
+    true,
+  );
+  await page.locator(settledView).waitFor();
+  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  assert.equal(await draftLinks.count(), 0);
+  assert.ok(await hasFocus(page.getByRole("heading", { level: 1 })));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
@@ -2759,6 +2865,7 @@ test("a reader without update views the version draft read-only", async (t) => {
 // Edit current Configuration turns into Open draft in place, and the Plugins tab waits
 // for the answer before it reads the policy capabilities, which need Agent update (finding 2436).
 test("a late permission answer relabels a reader's version entry and skips plugin capabilities", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Late plugin reader");
   const agent = await fixture.createAgent(namespace.id, "Late plugin Agent", nativeValues("v1"), {
     harnessAuth: { method: "runtime" },
@@ -2793,8 +2900,11 @@ test("a late permission answer relabels a reader's version entry and skips plugi
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
   // Until the answer lands the page assumes an editor.
   await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  const draftLinks = snapshot.getByRole("link", { name: /^Draft (credentials|repositories)$/ });
+  assert.equal(await draftLinks.count(), 0);
   firstAnswer.release();
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  assert.equal(await draftLinks.count(), 2);
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
@@ -2998,6 +3108,7 @@ test("a deployer without update keeps the draft checklist", async (t) => {
 // Configuration update, the Channels tab, the draft card and the Credentials tab's Channel
 // Secrets panel turn read-only in place (findings 2421, 2432).
 test("a late permission answer turns a reader's Channels and Channel Secrets read-only", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Late reader answer", { ready: true });
@@ -3925,6 +4036,7 @@ test("the picker's Create new Secret is disabled when operate covers only some S
 
 // A tab parked before the answer landed is shown again with the answer applied (finding 2421).
 test("a Channels tab parked before a reader's permission answer returns read-only", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Parked reader tab");
   const agent = await fixture.createAgent(namespace.id, "Parked reader Agent", nativeValues("v1"), {
     harnessAuth: { method: "runtime" },
@@ -4032,6 +4144,7 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
 });
 
 test("a negative permission answer reaching an open Stop or Delete dialog prevents submission", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Open confirmation");
   const agent = await fixture.createAgent(
     namespace.id,

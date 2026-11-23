@@ -305,11 +305,9 @@ test("hosted OAuth discovery rejects incomplete or unsafe warm identity before p
     [driver.discoverCatalog, malformed],
     [driver.getCatalogPlugin, { ...malformed, pluginId }],
   ] as const) {
-    await assert.rejects(async () => {
-      const response: unknown = Reflect.apply(operation, driver, [input]);
-      assert.ok(response instanceof Promise);
-      await response;
-    }, rejection);
+    const response: unknown = Reflect.apply(operation, driver, [input]);
+    assert.ok(response instanceof Promise);
+    await assert.rejects(response, rejection);
   }
   assert.equal(request.mock.callCount(), 0);
 });

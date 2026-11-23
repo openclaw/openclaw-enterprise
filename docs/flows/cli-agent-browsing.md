@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-11-10
-last_updated_session: authoring-run/6e7936d6-d552-4feb-9b02-2d8b7760bac8
+updated: 2026-11-19
+last_updated_session: authoring-run/d6c35425-ad20-4bc3-a09a-0756d3839065
 ---
 
 # CLI Agent metadata browsing flow
@@ -82,7 +82,7 @@ configuration only when they were recorded, without inventing defaults. Summarie
 have no `configurationReadError`. For revision detail, `revisionForBrowsingFromRow`
 returns that typed error with metadata when either Harness settings object is
 missing; it does not expose the incomplete saved payload.
-`packages/occ/src/index.ts:listRevisions` adds each version's
+`packages/occ/src/agent-queries.ts:listRevisions` adds each version's
 `deploymentStatus` and `deploymentErrorCode` from its deployment work record in
 the same read, so a version or Agent with unreadable saved settings keeps its
 status. A version without a deployment work record has `null` for both.
@@ -121,7 +121,9 @@ deployment record and reads the current Agent once. With Agent read access, the
 operator can see that a deployment succeeded even when the Agent now has no
 active revision or has selected a newer one. If the Agent read fails, the CLI
 still prints the revision record. The table shows the repository redeployment
-notice when the revision record contains it.
+notice when the revision record contains it. `output.go:printDeploymentStatus`
+adds a `CLEANUP` column when the deployment record contains a non-null `cleanup`
+object. The cell shows its status. JSON and YAML keep the full object.
 
 For one Agent in table output, `cli.go:agentCommand` then reads
 `occclient.Client.GetAgentHarnessStatus`, and
@@ -154,7 +156,7 @@ with the same Namespace. A saved-settings problem appears as
 deployment failed or succeeded.
 
 The PostgreSQL browsing case in
-`tests/integration/postgres-platform-state.test.mjs` creates healthy saved state,
+`tests/integration/postgres-platform-state.test.ts` creates healthy saved state,
 introduces a retired plugin enum using the same legacy-state fixture as the API
 contract, and exercises the compiled CLI through the shipped API listener. It
 checks list/detail/history output, structured errors, listed deployment status
@@ -176,6 +178,8 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 14:44: Show the recorded cleanup status in the deployment status table. (authoring-run/d6c35425-ad20-4bc3-a09a-0756d3839065 - 7e8f8612809e5c18ad9f0bdde73aa5ab29edfb22)
 
 - 2026-11-10 07:15: Show the recorded deployment outcome beside the current Agent state. (authoring-run/6e7936d6-d552-4feb-9b02-2d8b7760bac8 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
 

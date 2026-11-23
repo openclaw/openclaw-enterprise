@@ -11,8 +11,8 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
-const runtimeFile = "tests/integration/runtime-image-startup.test.mjs";
-const runtimeChildCase = "runtime startup child consumes the CI-prepared Codex seccomp profile";
+const runtimeFile = "tests/integration/runtime-image-startup.test.ts";
+const runtimeChildCase = "runtime startup child consumes the reviewed Codex startup inputs";
 const runtimeChildFixture = new URL(
   "../fixtures/staging-qualification-seccomp-child.ts",
   import.meta.url,
@@ -20,11 +20,26 @@ const runtimeChildFixture = new URL(
 
 test("staging workflow command consumes bound digests and refuses invalid release evidence", (t) =>
   checkWorkflowCommand(t));
-test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
+test(
+  "staging runtime lane preserves the reviewed Codex startup inputs in its child",
+  checkRuntimeChild,
+);
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
-for (const change of ["compatible", "controller", "catalog", "runtime"] as const) {
+const signinChanges = [
+  "compatible",
+  "controller",
+  "catalog",
+  "runtime",
+  "catalog-source",
+  "historical-auth",
+  "historical-migration",
+  "typed-migration",
+  "probe",
+] as const;
+
+for (const change of signinChanges) {
   test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
     checkWorkflowCommand(t, true, change));
 }
@@ -32,7 +47,7 @@ for (const change of ["compatible", "controller", "catalog", "runtime"] as const
 async function checkWorkflowCommand(
   t: TestContext,
   pairPullOnly = false,
-  signin?: "compatible" | "controller" | "catalog" | "runtime",
+  signin?: (typeof signinChanges)[number],
 ) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -108,6 +123,29 @@ async function checkWorkflowCommand(
     const file =
       signin === "controller" ? "apps/controller/unreviewed.txt" : "migrations/unreviewed.sql";
     await writeFile(join(root, file), "Unreviewed input\n");
+  }
+  if (signin === "catalog-source") {
+    // The catalog source alone must invalidate the reviewed reader contract.
+    await writeFile(join(root, "scripts/migration-catalog.ts"), "// Unreviewed catalog input\n");
+  }
+  if (signin === "historical-auth") {
+    // The historical controller image copied this entry point into the production target.
+    const file = join(root, "scripts/auth-maintain.mjs");
+    await writeFile(file, (await readFile(file, "utf8")) + "\n// Unreviewed entry point change\n");
+  }
+  if (signin === "historical-migration") {
+    const file = join(root, "scripts/migrate-production.mjs");
+    await writeFile(
+      file,
+      (await readFile(file, "utf8")) + "\n// Unreviewed migration entry point\n",
+    );
+  }
+  if (signin === "typed-migration") {
+    await cp("scripts/migrate-production.ts", join(root, "scripts/migrate-production.ts"));
+  }
+  if (signin === "probe") {
+    // The new script is a production build input even though the reviewed pair has only .mjs.
+    await cp("scripts/production-healthcheck.ts", join(root, "scripts/production-healthcheck.ts"));
   }
   const unrelated = (
     await git([
@@ -550,6 +588,10 @@ else:
           assert.equal(plan.candidate.version, 3);
           assert.equal(plan.previous.buildInputs, plan.candidate.buildInputs);
           assert.equal(
+            plan.previous.buildInputs,
+            "797f9d81cebb649ecec631cae57bdcb43172e26e47a8619d60e07eb2ff78caa3",
+          );
+          assert.equal(
             plan.migrationTree,
             (
               await git(["rev-parse", "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb:migrations"])
@@ -969,7 +1011,7 @@ async function checkRuntimeChild(t: TestContext) {
     await execute(
       process.execPath,
       [
-        "scripts/ci/run-tests.mjs",
+        "scripts/ci/run-tests.ts",
         "run",
         lane,
         "--file",
@@ -995,6 +1037,9 @@ async function checkRuntimeChild(t: TestContext) {
           OCC_TEST_WORKSPACE_ENVOY_IMAGE:
             original.prepare.defaultEnv.OCC_TEST_WORKSPACE_ENVOY_IMAGE,
           OCC_TEST_STAGING_CODEX_VERSION: version,
+          OCC_TEST_PRODUCTION_IMAGE: version === undefined ? undefined : `sha256:${"c".repeat(64)}`,
+          EXPECTED_OCC_REVISION:
+            version === undefined ? undefined : "54bfa7fc1b99e362450beb5f9211e164991fa7b4",
           OCC_TEST_STAGING_UNDECLARED: "outer-only",
         },
       },

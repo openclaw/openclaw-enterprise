@@ -1,13 +1,43 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
+import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ConfigurationValidationError,
   type OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
+
+export function openShellWorkspaceHarnessConfiguration() {
+  const configuration = {
+    integrationMode: "legacy" as NonNullable<OpenShellSandboxDriverOptions["integrationMode"]>,
+    gateway: {},
+    kubernetes: {
+      userNamespaces: false,
+      serviceAccount: {
+        mode: "gatewayConfigured",
+      } satisfies OpenShellSandboxDriverOptions["kubernetes"]["serviceAccount"],
+      sandboxDataMount: {
+        subPath: "workspace",
+        mountPath: "/sandbox/enterprise",
+        readOnly: false,
+      },
+    },
+    policy: {
+      process: { runAsUser: "1000", runAsGroup: "1000" },
+      networkPolicies: [
+        {
+          name: "model-egress",
+          endpoints: [{ host: "api.openai.com", ports: [443] }],
+          binaries: [{ path: "/app/bin/model-client" }],
+        },
+      ],
+    },
+  };
+  return configuration satisfies OpenShellSandboxDriverOptions;
+}
 
 export function buildSandboxInstallation() {
   const base = createInstallationDriverConfiguration();
@@ -40,29 +70,7 @@ export function buildSandboxInstallation() {
       },
       sandbox: {
         id: "openshell-sandbox",
-        configuration: {
-          gateway: { workspaceMode: "operator" },
-          kubernetes: {
-            runtimeClassName: "openshell-sandbox",
-            userNamespaces: false,
-            serviceAccount: { mode: "gatewayConfigured" },
-            sandboxDataMount: {
-              subPath: "workspace",
-              mountPath: "/sandbox/enterprise",
-              readOnly: false,
-            },
-          },
-          policy: {
-            process: { runAsUser: "1000", runAsGroup: "1000" },
-            networkPolicies: [
-              {
-                name: "model-egress",
-                endpoints: [{ host: "api.openai.com", ports: [443] }],
-                binaries: [{ path: "/app/bin/model-client" }],
-              },
-            ],
-          },
-        },
+        configuration: openShellWorkspaceHarnessConfiguration(),
       },
     },
   };

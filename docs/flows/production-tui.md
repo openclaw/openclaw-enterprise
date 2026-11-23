@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-22
-last_updated_session: authoring-run/ffffed03-0b85-4984-990e-aa0705a91645
+updated: 2026-11-22
+last_updated_session: authoring-run/3af918e3-ad57-434f-9d89-62efe847bb3b
 ---
 
 # Production TUI Flow
@@ -18,9 +18,9 @@ operations, dedicated Codex Agents, Slack channels, or a host-installed TUI.
 ## Entry Points
 
 - Trigger: authenticated production API calls followed by
-  `kubectl exec -it <gateway-pod> -c gateway -- node /app/openclaw.mjs tui`.
+  the [production TUI attachment procedure](../guides/deploy/production-tui.md).
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
-  `packages/occ/src/index.ts:OpenClawController.deployAgent`,
+  `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
   and `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`.
 - Assumptions: the production API and worker are ready, the caller has an OCC
   bootstrap service administrator key with current Namespace/Agent authority, the selected
@@ -59,11 +59,12 @@ graph TD
 `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`,
 `apps/controller/src/index.ts:createFastifyApp`
 
-After the initialization Job completes successfully, the operator retrieves
-`initial-admin-service-key.json` from its protected output PVC. Neither the API
-nor worker mounts that PVC. The [OCC CLI](../guides/cli.md) reads `data.key` from
-the protected response file, sends `x-api-key`, and first
-verifies `GET /installation`. The API validates the key, resolves the
+After the initialization Job completes successfully, the operator uses the
+retained precreated key in private CLI JSON containing `data.key`.
+[Bootstrap key access](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key)
+owns file preparation. Neither API nor worker receives the bootstrap inputs.
+The [OCC CLI](../guides/cli.md) sends `x-api-key` and first verifies
+`GET /installation`, which supplies the server-owned Installation ID. The API validates the key, resolves the
 Installation-scoped service principal, and applies its current IAM grants; an
 invalid, expired, or revoked key returns `401` without cookie fallback.
 
@@ -84,7 +85,7 @@ tenant boundary ready.
 
 ### 2. The API freezes the AgentRevision
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 After the Namespace is ready, the operator creates a Namespace-owned
 `kind: "agent"` Configuration and an Agent with `executionMode: "embedded"`.
@@ -198,9 +199,9 @@ ConfigMap-mounted gateway is Running and Ready.
   kubeconfig/context, and `OPENAI_API_KEY`.
 - Adjacent source-backed checks remain
   `node --test tests/integration/harness-topology-k3d-real.test.mjs`,
-  `node --test tests/integration/kubernetes-compute-real.test.mjs`,
+  `node --test tests/integration/kubernetes-compute-real.test.ts`,
   `node --test tests/integration/kubernetes-compute-provisioning-real.test.mjs` and
-  `node --test tests/integration/kubernetes-compute-driver-real.test.mjs`.
+  `node --test tests/integration/kubernetes-compute-driver-real.test.ts`.
 
 ## Related docs
 
@@ -217,6 +218,10 @@ ConfigMap-mounted gateway is Running and Ready.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 19:36: Link the production TUI operator procedure. (authoring-run/3af918e3-ad57-434f-9d89-62efe847bb3b - 0e314b4d4baca1cdc90e98d1c2265a453d5a37d0)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-16 09:42: Use retained precreated credentials at the authenticated startup handoff. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
 - Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)

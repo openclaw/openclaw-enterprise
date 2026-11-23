@@ -19,10 +19,10 @@ import (
 
 const (
 	agentSandboxControllerImage = "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403"
-	openShellVersion            = "0.1.6"
-	openShellSourceSHA256       = "e7bce772f5837a4ffc29fb51a49381eec3d4771a9f015c75b06d4f66deb109d2"
+	openShellVersion            = "0.1.9"
+	openShellSourceSHA256       = "e92705150f012d8d0b080db9af3c2c38df3425782cc68355b9179342e59531ba"
 	agentSandboxManifestSHA256  = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
-	openShellSourceArchiveURL   = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
+	openShellSourceArchiveURL   = "https://github.com/ai-openshell/openshell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL     = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 )
 
@@ -60,7 +60,7 @@ func (r *runner) openShellCharts(ctx context.Context, root string) (string, stri
 	if err := os.Mkdir(sourceRoot, 0700); err != nil {
 		return "", "", err
 	}
-	prefix := "OpenShell-" + openShellVersion + "/deploy/helm"
+	prefix := "openshell-" + openShellVersion + "/deploy/helm"
 	if err := extractArchiveSubtree(sourceArchive, sourceRoot, prefix); err != nil {
 		return "", "", err
 	}

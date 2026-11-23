@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { waitForRelayFile } from "../fixtures/workspace-relay-engine.ts";
 import { boundedTeardown } from "./bounded-teardown.ts";
-import { registerQaSecret } from "./qa-secrets.mjs";
+import { registerQaSecret } from "./qa-secrets.ts";
 import { fileTemporaryDirectory } from "./temporary-directory.mjs";
 import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.ts";
 

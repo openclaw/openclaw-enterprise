@@ -41,8 +41,8 @@ and how denials work.
 
 If a request returns `401`, check the session or service key. A `403` means the
 current identity, scope, grant, or a Restriction did not permit the operation.
-Have an administrator check the exact resource and action; access to a Namespace
-does not give access to every resource in it.
+Review the exact resource and action with whoever manages IAM. Access to a
+Namespace does not give access to every resource in it.
 
 ## Add a person
 
@@ -66,6 +66,10 @@ New accounts join configured default Groups. As a human Installation administrat
    USER_ID="$(jq -r .data.id created.json)"
    PRINCIPAL_ID="$(jq -r .data.principalId created.json)"
    ```
+
+   If creation returns `503` with an unknown outcome, confirm whether the original
+   request committed before sending another request or changing grants. See
+   [account provisioning](../../reference/authentication.md#account-provisioning).
 
    No API lists accounts. With Google or OIDC sign-in enabled,
    `GET /api/auth/accounts/$USER_ID` returns `principalId` again; a signed-in
@@ -122,29 +126,31 @@ account keeps one that nobody uses. It is still a credential:
   sign-in. On a password-only Installation they return `409`, so an abandoned
   account there cannot be disabled.
 
-Add actions such as `update` or `deploy` to the Role for more access; see
-[Authorization](../../reference/authorization.md) for actions and scope. Role
-creation refuses `create` Permissions, and a binding refuses a Role with none
-for its target's kind, because those grants could never apply.
-
-Use Namespace bindings for everyone who is not an Installation administrator.
+Add actions such as `update` or `deploy` to the Role for more access. See
+[Authorization](../../reference/authorization.md) for actions and scope. The
+Namespace policy API refuses Roles with `create` Permissions and bindings to
+Roles with no permission for the target's kind. Use exact Namespace bindings for
+access to existing resources. Use
+[Installation-configured Roles and Group bindings](#let-people-create-agents)
+for collection-level create permissions.
 
 ## Appoint an administrator
 
 Pass the Installation administrator `roleId` in the account creation body (step
 2 of [Add a person](#add-a-person)). The binding is scoped to the exact
-Installation, while the bootstrap administrator's binding is unscoped, so the
-appointed account holds only `installation:administer` and `installation:read`:
+Installation, while the bootstrap administrator's binding is unscoped. The
+direct binding grants only `installation:administer` and `installation:read`.
+An appointed account can have other grants through configured Groups.
 
 - It can create accounts, read the Installation, Backends and the observability
   link, and
   [issue service keys](../../reference/authentication/service-api-keys.md#issuance)
   for principals whose grants it already holds.
-- Its Namespace list is empty. It cannot create or read Namespaces, create
+- With only that binding, its Namespace list is empty. It cannot create or read Namespaces, create
   Secrets, credential sources or Agents, start a device login, read the
   deployment inventory, or change Namespace IAM. Each refusal is a `403`
-  audited as an authorization denial, and its message still says to ask an
-  Installation administrator.
+  audited as an authorization denial. For a refused create, review the required
+  permission with whoever manages IAM.
 - To let it manage IAM in one Namespace, the bootstrap administrator binds it
   there to a Role with `namespace:read`, as in step 4 of
   [Add a person](#add-a-person). Namespace IAM writes then work in that
@@ -247,9 +253,10 @@ Finally, disable the person at their identity provider as well.
 
 ## Let a person run an existing Agent
 
-People cannot receive Namespace-wide `create`, so an Installation administrator
-creates each Agent with its Configuration and Secrets. To let a team member
-edit, deploy, stop and inspect it, keep the Namespace `read` binding from
+Exact Namespace bindings cannot grant collection-level `create`. For a person
+who will run an existing Agent, have someone with the required create
+permissions prepare the Agent, Configuration, and Secrets. To let the person
+edit, deploy, stop, and inspect it, keep the Namespace `read` binding from
 [Add a person](#add-a-person), create one Role with all of these permissions,
 and bind it to each target:
 
@@ -264,8 +271,9 @@ and bind it to each target:
 
 A binding applies only the Role's permissions for its target's kind. Deploying
 needs `operate` on each Secret and credential source the Agent binds, also for a
-person without `update`. Omit `delete` to keep the Agent's removal with administrators. Bind each new Agent revision
-after it is deployed, or the person cannot see its status; see
+person without `update`. Omit `delete` if this Role should not permit Agent
+removal. Bind each new Agent revision after it is deployed, or the person cannot
+see its status; see
 [Agent revisions](agent-revisions.md). Secret reads return metadata, never values.
 The SandboxPolicy ID is `sbp_` followed by the UUID part of the Agent ID.
 `occ agent policy get` and `occ agent policy recommendations` need its `read`.
@@ -275,10 +283,11 @@ The console has no form for these grants. **Share Agent** on the Agent's
 of the Agent, not this set, so use the CLI or HTTP API as in
 [Add a person](#add-a-person).
 
-The person still cannot create Agents, Secrets or Configurations. Codex device
-login on the Agent needs Agent `update` and `read`, plus Secret and
-credential-source `create` in the Namespace, which exact-resource grants
-cannot give; see
+These exact-resource grants do not let the person create Agents, Secrets, or
+Configurations. Separate configured Group or Owner bindings may grant create.
+Codex device login on the Agent needs Agent `update` and `read`, plus Secret and
+credential-source `create` in the Namespace, which exact-resource grants cannot
+give. See
 [Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
 To message the Agent, the person can use a configured channel or
 [native chat](../../reference/agent-native-admin.md) with exact Agent `operate`.

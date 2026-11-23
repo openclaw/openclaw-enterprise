@@ -10,8 +10,7 @@ last_verified: "2026-10-27"
 ## Overview
 
 `SandboxDriver` confines an Agent Harness's network, filesystem, or processes.
-OpenClaw Control Plane (OCC) supports this Driver with the bundled
-[Kubernetes Compute Driver](kubernetes-compute.md).
+OCC supports it with [Kubernetes Compute](kubernetes-compute.md).
 The Sandbox can provision a dedicated Harness. Compute owns the gateway,
 workload identity, baseline isolation, routing, and activation.
 
@@ -60,11 +59,12 @@ Construct a new Driver after changing Installation settings.
 
 | Method                                       | Requirement           | Caller and behavior                                                                                                                                                                                                                                       |
 | -------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cleanup`                                    | Required              | Compute passes the Agent revision on stop or retirement. For Namespace cleanup, it omits the revision.                                                                                                                                                    |
-| `configureAgent`                             | Optional              | Synchronously transform Configuration values for the resolved Harness. OCC validates the result and stores it in the Agent revision. OCC uses the original values by default.                                                                             |
+| `cleanup`                                    | Required              | Stop or retire an Agent revision, or clean a Namespace when the revision is omitted.                                                                                                                                                                      |
+| `configureAgent`                             | Optional              | Synchronously transform the resolved Harness's Configuration values. OCC validates and stores the result in the Agent revision. Original values apply by default.                                                                                         |
 | `validateWorkspaceSetup`                     | Optional              | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute still checks storage and workload identity.                                                                                   |
-| `ensureNamespace`                            | Optional              | Prepare the backend after Compute prepares baseline Namespace isolation. Composition adapts it to OCC Namespace lifecycle hooks.                                                                                                                          |
-| `provisionHarness`                           | Optional              | Creates a dedicated Harness and returns its stable [resource identity](#sandbox-resource-identity). Without it, Compute rejects dedicated native OpenClaw and revisions that bind credential sources.                                                     |
+| `ensureNamespace`                            | Optional              | Prepare the backend after baseline Namespace isolation through the OCC Namespace lifecycle.                                                                                                                                                               |
+| `provisionHarness`                           | Optional              | Create a dedicated Harness and return its [resource identity](#sandbox-resource-identity). Required for a non-staged provider-owned Harness.                                                                                                              |
+| `provisionStagedHarness`                     | Optional              | Provision an idle target. `prepareStagedHarness` prepares launch inputs after policy readiness; `activateStagedHarness` starts the Harness. All three are required for staged deployment.                                                                 |
 | `harnessEndpoint`, `harnessStatus`           | Optional              | Compute calls `harnessEndpoint` for the transport and `harnessStatus` to check startup. See [Sandbox-provided Harness transport](#harness-transport).                                                                                                     |
 | `withdrawHarnessExposure`                    | Optional              | Remove the temporary Harness status endpoint after the dedicated worker's workspace node enrolls.                                                                                                                                                         |
 | `enrollHarness`                              | Optional              | Binds the verified installation to the Harness before Compute releases startup. Protected egress needs this method plus `provisionHarness`, `harnessEndpoint`, and `harnessStatus`.                                                                       |
@@ -73,7 +73,8 @@ Construct a new Driver after changing Installation settings.
 | `workspaceNodePeerLabels`                    | Optional              | Return exact Pod labels for this revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only those Pods and the serving revision's Pods during replacement.                                                       |
 | `readSandboxLogs`                            | Optional              | Derive the Sandbox from the revision. Return at most `lines` raw lines at or after `sinceTime` and the number examined, using read-only access. OCC classifies and redacts each line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source). |
 | `observeHarness`                             | Optional              | Read provider lifecycle state for [Harness Sandbox status](#harness-sandbox-status).                                                                                                                                                                      |
-| `admitNetworkPolicy`                         | Optional              | Validates additions and returns an admitted snapshot. Declaring `networkPolicy` without this method fails startup.                                                                                                                                        |
+| `admitNetworkPolicy`                         | Optional              | Admit additions; required for `networkPolicy` at startup.                                                                                                                                                                                                 |
+| `admitRepositoryNetworkPolicy`               | Optional              | Synchronous, side-effect-free [admission](../sandbox-policies.md#repository-network-policy). Returns opaque defaults: inspected HTTPS, additive ENFORCE, default deny; omission refuses `[]`.                                                             |
 | `admitProtectedCodexArtifactPolicy`          | Composition-dependent | Qualifies declared credential-free artifact rules for protected, dedicated Codex repository execution. It acknowledges the purpose and exact rule-name subset; omission refuses this composition.                                                         |
 | `observeNetworkPolicy`, `applyNetworkPolicy` | Optional              | Read provider state or apply the snapshot against the expected version. Declaring live policy support without both methods fails startup.                                                                                                                 |
 | `readPolicyRecommendations`                  | Optional              | Return provider suggestions for review.                                                                                                                                                                                                                   |
@@ -91,8 +92,7 @@ permit live Agent policy apply. See
 
 ### Sandbox-provided Harness transport
 
-When a provider supplies `harnessEndpoint`, Compute routes the Agent Gateway to
-the provider-owned Harness. For Codex, Compute derives the native hook credential
+For a provider-owned endpoint, Compute routes Gateway traffic through the [configured peer](kubernetes-compute/networking-and-isolation.md#networking). For Codex, Compute derives the native hook credential
 directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
@@ -163,10 +163,11 @@ describes how that provider maps its phases to these states.
 
 ### Provisioning inputs
 
-Compute supplies the Namespace, Kubernetes client, and cancellation signal.
-For Harness provisioning it also supplies the Agent revision and
-[`HarnessWorkloadRequirements`](../../../packages/contracts/src/drivers/sandbox/index.ts).
-Use the identity, mounts, login mode, and credential references Compute selected.
+Use Compute's [context and launch requirements](../../../packages/contracts/src/drivers/sandbox/index.ts)
+without changing identity, login mode or credentials.
+`retainedDirectories` describes storage-independent paths and environment bindings.
+`workspaceMounts` supplies approved PVC subpaths/modes; provider-owned storage
+(`workspaceStorage: "provider"`) leaves it empty.
 
 If `workspaceSetup` is present, read only the specified key of the Agent-owned
 Secret in the same Namespace. Initialize the approved workspace and verify its
@@ -175,18 +176,15 @@ the marker is missing or mismatched, refuse startup with
 `SandboxWorkspaceSetupRefusedError` to preserve later edits. See the
 [workspace setup sequence](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution).
 
-The paired [Credential Gateway](credential-gateway.md#lifecycle) issues one opaque
-`{ sourceId, ref }` attachment per bound credential source. Compute passes them
-in `credentialAttachments`, which is empty when the revision uses no sources.
-The Sandbox must consume every attachment and reject references from any other
-provider. Compute waits for the gateway to report every attachment
-`ready` before activation.
+For Gateway-owned Sources, [Credential Gateway](credential-gateway.md#lifecycle) issues opaque `{ sourceId, ref }` attachments. Compute passes them in `credentialAttachments`; Sandbox consumes each and rejects foreign references. Compute waits until the Gateway reports every attachment ready before activation. For TokenService-owned Sources, the paired Credential Proxy configures delivery separately.
 
 ### Sandbox resource identity
 
-`SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
-`revisionId`. It stays stable when a controller replaces the underlying Pod;
-retirement must find the provider resource even if that Pod is already gone.
+`SandboxResourceRef` retains `namespaceName`, `resourceName`, `agentId` and
+`revisionId` across Pod replacement/removal.
+
+[Managed OpenShell](kubernetes-openshell-compute.md) uses the authenticated Envoy
+node route without Kubernetes namespace or Pod selectors for its Sandboxes.
 
 ### Optional network policy operations
 
@@ -238,13 +236,11 @@ See [authorization](../authorization.md) and [Harness execution](../harness-exec
 
 ### Admission and lifecycle
 
-Startup validates the selected Sandbox and its declared facets. The shared
-interface has no initializer or destructor; workload and Namespace removal use
-the same cleanup operation with or without an Agent revision.
+Startup validates Sandbox facets. Namespace and workload removal share one cleanup operation. Drivers have no initializer or destructor.
 
-Dedicated native OpenClaw requires a selected Sandbox that implements
-`provisionHarness` and declares networking, filesystem, and process containment.
-Other dedicated Harnesses may use fewer facets or no Sandbox.
+Dedicated native OpenClaw requires `provisionHarness` and all three containment facets. Other dedicated Harnesses may use fewer facets or omit the Sandbox.
+
+An optional positive `maintenanceIntervalMs` schedules active-revision checks and requires `provisionHarness`. During those checks, `existingHarnessOnly` requires the provider to report a missing Harness without recreating it.
 
 ```mermaid
 sequenceDiagram
@@ -331,7 +327,7 @@ inputs as Sandbox startup fields.
 - Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.
 - Supported facets are `networking`, `filesystem`, and `process`. The Sandbox
   does not authorize commands or create a Sandbox for each tool invocation.
-- The Sandbox reports Harness status. Compute decides when to activate traffic.
+- Each Sandbox reports Harness status, including [Strands](strands-box.md). Compute activates traffic.
 
 ## Troubleshooting
 
@@ -352,5 +348,5 @@ inputs as Sandbox startup fields.
 ## Related
 
 - [Kubernetes ComputeDriver](kubernetes-compute.md) and [Compute Sandbox coordination](compute.md#sandboxdriver-coordination)
-- [OCC deployment admission](../../../packages/occ/src/index.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+- [OCC deployment admission](../../../packages/occ/src/agent-deployment-admission.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 - [OpenShell verification guide](../../testing/openshell.md)

@@ -4,41 +4,15 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   ciOtelBackendResourceKind,
-  cleanupLogging as cleanupLoggingJs,
+  cleanupLogging,
   collectorImage,
   fixture,
-  prepareLogging as prepareLoggingJs,
+  prepareLogging,
   readJsonlPayloads,
-} from "../helpers/ci-logging.mjs";
+  type LoggingResource,
+} from "../helpers/ci-logging.ts";
 
 type CommandCall = [command: string, args: string[]];
-type CommandExecutor = (
-  command: string,
-  args: string[],
-) => Promise<{ stdout: string; stderr: string }>;
-type LoggingResource = { network?: string; namespace?: string };
-type RegisterResource = (
-  kind: string,
-  resource: LoggingResource,
-) => Promise<{ id: string; kind: string }>;
-type PrepareOptions = Parameters<typeof prepareLoggingJs>[0] & {
-  directory?: string;
-  cluster?: { name: string; directory: string; kubeconfig: string; context: string };
-  execFile: CommandExecutor;
-  registerResource: RegisterResource;
-};
-const prepareLogging: (options: PrepareOptions) => ReturnType<typeof prepareLoggingJs> =
-  prepareLoggingJs;
-const cleanupLogging: (
-  resource: {
-    kind: string;
-    containerName: string;
-    directory: string;
-    namespace?: string;
-    cluster?: PrepareOptions["cluster"];
-  },
-  options: Parameters<typeof cleanupLoggingJs>[1] & { execFile: CommandExecutor },
-) => ReturnType<typeof cleanupLoggingJs> = cleanupLoggingJs;
 
 test("prepareLogging registers an owned Collector backend before starting Docker", async (t) => {
   const root = await fixture(t);
@@ -245,7 +219,8 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
   };
 
   const result = await prepareLogging({
-    laneName: "k3d-otel",
+    // This lane would exceed Helm's release name limit at the default name length.
+    laneName: "k3d-otel-custom-logging-smoke",
     cluster: {
       name: clusterName,
       directory: clusterDirectory,
@@ -272,6 +247,12 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
   assert.ok(dockerRun[1].includes(`k3d-${clusterName}`));
   const helm = calls.find(([command]) => command === "helm");
   assert.ok(helm);
+  const [helmCommand, releaseName] = helm[1];
+  assert.equal(helmCommand, "template");
+  assert.ok(releaseName);
+  assert.ok(releaseName.length <= 53, "Helm release names must fit within 53 characters");
+  assert.equal(releaseName, registered[0]?.resource.namespace);
+  assert.match(releaseName, /-[a-f0-9]{12}$/);
   assert.ok(helm[1].includes("--show-only"));
   assert.ok(helm[1].includes("templates/collector.yaml"));
   assert.ok(helm[1].includes("--values"));
@@ -327,18 +308,26 @@ test("cleanupLogging removes the owned Collector backend and rejects foreign pat
   assert.deepEqual(calls, [["docker", ["rm", "--force", containerName]]]);
   await assert.rejects(() => stat(directory), { code: "ENOENT" });
 
+  // A rejected foreign path must retain its contents, even if cleanup fails after a mutation.
+  const foreignDirectory = resolve(root, "foreign-state");
+  const sentinelPath = join(foreignDirectory, "sentinel");
+  const sentinel = Buffer.from("foreign state must remain intact\n");
+  await mkdir(foreignDirectory, { mode: 0o700 });
+  await writeFile(sentinelPath, sentinel);
+
   await assert.rejects(
     () =>
       cleanupLogging(
         {
           kind: ciOtelBackendResourceKind,
           containerName,
-          directory: resolve(root, "foreign-state"),
+          directory: foreignDirectory,
         },
         { execFile, env: { OCC_DOCKER_BIN: "docker" } },
       ),
     /outside ownership/,
   );
+  assert.deepEqual(await readFile(sentinelPath), sentinel);
 });
 
 test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned", async (t) => {

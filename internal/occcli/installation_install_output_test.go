@@ -2,6 +2,8 @@ package occcli
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,7 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 		failResult      bool
 		failHelm        bool
 		completeJob     bool
+		pendingRelease  bool
 		templateFailure string
 	}{
 		{name: "healthy"},
@@ -41,6 +44,7 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 		{name: "result", failResult: true},
 		{name: "helm-failed", failHelm: true},
 		{name: "helm-failed-completed-job", failHelm: true, completeJob: true},
+		{name: "pending-release", pendingRelease: true},
 		{name: "stock-suffix-refusal", templateFailure: "stock"},
 		{name: "template-canary-refusal", templateFailure: "canary"},
 		{name: "template-overflow", templateFailure: "overflow"},
@@ -76,6 +80,9 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			receipt := filepath.Join(root, "receipt")
 			var mu sync.Mutex
 			var releases []json.RawMessage
+			if phase.pendingRelease {
+				releases = []json.RawMessage{installationPendingRelease(t)}
+			}
 			creates, updates := 0, 0
 			releaseContentType := "application/json"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -250,8 +257,22 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 				output = io.MultiWriter(&outputAttempt, &handoffFailingWriter{remaining: remaining, err: failure})
 			}
 			cmd := New(output, &stderr)
-			cmd.SetArgs([]string{"installation", "install", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
+			cmd.SetArgs([]string{"installation", "install", "--bootstrap-credentials", "existing", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
 			err := cmd.ExecuteContext(t.Context())
+			if phase.pendingRelease {
+				if err == nil || !strings.Contains(err.Error(), "Helm release is not confirmed unused") {
+					t.Errorf("pending release: got %v, want unused-release refusal", err)
+				}
+				if _, err := os.Stat(receipt); !os.IsNotExist(err) {
+					t.Errorf("pending release left a fresh receipt: %v", err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if creates != 0 || updates != 0 {
+					t.Error("pending release check changed Helm storage")
+				}
+				return
+			}
 			wantOutcome := "succeeded"
 			switch {
 			case phase.failHelm || phase.templateFailure != "":
@@ -384,4 +405,25 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 
 		})
 	}
+}
+
+// Seed the fixture with Helm's Secret storage format. The real Helm process
+// must decode the release, include pending installs, and stop the CLI before dispatch.
+func installationPendingRelease(t *testing.T) json.RawMessage {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, `{"name":"demo","namespace":"operations","version":1,"info":{"status":"pending-install"},"chart":{"metadata":{"name":"output-proof","version":"0.1.0"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release := base64.StdEncoding.EncodeToString(compressed.Bytes())
+	return json.RawMessage(fmt.Sprintf(`{
+		"apiVersion":"v1","kind":"Secret","type":"helm.sh/release.v1",
+		"metadata":{"name":"sh.helm.release.v1.demo.v1","namespace":"operations",
+			"labels":{"owner":"helm","name":"demo","version":"1","status":"pending-install"}},
+		"data":{"release":%q}
+	}`, base64.StdEncoding.EncodeToString([]byte(release))))
 }

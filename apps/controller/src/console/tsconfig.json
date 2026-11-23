@@ -8,5 +8,8 @@
     "outDir": "../../dist/console"
   },
   "include": ["**/*.mts"],
-  "references": [{ "path": "../../../../packages/contracts" }]
+  "references": [
+    { "path": "../../../../packages/contracts" },
+    { "path": "../../../../packages/occ" }
+  ]
 }

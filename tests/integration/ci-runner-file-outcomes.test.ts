@@ -7,17 +7,20 @@ import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
+import { nativeProofFailureStage } from "../../scripts/ci/runner-reporter-output.ts";
 import {
   createRunnerFixture,
   laneArgs,
   runnerEnv,
   runRunnerAsync,
   runRunnerSync,
+  writeCleanupFixture,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
 
-const runnerPath = fileURLToPath(new URL("../../scripts/ci/run-tests.mjs", import.meta.url));
+const runnerPath = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
 const progressUrl = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url);
 
 interface RunSummary {
@@ -26,11 +29,23 @@ interface RunSummary {
   counts: { passed: number; failed: number; skipped: number; todo: number; total: number };
   issues: { code: string }[];
   files: {
+    path: string;
     status: string;
     nodeExitCode: number;
+    measurements?: unknown[];
+    installationPhases?: {
+      truncated: boolean;
+      phases: {
+        invocation: number;
+        stage: string;
+        outcome: string;
+        enteredMs: number;
+        elapsedMs?: number;
+      }[];
+    };
     cleanup: { status: string };
     fileFailure?: unknown;
-    tests: { name: string; status: string }[];
+    tests: { name: string; status: string; error?: { message?: string; diagnostic?: unknown } }[];
   }[];
 }
 
@@ -44,17 +59,93 @@ function onlyFile(summary: RunSummary) {
   return file;
 }
 
-async function writeCleanupFixture(root: string) {
-  await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
-    [
-      'import { appendFile } from "node:fs/promises";',
-      "export async function prepareFile({ file, statePath }) {",
-      '  return { cleanup: async () => appendFile(statePath, file.path + "\\n") };',
-      "}",
-      "",
-    ].join("\n"),
-  );
+async function checkUpstreamInstallationPhases(root: string) {
+  const file = "tests/integration/openshell-upstream-real.test.ts";
+  const title = "OpenShell model and tool upstream outages fail closed";
+  const repositoryUrl = new URL("../../", import.meta.url);
+  const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
+  const installationModule = new URL("tests/helpers/openshell-installation.ts", repositoryUrl).href;
+  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
+  const privateValue = "/fixture/installation-phase-value";
+  const failure = "synthetic gateway Helm failure";
+  const child = `import assert from "node:assert/strict";
+import test from "node:test";
+import { runGatewayInstallation } from ${JSON.stringify(installationModule)};
+import { runOpenShellStage } from ${JSON.stringify(stageModule)};
+test(${JSON.stringify(title)}, async (t) => {
+  const failure = new Error(${JSON.stringify(failure)});
+  await runOpenShellStage(t, "installation", async () => {
+    try {
+      await runGatewayInstallation(
+        async () => {},
+        async () => ${JSON.stringify(privateValue)},
+        async (value) => {
+          assert.equal(value, ${JSON.stringify(privateValue)});
+          throw failure;
+        },
+        async () => assert.fail("readiness must not run after failed Helm"),
+      );
+    } catch (error) {
+      assert.equal(error, failure);
+      throw error;
+    }
+  });
+});`;
+
+  await writeCleanupFixture(root);
+  // Run the real phase producer in the same test runner with harmless installation operations.
+  for (const [lane, files, recordedFile] of [
+    ["openshell", [sibling], sibling],
+    ["openshell-policy", [sibling], sibling],
+    ["progress", [file], undefined],
+    ["openshell-installers", [sibling, file], file],
+  ] as const) {
+    const state = `state/${lane}-installation.jsonl`;
+    const results = join(root, `results/${lane}-installation.json`);
+    for (const path of files) {
+      await writeFile(join(root, path), child);
+    }
+    await writeRunnerManifest(root, {
+      lanes: { [lane]: { files: files.map((path) => ({ path, expectedTests: [title] })) } },
+    });
+    const result = await runRunnerAsync(laneArgs(root, lane, state, results));
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.signal, null);
+    const cleaned = await readFile(join(root, state), "utf8");
+    assert.deepEqual(cleaned.trimEnd().split("\n").sort(), [...files].sort());
+    const artifact = await readFile(results, "utf8");
+    const summary = JSON.parse(artifact) as RunSummary;
+    assert.equal(summary.exitCode, result.status);
+    assert.deepEqual(summary.files.map(({ path }) => path).sort(), [...files].sort());
+    for (const text of [artifact, result.stdout, result.stderr]) {
+      assert.equal(text.includes(privateValue), false);
+    }
+    for (const entry of summary.files) {
+      assert.equal(entry.nodeExitCode, 1);
+      assert.deepEqual(entry.cleanup, { status: "passed" });
+      assert.deepEqual(
+        entry.tests.map(({ name, status, error }) => [name, status, error?.message]),
+        [[title, "failed", failure]],
+      );
+      if (entry.path !== recordedFile) {
+        assert.equal(Object.hasOwn(entry, "installationPhases"), false, `${lane}: ${entry.path}`);
+        continue;
+      }
+      const progress = entry.installationPhases;
+      assert.ok(progress, `${lane}: ${entry.path} omitted installationPhases`);
+      assert.equal(progress.truncated, false);
+      const phases = progress.phases.map(({ enteredMs, elapsedMs, ...phase }) => {
+        assert.ok(Number.isSafeInteger(enteredMs) && enteredMs >= 0);
+        assert.ok(elapsedMs !== undefined && Number.isSafeInteger(elapsedMs) && elapsedMs >= 0);
+        return phase;
+      });
+      assert.deepEqual(phases, [
+        { invocation: 1, stage: "workspace-helm", outcome: "passed" },
+        { invocation: 1, stage: "gateway-helm", outcome: "failed" },
+      ]);
+    }
+  }
 }
 
 test("run preserves nonzero child Node exits and rejects zero-case files", async (t) => {
@@ -87,6 +178,8 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
     emptySummary.issues.map((entry) => entry.code),
     ["selected-zero"],
   );
+
+  await checkUpstreamInstallationPhases(root);
 });
 
 test(
@@ -97,28 +190,37 @@ test(
     const first = "first.test.mjs";
     const second = "second.test.mjs";
     const files = [first, second].map((path) => ({ path }));
+    const state = "state/lane.jsonl";
     const resultsPath = join(root, "results/sample.json");
     await writeCleanupFixture(root);
-    await writeRunnerManifest(root, { lanes: { sample: { files } }, groups: {} });
-    await writeFile(
-      join(root, first),
-      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n',
-    );
-    // Hold another failing file open to distinguish live reporting from a final summary.
+    await writeRunnerManifest(root, {
+      lanes: { sample: { files, fileConcurrency: 2, parallelFiles: [first, second] } },
+      groups: {},
+    });
+    const failingCase =
+      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n';
+    const passingCase = 'import test from "node:test";\ntest("passing case", () => {});\n';
+    await writeFile(join(root, second), failingCase);
+    // Hold manifest file 1 open so file 2 fails first and reports while the lane is live.
     const release = join(root, "release");
     await writeFile(
-      join(root, second),
+      join(root, first),
       `import { existsSync } from "node:fs";
      import { setTimeout } from "node:timers/promises";
      import test from "node:test";
-     test("second failure", {timeout: 20000}, async () => {
+     test("later failure", {timeout: 20000}, async () => {
        while (!existsSync(${JSON.stringify(release)})) await setTimeout(50);
-       throw new Error("second failure");
+       throw new Error("later failure");
      });\n`,
     );
-    const args = laneArgs(root, "sample", "state/lane.jsonl", resultsPath);
+    const args = laneArgs(root, "sample", state, resultsPath);
+    const env = {
+      GITHUB_ACTIONS: "true",
+      CI_RUNNER_FILE_CONCURRENCY: "2",
+      OCC_CI_SUITE_VIEW: "default",
+    };
     const child = spawn(process.execPath, [runnerPath, ...args], {
-      env: runnerEnv({ GITHUB_ACTIONS: "true" }),
+      env: runnerEnv(env),
     });
     let stderr = "";
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -127,29 +229,204 @@ test(
     const closed = new Promise<number | null>((resolve, reject) => {
       child.once("error", reject).once("close", resolve);
     });
+    const failureCommand =
+      "::error title=Test lane failure::A test file reported failed tests and its cleanup passed. Final lane results will follow.";
+    const ordinalHint =
+      "::notice title=Test lane first failed file hint::Original manifest file ordinal";
+    const commands = (output: string) => output.match(/^::[^\n]*(?=\n)/gm) ?? [];
+    const firstFailureCommands = [failureCommand, `${ordinalHint} 2.`];
     let code: number | null;
-    const commands = () => stderr.match(/^::.*$/gm) ?? [];
     try {
-      // Match the entire workflow command: no child-controlled text or extra commands.
       const deadline = Date.now() + 10_000;
-      while (!/^::.*\n/m.test(stderr) && Date.now() < deadline) {
+      while (commands(stderr).length < firstFailureCommands.length && Date.now() < deadline) {
         await setTimeout(50);
       }
-      assert.match(stderr, /^::.*\n/m, "live workflow command");
-      assert.deepEqual(commands(), [
-        "::error title=Test lane failure::A test file reported failed tests and its cleanup passed. Final lane results will follow.",
-      ]);
+      assert.equal(commands(stderr)[0], failureCommand);
+      // This is file 2's cleanup, while the lane and its later cleanup are still pending.
+      assert.equal(await readFile(join(root, state), "utf8"), `${second}\n`);
       assert.equal(child.exitCode, null);
       assert.equal(existsSync(resultsPath), false);
+      assert.deepEqual(commands(stderr), firstFailureCommands);
     } finally {
       await writeFile(release, "");
       code = await closed;
     }
     assert.equal(code, 1);
-    assert.equal(commands().length, 1);
-    assert.equal(await readFile(join(root, "state/lane.jsonl"), "utf8"), `${first}\n${second}\n`);
+    // Match entire commands to exclude child-controlled text and repeated hints.
+    assert.deepEqual(commands(stderr), firstFailureCommands);
+    assert.equal(await readFile(join(root, state), "utf8"), `${second}\n${first}\n`);
     const result = await readSummary(resultsPath);
     assert.equal(result.counts.failed, 2);
+
+    const focused = await runRunnerAsync(
+      [
+        ...laneArgs(root, "sample", "state/focused.jsonl", "results/focused.json"),
+        "--file",
+        second,
+      ],
+      env,
+    );
+    assert.ifError(focused.error);
+    assert.equal(focused.status, 1);
+    assert.deepEqual(commands(focused.stderr), [failureCommand, `${ordinalHint} UNKNOWN.`]);
+
+    await writeFile(join(root, second), passingCase);
+    const green = await runRunnerAsync(
+      [...laneArgs(root, "sample", "state/green.jsonl", "results/green.json"), "--file", second],
+      env,
+    );
+    assert.ifError(green.error);
+    assert.equal(green.status, 0, green.stderr);
+    assert.deepEqual(commands(green.stderr), []);
+
+    // The first policy file follows all five installers in the original manifest.
+    const canonical = JSON.parse(
+      await readFile(
+        new URL("../../scripts/ci/test-suites/openshell.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { files: { path: string; expectedTests?: string[] }[] };
+    const installerFailure = canonical.files.find(
+      ({ path }) => path === "tests/integration/local-first-agent-openshell-real.test.mjs",
+    );
+    assert.ok(installerFailure?.expectedTests);
+    const [parentCase, nativeCase] = installerFailure.expectedTests;
+    assert.ok(parentCase && nativeCase);
+    const installers = canonical.files
+      .filter(({ path }) => isOpenShellInstallerFile(path))
+      .map((file) =>
+        file === installerFailure
+          ? { path: file.path, expectedTests: file.expectedTests }
+          : { path: file.path },
+      );
+    await writeRunnerManifest(root, {
+      lanes: { openshell: { files: [...installers, { path: first }] } },
+      groups: { full: ["openshell"] },
+    });
+    const splitEnv = { ...env, OCC_CI_SUITE_VIEW: "full-integration" };
+    const splitHint =
+      "::notice title=Test lane first failed split file hint::Split-lane file position";
+    const unknownOrdinalCommands = [failureCommand, `${ordinalHint} UNKNOWN.`];
+    await writeFile(join(root, first), failingCase);
+    const splitResults = join(root, "results/split.json");
+    const split = await runRunnerAsync(
+      laneArgs(root, "openshell-policy", "state/split.jsonl", splitResults),
+      splitEnv,
+    );
+    assert.ifError(split.error);
+    assert.equal(split.status, 1, split.stderr);
+    const splitSummary = await readSummary(splitResults);
+    assert.equal(splitSummary.counts.failed, 1);
+    const failedPolicy = onlyFile(splitSummary);
+    assert.equal(failedPolicy.path, first);
+    assert.equal(failedPolicy.cleanup.status, "passed");
+    assert.deepEqual(commands(split.stderr), [...unknownOrdinalCommands, `${splitHint} 1.`]);
+
+    // Even selecting the only policy file explicitly is a focused run.
+    const focusedSplit = await runRunnerAsync(
+      [
+        ...laneArgs(
+          root,
+          "openshell-policy",
+          "state/split-focused.jsonl",
+          "results/split-focused.json",
+        ),
+        "--file",
+        first,
+      ],
+      splitEnv,
+    );
+    assert.ifError(focusedSplit.error);
+    assert.equal(focusedSplit.status, 1, focusedSplit.stderr);
+    assert.deepEqual(commands(focusedSplit.stderr), unknownOrdinalCommands);
+
+    for (const { path } of installers) {
+      await writeFile(join(root, path), passingCase);
+    }
+    // The wrapper imports the declaration just as the Compose installer does, so
+    // Node reports the actual declaration as the nested terminal's source.
+    await writeFile(
+      join(root, installerFailure.path),
+      'await import("./local-first-agent-real.test.mjs");\n',
+    );
+    const nativeDeclaration = join(root, "tests/integration/local-first-agent-real.test.mjs");
+    await writeFile(
+      nativeDeclaration,
+      `
+import test from "node:test";
+function reportFailure(failureStage) {
+  throw Object.assign(new Error("::warning::private-proof-canary"), {
+    openclawCiDiagnostic: { kind: "native-first-agent-proof", failureStage },
+  });
+}
+test(${JSON.stringify(parentCase)}, async (t) => {
+  await t.test("sibling proof", () => reportFailure("exec-proof"));
+  await t.test(${JSON.stringify(nativeCase)}, () => reportFailure("model-outcome"));
+});`,
+    );
+    const installerResults = join(root, "results/split-installers.json");
+    const installerSplit = await runRunnerAsync(
+      laneArgs(root, "openshell-installers", "state/split-installers.jsonl", installerResults),
+      splitEnv,
+    );
+    assert.ifError(installerSplit.error);
+    assert.equal(installerSplit.status, 1, installerSplit.stderr);
+    const installerSummary = await readSummary(installerResults);
+    assert.equal(installerSummary.exitCode, 1);
+    assert.deepEqual(
+      installerSummary.files.map(({ path, status }) => [path, status]),
+      installers.map(({ path }) => [path, path === installerFailure.path ? "failed" : "passed"]),
+    );
+    const installerOutcome = installerSummary.files.find(
+      ({ path }) => path === installerFailure.path,
+    );
+    assert.ok(installerOutcome);
+    assert.equal(installerOutcome.nodeExitCode, 1);
+    assert.deepEqual(installerOutcome.cleanup, { status: "passed" });
+    assert.deepEqual(
+      installerOutcome.tests.map(({ name, status, error }) => [name, status, error?.diagnostic]),
+      [
+        [
+          "sibling proof",
+          "failed",
+          { kind: "native-first-agent-proof", failureStage: "exec-proof" },
+        ],
+        [nativeCase, "failed", { kind: "native-first-agent-proof", failureStage: "model-outcome" }],
+        [parentCase, "failed", undefined],
+      ],
+    );
+    assert.deepEqual(commands(installerSplit.stderr), [
+      ...unknownOrdinalCommands,
+      `${splitHint} 2.`,
+      "::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage model-outcome.",
+    ]);
+
+    // The same real sibling remains first. Removing or corrupting the named
+    // case's normalized stage must suppress the hint, never select exec-proof.
+    for (const diagnostic of [
+      undefined,
+      {
+        kind: "native-first-agent-proof",
+        failureStage: "model-outcome\n::warning::private-stage-canary",
+      },
+    ]) {
+      assert.equal(
+        nativeProofFailureStage([
+          installerOutcome.tests[0]!,
+          { name: nativeCase, error: { diagnostic } },
+        ]),
+        undefined,
+      );
+    }
+
+    await writeFile(join(root, first), passingCase);
+    const greenSplit = await runRunnerAsync(
+      laneArgs(root, "openshell-policy", "state/split-green.jsonl", "results/split-green.json"),
+      splitEnv,
+    );
+    assert.ifError(greenSplit.error);
+    assert.equal(greenSplit.status, 0, greenSplit.stderr);
+    assert.deepEqual(commands(greenSplit.stderr), []);
   },
 );
 
@@ -306,4 +583,90 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
       ["todo case", "todo"],
     ],
   );
+});
+
+test("run keeps the enrollment operation pending when the parent is interrupted", async (t) => {
+  const root = await createRunnerFixture(t);
+  const helper = new URL("../helpers/keycloak-enrollment-wait.ts", import.meta.url);
+  const modes = ["body", "cleanup", "untracked", "passed", "rejected", "unavailable"] as const;
+  const files = modes.map((mode) => ({ path: `tests/integration/${mode}.test.mjs` }));
+  for (const [index, mode] of modes.entries()) {
+    const file = files[index];
+    assert.ok(file);
+    await writeFile(
+      join(root, file.path),
+      `
+        import assert from "node:assert/strict";
+        import test from "node:test";
+        import { setTimeout as delay } from "node:timers/promises";
+        import { writeFileSync } from "node:fs";
+        import { enrollmentWait } from ${JSON.stringify(helper.href)};
+        test("parent", { timeout: 100 }, async (parent) => {
+          const mode = ${JSON.stringify(mode)};
+          const wait = enrollmentWait(mode === "unavailable" ? {
+            signal: parent.signal, diagnostic() { throw new Error("fixture diagnostic unavailable"); },
+          } : parent)(2);
+          // Keep Node alive until the real parent timer fires. Settle after cancellation.
+          const untilAbort = () => new Promise(resolve => {
+            const timer = setTimeout(resolve, 2000);
+            parent.signal.addEventListener("abort", () => {
+              clearTimeout(timer);
+              resolve();
+            }, { once: true });
+          });
+          await parent.test("row", async (row) => {
+            row.after(() => wait("close-context", mode === "cleanup" ? untilAbort() : delay(1)));
+            await wait("open-page", (mode === "body" || mode === "unavailable") ? untilAbort() : Promise.resolve());
+            if (mode === "untracked") await untilAbort();
+            if (mode === "rejected") {
+              parent.diagnostic('openclaw-ci-measurement {"kind":"keycloak-enrollment-interrupted","row":2,"operation":"unlisted-input"}');
+              parent.diagnostic('openclaw-ci-measurement {"kind":"keycloak-enrollment-interrupted","row":-1,"operation":"open-page"}');
+              const original = new Error("synthetic fixture error");
+              await assert.rejects(wait("query-users", Promise.reject(original)), e => e === original);
+              throw original;
+            }
+            await wait("wait-for-callback", Promise.resolve());
+            if (mode === "body") writeFileSync("late-body-finished", "yes");
+          });
+        });
+      `,
+    );
+  }
+  await writeRunnerManifest(root, { lanes: { enrollment: { files } } });
+  const results = "results/enrollment.json";
+  const run = runRunnerSync(laneArgs(root, "enrollment", "state/enrollment.jsonl", results));
+  assert.ifError(run.error);
+  assert.equal(run.status, 1);
+  const summary = await readSummary(join(root, results));
+  assert.equal(summary.files.length, modes.length);
+  assert.equal(await readFile(join(root, "late-body-finished"), "utf8"), "yes");
+  for (const [index, mode] of modes.entries()) {
+    const file = summary.files[index];
+    assert.ok(file);
+    assert.equal(file.nodeExitCode, mode === "passed" ? 0 : 1);
+    assert.equal(file.tests.length, 2);
+    if (mode === "rejected") {
+      assert.equal(
+        file.tests.find(({ name }) => name === "row")?.error?.message,
+        "synthetic fixture error",
+      );
+    } else if (mode !== "passed") {
+      assert.match(
+        file.tests.find(({ name }) => name === "parent")?.error?.message ?? "",
+        /test timed out after 100ms/,
+      );
+    }
+    assert.deepEqual(
+      file.measurements ?? [],
+      mode === "body" || mode === "cleanup"
+        ? [
+            {
+              kind: "keycloak-enrollment-interrupted",
+              row: 2,
+              operation: mode === "body" ? "open-page" : "close-context",
+            },
+          ]
+        : [],
+    );
+  }
 });

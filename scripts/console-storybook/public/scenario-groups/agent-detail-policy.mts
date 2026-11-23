@@ -36,6 +36,10 @@ type PolicyState =
   | "readDenied"
   | "loading"
   | "noCredential"
+  | "repositoryLimits"
+  | "repositoryEditor"
+  | "repositoryEditorConcurrent"
+  | "repositoryRecovery"
   | "protected"
   | "withheldOne"
   | "withheldMany";
@@ -46,8 +50,8 @@ type AgentDetailPolicyScenario = {
   group: "Pages/Agent detail";
   name: string;
   path: string;
-  deployed: true;
-  candidateDeploymentStatus: "succeeded";
+  deployed: boolean;
+  candidateDeploymentStatus?: "succeeded";
   policyState: PolicyState;
   description: string;
   steps: string[];
@@ -76,6 +80,22 @@ export function createAgentDetailPolicyScenarios({
   const variants = [
     ["policyDenials", "ready", "Policy denials and reviewed network additions"],
     ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
+    ["policyRepositoryLimits", "repositoryLimits", "Inspect Namespace repository limits"],
+    [
+      "policyRepositoryRecovery",
+      "repositoryRecovery",
+      "Withdraw grants with an unreadable active revision",
+    ],
+    [
+      "policyRepositoryEditor",
+      "repositoryEditor",
+      "Save Agent repository access and narrow a grant",
+    ],
+    [
+      "policyRepositoryEditorConcurrent",
+      "repositoryEditorConcurrent",
+      "Reconcile concurrent repository grant changes",
+    ],
     ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
     ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
     [
@@ -110,8 +130,8 @@ export function createAgentDetailPolicyScenarios({
       "failedCeiling",
       "Policy application refused by a changed ceiling",
     ],
-    ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
-    ["policyDenialsApplyDenied", "applyDenied", "Policy saved but live application refused access"],
+    ["policyDenialsApplyRejected", "applyRejected", "Combined policy change rejected"],
+    ["policyDenialsApplyDenied", "applyDenied", "Combined policy change refused access"],
     ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
     [
       "policyUnconfirmedSave",
@@ -148,6 +168,8 @@ export function createAgentDetailPolicyScenarios({
       "Multiple policy records withheld since the last refresh",
     ],
   ] satisfies [id: string, state: PolicyState, name: string][];
+  const isRepositoryEditor = (state: PolicyState) =>
+    state === "repositoryEditor" || state === "repositoryEditorConcurrent";
   return variants.map(
     ([id, state, name]) =>
       [
@@ -155,9 +177,9 @@ export function createAgentDetailPolicyScenarios({
         {
           group: "Pages/Agent detail",
           name,
-          path: `${candidateVersion}&tab=policy`,
-          deployed: true,
-          candidateDeploymentStatus: "succeeded",
+          path: `${isRepositoryEditor(state) ? candidateVersion.replace(/([?&]revision=)[^&]+/, "$1draft") : candidateVersion}&tab=policy`,
+          deployed: !isRepositoryEditor(state),
+          ...(isRepositoryEditor(state) ? {} : { candidateDeploymentStatus: "succeeded" }),
           policyState: state,
           ...(["many", "populated"].includes(state)
             ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
@@ -236,11 +258,57 @@ export function createAgentDetailPolicyScenarios({
                 ],
               }
             : {}),
+          ...(state === "repositoryLimits"
+            ? {
+                policyCeiling: [],
+                description:
+                  "The Namespace delegates repository access. An earlier version was deployed without a repository policy.",
+                steps: [
+                  "Open View network limits. Check that example/application is read and example/tooling is write.",
+                  "Open Manage rules. Check the guidance to create a new Agent and verify that no repository save controls appear.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryEditor"
+            ? {
+                policyCeiling: [],
+                description:
+                  "An Agent can propose repository access within the Namespace limits before its first deployment.",
+                steps: [
+                  "Open Manage rules, select Read for example/application and Write for example/tooling, and save.",
+                  "Reopen Manage rules, change example/tooling to Read, and refresh. Check that Read is still selected, then save.",
+                  "Set example/application to No access and save. The story rejects the partial list. Check that the choice stays selected, then discard the repository changes.",
+                  "Reload the story from its initial state and choose Deny all repositories. Confirm the empty policy remains distinct from legacy access.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryEditorConcurrent"
+            ? {
+                policyCeiling: [],
+                steps: [
+                  "Open Manage rules. Set example/application to Read and example/tooling to Write, then save.",
+                  "Reopen Manage rules and change example/tooling to Read. Save and observe the simulated version conflict.",
+                  "Refresh policy. The current grants show example/tooling only. Discard repository changes to resume editing.",
+                  "Set example/tooling to Read and save. Check that example/application still has No access.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryRecovery"
+            ? {
+                steps: [
+                  "Check that the active policy is unavailable and the saved grants are readable.",
+                  "Open Manage rules and choose Withdraw saved repository grants.",
+                  "Check the compatible controller and Worker guidance, then save the deny-all policy.",
+                ],
+              }
+            : {}),
           ...(state === "protected"
             ? {
                 steps: [
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
-                  "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
+                  "Existing ordinary rules and repository grants were saved before protected execution applied. First choose Remove saved network rules, review the removal, and choose Save for later.",
+                  "Reopen Manage rules. Choose Withdraw saved repository grants and check the confirmation. Back to editing preserves the saved grant.",
+                  "Review again and choose Save deny-all policy. Confirm the saved policy denies all repositories and the feedback describes the saved change. Check that no live application or deployment is offered.",
                 ],
               }
             : {}),
@@ -257,7 +325,7 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 steps: [
                   "Review a suggestion, then choose Review changes and Save and apply to current revision.",
-                  "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+                  "Refresh the policy. The rejected change leaves the saved rules and version unchanged.",
                 ],
               }
             : {}),
@@ -273,7 +341,7 @@ export function createAgentDetailPolicyScenarios({
                 ],
                 steps: [
                   "Review a suggestion, then choose Review changes and Save and apply to current revision.",
-                  "The simulated apply answers 403, as when SandboxPolicy read is revoked while the page is open. Confirm the alert says the policy was saved but not applied, and names Agent manage_policy and SandboxPolicy update and read.",
+                  "The simulated apply answers 403, as when SandboxPolicy read is revoked while the page is open. Confirm the refusal names Agent manage_policy and SandboxPolicy update and read. Refresh and verify the saved version did not change.",
                 ],
               }
             : {}),
@@ -288,7 +356,7 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 steps: [
                   "Review a suggestion, then choose Review changes and Save and apply to current revision.",
-                  "The save response omits the rule. Confirm that live application was not requested, then choose Refresh policy to see the rule that was saved.",
+                  "The response omits the reviewed rule. Confirm the Console reads the policy again and shows the recorded outcome without sending another apply.",
                 ],
               }
             : {}),

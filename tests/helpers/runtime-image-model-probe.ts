@@ -5,7 +5,7 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import type { ExecFileOptions } from "node:child_process";
+import type { ExecFileOptions, ExecFileOptionsWithStringEncoding } from "node:child_process";
 import type { TestContext } from "node:test";
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
@@ -13,9 +13,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { changeSignal, followContainer } from "./docker-follow.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { gatewayMemoryArguments, runDockerCommand } from "./runtime-image-startup.mjs";
+import { runDockerCommand } from "./runtime-image-docker.ts";
+import { gatewayMemoryArguments } from "./runtime-image-memory.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
+import { createModelProbeCertificates } from "./runtime-model-probe-certificates.ts";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { jsonLines } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
@@ -59,7 +60,7 @@ export const constrainedGatewayCpuLimit = "0.5";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
 // Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
-export async function runDocker(args: string[], options: ExecFileOptions = {}) {
+export async function runDocker(args: string[], options: ExecFileOptionsWithStringEncoding = {}) {
   return runDockerCommand(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 4_000_000,

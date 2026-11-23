@@ -6,16 +6,20 @@
 import assert from "node:assert/strict";
 import { describe, test, type TestContext } from "node:test";
 import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
-import { imageTestOptions, runDocker, failureTail } from "../helpers/runtime-image-startup.mjs";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
+import { runDocker, failureTail } from "../helpers/runtime-image-docker.ts";
+import { imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
+  withStartupProbeEvidence,
+} from "../helpers/runtime-image-startup-probe.mjs";
+import {
   observedValue,
   isModelTurn,
   heldFailure,
   phaseAt,
-  withStartupProbeEvidence,
-} from "../helpers/runtime-image-startup-probe.mjs";
+  type StartupProbePhase,
+} from "../helpers/runtime-image-startup-probe-observation.ts";
 
 // Runtime wrapper termination. A Pod stop sends SIGTERM to the container's
 // PID 1, waits terminationGracePeriodSeconds (the Gateway's is 330 seconds),
@@ -27,10 +31,9 @@ import {
 // Gateway's 330 seconds: a wrapper that ignores SIGTERM never meets it.
 const promptTerminationMs = 15_000;
 
-type TerminationSnapshot = Pick<
-  ProbeSnapshot,
-  "events" | "phases" | "output" | "running" | "exitCode"
->;
+type TerminationSnapshot = Pick<ProbeSnapshot, "events" | "output" | "running" | "exitCode"> & {
+  phases: readonly StartupProbePhase[];
+};
 type TerminationScenario = {
   containerName: string;
   collect: () => Promise<TerminationSnapshot>;
@@ -125,7 +128,7 @@ async function assertWrapperTermination(
   });
   await withStartupProbeEvidence(probing, async () => {
     const { events, phases } = probing.snapshot;
-    const modelProbePhase: unknown = phaseAt(phases, "model-probe");
+    const modelProbePhase = phaseAt(phases, "model-probe");
     assert.equal(modelProbePhase, undefined, "a terminated probe has no outcome");
     assert.equal(events.filter(isModelTurn).length, 1, "termination starts no further attempt");
     assert.equal(events.some(observedValue("ready", true)), false);

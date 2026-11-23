@@ -45,12 +45,9 @@ import {
 } from "./console-fetch-accounting.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import {
-  NO_READABLE_NAMESPACES,
-  NAMESPACE_UNAVAILABLE,
-  WORKSPACE_FILES_UNAVAILABLE,
-  SIGN_IN_UNAVAILABLE,
-} from "../helpers/refusal-text.mjs";
+import { within } from "../helpers/wait-for.ts";
+import { WORKSPACE_FILES_UNAVAILABLE, SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { NO_READABLE_NAMESPACES, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 
 type App = ReturnType<typeof createFastifyApp>;
 type RouteHandler = Parameters<App["get"]>[1]["handler"];
@@ -699,7 +696,8 @@ test("console shows the external observability link only to Installation adminis
   // Installation-access answer, so the link checks below see the settled shell, not the loading
   // one. The Namespace permission answer says she does not administer the Installation, so she is
   // not probed: the API would audit the probe's 403 as a denial (finding D45).
-  await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
+  const emptyAgents = page.getByRole("heading", { name: /^No Agents/ });
+  assert.equal(await emptyAgents.textContent(), "No Agents to show");
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 1);
   // Navigation does not probe either.
@@ -710,12 +708,12 @@ test("console shows the external observability link only to Installation adminis
   );
   await page.getByRole("link", { name: "Agents" }).click();
   await namespacesRead;
-  await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
+  assert.equal(await emptyAgents.textContent(), "No Agents to show");
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 1);
   // Nor does a reload in the same tab.
   await page.reload();
-  await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
+  assert.equal(await emptyAgents.textContent(), "No Agents to show");
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 1);
 });
@@ -776,7 +774,7 @@ async function navigateDuringInstallationAccessProbe(
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.waitForURL(/\/console\/namespaces/);
   if (settleFirst) {
-    await navigationAsked.promise;
+    await within(navigationAsked.promise, "the held second permissions read");
     probe.release();
     // The Console keeps a settled answer for the tab in session storage.
     await page.waitForFunction(() => sessionStorage.getItem("occ.console.installationAccess"));

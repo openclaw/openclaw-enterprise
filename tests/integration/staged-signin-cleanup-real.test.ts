@@ -7,7 +7,8 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
+import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.ts";
+import { stagedCreateTimeout } from "../../scripts/ci/k3d-preparation-diagnostics.ts";
 import {
   assertLocalRehearsalDaemon,
   FixtureCommandError,
@@ -15,7 +16,7 @@ import {
   runFixtureCommand,
   type FixtureRun,
 } from "../helpers/production-rehearsal-custody.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 
 const execute = promisify(execFile);
 type Owned = {
@@ -233,7 +234,7 @@ async function fixture(
           [
             "--input-type=module",
             "-e",
-            'import {cleanupState} from "./scripts/ci/cleanup.mjs"; await cleanupState(process.argv[1], JSON.parse(process.argv[2]));',
+            'import {cleanupState} from "./scripts/ci/cleanup.ts"; await cleanupState(process.argv[1], JSON.parse(process.argv[2]));',
             statePath,
             JSON.stringify({
               expectedStateSha256: cleanupAuthority.stateSha256,
@@ -288,11 +289,19 @@ async function fixture(
     [
       "--input-type=module",
       "-e",
-      'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; console.log(JSON.stringify(await prepareStagingSigninCluster(process.argv[1])));',
+      'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.ts"; console.log(JSON.stringify(await prepareStagingSigninCluster(process.argv[1])));',
       statePath,
     ],
     { cwd: root, timeout: 4 * 60_000 },
-  );
+  ).catch(async (error: unknown) => {
+    if (error instanceof FixtureCommandError && error.settled && error.outcome.exitCode === 1) {
+      const hint = await stagedCreateTimeout(statePath);
+      if (hint) {
+        throw new Error(hint, { cause: error });
+      }
+    }
+    throw error;
+  });
   const resource = JSON.parse(prepared) as Record<string, unknown> & {
     name: string;
     nodeImage: string;
@@ -399,7 +408,7 @@ async function fixture(
       cleanupOutcome = "unknown";
       const result = await execute(
         process.execPath,
-        ["scripts/ci/cleanup-staged-signin.mjs", planHash, preparedHash],
+        ["scripts/ci/cleanup-staged-signin.ts", planHash, preparedHash],
         {
           cwd: root,
           env: process.env,

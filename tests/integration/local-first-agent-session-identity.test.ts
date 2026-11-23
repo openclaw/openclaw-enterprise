@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 import {
-  collectNativeWorkerFailure,
+  nativePlacementReadRetryable,
   nativeWorkerSessionPlacement,
-} from "../helpers/local-first-agent-native.mjs";
+} from "../helpers/local-first-agent-native-placement.ts";
+import { collectNativeWorkerFailure } from "../helpers/local-first-agent-native.mjs";
 
 // Exercise the same self-contained function after serialization into a controller.
 const placementFromDescription = runInNewContext(
@@ -13,6 +15,33 @@ const placementFromDescription = runInNewContext(
 ) as typeof nativeWorkerSessionPlacement;
 const session = { key: "agent:main:identity-proof", sessionId: "owned-session" };
 const ownedPlacement = { state: "active", environmentId: "owned-environment" };
+
+test("native model failure reports only the bounded Credential Proxy refusal", () => {
+  const project = (stage: string, audit: object) => {
+    const diagnostic = nativeFirstAgentProofDiagnostic(stage, {
+      credentialProxyAudit: "unsupported-operation",
+      credentialProxyRule: 6,
+      requestId: "private-fixture-request",
+      ...audit,
+    });
+    assert.ok(diagnostic && "worker" in diagnostic);
+    return diagnostic.worker;
+  };
+  assert.deepEqual(project("model-outcome", {}), {
+    credentialProxyAudit: "unsupported-operation",
+    credentialProxyRule: 6,
+  });
+  assert.deepEqual(project("model-outcome", { credentialProxyRule: "private-fixture" }), {
+    credentialProxyAudit: "unsupported-operation",
+  });
+  assert.deepEqual(project("model-outcome", { credentialProxyRule: 256 }), {
+    credentialProxyAudit: "unsupported-operation",
+  });
+  assert.deepEqual(project("model-outcome", { credentialProxyAudit: "ambiguous" }), {
+    credentialProxyAudit: "ambiguous",
+  });
+  assert.deepEqual(project("model-history", {}), {});
+});
 
 test("native placement capture rejects foreign or missing identity before reading placement", () => {
   for (const sessionId of ["foreign-session", undefined]) {
@@ -88,4 +117,47 @@ test("native placement capture preserves owned failure and later fresh diagnosti
       assert.equal(worker.terminalReason, "bundle-http-403");
     }
   }
+});
+
+test("the native placement failure receipt distinguishes Gateway queue and catalog errors", async () => {
+  const stage = "required-placement-describe-rejected";
+  const catalog = "Error: Session model catalog is unavailable; refresh and try again.";
+  const timeout = {
+    code: "UNAVAILABLE",
+    retryable: true,
+    details: { reason: "request-start-timeout", private: "private-fixture" },
+    message: "private-fixture",
+  };
+  const reportedReason = (worker: object): unknown => {
+    const diagnostic = nativeFirstAgentProofDiagnostic(stage, worker);
+    assert.ok(diagnostic && "worker" in diagnostic);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-fixture/);
+    return "placementReadFailure" in diagnostic.worker
+      ? diagnostic.worker.placementReadFailure
+      : undefined;
+  };
+  for (const [error, correlated, expected] of [
+    [timeout, true, "request-start-timeout"],
+    [{ code: "UNAVAILABLE", message: catalog }, true, "session-model-catalog-unavailable"],
+    [{ ...timeout, retryable: false }, true, "other"],
+    [{ ...timeout, details: { reason: "private-fixture" } }, true, "other"],
+    [{ code: "UNAVAILABLE", message: catalog + " private-fixture" }, true, "other"],
+    [{ ...timeout, code: "FORBIDDEN" }, true, undefined],
+    [timeout, false, undefined],
+  ] as const) {
+    assert.equal(nativePlacementReadRetryable(error, correlated), false);
+    const worker = await collectNativeWorkerFailure({
+      session: undefined,
+      lastPlacement: undefined,
+      expectedNodeId: undefined,
+      elapsedMs: 1,
+      runId: undefined,
+      outcome: undefined,
+      error,
+      placementReadResponse: correlated,
+      request: async () => ({ nodes: [] }),
+    });
+    assert.equal(reportedReason(worker), expected);
+  }
+  assert.equal(reportedReason({ placementReadFailure: "private-fixture" }), "other");
 });

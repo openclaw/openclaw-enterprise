@@ -1,6 +1,13 @@
 {
   "components": {
     "examples": {
+      "BAD_GATEWAY": {
+        "summary": "BAD_GATEWAY",
+        "value": {
+          "error": { "code": "BAD_GATEWAY", "message": "The Agent request was interrupted." },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "CHANNEL_DIRECTORY_RATE_LIMITED": {
         "summary": "CHANNEL_DIRECTORY_RATE_LIMITED",
         "value": {
@@ -28,6 +35,13 @@
             "code": "FORBIDDEN",
             "message": "The caller is not allowed to perform this operation."
           },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
+      "GATEWAY_TIMEOUT": {
+        "summary": "GATEWAY_TIMEOUT",
+        "value": {
+          "error": { "code": "GATEWAY_TIMEOUT", "message": "The runtime request timed out." },
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
@@ -121,6 +135,13 @@
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
+      "REQUEST_TIMEOUT": {
+        "summary": "REQUEST_TIMEOUT",
+        "value": {
+          "error": { "code": "REQUEST_TIMEOUT", "message": "The request body deadline expired." },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "RESOURCE_CONFLICT": {
         "summary": "RESOURCE_CONFLICT",
         "value": {
@@ -173,6 +194,156 @@
       }
     },
     "schemas": {
+      "PushAgentCredentialsBody": {
+        "additionalProperties": false,
+        "description": "Proposed manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
+        "properties": {
+          "sources": {
+            "anyOf": [
+              { "const": "all", "type": "string" },
+              {
+                "items": {
+                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ],
+            "description": "Select all eligible sources or name each source to retry. Eligible sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on the source."
+          }
+        },
+        "required": ["sources"],
+        "title": "PushAgentCredentialsBody",
+        "type": "object"
+      },
+      "PushAgentCredentialsResponse": {
+        "additionalProperties": false,
+        "description": "Proposed response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "results": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "outcome": {
+                      "anyOf": [
+                        {
+                          "const": "succeeded",
+                          "description": "The Credential Proxy completed the update notification according to its binding. A push confirms that every serving copy can use the resolved version. If no delivery resource exists, the proxy succeeds without resolving or creating one.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "resolution_failed",
+                          "description": "The proxy requested the credential, but its source-bound resolver failed.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "delivery_failed",
+                          "description": "The Credential Proxy could not complete the update notification, including when material required for a push had no resolved version.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "sourceId": {
+                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["sourceId", "outcome"],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["results"],
+            "type": "object"
+          },
+          "meta": {
+            "additionalProperties": false,
+            "properties": {
+              "requestId": {
+                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["requestId"],
+            "type": "object"
+          }
+        },
+        "required": ["data", "meta"],
+        "title": "PushAgentCredentialsResponse",
+        "type": "object"
+      },
+      "RegisterTokenServiceSourceBody": {
+        "additionalProperties": false,
+        "description": "Register a managed static Source. OCC allocates its identity and selects the TokenService owner.",
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+            "type": "string"
+          },
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
+            },
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
+          },
+          "type": { "const": "static", "type": "string" }
+        },
+        "required": ["name", "type", "secret"],
+        "title": "RegisterTokenServiceSourceBody",
+        "type": "object"
+      },
+      "UpdateTokenServiceSourceBody": {
+        "additionalProperties": false,
+        "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "minProperties": 1,
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
+            },
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
+          }
+        },
+        "title": "UpdateTokenServiceSourceBody",
+        "type": "object"
+      },
       "def-0": {
         "anyOf": [
           { "type": "string" },
@@ -745,12 +916,12 @@
               },
               "status": {
                 "additionalProperties": false,
-                "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
                   "refresh": {
                     "additionalProperties": false,
-                    "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
                     "properties": {
                       "expiresAt": { "format": "date-time", "type": "string" },
                       "failureCode": { "maxLength": 128, "type": "string" },
@@ -788,7 +959,7 @@
                 "type": "object"
               },
               "type": {
-                "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                 "maxLength": 64,
                 "minLength": 1,
                 "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -968,7 +1139,12 @@
         "additionalProperties": false,
         "properties": {
           "createdAt": { "type": "string" },
-          "current": { "$ref": "#/components/schemas/def-14" },
+          "current": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/def-14" },
+              { "$ref": "#/components/schemas/def-16" }
+            ]
+          },
           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
           "id": {
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -980,7 +1156,129 @@
           }
         },
         "required": ["displayName", "id", "current", "createdAt"],
-        "title": "OAuth connection template",
+        "title": "Connection template",
+        "type": "object"
+      },
+      "def-16": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": { "type": "string" },
+          "destinations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                "method": {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                  "type": "string"
+                },
+                "path": { "maxLength": 512, "minLength": 1, "pattern": "^/", "type": "string" },
+                "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+              },
+              "required": ["host", "port", "path", "method"],
+              "type": "object"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "type": "array"
+          },
+          "mode": { "const": "static_bearer", "type": "string" },
+          "templateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "version": { "minimum": 1, "type": "integer" }
+        },
+        "required": ["mode", "destinations", "templateId", "version", "createdAt"],
+        "title": "Static-key connection template version",
+        "type": "object"
+      },
+      "def-17": {
+        "additionalProperties": false,
+        "properties": {
+          "contextWindow": { "minimum": 1, "type": "integer" },
+          "cost": {
+            "additionalProperties": false,
+            "description": "Cost in USD per million tokens.",
+            "properties": {
+              "cacheRead": { "minimum": 0, "type": "number" },
+              "cacheWrite": { "minimum": 0, "type": "number" },
+              "input": { "minimum": 0, "type": "number" },
+              "output": { "minimum": 0, "type": "number" }
+            },
+            "required": ["input", "output", "cacheRead", "cacheWrite"],
+            "type": "object"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "type": "string"
+          },
+          "maxTokens": { "minimum": 1, "type": "integer" },
+          "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "title": "Model offered by this provider",
+        "type": "object"
+      },
+      "def-18": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
+            "maxLength": 2048,
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "connectionTemplateId": {
+            "description": "Installation-wide static-key Connection Template that approves the inference request.",
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "defaultModelId": {
+            "description": "Optional default from the models offered by this provider.",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "type": "string"
+          },
+          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+          "id": {
+            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "models": {
+            "description": "Models offered by this provider. Each model ID must be unique.",
+            "items": { "$ref": "#/components/schemas/def-17" },
+            "maxItems": 256,
+            "minItems": 1,
+            "type": "array"
+          },
+          "protocol": {
+            "anyOf": [
+              { "const": "openai-responses", "type": "string" },
+              { "const": "openai-completions", "type": "string" }
+            ]
+          },
+          "settingsFingerprint": {
+            "description": "Fingerprint of the saved settings, used for conditional updates.",
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "displayName",
+          "baseUrl",
+          "protocol",
+          "models",
+          "connectionTemplateId",
+          "settingsFingerprint"
+        ],
+        "title": "Model Provider",
         "type": "object"
       },
       "def-2": {
@@ -1658,6 +1956,373 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agents/{agentId}/chat": {
+      "post": {
+        "description": "Requires operate permission on the requested Agent.",
+        "operationId": "chatWithAgent",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "messages": [{ "content": "Reply with a short greeting.", "role": "user" }],
+                    "stream": false
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "messages": { "items": {}, "type": "array" },
+                  "model": { "const": "openclaw", "type": "string" },
+                  "stream": { "type": "boolean" },
+                  "user": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["messages"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "choices": [
+                        {
+                          "finish_reason": "stop",
+                          "index": 0,
+                          "message": { "content": "Hello.", "role": "assistant" }
+                        }
+                      ],
+                      "created": 1792411200,
+                      "id": "chatcmpl-example",
+                      "model": "openclaw:main",
+                      "object": "chat.completion"
+                    }
+                  }
+                },
+                "schema": {}
+              },
+              "text/event-stream": {
+                "examples": {
+                  "example": {
+                    "summary": "Native SSE completion",
+                    "value": "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello.\"},\"index\":0}]}\n\ndata: [DONE]\n\n"
+                  }
+                },
+                "schema": { "type": "string" }
+              }
+            },
+            "description": "Native Chat Completions JSON or SSE, without an OCC envelope."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/REQUEST_TIMEOUT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request body deadline expired."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/BAD_GATEWAY" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The Agent request was interrupted."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/GATEWAY_TIMEOUT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The runtime request timed out."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Native application error",
+                    "value": {
+                      "error": {
+                        "message": "Invalid completion request.",
+                        "type": "invalid_request_error"
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": { "error": {} },
+                  "required": ["error"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Native application error; status and body pass through unchanged."
+          }
+        },
+        "summary": "Submit an Agent turn and receive native JSON or SSE",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/api/auth/accounts": {
       "post": {
         "description": "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
@@ -2240,7 +2905,7 @@
     },
     "/api/auth/accounts/{userId}": {
       "get": {
-        "description": "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+        "description": "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
         "operationId": "getAuthAccount",
         "parameters": [
           {
@@ -8174,7 +8839,7 @@
     },
     "/api/auth/recovery": {
       "get": {
-        "description": "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+        "description": "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
         "operationId": "getAuthRecovery",
         "responses": {
           "200": {
@@ -11164,7 +11829,7 @@
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
-                            "version": 1
+                            "version": 2
                           },
                           "displayName": "Example account",
                           "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -11280,7 +11945,6 @@
                     "issuer": "https://accounts.example.com",
                     "mode": "manual",
                     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                    "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                     "scopes": ["profile.read"],
                     "tokenUrl": "https://accounts.example.com/token"
                   }
@@ -11288,6 +11952,45 @@
               },
               "schema": {
                 "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "method": {
+                              "maxLength": 16,
+                              "minLength": 1,
+                              "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                              "type": "string"
+                            },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host", "port", "path", "method"],
+                          "type": "object"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "mode": { "const": "static_bearer", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["displayName", "mode", "destinations"],
+                    "type": "object"
+                  },
                   {
                     "additionalProperties": false,
                     "properties": {
@@ -11436,7 +12139,6 @@
                           ],
                           "issuer": "https://accounts.example.com",
                           "mode": "manual",
-                          "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
@@ -11955,7 +12657,7 @@
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
-                          "version": 1
+                          "version": 2
                         },
                         "displayName": "Example account",
                         "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -12089,6 +12791,41 @@
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" }
                     },
                     "required": ["displayName"],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "method": {
+                              "maxLength": 16,
+                              "minLength": 1,
+                              "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                              "type": "string"
+                            },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host", "port", "path", "method"],
+                          "type": "object"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "mode": { "const": "static_bearer", "type": "string" }
+                    },
+                    "required": ["mode", "destinations"],
                     "type": "object"
                   },
                   {
@@ -12234,7 +12971,7 @@
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
-                          "version": 1
+                          "version": 2
                         },
                         "displayName": "Engineering account",
                         "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -12354,7 +13091,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Rename a connection template, or create a version with new approved values",
+        "summary": "Rename a connection template or create a version with updated settings",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -12475,7 +13212,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -12581,8 +13318,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -12656,11 +13395,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -12904,7 +13638,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13010,8 +13744,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -13085,11 +13821,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -13654,6 +14385,692 @@
           }
         },
         "summary": "Inspect selected Driver accepted startup values and configuration schemas",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/model-providers": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listModelProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "defaultModelId": "research-model",
+                          "displayName": "Research inference",
+                          "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                          "models": [{ "id": "research-model" }],
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "items": { "$ref": "#/components/schemas/def-18" }, "type": "array" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List Installation model providers",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "createModelProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "baseUrl": "https://inference.example.com/v1",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                    "defaultModelId": "research-model",
+                    "displayName": "Research inference",
+                    "models": [{ "id": "research-model" }],
+                    "protocol": "openai-responses"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": {
+                    "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "connectionTemplateId": {
+                    "description": "Installation-wide static-key Connection Template that approves the inference request.",
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "defaultModelId": {
+                    "description": "Optional default from the models offered by this provider.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                    "type": "string"
+                  },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "models": {
+                    "description": "Models offered by this provider. Each model ID must be unique.",
+                    "items": { "$ref": "#/components/schemas/def-17" },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "baseUrl",
+                  "protocol",
+                  "models",
+                  "connectionTemplateId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/def-18" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Create an Installation model provider",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/model-providers/{modelProviderId}": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "getModelProvider",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "modelProviderId",
+            "required": true,
+            "schema": {
+              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/def-18" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Read a model provider",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "put": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "updateModelProvider",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "modelProviderId",
+            "required": true,
+            "schema": {
+              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "baseUrl": "https://inference.example.com/v1",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                    "defaultModelId": "research-model",
+                    "displayName": "Research inference",
+                    "expectedSettingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "models": [{ "id": "research-model" }],
+                    "protocol": "openai-responses"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": {
+                    "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "connectionTemplateId": {
+                    "description": "Installation-wide static-key Connection Template that approves the inference request.",
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "defaultModelId": {
+                    "description": "Optional default from the models offered by this provider.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                    "type": "string"
+                  },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "expectedSettingsFingerprint": {
+                    "description": "Fingerprint of the saved settings, used for conditional updates.",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  "models": {
+                    "description": "Models offered by this provider. Each model ID must be unique.",
+                    "items": { "$ref": "#/components/schemas/def-17" },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "baseUrl",
+                  "protocol",
+                  "models",
+                  "connectionTemplateId",
+                  "expectedSettingsFingerprint"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/def-18" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Replace model provider settings if the saved fingerprint matches",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -14479,7 +15896,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -14585,8 +16002,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -14660,11 +16079,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -14854,7 +16268,7 @@
                                 "type": "string"
                               },
                               "credentialSources": {
-                                "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -14993,6 +16407,10 @@
                               },
                               "id": {
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
                               "name": {
@@ -15169,6 +16587,10 @@
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "name": {
                                 "maxLength": 200,
                                 "minLength": 1,
@@ -15323,17 +16745,10 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                    "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
                     "executionMode": "dedicated",
-                    "harnessAuth": {
-                      "method": "api_key",
-                      "source": {
-                        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                        "kind": "secret",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                      }
-                    },
-                    "name": "Documentation assistant"
+                    "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                    "name": "Research assistant"
                   }
                 }
               },
@@ -15356,7 +16771,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -15510,6 +16925,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -15602,7 +17021,7 @@
                     "value": {
                       "data": {
                         "backendId": null,
-                        "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                        "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "desiredRuntimeState": "stopped",
                         "executionMode": "dedicated",
@@ -15615,10 +17034,11 @@
                             "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                           }
                         },
-                        "id": "agt_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Documentation assistant",
+                        "id": "agt_223e4567-e89b-42d3-a456-426614174000",
+                        "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "name": "Research assistant",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "servicePrincipalId": "principal-docs-agent",
+                        "servicePrincipalId": "principal-research-agent",
                         "status": "active"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -15656,7 +17076,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -15792,6 +17212,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -16036,7 +17460,7 @@
     },
     "/namespaces/{namespaceId}/agents/device-authorizations": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16085,8 +17509,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -16111,19 +17534,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -16280,13 +17702,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16308,11 +17730,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16400,14 +17822,13 @@
         "summary": "Experimental: Discard a local device login without upstream revocation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16429,11 +17850,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16462,8 +17883,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -16488,19 +17908,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -16657,7 +18076,7 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -17926,6 +19345,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -18931,7 +20354,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -19327,6 +20750,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "description": "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
                     "maxLength": 200,
@@ -19545,7 +20972,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -19681,6 +21108,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -19978,7 +21409,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -20117,6 +21548,10 @@
                             },
                             "id": {
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "name": {
@@ -20291,6 +21726,10 @@
                             },
                             "id": {
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "name": {
@@ -20476,7 +21915,8 @@
                 "additionalProperties": false,
                 "anyOf": [
                   { "required": ["configurationId"] },
-                  { "required": ["gatewayManagedMode"] }
+                  { "required": ["gatewayManagedMode"] },
+                  { "required": ["modelProviderId"] }
                 ],
                 "properties": {
                   "backendId": {
@@ -20495,7 +21935,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -20614,6 +22054,15 @@
                             "type": "object"
                           }
                         ]
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "modelProviderId": {
+                    "anyOf": [
+                      {
+                        "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
                       },
                       { "type": "null" }
                     ]
@@ -20811,7 +22260,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -20947,6 +22396,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -21192,6 +22645,297 @@
             "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
+      "get": {
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.",
+        "operationId": "listAgentAuditEvents",
+        "parameters": [
+          {
+            "description": "Number of records per page, from 1 to 100. The default is 50.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "20"
+              }
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": { "pattern": "^(?:[1-9][0-9]?|100)$", "type": "string" }
+          },
+          {
+            "description": "Continuation from the preceding page for the same Agent and session.",
+            "examples": {
+              "example": {
+                "summary": "Illustrative only: copy an actual cursor from the previous response.",
+                "value": "YXVkaXQtbmV4dC1wYWdl"
+              }
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "events": [
+                          {
+                            "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+                            "event": "api_request",
+                            "id": "aud_123e4567-e89b-42d3-a456-426614174000",
+                            "occurredAt": "2026-10-01T11:30:00.000000Z",
+                            "operationId": "getAgent",
+                            "outcome": "success",
+                            "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                          }
+                        ],
+                        "nextCursor": null,
+                        "projectionVersion": 1,
+                        "window": {
+                          "end": "2026-10-01T12:00:00.000Z",
+                          "start": "2026-09-30T12:00:00.000Z"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actorId": {
+                                "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                "type": "string"
+                              },
+                              "attemptId": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "event": {
+                                "anyOf": [
+                                  { "const": "api_request", "type": "string" },
+                                  { "const": "work_queued", "type": "string" },
+                                  { "const": "work_claimed", "type": "string" },
+                                  { "const": "work_deferred", "type": "string" },
+                                  { "const": "work_completed", "type": "string" },
+                                  { "const": "work_result", "type": "string" }
+                                ]
+                              },
+                              "id": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "occurredAt": {
+                                "format": "date-time",
+                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                "type": "string"
+                              },
+                              "operationId": { "const": "getAgent", "type": "string" },
+                              "outcome": {
+                                "anyOf": [
+                                  { "const": "success", "type": "string" },
+                                  { "const": "denied", "type": "string" },
+                                  { "const": "failure", "type": "string" }
+                                ]
+                              },
+                              "requestId": {
+                                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "workId": { "pattern": "^work_[0-9a-f]{64}$", "type": "string" },
+                              "workState": {
+                                "anyOf": [
+                                  { "const": "queued", "type": "string" },
+                                  { "const": "claimed", "type": "string" },
+                                  { "const": "succeeded", "type": "string" },
+                                  { "const": "failed_permanent", "type": "string" },
+                                  { "const": "superseded", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["id", "occurredAt", "event", "outcome"],
+                            "type": "object"
+                          },
+                          "maxItems": 100,
+                          "type": "array"
+                        },
+                        "nextCursor": {
+                          "anyOf": [
+                            {
+                              "description": "Continuation from the preceding page for the same Agent and session.",
+                              "maxLength": 1024,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "type": "string"
+                            },
+                            { "type": "null" }
+                          ]
+                        },
+                        "projectionVersion": { "const": 1, "type": "number" },
+                        "window": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "end": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "start": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["start", "end"],
+                          "type": "object"
+                        }
+                      },
+                      "required": ["projectionVersion", "window", "events", "nextCursor"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "List audit metadata for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read_audit", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
@@ -21640,7 +23384,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -21841,7 +23585,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -21875,6 +23619,10 @@
                                 { "const": "embedded", "type": "string" },
                                 { "const": "dedicated", "type": "string" }
                               ]
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             },
                             "overrides": {
                               "additionalProperties": {},
@@ -22246,7 +23994,19 @@
           },
           {
             "action": "read",
-            "condition": "saved_sandbox_policy_additions",
+            "condition": "saved_sandbox_policy_for_deployment",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          },
+          {
+            "action": "manage_policy",
+            "condition": "explicit_repository_network_policy",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "explicit_repository_network_policy",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
@@ -22255,7 +24015,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy-first": {
       "post": {
-        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgentFirst",
         "parameters": [
           {
@@ -22543,7 +24303,21 @@
           },
           {
             "action": "read",
-            "condition": "saved_sandbox_policy_additions",
+            "condition": "saved_sandbox_policy_for_deployment",
+            "phase": "fresh_admission",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          },
+          {
+            "action": "manage_policy",
+            "condition": "explicit_repository_network_policy",
+            "phase": "fresh_admission",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "explicit_repository_network_policy",
             "phase": "fresh_admission",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
@@ -22912,7 +24686,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete."
+                          "description": "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read."
                         },
                         "deploymentId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -24925,7 +26699,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -24989,8 +26763,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -25015,19 +26788,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -25185,13 +26957,13 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -25228,11 +27000,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -25321,14 +27093,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
-          { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -25365,11 +27136,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -25398,8 +27169,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -25424,19 +27194,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -25594,7 +27363,7 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -27435,7 +29204,12 @@
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
                         "policyScopeByPlugin": {
-                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "additionalProperties": {
+                            "anyOf": [
+                              { "const": "enablement_only", "type": "string" },
+                              { "const": "tool_human_approval", "type": "string" }
+                            ]
+                          },
                           "type": "object"
                         },
                         "toolDefaults": {
@@ -28487,7 +30261,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -28767,6 +30541,10 @@
                                   { "const": "embedded", "type": "string" },
                                   { "const": "dedicated", "type": "string" }
                                 ]
+                              },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
                               },
                               "overrides": {
                                 "additionalProperties": {},
@@ -29095,7 +30873,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -29129,6 +30907,10 @@
                                     { "const": "embedded", "type": "string" },
                                     { "const": "dedicated", "type": "string" }
                                   ]
+                                },
+                                "modelProviderId": {
+                                  "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
                                 },
                                 "overrides": {
                                   "additionalProperties": {},
@@ -30363,7 +32145,9 @@
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
-                        "protectedExecution": false
+                        "protectedExecution": false,
+                        "repositoryNetworkPolicyCeiling": [],
+                        "repositoryNetworkPolicySaveSupported": false
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -30716,17 +32500,69 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "repositoryNetworkPolicy": {
+                              "description": "Saved repository grants. An empty array denies all repositories.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
+                                  "repository": {
+                                    "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                    "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                    "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["repository", "access"],
+                                "type": "object"
+                              },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
                             "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                           },
                           "required": ["id", "namespaceId", "agentId", "version", "additions"],
                           "type": "object"
                         },
                         "protectedExecution": {
-                          "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+                          "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+                          "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
+                        },
+                        "repositoryNetworkPolicyCeiling": {
+                          "description": "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "repositoryNetworkPolicySaveSupported": {
+                          "description": "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
-                          "description": "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+                          "description": "Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list.",
                           "type": "string"
                         }
                       },
@@ -30735,6 +32571,8 @@
                         "editingEnabled",
                         "protectedExecution",
                         "ceiling",
+                        "repositoryNetworkPolicyCeiling",
+                        "repositoryNetworkPolicySaveSupported",
                         "defaults",
                         "capability"
                       ],
@@ -30955,7 +32793,31 @@
                     "title": "Network rules",
                     "type": "array"
                   },
-                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                  "repositoryNetworkPolicy": {
+                    "description": "Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "repository": {
+                          "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                          "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["repository", "access"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
                 },
                 "required": ["expectedVersion", "additions"],
                 "type": "object"
@@ -31113,6 +32975,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
@@ -31300,7 +33186,66 @@
               },
               "schema": {
                 "additionalProperties": false,
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
                 "properties": {
+                  "additions": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "binary": {
+                          "description": "Absolute path of the executable receiving access.",
+                          "maxLength": 512,
+                          "minLength": 2,
+                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "title": "Executable path",
+                          "type": "string"
+                        },
+                        "host": {
+                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "title": "Destination hostname",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                          "title": "Rule ID",
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "Start port",
+                                "type": "integer"
+                              },
+                              "to": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "End port",
+                                "type": "integer"
+                              }
+                            },
+                            "required": ["from", "to"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "title": "Port ranges",
+                          "type": "array"
+                        }
+                      },
+                      "required": ["id", "binary", "host", "ports"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "title": "Network rules",
+                    "type": "array"
+                  },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "revisionId": {
                     "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -31312,6 +33257,7 @@
               }
             }
           },
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
           "required": true
         },
         "responses": {
@@ -31472,6 +33418,30 @@
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
                       "required": ["id", "namespaceId", "agentId", "version", "additions"],
@@ -31582,7 +33552,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Apply the saved policy to the running Agent revision",
+        "summary": "Queue policy application to the running Agent revision, optionally replacing saved additions",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
@@ -31725,7 +33695,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -31861,6 +33831,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -32081,7 +34055,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
         "operationId": "validateAgentSandboxPolicy",
         "parameters": [
           {
@@ -32338,7 +34312,8 @@
         "summary": "Preview Agent network policy admission without saving or applying",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" }
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
@@ -32347,6 +34322,21 @@
         "description": "Requires operate permission on the requested Agent.",
         "operationId": "stopAgent",
         "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "rev_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "query",
+            "name": "expectedActiveRevisionId",
+            "required": false,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
           {
             "examples": {
               "example": {
@@ -32442,7 +34432,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -32578,6 +34568,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -33606,8 +35600,10 @@
                     "values": {
                       "agents": {
                         "defaults": {
-                          "model": "codex/gpt-5.1-codex",
-                          "models": { "codex/gpt-5.1-codex": { "agentRuntime": { "id": "codex" } } }
+                          "model": "codex/research-model",
+                          "models": {
+                            "codex/research-model": { "agentRuntime": { "id": "codex" } }
+                          }
                         }
                       },
                       "gateway": {
@@ -33628,7 +35624,7 @@
                           "codex": {
                             "api": "openai-responses",
                             "baseUrl": "http://127.0.0.1:9",
-                            "models": [{ "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" }]
+                            "models": [{ "id": "research-model", "name": "research-model" }]
                           }
                         }
                       },
@@ -33720,15 +35716,15 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "generation": 1,
-                        "id": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                        "id": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "kind": "agent",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "values": {
                           "agents": {
                             "defaults": {
-                              "model": "codex/gpt-5.1-codex",
+                              "model": "codex/research-model",
                               "models": {
-                                "codex/gpt-5.1-codex": { "agentRuntime": { "id": "codex" } }
+                                "codex/research-model": { "agentRuntime": { "id": "codex" } }
                               }
                             }
                           },
@@ -33750,7 +35746,7 @@
                               "codex": {
                                 "api": "openai-responses",
                                 "baseUrl": "http://127.0.0.1:9",
-                                "models": [{ "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" }]
+                                "models": [{ "id": "research-model", "name": "research-model" }]
                               }
                             }
                           },
@@ -34822,7 +36818,7 @@
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
-                            "version": 1
+                            "version": 2
                           },
                           "displayName": "Example account",
                           "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -34913,7 +36909,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List connection templates the caller may connect in this Namespace",
+        "summary": "List connection templates available in this Namespace",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
@@ -34960,7 +36956,7 @@
                         {
                           "clientId": "example-client",
                           "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                          "connectionTemplateVersion": 1,
+                          "connectionTemplateVersion": 2,
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "destinations": [
@@ -35616,12 +37612,12 @@
                           },
                           "status": {
                             "additionalProperties": false,
-                            "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
                               "refresh": {
                                 "additionalProperties": false,
-                                "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
                                 "properties": {
                                   "expiresAt": { "format": "date-time", "type": "string" },
                                   "failureCode": { "maxLength": 128, "type": "string" },
@@ -35659,7 +37655,7 @@
                             "type": "object"
                           },
                           "type": {
-                            "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                             "maxLength": 64,
                             "minLength": 1,
                             "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -35805,52 +37801,61 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "config": {
-                    "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                    "description": "Non-secret source configuration keyed by catalog field name.",
-                    "maxProperties": 32,
-                    "type": "object"
-                  },
-                  "name": {
-                    "maxLength": 200,
-                    "minLength": 1,
-                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                    "type": "string"
-                  },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "config": {
+                        "additionalProperties": {
+                          "maxLength": 2048,
+                          "minLength": 1,
                           "type": "string"
                         },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
+                        "description": "Non-secret source configuration keyed by catalog field name.",
+                        "maxProperties": 32,
+                        "type": "object"
                       },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                        "type": "string"
+                      },
+                      "secrets": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+                        "maxProperties": 16,
+                        "type": "object"
+                      },
+                      "type": {
+                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                        "type": "string"
+                      }
                     },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
+                    "required": ["name", "type"],
                     "type": "object"
                   },
-                  "type": {
-                    "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                    "type": "string"
-                  }
-                },
-                "required": ["name", "type"],
-                "type": "object"
+                  { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" }
+                ]
               }
             }
           },
@@ -35968,6 +37973,15 @@
             },
             "description": "The platform request could not be completed."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
           "503": {
             "content": {
               "application/json": {
@@ -35980,7 +37994,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a credential source with the selected Credential Gateway",
+        "summary": "Register a credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
@@ -36103,7 +38117,7 @@
             }
           }
         },
-        "summary": "Remove an unreferenced credential source from the Credential Gateway",
+        "summary": "Remove an unreferenced credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "delete", "resourceKind": "credential_source", "scope": "requested" }
@@ -36239,14 +38253,14 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Get one credential source and its live Credential Gateway status",
+        "summary": "Get one readable credential source and its available status",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "credential_source", "scope": "requested" }
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested CredentialSource. Requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
+        "description": "Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
         "operationId": "updateCredentialSource",
         "parameters": [
           {
@@ -36299,47 +38313,51 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
-                "properties": {
-                  "adoption": {
-                    "const": "live",
-                    "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-                    "type": "string"
-                  },
-                  "authorityScope": {
-                    "const": "execution",
-                    "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-                    "type": "string"
-                  },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+                    "properties": {
+                      "adoption": {
+                        "const": "live",
+                        "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+                        "type": "string"
                       },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
+                      "authorityScope": {
+                        "const": "execution",
+                        "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+                        "type": "string"
+                      },
+                      "secrets": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+                        "maxProperties": 16,
+                        "type": "object"
+                      }
                     },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
                     "type": "object"
-                  }
-                },
-                "type": "object"
+                  },
+                  { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
+                ]
               }
             }
           },
-          "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {
@@ -36466,7 +38484,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Push current or replacement Secret values to the Credential Gateway copy",
+        "summary": "Update a Source through its recorded owner",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" },
@@ -37543,7 +39561,8 @@
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
-                                    { "const": "manage_policy", "type": "string" }
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "read_audit", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -37712,7 +39731,8 @@
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
-                            { "const": "manage_policy", "type": "string" }
+                            { "const": "manage_policy", "type": "string" },
+                            { "const": "read_audit", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -37793,7 +39813,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -38124,7 +40145,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -38705,6 +40727,145 @@
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/model-providers": {
+      "get": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "listUsableModelProviders",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "defaultModelId": "research-model",
+                          "displayName": "Research inference",
+                          "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                          "models": [{ "id": "research-model" }],
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "items": { "$ref": "#/components/schemas/def-18" }, "type": "array" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List the model providers available when creating an Agent",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },
@@ -42909,6 +45070,7 @@
                           "displayName": "Example provider client",
                           "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "issuer": "https://accounts.example.com",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "tokenEndpointAuthMethod": "client_secret_basic",
                           "tokenUrl": "https://accounts.example.com/token"
                         }
@@ -43124,6 +45286,7 @@
                         "displayName": "Example provider client",
                         "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                         "issuer": "https://accounts.example.com",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "tokenEndpointAuthMethod": "client_secret_basic",
                         "tokenUrl": "https://accounts.example.com/token"
                       },
@@ -43452,6 +45615,7 @@
                         "displayName": "Example provider client",
                         "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                         "issuer": "https://accounts.example.com",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "tokenEndpointAuthMethod": "client_secret_basic",
                         "tokenUrl": "https://accounts.example.com/token"
                       },

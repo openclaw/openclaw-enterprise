@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import pg from "pg";
 import { AuditEventFactory } from "../../packages/audit/src/index.ts";
@@ -19,15 +18,16 @@ import {
   type InjectedResponse,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { accountProvisioning } from "./postgres-auth-account-provisioning-cases.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
-import { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
+import { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
@@ -37,7 +37,7 @@ type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
 
 async function injectJson(
   app: App,
-  method: string,
+  method: Parameters<typeof injectJsonRequest>[1],
   url: string,
   options: Parameters<typeof injectJsonRequest>[3] = {},
 ): Promise<InjectedResponse> {
@@ -117,7 +117,7 @@ function installationPrincipal(state: NativeIAMState) {
 }
 
 test(
-  "fresh PostgreSQL development bootstrap writes a usable administrator service key",
+  "fresh PostgreSQL development bootstrap registers the supplied administrator service key",
   requiresPostgres,
   async (context) => {
     assert.ok(databaseUrl, "PostgreSQL test database URL is required");
@@ -143,7 +143,6 @@ test(
       return;
     }
 
-    const bootstrapServiceKeyFile = join(outputDirectory, "initial-admin-service-key.json");
     const config = {
       mode: "development",
       host: "127.0.0.1",
@@ -151,7 +150,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     let rejectedStartup = false;
     try {
       app = await composePostgresDevelopment(config, {
@@ -182,7 +181,7 @@ test(
       sessions: 0,
       api_keys: 0,
     });
-    await ensureDevelopmentBootstrap(context, {
+    const bootstrap = await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       directory: outputDirectory,
       email: adminEmail,
@@ -190,7 +189,6 @@ test(
       authSecret: config.authSecret,
       authBaseURL: config.authBaseURL,
       installationName: "PostgreSQL development bootstrap service key",
-      serviceKeyFile: "initial-admin-service-key.json",
     });
     app = await composePostgresDevelopment(config, {
       computeDriver: createDevelopmentComputeDriver(),
@@ -224,17 +222,19 @@ test(
     assert.equal(serviceBinding.namespaceId, undefined);
     assert.equal(serviceBinding.resourceKind, undefined);
 
-    const output = record(parseJson(await readPrivateBootstrapOutput(bootstrapServiceKeyFile)));
-    const outputMeta = record(output.meta);
-    const outputData = record(output.data);
-    const outputId = text(outputData.id);
-    const outputKey = text(outputData.key);
-    assert.ok(outputMeta.installationId === installation.id, "bootstrap Installation must match");
-    assert.ok(
-      outputData.servicePrincipalId === servicePrincipal.id,
-      "bootstrap Principal must match",
+    const confirmed = bootstrap.result.stdout
+      .trim()
+      .split("\n")
+      .map((line: string) => record(parseJson(line)))
+      .find((event: Record<string, unknown>) => event.event === "installation.bootstrapped");
+    assert.ok(confirmed);
+    const outputId = text(confirmed.serviceKeyId);
+    const outputKey = await readFile(
+      bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+      "utf8",
     );
-    assert.ok(outputData.name === "bootstrap-admin", "bootstrap key name must match");
+    assert.equal(confirmed.installationId, installation.id);
+    assert.equal(confirmed.servicePrincipalId, servicePrincipal.id);
     assert.ok(
       outputKey.startsWith("occ_") && outputKey.length > "occ_".length && !/[^!-~]/.test(outputKey),
       "invalid bootstrap service-key format",
@@ -319,7 +319,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: adminEmail,
@@ -414,7 +414,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: adminEmail,
@@ -475,14 +475,40 @@ test(
       return rows;
     }
 
-    // The request's three earlier read transactions commit first. Drop the reply to
-    // the provisioning COMMIT, after PostgreSQL has committed the account, Principal,
-    // binding and audit.
-    proxy.arm({ skipCommits: 3 });
-    const unknown = await injectJson(faulted, "POST", "/api/auth/accounts", {
-      session,
-      body: payload,
-    });
+    // Wait for the real provisioning INSERT before arming the fault. Admission and
+    // Role-validation reads may use a different number of transactions.
+    const blocker = await observerPool.connect();
+    let creation: ReturnType<typeof injectJson> | undefined;
+    let unknown: InjectedResponse;
+    try {
+      await blocker.query("BEGIN");
+      const blockerPid = (await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+        .rows[0]?.pid;
+      assert.ok(blockerPid);
+      await blocker.query('LOCK TABLE occ."user" IN SHARE MODE');
+      creation = injectJson(faulted, "POST", "/api/auth/accounts", {
+        session,
+        body: payload,
+      });
+      await waitFor("the account provisioning INSERT to wait on its blocker", async () => {
+        const { rows } = await observerPool.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=current_user
+           AND state='active' AND wait_event_type='Lock' AND position(lower($1) in lower(query))>0
+           AND $2::int=ANY(pg_blocking_pids(pid))`,
+          ['INSERT INTO occ."user"', blockerPid],
+        );
+        return rows[0]?.pid;
+      });
+      // Drop the real provisioning COMMIT reply only after the account writer has
+      // reached its transaction. PostgreSQL still commits all account records.
+      proxy.arm();
+      await blocker.query("COMMIT");
+      unknown = await creation;
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled([creation]);
+    }
     assert.equal(proxy.observedCommit, true);
     assertApiError(unknown, 503, "DEPENDENCY_UNAVAILABLE");
     assert.ok(/outcome is unknown/i.test(text(record(record(unknown.json()).error).message)));
@@ -541,7 +567,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: adminEmail,

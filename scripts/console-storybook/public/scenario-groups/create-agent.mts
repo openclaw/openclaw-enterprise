@@ -21,6 +21,7 @@ import {
 import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
+  OpenClawConfigurationDocument,
   CredentialSourceType,
   InstallationCapabilities,
   NamespaceStatus,
@@ -40,7 +41,8 @@ type CreateAgentScenario = {
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
-  credentialRegistrationOutcome?: "invalid-config" | "ready" | "different-source" | "deleting";
+  credentialRegistrationOutcome?:
+    "invalid-config" | "refused" | "ready" | "different-source" | "deleting";
   extraSecrets?: readonly { id: string; name: string }[];
   namespaceStatus?: NamespaceStatus;
   namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
@@ -63,7 +65,6 @@ type CreateAgentScenario = {
     "at"
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
-  repositoryAccessRequired?: true;
   repositoryOptions?: readonly RepositoryOption[];
   secretOperateDenied?: readonly string[];
   denySecretCreate?: true;
@@ -86,6 +87,7 @@ type CreateAgentScenario = {
   secretCreateNotPermitted?: true;
   standardCodexPreset?: true;
   standardOpenclawPreset?: true;
+  nativePluginSettings?: OpenClawConfigurationDocument;
   unsupportedProvisioning?: true;
   presetTrustedProxyVariable?: true;
   presetModelKeyVariable?: true;
@@ -115,6 +117,16 @@ const passwordPresetForm: StoryAction[] = [
   { selector: "#preset-variable-model", value: "gpt-5.1" },
   { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
   click("Use Preset"),
+];
+const nativePluginForm: StoryAction[] = [
+  ...passwordPresetForm,
+  { selector: ".launch-advanced summary", click: true },
+];
+const nativePlugins = {
+  entries: { knowledge: { enabled: true, config: { collection: "team-notes" } } },
+};
+const nativePluginSteps = [
+  "Inspect Configuration JSON, select Codex, then OpenClaw. Allow and deny lists stay unchanged; only Codex runtime wiring changes.",
 ];
 
 const existingPresetSecret: StoryAction[] = [
@@ -236,6 +248,45 @@ const createProvisioningSecrets: StoryAction[] = [
   click("Apply channel settings"),
 ];
 
+function ordinarySaveRefused(permission: "Secret operate" | "Configuration read") {
+  const needsModelSecret = permission === "Secret operate";
+  // The preview allocates its first new Configuration at serial 100.
+  const target = needsModelSecret
+    ? "Secret sec_demo_model"
+    : "Configuration cfg_00000000-0000-4000-8000-000000000100";
+  return {
+    group: "Pages/Create Agent",
+    name: needsModelSecret
+      ? "Agent save refused after saving a Configuration"
+      : "Configuration read denied after saving",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message: `Not authorized: this needs ${permission} on ${target}. Ask an Installation administrator to grant it.`,
+        once: true,
+      },
+    ],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#provider-credential-secret", value: "Demo model API key" },
+      { selector: "#agent-model", value: "gpt-5.6-sol" },
+      click("Create Agent"),
+    ],
+    description: `The Configuration saves and the Agent save is refused because it needs ${permission}.`,
+    steps: [
+      `Read the ${permission} refusal and the saved Configuration ID.`,
+      "Select Cancel and read what remains saved. Dismiss the confirmation to keep the draft.",
+      "Select Create Agent again to simulate a retry after an access change. The Agent save reuses the Configuration.",
+    ],
+  } satisfies CreateAgentScenario;
+}
+
 export const createAgentFormScenarios = {
   createNamespaceProvisioning: {
     group: "Pages/Create Agent",
@@ -327,6 +378,24 @@ export const createAgentFormScenarios = {
       "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
   },
+  createModelSecretPending: {
+    group: "Pages/Create Agent",
+    name: "Model Secret access check",
+    path: create,
+    actions: form,
+    extraSecrets: [
+      { id: "sec_storybook_first", name: "Sample A" },
+      { id: "sec_storybook_second", name: "Sample B" },
+    ],
+    rules: [{ suffix: "/permissions/secrets", delayMs: 15000, once: true }],
+    description: "The first Secret access check takes 15 seconds.",
+    steps: [
+      "Under OpenAI, choose Sample A. Create Agent is unavailable while the picker checks access.",
+      "Switch to Anthropic during the check. The Secret field clears and stays empty after the answer arrives.",
+      "Choose Sample B, then switch back to OpenAI. The choice, metadata link and selection message clear together.",
+    ],
+    gap: "The Secrets and permission answer are simulated.",
+  },
   createNativeAdmin: {
     group: "Pages/Create Agent",
     name: "Browser chat opt-in",
@@ -379,7 +448,7 @@ export const createAgentFormScenarios = {
     actions: form,
     secretCreateNotPermitted: true,
     description:
-      "The Namespace permission answer denies Secret creation. The API key Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+      "The Namespace permission answer denies Secret creation. Create new Secret... is disabled and names Secret create in this Namespace. The field also offers existing Secrets.",
     steps: [
       "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
       "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",
@@ -406,6 +475,8 @@ export const createAgentFormScenarios = {
     ],
     gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
   },
+  createAgentSaveRefused: ordinarySaveRefused("Secret operate"),
+  createAgentSaveConfigurationReadRefused: ordinarySaveRefused("Configuration read"),
   createRepositoryNotConfigured: {
     group: "Pages/Create Agent",
     name: "Repository access not set up",
@@ -1287,7 +1358,7 @@ export const createAgentProvisioningScenarios = {
       "The first source request receives a simulated destination mismatch. Check registration to confirm absence, then correct authorization and retry. Uncertain writes remain locked until checked.",
     steps: [
       "Select the simulated model Secret and enter https://other.example.com/v1.",
-      "Create the Agent, then choose Check credential registration.",
+      "Create the Agent, then choose Check credential registration. Confirm the destination refusal remains visible beside the correction instructions.",
       "Correct the authorization to https://models.example.com/v1 and retry.",
     ],
   },
@@ -1302,6 +1373,20 @@ export const createAgentProvisioningScenarios = {
     steps: [
       "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
       "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+    ],
+  },
+  createCredentialRegistrationRefused: {
+    group: "Pages/Create Agent",
+    name: "Model credential registration refused",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "refused",
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The first registration receives a simulated refusal without saving a source. Empty registration checks retain the reason and the saved Secret. The next explicit Create Agent request simulates recovery.",
+    steps: [
+      "Select Check credential registration twice. Confirm the refusal and saved-Secret guidance remain visible after each check.",
+      "Select Create Agent to retry. The same registration and Secret are reused before simulated provisioning opens Agent details.",
     ],
   },
   createCredentialRegistrationUnknown: {
@@ -1488,8 +1573,8 @@ export const createAgentProvisioningScenarios = {
     name: "Repository-only Credential Proxy",
     path: create,
     actions: dedicatedOpenclawForm,
+    credentialSourceTypes: modelCredentialSourceTypes,
     openclawExecutionModes: ["dedicated"],
-    repositoryAccessRequired: true,
     repositoryOptions: [
       {
         repositoryRef: "application",
@@ -1498,11 +1583,11 @@ export const createAgentProvisioningScenarios = {
       },
     ],
     description:
-      "The installation supports Dedicated OpenClaw but requires repository access to deploy. Create explains the restriction before it submits a provisioning request.",
+      "The simulated installation offers Git access alongside Dedicated OpenClaw. An Agent can be created with a model credential and no repository selection.",
     steps: [
-      "Check the reason beside Create Agent on the model-only form.",
+      "Check that Create Agent is available on the model-only form.",
       "Choose Codex and select example/application under Repository access.",
-      "In Customize access, turn off Create and manage issues to use the repository's approved access level. The requirement clears.",
+      "In Customize access, turn off Create and manage issues to use the repository's approved access level.",
     ],
   },
   createRepositoriesSelected: {
@@ -1925,6 +2010,101 @@ export const createAgentProvisioningScenarios = {
     actions: existingPresetSecret,
     description:
       "An empty Namespace Secret catalog requires creating a new Secret or returning after a Secret is available.",
+  },
+  createNativePluginsUnrestricted: {
+    group: "Pages/Create Agent",
+    name: "Native plugins without an allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: nativePlugins,
+    actions: nativePluginForm,
+    description:
+      "Harness switches preserve an omitted native plugin allowlist and configured entries.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsAllowlist: {
+    group: "Pages/Create Agent",
+    name: "Native plugins with an allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, allow: ["knowledge", "openai"] },
+    actions: nativePluginForm,
+    description:
+      "A restrictive allowlist is preserved. Selecting Codex does not silently grant permission; existing server admission decides at creation.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsEmptyAllowlist: {
+    group: "Pages/Create Agent",
+    name: "Native plugins with an empty allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, allow: [] },
+    actions: nativePluginForm,
+    description: "An explicitly authored empty array remains unrestricted in both Harnesses.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsCodexRoundTrip: {
+    group: "Pages/Create Agent",
+    name: "Codex allowlist round-trip",
+    path: create,
+    standardCodexPreset: true,
+    actions: [...passwordPresetForm, { selector: ".launch-advanced summary", click: true }],
+    description: "The shipped Codex Preset keeps its codex-only allowlist across Harness switches.",
+    steps: [
+      'Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays ["codex"] throughout. OpenClaw uses existing provider admission without an additional editor restriction.',
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsDenyConflict: {
+    group: "Pages/Create Agent",
+    name: "Codex denied by native policy",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, deny: ["codex"] },
+    actions: [...nativePluginForm, { selector: "#agent-harness", value: "codex" }],
+    // This story simulates the first server refusal; admission is not implemented in the preview.
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        once: true,
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.deny must not list codex: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove that item.",
+      },
+    ],
+    description:
+      "Selecting Codex preserves the denylist. Existing server admission refuses the denial on creation.",
+    steps: [
+      "Try Create Agent. Edit Configuration JSON to deliberately remove the codex denial, or select OpenClaw.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsDisabledEntry: {
+    group: "Pages/Create Agent",
+    name: "Codex explicitly disabled in Configuration",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: {
+      ...nativePlugins,
+      allow: ["knowledge", "openai", "codex"],
+      entries: {
+        ...nativePlugins.entries,
+        codex: { enabled: false, config: { appServer: { sandbox: "workspace-write" } } },
+      },
+    },
+    actions: nativePluginForm,
+    description:
+      "Harness switches preserve the disabled Codex entry and its authored App Server settings. Existing admission and runtime enablement remain separate.",
+    steps: [
+      "Inspect the disabled Codex entry and workspace-write sandbox. Switch to Codex, then OpenClaw: the original entry is restored.",
+      "Switch to Codex, make Configuration JSON incomplete, and select OpenClaw. Finish the JSON, then switch to Codex and OpenClaw again: authored settings remain. This preview simulates creation, not runtime enablement.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },
   createStandardOpenclawPreset: {
     group: "Pages/Create Agent",
@@ -2755,7 +2935,7 @@ export const createAgentOutcomeScenarios = {
       "At 360-390 px, confirm the focused refusal is on screen with no Secret or Configuration saved line and no sideways scroll.",
       "Open Configuration JSON under Advanced settings and confirm it is editable, then select Create Agent again; the Agent is created.",
     ],
-    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.mjs and tests/integration/agent-create-validate-api.test.mjs.",
+    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.ts and tests/integration/agent-create-validate-api.test.ts.",
   },
   createPluginRefusal: {
     group: "Pages/Create Agent",
@@ -2786,7 +2966,7 @@ export const createAgentOutcomeScenarios = {
       "At 360-390 px, confirm the focused refusal is on screen above the Secret and Configuration saved line, with no sideways scroll.",
       "Clear Plugin selections JSON to {} and select Create Agent again; the Agent is created.",
     ],
-    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
+    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.ts.",
   },
   createUnknown: {
     group: "Pages/Create Agent",

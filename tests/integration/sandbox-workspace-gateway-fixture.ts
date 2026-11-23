@@ -1,23 +1,27 @@
 import assert from "node:assert/strict";
-import type {
-  OpenShellProviderCreateRequest,
-  OpenShellProviderProfile,
-  OpenShellProviderResponse,
-  OpenShellSandboxDeleteRequest,
-  OpenShellSandboxResponse,
-  OpenShellStoredProviderProfile,
-  OpenShellWorkspaceResponse,
+import {
+  type OpenShellGatewayClient,
+  type OpenShellProviderCreateRequest,
+  type OpenShellProviderProfile,
+  type OpenShellProviderResponse,
+  type OpenShellSandboxResponse,
+  type OpenShellStoredProviderProfile,
+  type OpenShellWorkspaceResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+
+import { unconfiguredGateway } from "../helpers/openshell-gateway-client.ts";
+
+export { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 
 type StringValues = Readonly<Record<string, string>>;
 
-type WorkspaceProfile = Omit<OpenShellStoredProviderProfile, "annotations"> & {
-  annotations?: OpenShellStoredProviderProfile["annotations"];
+type WorkspaceProfile = Omit<OpenShellStoredProviderProfile, "annotations" | "definition"> & {
+  annotations: OpenShellStoredProviderProfile["annotations"];
+  definition?: NonNullable<OpenShellStoredProviderProfile["definition"]>;
   profile?: OpenShellProviderProfile;
 };
-
-type WorkspaceSandbox = Omit<OpenShellSandboxResponse, "spec"> & {
-  readonly spec?: Readonly<Record<string, unknown>> & { readonly providers?: readonly string[] };
+type WorkspaceObservation = Omit<OpenShellWorkspaceResponse, "phase"> & {
+  phase?: NonNullable<OpenShellWorkspaceResponse["phase"]>;
 };
 
 type WorkspaceGatewayCall =
@@ -27,9 +31,18 @@ type WorkspaceGatewayCall =
   | ["createProvider", OpenShellProviderCreateRequest]
   | ["updateProviderConfig", string, StringValues, string];
 
-type WorkspaceGatewayEvent =
+export type WorkspaceGatewayEvent =
   | ["gateway", "health"]
   | ["gateway", "getWorkspace" | "createWorkspace" | "deleteWorkspace", string];
+
+type WorkspaceGateway = Omit<OpenShellGatewayClient, "getWorkspace"> & {
+  getWorkspace: (name: string, signal?: AbortSignal) => Promise<WorkspaceObservation | undefined>;
+  calls: WorkspaceGatewayCall[];
+  profiles: Map<string, WorkspaceProfile>;
+  providers: Map<string, OpenShellProviderResponse>;
+  sandboxes: Map<string, OpenShellSandboxResponse>;
+  workspaces: Map<string, WorkspaceObservation>;
+};
 
 /** The gRPC FAILED_PRECONDITION error OpenShell answers a delete that members still block. */
 function failedPrecondition(details: string) {
@@ -37,13 +50,13 @@ function failedPrecondition(details: string) {
 }
 
 export function workspaceGatewayClient(
-  seed: readonly OpenShellWorkspaceResponse[] = [],
+  seed: readonly WorkspaceObservation[] = [],
   events: Pick<WorkspaceGatewayEvent[], "push"> = [],
-) {
+): WorkspaceGateway {
   const workspaces = new Map(seed.map((workspace) => [workspace.name, structuredClone(workspace)]));
   const profiles = new Map<string, WorkspaceProfile>();
   const providers = new Map<string, OpenShellProviderResponse>();
-  const sandboxes = new Map<string, WorkspaceSandbox>();
+  const sandboxes = new Map<string, OpenShellSandboxResponse>();
   const calls: WorkspaceGatewayCall[] = [];
   const storeProfile = (profile: OpenShellProviderProfile, resourceVersion: string) =>
     profiles.set(profile.id, {
@@ -53,11 +66,21 @@ export function workspaceGatewayClient(
       profile: structuredClone(profile),
     });
   return {
+    ...unconfiguredGateway,
     calls,
     profiles,
     providers,
     sandboxes,
     workspaces,
+    async getPolicyStatus({ workspace, sandbox }, signal) {
+      const current = await this.getSandbox({ workspace, name: sandbox }, signal);
+      return {
+        policy: (current?.spec?.policy ?? {}) as Record<string, unknown>,
+        version: 1,
+        activeVersion: 1,
+        state: "POLICY_STATUS_LOADED",
+      };
+    },
     async health() {
       calls.push(["health"]);
       events.push(["gateway", "health"]);
@@ -95,13 +118,13 @@ export function workspaceGatewayClient(
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },
-    async getSandbox({ name }: OpenShellSandboxDeleteRequest) {
+    async getSandbox({ name }) {
       return sandboxes.get(name);
     },
     async getService() {
       return undefined;
     },
-    async deleteSandbox({ name }: OpenShellSandboxDeleteRequest) {
+    async deleteSandbox({ name }) {
       sandboxes.delete(name);
     },
     async getProviderProfile(_workspace: string | null, id: string) {
@@ -151,7 +174,12 @@ export function workspaceGatewayClient(
     async deleteProvider(_workspace: string, name: string) {
       calls.push(["deleteProvider", name]);
       // OpenShell refuses to delete a provider a Sandbox still attaches.
-      if ([...sandboxes.values()].some((sandbox) => sandbox.spec?.providers?.includes(name))) {
+      if (
+        [...sandboxes.values()].some((sandbox) => {
+          const attached = sandbox.spec?.providers;
+          return Array.isArray(attached) && attached.includes(name);
+        })
+      ) {
         throw failedPrecondition(`provider '${name}' is attached to sandbox(es)`);
       }
       providers.delete(name);
@@ -174,6 +202,12 @@ export function workspaceGatewayClient(
         config: { ...provider.config, ...structuredClone(config) },
         resourceVersion: String(Number(provider.resourceVersion) + 1),
       };
+      // OpenShell UpdateProvider uses empty patch values to delete config keys.
+      for (const [key, value] of Object.entries(config)) {
+        if (value === "") {
+          delete updated.config[key];
+        }
+      }
       providers.set(name, updated);
       return updated;
     },

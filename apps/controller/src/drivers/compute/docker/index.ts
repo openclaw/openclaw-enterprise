@@ -1295,6 +1295,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         OPENCLAW_CONFIG_JSON: configuration,
         OPENCLAW_CONFIG_PATH: CONFIGURATION_DOCUMENT,
         OPENCLAW_GATEWAY_PORT: String(GATEWAY_PORT),
+        // Only a restart of this revision resumes an interrupted turn (finding 3347).
         OPENCLAW_STATE_DIR: "/home/node/.openclaw",
         HOME: "/home/node",
       },

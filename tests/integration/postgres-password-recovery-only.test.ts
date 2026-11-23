@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   assertConsoleSignIn,
   assertProviderAttached,
@@ -9,20 +9,18 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   createAccount,
-  fakeGoogle,
   oidcSignIn,
   oidcUpgradeSettings,
   fixtureOidcIssuer,
-  googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { fakeGoogle, googleSignIn } from "../helpers/google-sign-in.ts";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import {
-  account,
   responseData,
   events,
   first,
@@ -34,8 +32,9 @@ import {
   text,
   type App,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
+import type { SignInSettings } from "../helpers/sign-in-chart.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const password = "recovery-only-member-password";
 const googleClientId = "recovery-only.apps.googleusercontent.com";
@@ -45,7 +44,7 @@ const strandedSubject = 8_100_002;
 const operatorSubject = 8_100_003;
 const googleMemberSubject = "118100000000000000001";
 
-const recoveryOnly = (settings: Record<string, unknown>) =>
+const recoveryOnly = (settings: SignInSettings) =>
   Object.freeze({ ...settings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" });
 const providers = async (app: App) =>
   responseData(await app.inject({ url: "/api/auth/providers" }));
@@ -88,26 +87,20 @@ test(
     const google = fakeGoogle(t, { clientId: googleClientId, clientSecret: googleClientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install.
-    const onboarded = await onboard({
+    const {
+      admin,
+      roles,
+      accounts: { member, stranded, disabled, operator },
+    } = await onboard({
       remoteAddress: address(),
-      accounts: Object.fromEntries(
-        ["member", "stranded", "disabled", "operator"].map((name) => [
-          name,
-          {
-            email: `recovery-only-${name}@example.test`,
-            // An administrator other than the recovery account, with a OIDC identity.
-            ...(name === "operator" ? { role: "admin" } : {}),
-          },
-        ]),
-      ),
+      accounts: {
+        member: { email: "recovery-only-member@example.test" },
+        stranded: { email: "recovery-only-stranded@example.test" },
+        disabled: { email: "recovery-only-disabled@example.test" },
+        // This administrator has an OIDC identity separate from the recovery account.
+        operator: { email: "recovery-only-operator@example.test", role: "admin" },
+      },
     });
-    const admin = account(onboarded.admin);
-    const { roles } = onboarded;
-    const accounts = record(onboarded.accounts);
-    const member = account(accounts.member);
-    const stranded = account(accounts.stranded);
-    const disabled = account(accounts.disabled);
-    const operator = account(accounts.operator);
     let adminHeaders: { cookie: string; origin: string };
 
     async function attach(provider: string, account: { id: string }, subject: string | number) {
