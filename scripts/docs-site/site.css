@@ -923,22 +923,92 @@ dialog::backdrop {
 
 [data-repository-actions]:not(:empty) {
   border: 1px solid var(--line);
-  padding: 18px;
   border-radius: 12px;
+  padding: clamp(16px, 3vw, 24px);
   color: var(--ink);
   font-size: 15px;
   line-height: 1.5;
 
-  fieldset,
-  legend {
-    border: none;
+  .access-title,
+  .action-presets,
+  .example-levels {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+  }
+
+  [data-title] {
+    font-size: 21px;
+  }
+
+  [data-recommended] {
+    border-radius: 6px;
+    padding: 3px 9px;
+    background: var(--verified-bg);
+    color: var(--verified-ink);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  [data-reset] {
+    margin-left: auto;
+    padding: 5px 10px;
+    font-size: 14px;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 16px 0;
+    padding: 16px;
+    background: var(--surface);
+    border-radius: 8px;
+    gap: 8px;
+  }
+
+  dt,
+  summary span,
+  .action-limits {
+    font-weight: 400;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  dd {
     margin: 0;
+    font-weight: 600;
+  }
+
+  .access-scope,
+  [data-default],
+  [data-mode],
+  details > div {
+    color: var(--text);
+    margin-top: 12px;
+  }
+
+  summary {
+    cursor: pointer;
+    border-top: 1px solid var(--line);
+    margin-top: 16px;
+    padding-top: 16px;
+    font-weight: 600;
+  }
+
+  summary::marker {
+    color: var(--brand);
+  }
+
+  fieldset {
+    border: none;
     padding: 0;
+    margin: 16px 0 0;
     min-width: 0;
   }
 
-  legend,
-  summary {
+  legend {
+    padding: 0;
     font-weight: 600;
   }
 
@@ -946,7 +1016,7 @@ dialog::backdrop {
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 42px;
+    min-height: 44px;
     cursor: pointer;
   }
 
@@ -966,24 +1036,15 @@ dialog::backdrop {
     padding-block: 8px;
   }
 
-  [data-mode],
-  .action-limits,
-  details > div {
-    color: var(--text);
+  .action-presets {
+    justify-content: space-between;
     margin-top: 12px;
-  }
-
-  .example-levels {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
   }
 
   .example-levels label {
     flex: 1 0 165px;
     flex-direction: column;
     align-items: stretch;
-    justify-content: end;
   }
 
   pre,
@@ -999,9 +1060,8 @@ dialog::backdrop {
     border: 1px solid var(--line);
   }
 
-  pre,
-  button {
-    margin-top: 10px;
+  pre {
+    margin-top: 12px;
   }
 
   pre code {
@@ -1009,18 +1069,21 @@ dialog::backdrop {
     overflow-wrap: anywhere;
   }
 
-  summary {
-    color: var(--brand);
-    cursor: pointer;
-    border-top: 1px solid var(--line);
-    margin-top: 14px;
-    padding-top: 14px;
-  }
-
-  @media (max-width: 540px) {
+  @media (max-width: 520px) {
     .action-options,
-    [data-action] {
+    [data-action],
+    dl {
       grid-template-columns: 1fr;
+    }
+    dl > div {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    [data-reset] {
+      margin: 0;
     }
   }
 }

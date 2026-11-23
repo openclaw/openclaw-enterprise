@@ -133,11 +133,8 @@ old Sandbox retires.
 
 #### Native GitHub API actions
 
-To limit direct requests for **every Agent using this registration**, set
-`apiActions` beside `permissions` in one repository’s `namespaces` entry.
-Git fetch and push keep their saved grants. Omit `apiActions` to include new
-eligible actions or set `"apiActions": { "allow": [] }` for Git only.
-Review the [limits](#known-limits) and redeploy to apply changes.
+The API filter limits direct requests for every Agent using this repository’s
+Namespace registration. [Pull request safeguards](#pull-request-creation) still apply.
 
 <div data-repository-actions></div>
 

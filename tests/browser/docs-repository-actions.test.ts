@@ -60,17 +60,27 @@ test("docs repository checklist generates filters independently of deployment", 
   await page.goto(origin);
 
   const checklist = page.locator("[data-repository-actions]");
+  const title = checklist.locator("[data-title]");
+  const advanced = checklist.locator("summary").filter({ hasText: /customize access/i });
+  const reset = checklist.getByRole("button", { name: "Reset to full access", exact: true });
   const checkbox = (name: string) => checklist.getByRole("checkbox", { name, exact: true });
   const action = (id: string) => checklist.locator(`details [data-action="${id}"]`);
   const future = checkbox("Include new eligible actions automatically");
   const createIssues = checkbox("Create issues");
+  const missingGrant = checkbox("Another bound repository has no Agent grant");
   const output = checklist.locator("pre");
   async function readFilter(): Promise<unknown> {
     assert.equal(await output.isVisible(), true, "The checklist must show the filter to save");
     return JSON.parse((await output.textContent()) ?? "");
   }
 
-  await createIssues.waitFor();
+  await advanced.waitFor();
+  assert.equal(await title.isVisible(), true);
+  assert.equal(await title.innerText(), "Full access");
+  assert.equal(await checklist.getByText("Recommended", { exact: true }).isVisible(), true);
+  assert.equal(await checklist.getByRole("checkbox").count(), 0);
+  assert.equal(await reset.isVisible(), false);
+  await advanced.press("Enter");
   for (const name of ["Read issues", "Create issues", "Read pull requests", "Open pull requests"]) {
     assert.equal(await checkbox(name).isChecked(), true, `${name} is selected by default`);
   }
@@ -87,6 +97,13 @@ test("docs repository checklist generates filters independently of deployment", 
 
   await createIssues.uncheck();
   assert.deepEqual(await readFilter(), { apiActions: { deny: ["issues:create"] } });
+  await advanced.click();
+  assert.equal(await createIssues.isVisible(), false);
+  assert.equal(await title.isVisible(), true);
+  assert.equal(await title.innerText(), "Custom access");
+  assert.equal(await checklist.locator("[data-issues]").innerText(), "Read");
+  assert.equal(await reset.isVisible(), true);
+  await advanced.press("Enter");
   await checklist.locator("summary").filter({ hasText: "Example at next deployment" }).click();
   assert.match(await action("issues:create").innerText(), /Excluded by filter/i);
   assert.match(await action("pull_requests:create").innerText(), /Eligible/i);
@@ -107,7 +124,7 @@ test("docs repository checklist generates filters independently of deployment", 
 
   // Another bound repository without a grant withholds PR creation while preserving reads.
   await grant.selectOption("write");
-  await checkbox("Another bound repository has no Agent grant").check();
+  await missingGrant.check();
   assert.match(await action("pull_requests:create").innerText(), /Another bound repository/i);
   assert.match(await action("pull_requests:read").innerText(), /Eligible/i);
   assert.match(await action("issues:read").innerText(), /Eligible/i);
@@ -120,6 +137,13 @@ test("docs repository checklist generates filters independently of deployment", 
   });
   await checklist.getByRole("button", { name: "Git only", exact: true }).click();
   assert.deepEqual(await readFilter(), { apiActions: { allow: [] } });
+  await advanced.click();
+  assert.equal(await createIssues.isVisible(), false);
+  assert.equal(await title.isVisible(), true);
+  assert.equal(await title.innerText(), "Git only");
+  assert.equal(await checklist.locator("[data-pulls]").innerText(), "None");
+  assert.equal(await reset.isVisible(), true);
+  await advanced.press("Enter");
 
   // Excluding all current actions still includes future actions in automatic mode.
   await future.check();
@@ -130,8 +154,17 @@ test("docs repository checklist generates filters independently of deployment", 
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await checklist.getByRole("button", { name: "Reset filter", exact: true }).click();
+  await issuesPermission.selectOption("read");
+  await reset.press("Enter");
+  assert.equal(await advanced.evaluate((element) => element === document.activeElement), true);
+  assert.equal(await title.innerText(), "Full access");
+  assert.equal(await createIssues.isVisible(), false);
+  await advanced.press("Enter");
   assert.equal(await output.isVisible(), false);
+  assert.equal(await action("pull_requests:create").isVisible(), true);
+  assert.equal(await issuesPermission.inputValue(), "read");
+  assert.equal(await missingGrant.isChecked(), true);
+  await issuesPermission.selectOption("write");
   assert.match(await action("issues:create").innerText(), /Eligible/i);
   assert.match(await action("pull_requests:create").innerText(), /Another bound repository/i);
   await createIssues.uncheck();

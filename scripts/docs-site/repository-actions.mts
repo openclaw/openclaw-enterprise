@@ -16,34 +16,53 @@ function level(label: string, id: string) {
 
 function mount(root: HTMLElement) {
   root.innerHTML = `
-    <fieldset>
-      <legend>Actions to keep for this Namespace registration</legend>
-      <div class="action-options">
-        ${actions.map(([id, label]) => `<label><input type="checkbox" value="${id}" checked>${label}</label>`).join("")}
-      </div>
-      <label><input type="checkbox" name="future" checked>Include new eligible actions automatically</label>
-      <button type="button" data-git>Git only</button>
-      <button type="button" data-reset>Reset filter</button>
-    </fieldset>
-    <div aria-live="polite">
-      <div data-mode></div>
-      <pre hidden><code></code></pre>
+    <div class="access-title">
+      <strong data-title aria-live="polite"></strong>
+      <span data-recommended>Recommended</span>
+      <button type="button" data-reset hidden>Reset to full access</button>
     </div>
-    <details>
-      <summary>Example at next deployment</summary>
-      <div>Choose example Namespace permissions and an Agent grant. This assumes native delivery and matching GitHub permissions. It does not read or change a running policy.</div>
-      <div class="example-levels">
-        ${level("Issues permission", "issues")}
-        ${level("Pull requests permission", "pull_requests")}
-        ${level("Agent grant", "grant")}
+    <div class="access-scope">These actions depend on the Agent’s grant and approved Namespace and GitHub App permissions.</div>
+    <dl>
+      <div><dt>Git</dt><dd>Fetch and push</dd></div>
+      <div><dt>Issues</dt><dd data-issues></dd></div>
+      <div><dt>Pull requests</dt><dd data-pulls></dd></div>
+    </dl>
+    <div data-default>Omit <code>apiActions</code>, select <strong>Write</strong> for this repository in the Agent’s policy, then deploy.</div>
+    <div data-mode hidden></div>
+    <details data-advanced>
+      <summary>Advanced <span>· Customize access</span></summary>
+      <fieldset>
+        <legend>API actions to keep</legend>
+        <div class="action-options">
+          ${actions.map(([id, label]) => `<label><input type="checkbox" value="${id}" checked>${label}</label>`).join("")}
+        </div>
+        <div class="action-presets">
+          <label><input type="checkbox" name="future" checked>Include new eligible actions automatically</label>
+          <button type="button" data-git>Git only</button>
+        </div>
+      </fieldset>
+      <div data-config hidden>
+        Add or replace only <code>apiActions</code> beside <code>permissions</code> in the repository’s <code>namespaces</code> entry, then redeploy. Git grants stay unchanged.
+        <pre><code></code></pre>
       </div>
-      <label><input type="checkbox" name="ungranted">Another bound repository has no Agent grant</label>
-      <div aria-live="polite">
-        ${actions.map(([id, label]) => `<div aria-atomic="true" data-action="${id}"><strong>${label}</strong><span></span></div>`).join("")}
-      </div>
-    </details>
-    <div class="action-limits">Issue lists can include pull requests. Creation returns the record even without read access. Opening a pull request can convert an issue. Creating an issue may link a parent in another repository.</div>`;
+      <details data-example>
+        <summary>Example at next deployment</summary>
+        <div>These inputs affect only this example. It assumes native delivery and matching GitHub permissions. It reads no running policy.</div>
+        <div class="example-levels">
+          ${level("Issues permission", "issues")}
+          ${level("Pull requests permission", "pull_requests")}
+          ${level("Agent grant", "grant")}
+        </div>
+        <label><input type="checkbox" name="ungranted">Another bound repository has no Agent grant</label>
+        <div aria-live="polite">
+          ${actions.map(([id, label]) => `<div aria-atomic="true" data-action="${id}"><strong>${label}</strong><span></span></div>`).join("")}
+        </div>
+      </details>
+      <div class="action-limits">Issue lists can include pull requests. Creation returns the record even without read access. Opening a pull request can convert an issue. Creating an issue may link a parent in another repository.</div>
+    </details>`;
 
+  const advanced = root.querySelector<HTMLDetailsElement>("[data-advanced]")!;
+  const reset = root.querySelector<HTMLButtonElement>("[data-reset]")!;
   const options = [...root.querySelectorAll<HTMLInputElement>(".action-options input")];
   const future = root.querySelector<HTMLInputElement>("[name=future]")!;
   const ungranted = root.querySelector<HTMLInputElement>("[name=ungranted]")!;
@@ -76,17 +95,39 @@ function mount(root: HTMLElement) {
       .filter((option) => option.checked !== automatic)
       .map((option) => option.value);
     const omit = automatic && !ids.length;
-    const mode = automatic
-      ? "New eligible actions are included on deployment."
-      : ids.length
-        ? "Future actions stay off until listed."
-        : "Git only. Future actions stay off.";
-    root.querySelector("[data-mode]")!.textContent = omit
-      ? `Default. Omit apiActions or remove the existing filter. ${mode}`
-      : `${mode} Add or replace only the apiActions field in the registration.`;
+    const gitOnly = !automatic && !ids.length;
+    root.querySelector("[data-title]")!.textContent = omit
+      ? "Full access"
+      : gitOnly
+        ? "Git only"
+        : "Custom access";
+    reset.hidden = omit;
+    root.querySelector<HTMLElement>("[data-recommended]")!.hidden = !omit;
+    root.querySelector<HTMLElement>("[data-default]")!.hidden = !omit;
+
+    const allowed = new Set(
+      options.filter((option) => option.checked).map((option) => option.value),
+    );
+    function label(resource: string, verb: string) {
+      const read = allowed.has(resource + ":read");
+      if (allowed.has(resource + ":create")) {
+        return read ? "Read and " + verb.toLowerCase() : verb;
+      }
+      return read ? "Read" : "None";
+    }
+    root.querySelector("[data-issues]")!.textContent = label("issues", "Create");
+    root.querySelector("[data-pulls]")!.textContent = label("pull_requests", "Open");
+    const mode = root.querySelector<HTMLElement>("[data-mode]")!;
+    mode.hidden = omit;
+    mode.textContent =
+      (automatic ? "New eligible actions are included." : "Future actions stay off.") +
+      " See Advanced for the registry change.";
+
     const apiActions = automatic ? { deny: ids } : { allow: ids };
-    root.querySelector("pre")!.hidden = omit;
-    root.querySelector("code")!.textContent = omit ? "" : JSON.stringify({ apiActions }, null, 2);
+    root.querySelector<HTMLElement>("[data-config]")!.hidden = omit;
+    root.querySelector("pre code")!.textContent = omit
+      ? ""
+      : JSON.stringify({ apiActions }, null, 2);
 
     preview();
   }
@@ -109,9 +150,13 @@ function mount(root: HTMLElement) {
   }
 
   root.querySelector("[data-git]")!.addEventListener("click", () => preset(false));
-  root.querySelector("[data-reset]")!.addEventListener("click", () => preset(true));
+  reset.addEventListener("click", () => {
+    preset(true);
+    advanced.open = false;
+    advanced.querySelector("summary")!.focus();
+  });
   root.querySelector("fieldset")!.addEventListener("change", render);
-  root.querySelector("details")!.addEventListener("change", preview);
+  root.querySelector("[data-example]")!.addEventListener("change", preview);
   render();
 }
 
