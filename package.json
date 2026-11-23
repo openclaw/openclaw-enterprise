@@ -76,15 +76,15 @@
     "@types/pg": "8.23.1",
     "@typescript/native": "npm:typescript@7.0.2",
     "drizzle-kit": "0.31.11",
-    "eslint": "10.14.0",
+    "eslint": "10.15.0",
     "globals": "17.14.0",
-    "jiti": "2.6.1",
+    "jiti": "2.7.0",
     "pg": "8.23.1",
-    "playwright": "1.65.0",
-    "prettier": "3.9.10",
-    "typebox": "1.4.6",
+    "playwright": "1.65.1",
+    "prettier": "3.10.1",
+    "typebox": "1.4.7",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
-    "typescript-eslint": "8.72.1"
+    "typescript-eslint": "8.72.2"
   }
 }
