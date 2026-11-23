@@ -2005,37 +2005,40 @@ function searchWorkloadForTokens() {
       return;
     }
     seen.add(path);
-    let stat;
+    // Open once and check and read through that handle, so the entry checked is the one read.
+    // O_NOFOLLOW refuses a symbolic link; O_NONBLOCK keeps a FIFO from blocking the open.
+    const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+    let handle: number;
     try {
-      stat = fs.lstatSync(path);
+      handle = fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     } catch {
       return;
     }
-    if (stat.isDirectory()) {
-      let names: string[] = [];
-      try {
+    let names: string[] = [];
+    try {
+      const stat = fs.fstatSync(handle);
+      if (stat.isDirectory()) {
         names = fs.readdirSync(path);
-      } catch {
-        counts.skipped += 1;
-      }
-      for (const name of names) {
-        walk(path === "/" ? `/${name}` : `${path}/${name}`);
-      }
-    } else if (stat.isFile()) {
-      if (stat.size > 4 * 1024 * 1024) {
-        counts.skipped += 1;
-        return;
-      }
-      try {
-        const buffer = fs.readFileSync(path);
+      } else if (stat.isFile()) {
+        if (stat.size > 4 * 1024 * 1024) {
+          counts.skipped += 1;
+          return;
+        }
+        const buffer = fs.readFileSync(handle);
         counts.files += 1;
         counts.bytes += buffer.length;
         if (hit(buffer)) {
           found.add(path.startsWith("/tmp/") ? "file:/tmp" : `file:${path}`);
         }
-      } catch {
-        counts.skipped += 1;
       }
+    } catch {
+      counts.skipped += 1;
+    } finally {
+      fs.closeSync(handle);
+    }
+    // Recurse after the close, so a deep tree holds one handle at a time.
+    for (const name of names) {
+      walk(path === "/" ? `/${name}` : `${path}/${name}`);
     }
   };
   for (const root of roots) {
