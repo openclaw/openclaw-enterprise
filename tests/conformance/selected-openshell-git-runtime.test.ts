@@ -4652,9 +4652,10 @@ test("a native Source Provider cannot bind an App REST grant", () => {
   const source = "oce-github-token-" + "a".repeat(32);
   const hosts = (rule: ReturnType<typeof compileOpenShellBoundGitRule>) =>
     rule.endpoints.map(({ host }) => host);
-  assert.ok(
-    hosts(compileOpenShellBoundGitRule(grants, app, binaries, rest)).includes("api.github.com"),
-  );
+  assert.deepEqual(hosts(compileOpenShellBoundGitRule(grants, app, binaries, rest)), [
+    "github.com",
+    "api.github.com",
+  ]);
   assert.deepEqual(
     hosts(compileOpenShellBoundGitRule(grants, source, binaries, undefined, "source")),
     ["github.com"],
