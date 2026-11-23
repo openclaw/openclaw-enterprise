@@ -15,7 +15,6 @@ on:
       - apps/controller/src/composition/installation-config.ts
       - cmd/occ/**
       - deploy/examples/production/**
-      - deploy/helm/openclaw-enterprise/templates/slack-proxy.yaml
       - deploy/runtime/openclaw-source.json
       - scripts/upgrade-production-images
   push:
@@ -26,7 +25,6 @@ on:
       - apps/controller/src/composition/installation-config.ts
       - cmd/occ/**
       - deploy/examples/production/**
-      - deploy/helm/openclaw-enterprise/templates/slack-proxy.yaml
       - deploy/runtime/openclaw-source.json
       - scripts/upgrade-production-images
 
@@ -89,7 +87,6 @@ jobs:
             apps/controller/src/composition/installation-config.ts \
             cmd/occ \
             deploy/examples/production \
-            deploy/helm/openclaw-enterprise/templates/slack-proxy.yaml \
             deploy/runtime/openclaw-source.json \
             scripts/upgrade-production-images; do
             test -e "$path" || { echo "missing OCE path: $path" >&2; exit 1; }
