@@ -88,11 +88,12 @@ request; do not assume the provider rejected the change.
 
 Use the same Namespace and authenticated OCC context as other Agent commands.
 Get the current saved policy version and the ID of the active revision before
-preparing a change.
+preparing a change. The active revision is `activeRevisionId` in the Agent's
+JSON output, which needs only Agent read.
 
 ```sh
 occ agent policy get AGENT_ID --facet networking -o json
-occ agent revisions AGENT_ID
+occ agent get AGENT_ID -o json
 ```
 
 To save a replacement and queue its application in one request, create
