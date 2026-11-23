@@ -1,5 +1,5 @@
 import type {
-  CredentialSource,
+  StoredCredentialSource as CredentialSource,
   PluginDeploymentNetworkRequirement,
 } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
@@ -58,6 +58,9 @@ function googleNetworks(
 }
 
 function sourceScope(source: CredentialSource) {
+  if (source.ownerCapability === "token_service") {
+    return undefined;
+  }
   const config = source.config;
   return googleRequestScope({
     host: config.host,
@@ -81,6 +84,9 @@ export const googleWorkspaceCredentialPolicy = {
     slot: ManagedCredentialSlot,
     source: CredentialSource,
   ): boolean {
+    if (source.ownerCapability === "token_service") {
+      return false;
+    }
     const config = source.config;
     const scope = sourceScope(source);
     return (
@@ -97,7 +103,7 @@ export const googleWorkspaceCredentialPolicy = {
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
     const scope = sourceScope(selected);
-    if (!scope) {
+    if (!scope || selected.ownerCapability === "token_service") {
       return undefined;
     }
     // The qualified adapter selects middleware by host, including discovery requests.
@@ -105,6 +111,7 @@ export const googleWorkspaceCredentialPolicy = {
     if (
       sources.some(
         (s) =>
+          s.ownerCapability !== "token_service" &&
           s.id !== selected.id &&
           (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
       )

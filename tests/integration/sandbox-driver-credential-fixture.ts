@@ -13,7 +13,7 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   CredentialRevisionContext,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceContext,
   CredentialSourceInput,
   CredentialSourceStatus,
@@ -32,7 +32,7 @@ export function createCredentialGatewayContexts(driverId: string) {
     createdAt,
   };
   const signal = new AbortController().signal;
-  const source = (id: string, namespaceId = namespace.id): CredentialSource => ({
+  const source = (id: string, namespaceId = namespace.id): LegacyCredentialSource => ({
     id,
     namespaceId,
     name: "openai",
@@ -49,7 +49,9 @@ export function createCredentialGatewayContexts(driverId: string) {
     source: source(id),
     signal,
   });
-  const revisionContext = (sources: readonly CredentialSource[]): CredentialRevisionContext => ({
+  const revisionContext = (
+    sources: readonly LegacyCredentialSource[],
+  ): CredentialRevisionContext => ({
     namespace,
     revision: completeSandboxRevision({
       id: "rev_00000000-0000-4000-8000-0000000000aa",

@@ -182,6 +182,12 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     { value: "codex_pat", text: "Service Accounts" },
     { value: "credential_source", text: "ChatGPT OAuth (Experimental)" },
   ]);
+  assert.equal(await page.getByLabel("Credential storage").inputValue(), "source");
+  const apiKey = page.getByLabel("API key", { exact: true });
+  await apiKey.waitFor();
+  assert.equal(await apiKey.getAttribute("type"), "password");
+  assert.equal(await apiKey.evaluate((node: HTMLInputElement) => node.required), true);
+  await page.getByLabel("Credential storage").selectOption("secret");
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();
   assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "INPUT");

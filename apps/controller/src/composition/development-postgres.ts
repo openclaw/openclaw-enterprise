@@ -1,5 +1,4 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
-import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import {
@@ -229,13 +228,6 @@ export async function composePostgresDevelopment(
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
-      drivers.tokenService?.registerIssuer(
-        new OAuthAccountTokens(
-          state,
-          drivers.secretDriver,
-          controller.resolveConnectionClient.bind(controller),
-        ),
-      );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }

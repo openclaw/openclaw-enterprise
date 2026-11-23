@@ -828,9 +828,7 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
         },
       ];
     },
-    async registerSource() {
-      return { state: "ready" };
-    },
+    registerSource: unexpectedCredentialEffect,
     async sourceStatus() {
       return { state: "ready" };
     },
@@ -863,20 +861,23 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
     await fixture.createSecret(namespace.id, "MCP token", "controlled-token"),
   );
   async function createAccount(name: string) {
-    const response = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/credential-sources`,
-      {
-        body: {
-          name,
-          type: "bearer-token",
-          config: sourceConfig,
-          secrets: { token: secret.ref },
-        },
-      },
+    // This scenario covers the existing Gateway-owned Plugin account path. Public Source
+    // enrollment now accepts TokenService-owned static credentials instead.
+    const source = await controller(fixture).transact((state) =>
+      state.credentialSources.createCredentialSource({
+        id: `cs_${crypto.randomUUID()}`,
+        namespaceId: namespace.id,
+        name,
+        type: "bearer-token",
+        config: sourceConfig,
+        secrets: { token: secret.ref },
+        ownerCapability: "credential_gateway",
+        driverId: gateway.id,
+        state: "ready",
+        createdAt: new Date().toISOString(),
+      }),
     );
-    assert.equal(response.status, 201, JSON.stringify(response.body));
-    return text(responseData(response).id);
+    return source.id;
   }
   const sourceId = await createAccount("Controlled account");
   const siblingId = withSibling ? await createAccount("Independent account") : undefined;

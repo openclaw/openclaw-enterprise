@@ -14,13 +14,11 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import {
   AgentResponse,
   AgentSchema,
-  CredentialSourceSchema,
   IAMAccessBindingSchema,
   NamespaceSchema,
   SecretResponse,
   SecretSchema,
   type AgentWire,
-  type CredentialSourceWire,
   type NamespaceWire,
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
@@ -32,6 +30,7 @@ import type {
   CredentialProviderDefinition,
   DriverCapability,
   EgressResolution,
+  LegacyCredentialSource,
   SecretDriver,
   SecretReference,
 } from "../../packages/contracts/src/index.ts";
@@ -49,9 +48,7 @@ import { staticEgressFixture } from "./static-egress.mjs";
 const staticEgressResources = Type.Object({
   namespace: NamespaceSchema,
   agent: AgentSchema,
-  source: CredentialSourceSchema,
   secret: SecretSchema,
-  legacySource: Type.Optional(CredentialSourceSchema),
 });
 
 function unexpectedIssuerWork(): never {
@@ -95,7 +92,7 @@ type AdmitSourceInput = {
   countSecretReads: () => number;
   computeAuthentication: Extract<KubernetesAuthentication, { mode: "kubeconfig" }>;
 };
-type AdmittedSource = { agent: AgentWire; source: CredentialSourceWire };
+type AdmittedSource = { agent: AgentWire; source: Readonly<LegacyCredentialSource> };
 type StaticEgressOptions<Provider extends Server> = NonNullable<
   Parameters<typeof staticEgressFixture<Provider>>[1]
 >;
@@ -232,12 +229,24 @@ async function buildProtectedSourceFixture<Provider extends Server>(
   const resources: unknown = {
     namespace: f.namespace,
     agent: f.agent,
-    source: f.source,
     secret: f.secret,
-    legacySource: f.legacySource,
   };
   assert.ok(Check(staticEgressResources, resources), "expected seeded static egress resources");
   const { namespace, agent } = resources;
+  const sourceId = asRecord(f.source)?.id;
+  assert.ok(typeof sourceId === "string", "historical Source ID");
+  const source = await runningController.transact((unit) =>
+    unit.credentialSources.findCredentialSource(namespace.id, sourceId),
+  );
+  assert.ok(source && source.ownerCapability !== "token_service", "historical Source record");
+  const legacySourceId = asRecord(f.legacySource)?.id;
+  const legacySource =
+    typeof legacySourceId === "string"
+      ? await runningController.transact((unit) =>
+          unit.credentialSources.findCredentialSource(namespace.id, legacySourceId),
+        )
+      : undefined;
+  assert.ok(!legacySource || legacySource.ownerCapability !== "token_service");
   // These captures contain supplier wire data, not validated OCC API resources.
   const providers: Map<string, unknown> = f.providers;
   const providerRequests: {
@@ -329,6 +338,8 @@ async function buildProtectedSourceFixture<Provider extends Server>(
   const common = {
     ...app,
     ...resources,
+    source,
+    legacySource,
     providers,
     providerRequests,
     gatewayEffects,

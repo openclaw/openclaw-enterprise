@@ -7,6 +7,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 
 const uuid = "0000000a-0000-4000-8000-00000000000b";
 const id = `cs_${uuid}`;
@@ -60,8 +61,17 @@ test("published TokenService source request schemas validate managed static mate
     assert.equal(register({ ...source, config, secret: credential }), true);
     // Static custody accepts one opaque value without assigning authority to its field name.
     assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), true);
-    // Template attachment is not part of static Source enrollment.
-    assert.equal(register({ ...source, connectionTemplateId, secret: credential }), false);
+    // Source enrollment selects a Template by identity; version selection belongs to admission.
+    assert.equal(register({ ...source, connectionTemplateId, secret: credential }), true);
+    assert.equal(
+      register({
+        ...source,
+        connectionTemplateId,
+        connectionTemplateVersion: 1,
+        secret: credential,
+      }),
+      false,
+    );
     assert.equal(register(source), false);
     assert.equal(register({ ...source, secret: refs }), false);
     assert.equal(register({ ...source, secrets: refs }), false);
@@ -82,7 +92,7 @@ test("published TokenService source request schemas validate managed static mate
   }
 });
 
-test("namespace Source routes distinguish managed static material from legacy Secret references", async (t) => {
+test("namespace Source writes accept static material and reject legacy Secret references or direct OAuth enrollment", async (t) => {
   const { route, validatorCompiler } = await publishedCredentialComponents(t);
   const create = occApiRoutes.find(
     (candidate) => candidate.operationId === "createCredentialSource",
@@ -105,16 +115,16 @@ test("namespace Source routes distinguish managed static material from legacy Se
   const legacy = { name: "Legacy access", type: "openai", secrets: { api_key: reference } };
 
   assert.equal(register(managed), true);
-  assert.equal(register(legacy), true);
-  // Gateway catalogs may already offer a type named static; only raw material selects managed registration.
-  assert.equal(register({ name: managed.name, type: "static" }), true);
+  assert.equal(register(legacy), false);
+  assert.equal(register({ name: managed.name, type: "static" }), false);
+  assert.equal(register({ ...managed, type: "oauth2-refresh-token" }), false);
   assert.equal(register({ ...managed, secrets: legacy.secrets }), false);
   assert.equal(register({ ...managed, type: "openai" }), false);
   assert.equal(register({ ...managed, secret: { first: "one", second: "two" } }), false);
   assert.equal(register({ ...managed, ownerCapability: "token_service" }), false);
   assert.equal(patch({ secret: material }), true);
   assert.equal(patch({ config: { provider_preset: "openai" } }), true);
-  assert.equal(patch({ secrets: legacy.secrets }), true);
+  assert.equal(patch({ secrets: legacy.secrets }), false);
   assert.equal(patch({ secret: material, secrets: legacy.secrets }), false);
   assert.equal(patch({ secret: material, ownerCapability: "token_service" }), false);
 });
@@ -124,32 +134,95 @@ test("existing Source responses serialize sanitized managed metadata for detail 
   const list = occApiRoutes.find((candidate) => candidate.operationId === "listCredentialSources");
   const get = occApiRoutes.find((candidate) => candidate.operationId === "getCredentialSource");
   assert.ok(list && get);
-  const metadata = {
+  const identity = {
     id,
     namespaceId,
     ref: { kind: "credential_source", namespaceId, id },
     name: "Model access",
-    type: "static",
-    ownerCapability: "token_service",
-    config: { provider_preset: "openai" },
-    secrets: {},
     state: "ready",
+    createdAt: "2026-01-01T00:00:00.000Z",
   };
+  const metadata = { ...identity, type: "static", config: { provider_preset: "openai" } };
   const meta = { requestId: `req_${uuid}` };
-  const privateSource = {
-    ...metadata,
-    secret: { opaque: "synthetic-material" },
-    tokenServiceInstanceId: "private-instance",
+  const oauth = {
+    ...identity,
+    type: "oauth2-refresh-token",
+    connectionTemplateId: `ctp_${uuid}`,
+    consent: {
+      kind: "connection_template",
+      version: 1,
+      oauthClientId: `oac_${uuid}`,
+      ownerPrincipalId: `prn_${uuid}`,
+      requestedScopes: ["read"],
+      grantedScopes: ["read"],
+      issuer: "https://issuer.example.test",
+      tokenUrl: "https://issuer.example.test/token",
+      clientId: "public-client",
+      destinations: [{ host: "api.example.test", port: 443, path: "/v1/**" }],
+    },
   };
-  for (const [schema, response, internal] of [
-    [get.schema.response[200], { data: metadata, meta }, { data: privateSource, meta }],
-    [list.schema.response[200], { data: [metadata], meta }, { data: [privateSource], meta }],
-  ] as const) {
-    const validate = validatorCompiler({ ...route, schema });
-    const serialize = serializerCompiler({ ...route, schema });
-    assert.equal(validate(response), true);
-    assert.equal(validate(internal), false);
-    assert.deepEqual(JSON.parse(serialize(internal)), response);
+  const builtin = {
+    ...identity,
+    type: "oauth2-refresh-token",
+    consent: {
+      kind: "builtin_codex",
+      ownerPrincipalId: `prn_${uuid}`,
+      requestedScopes: ["openid"],
+      grantedScopes: ["openid"],
+      account: { accountId: "account-1", planType: "plus", isFedramp: false },
+      ...BUILTIN_CODEX_OAUTH_PRESET,
+    },
+  };
+  for (const source of [metadata, oauth, builtin]) {
+    const privateSource = {
+      ...source,
+      secret: { opaque: "synthetic-material" },
+      ownerCapability: "token_service",
+      secrets: {},
+      tokenServiceInstanceId: "private-instance",
+      ...("consent" in source
+        ? { consent: { ...source.consent, refreshToken: "synthetic-refresh" } }
+        : {}),
+    };
+    const responseCases: readonly (readonly [
+      Parameters<typeof validatorCompiler>[0]["schema"],
+      unknown,
+      unknown,
+    ])[] = [
+      [get.schema.response[200], { data: source, meta }, { data: privateSource, meta }],
+      [list.schema.response[200], { data: [source], meta }, { data: [privateSource], meta }],
+    ];
+    for (const [schema, publicPayload, internal] of responseCases) {
+      const validate = validatorCompiler({ ...route, schema });
+      const serialize = serializerCompiler({ ...route, schema });
+      assert.equal(validate(publicPayload), true);
+      assert.equal(validate(internal), false);
+      assert.deepEqual(JSON.parse(serialize(publicPayload)), publicPayload);
+      assert.throws(() => serialize(internal), TypeError);
+    }
+  }
+  const validate = validatorCompiler({ ...route, schema: get.schema.response[200] });
+  assert.equal(
+    validate({ data: { ...builtin, connectionTemplateId: `ctp_${uuid}` }, meta }),
+    false,
+  );
+  for (const extra of [{ refreshToken: "synthetic-refresh" }, { arbitrary: "value" }]) {
+    assert.equal(
+      validate({
+        data: {
+          ...builtin,
+          consent: { ...builtin.consent, account: { ...builtin.consent.account, ...extra } },
+        },
+        meta,
+      }),
+      false,
+    );
+  }
+  for (const field of ["issuer", "tokenUrl", "clientId"]) {
+    assert.equal(
+      validate({ data: { ...builtin, consent: { ...builtin.consent, [field]: undefined } }, meta }),
+      false,
+    );
   }
 });
 

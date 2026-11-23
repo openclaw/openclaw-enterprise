@@ -1,5 +1,5 @@
-import type { StoryAction } from "../story-action.mts";
 import type { CredentialSourceType } from "@openclaw-enterprise/contracts";
+import type { StoryAction } from "../story-action.mts";
 
 export const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 
@@ -13,11 +13,20 @@ export const createModelSecret = (value: string): StoryAction[] => [
   click("Create Secret"),
 ];
 
-export const readyForm: StoryAction[] = [
+export const managedStaticForm: StoryAction[] = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
-  ...createModelSecret("storybook-model-api-key"),
+  { selector: "#provider-api-key", value: "storybook-model-api-key" },
+];
+
+// Guided provisioning still supports Namespace Secret authentication.
+export const provisionableForm: StoryAction[] = [
+  ...form,
+  { selector: "#agent-name", value: "Research assistant" },
+  { selector: "#agent-model", value: "gpt-5.6-sol" },
+  { selector: "#model-credential-storage", value: "secret" },
+  { selector: "#provider-credential-secret", value: "sec_demo_model" },
 ];
 
 export const modelCredentialSourceTypes: CredentialSourceType[] = [

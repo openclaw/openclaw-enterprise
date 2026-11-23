@@ -12,7 +12,7 @@ import {
   type CapturedEgressUse,
   type ComputeDriver,
   type DriverByCapability,
-  type CredentialSource,
+  type LegacyCredentialSource,
   type EgressExchangeOwner,
   type EgressRefusal,
   type EgressRoute,
@@ -70,7 +70,7 @@ interface EgressAuthorityDependencies {
     authorize: IAMDriver["authorize"],
   ) => boolean;
   readonly currentCredentialSourceOwner: (
-    source: CredentialSource,
+    source: LegacyCredentialSource,
     revision: AgentRevision,
   ) => boolean;
   readonly preparedTokens: TokenService | undefined;
@@ -80,7 +80,7 @@ interface EgressAuthorityDependencies {
 
 /** The source, binding and single permitted metadata operation must describe the same grant. */
 function matchesCredentialFreeMetadataGrant(
-  source: Readonly<CredentialSource>,
+  source: Readonly<LegacyCredentialSource>,
   route: EgressRoute,
 ) {
   const admitted = source.egress;
@@ -219,7 +219,12 @@ export function createEgressAuthority(
       execution.revisionId,
       target.id,
     );
-    if (!source || source.state !== "ready" || withdrawal !== undefined) {
+    if (
+      !source ||
+      source.ownerCapability === "token_service" ||
+      source.state !== "ready" ||
+      withdrawal !== undefined
+    ) {
       return deny("withdrawn");
     }
     const admitted = source.egress;

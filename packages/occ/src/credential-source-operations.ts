@@ -8,8 +8,10 @@ import {
   type CredentialGatewayDriver,
   type CredentialRefreshDriver,
   type CredentialRefreshStatus,
-  type CredentialSource,
-  type CredentialSourceMetadata,
+  type LegacyCredentialSource as CredentialSource,
+  type StoredCredentialSource,
+  type CredentialSourceMetadata as PublicCredentialSourceMetadata,
+  type CredentialSource as CanonicalCredentialSource,
   type CredentialSourceStatus,
   type CredentialSourceType,
   type EgressRef,
@@ -33,16 +35,17 @@ import {
 } from "./credential-source-drivers.ts";
 import {
   credentialSourceMetadata,
+  oauthCredentialSourceMetadata,
+  legacyCredentialSourceMetadata,
+  type LegacyCredentialSourceMetadata as CredentialSourceMetadata,
   isManagedTokenServiceSource,
 } from "./credential-source-metadata.ts";
 import {
   CredentialSourceConfigError,
-  CredentialSourceDriverError,
   DependencyUnavailableError,
   keyedSettingPath,
   NamespaceNotReadyError,
   NotImplementedError,
-  ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
   SecretBindingValidationError,
@@ -118,6 +121,12 @@ interface CredentialSourceDependencies {
     namespaceId: string,
     sourceId: string,
   ) => Promise<OAuthConnectionStatus | undefined>;
+}
+
+function legacySource(
+  source: Readonly<StoredCredentialSource> | undefined,
+): Readonly<CredentialSource> | undefined {
+  return source?.ownerCapability === "token_service" ? undefined : source;
 }
 
 /** A name-based (version 5 layout) UUID, so a replayed registration step reuses its request ID. */
@@ -273,12 +282,11 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     // A commit failure leaves the record `registering`; deleting it removes any stored copy.
     const ready = await dependencies.transactions.transact(async (state) => {
       await lockNamespace(state, namespace.id);
-      const marked = await state.credentialSources.markCredentialSourceReady(
-        namespace.id,
-        source.id,
+      const marked = legacySource(
+        await state.credentialSources.markCredentialSourceReady(namespace.id, source.id),
       );
       if (marked !== undefined && audit !== undefined) {
-        await state.audit.append(audit(credentialSourceMetadata(marked)));
+        await state.audit.append(audit(legacyCredentialSourceMetadata(marked)));
       }
       return marked;
     });
@@ -289,7 +297,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       }
       throw new ResourceStateConflictError("The credential source changed during registration.");
     }
-    return credentialSourceMetadata(ready, status);
+    return legacyCredentialSourceMetadata(ready, status);
   }
 
   async function reserveCredentialSource(
@@ -413,28 +421,33 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       read = await readCredentialSourceSecrets(state, locked.id, secretRefs);
     }
 
-    const registering = await state.credentialSources.createCredentialSource(
-      Object.freeze({
-        id: sourceId,
-        ...(egress === undefined ? {} : { egress }),
-        namespaceId: locked.id,
-        name: input.name,
-        type: type.type,
-        config,
-        secrets: secretRefs,
-        ownerCapability: protectedType ? "credential_proxy" : "credential_gateway",
-        driverId: protectedType ? protectedType.driver.id : selected!.id,
-        state: "registering",
-        createdAt: dependencies.timestamp(),
-      }),
+    const registering = legacySource(
+      await state.credentialSources.createCredentialSource(
+        Object.freeze({
+          id: sourceId,
+          ...(egress === undefined ? {} : { egress }),
+          namespaceId: locked.id,
+          name: input.name,
+          type: type.type,
+          config,
+          secrets: secretRefs,
+          ownerCapability: protectedType ? "credential_proxy" : "credential_gateway",
+          driverId: protectedType ? protectedType.driver.id : selected!.id,
+          state: "registering",
+          createdAt: dependencies.timestamp(),
+        }),
+      ),
     );
+    if (!registering) {
+      throw new ResourceStateConflictError("The legacy Source registration changed owner.");
+    }
     await dependencies.bindCreator(state, principalId, {
       kind: "credential_source",
       id: registering.id,
       namespaceId: locked.id,
     });
     if (registrationAudit !== undefined) {
-      await state.audit.append(registrationAudit(credentialSourceMetadata(registering)));
+      await state.audit.append(registrationAudit(legacyCredentialSourceMetadata(registering)));
     }
     return {
       namespace: locked,
@@ -635,16 +648,18 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         secretRefs,
       );
     }
-    const updated = await state.credentialSources.admitEgressSource(
-      namespace.id,
-      source.id,
-      source.egress?.key.source.generation ?? 0,
-      egress,
+    const updated = legacySource(
+      await state.credentialSources.admitEgressSource(
+        namespace.id,
+        source.id,
+        source.egress?.key.source.generation ?? 0,
+        egress,
+      ),
     );
     if (!updated) {
       throw new ResourceStateConflictError("The protected source changed during admission.");
     }
-    return credentialSourceMetadata(updated, { state: "ready" });
+    return legacyCredentialSourceMetadata(updated, { state: "ready" });
   }
 
   /**
@@ -676,9 +691,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         input.credentialSourceId,
       );
       const source = isManagedTokenServiceSource(recorded) ? undefined : recorded;
-      if (source?.ownerCapability !== "token_service") {
-        dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
-      }
+      dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -689,11 +702,6 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       }
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
-      }
-      if (source.ownerCapability === "token_service") {
-        throw new ResourceStateConflictError(
-          "Reconnect the account to replace its saved OAuth grant.",
-        );
       }
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         // After the update grant and lookup: the caller may change this source.
@@ -780,15 +788,17 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       const updated =
         input.secrets === undefined
           ? source
-          : await state.credentialSources.replaceCredentialSourceSecrets(
-              namespace.id,
-              source.id,
-              secretRefs,
+          : legacySource(
+              await state.credentialSources.replaceCredentialSourceSecrets(
+                namespace.id,
+                source.id,
+                secretRefs,
+              ),
             );
       if (updated === undefined) {
         throw new ResourceStateConflictError("The credential source changed during the update.");
       }
-      return credentialSourceMetadata(updated, status);
+      return legacyCredentialSourceMetadata(updated, status);
     });
   }
 
@@ -801,103 +811,66 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
   async function rotateCredentialSource(
     principalId: string,
     input: RotateCredentialSourceInput,
-    failureAudit?: (reasonCode: string) => AuditEvent,
     audit?: AuditEvent,
-  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    namespaceIdentity(input.namespaceId);
-    const ownsTransaction = !dependencies.transactions.hasContext();
-    const rotation = await dependencies.transactions.transact(async (state) => {
-      await dependencies.authority.authorize(principalId, "update", {
-        kind: "credential_source",
-        id: input.credentialSourceId,
-        namespaceId: input.namespaceId,
-      });
-      const namespace = await exactNamespace(state, input.namespaceId);
-      // An Installation property, so it is reported before any Namespace or source state.
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const source = await state.credentialSources.lockCredentialSource(
-        namespace.id,
+    failureAudit?: (reasonCode: string) => AuditEvent,
+  ): Promise<
+    Readonly<PublicCredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>
+  > {
+    const resource = {
+      kind: "credential_source" as const,
+      namespaceId: input.namespaceId,
+      id: input.credentialSourceId,
+    };
+    await dependencies.authority.authorize(principalId, "update", resource);
+    const source = await dependencies.transactions.read(async (state) => {
+      await exactNamespace(state, input.namespaceId);
+      const found = await state.credentialSources.findCredentialSource(
+        input.namespaceId,
         input.credentialSourceId,
       );
-      if (!source || isManagedTokenServiceSource(source)) {
+      if (!isManagedTokenServiceSource(found)) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (source.state !== "ready") {
-        throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
+      if (found.type !== "oauth2-refresh-token" || found.state !== "ready") {
+        throw new ResourceStateConflictError("Only a ready OAuth Source can be rotated.");
       }
-      if (source.ownerCapability === "token_service") {
-        if (!ownsTransaction) {
-          throw new ResourceConflictError(
-            "Connected-account rotation must own its retry transaction.",
-          );
-        }
-        // Commit the retry before contacting the issuer or gateway. An uncertain write is recoverable.
-        await state.savedConnections.recordTokenSchedule(namespace.id, source.id, "due");
-        return { managedSource: source };
-      }
-      dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
-      if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
-        throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
-      }
-      const gateway = dependencies.sourceDrivers.ownedCredentialGatewayDriver(source);
-      const type = await dependencies.sourceDrivers.credentialSourceType(gateway, source.type);
-      if (type.rotation !== "refresh") {
-        throw new ResourceStateConflictError(
-          "Only a refresh-type credential source can be rotated; update a static source instead.",
-        );
-      }
-      const refresh = dependencies.sourceDrivers.credentialRefreshDriver();
-      const placed = await dependencies.sourceDrivers.credentialNamespace(namespace);
-      const context = () => ({
-        namespace: placed,
-        source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      });
-      auditUncommittedCredentialEffect(
-        dependencies.transactions,
-        failureAudit,
-        "CREDENTIAL_REFRESH_ROTATION_FAILED",
-      );
-      const minted = await credentialGatewayOperation(() =>
-        refresh.rotate(context(), crypto.randomUUID()),
-      );
-      assertRefreshMinted(minted);
-      const status = await credentialGatewayOperation(() => gateway.sourceStatus(context()));
-      if (audit) {
-        await state.audit.append(audit);
-      }
-      return credentialSourceMetadata(source, { ...status, refresh: minted });
+      return found;
     });
-    if ("managedSource" in rotation) {
-      const source = rotation.managedSource;
-      const failureCode = "CREDENTIAL_REFRESH_ROTATION_FAILED";
-      let refresh: OAuthConnectionStatus | undefined;
-      try {
-        refresh = await dependencies.maintainConnectionToken(source.namespaceId, source.id);
-        if (!refresh) {
-          throw new ResourceStateConflictError("The connected account was retired.");
-        }
-        const outcome = refresh.state === "ready" ? audit : failureAudit?.(failureCode);
-        if (outcome) {
-          await dependencies.transactions.transact((unit) => unit.audit.append(outcome));
-        }
-      } catch (error) {
-        if (failureAudit) {
-          await dependencies.transactions
-            .transact((unit) => unit.audit.append(failureAudit(failureCode)))
-            .catch(() => undefined);
-        }
-        throw error;
+    try {
+      const refresh = await dependencies.maintainConnectionToken(source.namespaceId, source.id);
+      if (!refresh) {
+        throw new ResourceStateConflictError("The OAuth Source was retired.");
       }
-      // Commit the new retry schedule and its audit even when no token was minted.
       assertRefreshMinted(refresh);
-      return credentialSourceMetadata(source, { state: "ready", refresh });
+      if (audit) {
+        await dependencies.transactions.transact((state) => state.audit.append(audit));
+      }
+      return dependencies.transactions.read(async (view) => {
+        const current = await view.credentialSources.findCredentialSource(
+          source.namespaceId,
+          source.id,
+        );
+        if (
+          !isManagedTokenServiceSource(current) ||
+          current.type !== "oauth2-refresh-token" ||
+          current.state !== "ready"
+        ) {
+          throw new ResourceStateConflictError("The OAuth Source was retired during rotation.");
+        }
+        return oauthCredentialSourceMetadata(view, current, { state: "ready", refresh });
+      });
+    } catch (error) {
+      if (failureAudit) {
+        await dependencies.transactions
+          .transact((state) =>
+            state.audit.append(failureAudit("CREDENTIAL_REFRESH_ROTATION_FAILED")),
+          )
+          .catch(() => undefined);
+      }
+      throw error;
     }
-    return rotation;
   }
 
   /**
@@ -961,12 +934,12 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         credentialSourceId,
       );
       await dependencies.authority.authorize(principalId, "update", resource);
-      if (!source) {
+      if (!isManagedTokenServiceSource(source)) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      return { managed: isManagedTokenServiceSource(source), type: source.type };
+      return { managed: true, type: source.type };
     });
   }
 
@@ -974,106 +947,84 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     principalId: string,
     namespaceId: string,
     credentialSourceId: string,
-  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+  ): Promise<
+    Readonly<PublicCredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>
+  > {
     await dependencies.authority.authorize(principalId, "read", {
       kind: "credential_source",
       id: credentialSourceId,
       namespaceId,
     });
-    const { namespace, source } = await dependencies.transactions.read(async (state) => {
-      const exact = await exactNamespace(state, namespaceId);
+    const source = await dependencies.transactions.read(async (state) => {
+      await exactNamespace(state, namespaceId);
       const found = await state.credentialSources.findCredentialSource(
         namespaceId,
         credentialSourceId,
       );
-      if (!found) {
+      if (!isManagedTokenServiceSource(found)) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      return { namespace: exact, source: found };
+      return found;
     });
-    if (isManagedTokenServiceSource(source)) {
+    if (source.type === "static") {
       return credentialSourceMetadata(source);
     }
-    if (source.ownerCapability === "token_service") {
-      const refresh = await dependencies.readConnectionStatus(namespaceId, source.id);
-      return credentialSourceMetadata(source, {
-        state: source.state === "ready" ? refresh.state : "pending",
-        refresh,
-      });
-    }
-    if (source.egress !== undefined) {
+    let refresh: OAuthConnectionStatus | undefined;
+    if (source.state === "ready") {
       try {
-        dependencies.sourceDrivers.credentialSourceOwner(source);
-      } catch {
-        return credentialSourceMetadata(source, {
-          state: "failed",
-          reason:
-            "The Driver that admitted this credential source is no longer selected or available.",
-        });
+        refresh = await dependencies.readConnectionStatus(namespaceId, source.id);
+      } catch (error) {
+        if (
+          !(error instanceof DependencyUnavailableError) &&
+          !(error instanceof ResourceStateConflictError)
+        ) {
+          throw error;
+        }
       }
-      // Configuration admission is not attachment readiness or proof of usable material.
-      const prepared =
-        source.egress.adoption !== "prepared" ||
-        (source.state === "ready" &&
-          (await dependencies
-            .preparedIssuer(source.egress.key.provider)
-            .ready(source.egress, AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS))));
-      return credentialSourceMetadata(source, {
-        state: source.state === "ready" && prepared ? "ready" : "pending",
-      });
     }
-    let status: CredentialSourceStatus;
-    try {
-      const gateway = dependencies.sourceDrivers.ownedCredentialGatewayDriver(source);
-      const context = {
-        namespace: await dependencies.sourceDrivers.credentialNamespace(namespace),
+    return dependencies.transactions.read((view) =>
+      oauthCredentialSourceMetadata(
+        view,
         source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      };
-      status = await gateway.sourceStatus(context);
-      const refresh =
-        status.state === "ready" || status.state === "pending"
-          ? await dependencies.sourceDrivers.refreshDriverForSource(gateway, source.type)
-          : undefined;
-      if (refresh !== undefined) {
-        status = { ...status, refresh: await refresh.refreshStatus(context) };
-      }
-    } catch (error) {
-      // After the grant and the lookup, so naming a driver change reveals nothing new.
-      status = {
-        state: "failed",
-        reason:
-          error instanceof CredentialSourceDriverError
-            ? "A Credential Gateway Driver that is no longer selected registered the source."
-            : "The Credential Gateway status is unavailable.",
-      };
-    }
-    return credentialSourceMetadata(source, status);
+        refresh === undefined ? undefined : { state: refresh.state, refresh },
+      ),
+    );
   }
 
   async function listCredentialSources(
     principalId: string,
     namespaceId: string,
-  ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
+  ): Promise<readonly Readonly<PublicCredentialSourceMetadata>[]> {
     const namespace = await dependencies.getNamespace(principalId, namespaceId);
     const catalog = await dependencies.transactions.read((state) =>
       state.credentialSources.listCredentialSources(namespace.id),
     );
-    const readable: Readonly<CredentialSourceMetadata>[] = [];
+    const sources: Readonly<CanonicalCredentialSource>[] = [];
     for (const source of catalog) {
       if (
-        await dependencies.authority.canRead(principalId, {
+        isManagedTokenServiceSource(source) &&
+        (await dependencies.authority.canRead(principalId, {
           kind: "credential_source",
           id: source.id,
-          namespaceId: namespace.id,
-        })
+          namespaceId,
+        }))
       ) {
-        readable.push(credentialSourceMetadata(source));
+        sources.push(source);
       }
     }
-    return Object.freeze(readable);
+    return dependencies.transactions.read(async (view) =>
+      Object.freeze(
+        await Promise.all(
+          sources.map((source) =>
+            source.type === "static"
+              ? credentialSourceMetadata(source)
+              : oauthCredentialSourceMetadata(view, source),
+          ),
+        ),
+      ),
+    );
   }
 
   async function authorizedCredentialSource(
@@ -1093,7 +1044,11 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     const { namespace, source } = await dependencies.transactions.read(async (state) => {
       const namespace = await exactNamespace(state, namespaceId);
       const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
-      if (namespace.status !== "ready" || source?.state !== "ready") {
+      if (
+        namespace.status !== "ready" ||
+        source?.state !== "ready" ||
+        source.ownerCapability === "token_service"
+      ) {
         throw new ResourceStateConflictError(
           "The credential source is unavailable. Connect again.",
         );

@@ -7,7 +7,7 @@ import {
   type ComputeDriver,
   type ComputeRevisionContext,
   type CredentialGatewayDriver,
-  type CredentialSource,
+  type StoredCredentialSource as CredentialSource,
   type CredentialSourceSnapshot,
   type LegacyEgressProxyDriver,
   type ResolvedHarnessAuth,
@@ -214,7 +214,7 @@ export async function resolveRevisionHarnessAuth(
         return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
       }
       // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
+      if (source === undefined || source.ownerCapability === "token_service") {
         return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
       }
       if (source.egress !== undefined) {

@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 
-import { CredentialSourceConfig, Name, SecretValue } from "./common.ts";
+import { ConnectionTemplateId, CredentialSourceConfig, Name, SecretValue } from "./common.ts";
 
 const material = Type.Record(Type.String(), SecretValue, {
   minProperties: 1,
@@ -21,13 +21,14 @@ export const RegisterTokenServiceSourceBody = Type.Object(
     name: Name,
     type: Type.Literal("static"),
     config: Type.Optional(managedConfig),
+    connectionTemplateId: Type.Optional(ConnectionTemplateId),
     secret: material,
   },
   {
     $id: "RegisterTokenServiceSourceBody",
     additionalProperties: false,
     description:
-      "Register a managed static Source. OCC allocates its identity and selects the TokenService owner.",
+      "Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.",
   },
 );
 

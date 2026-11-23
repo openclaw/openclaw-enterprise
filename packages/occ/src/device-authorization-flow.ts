@@ -1,4 +1,7 @@
-import { credentialSourceMetadata } from "./credential-source-metadata.ts";
+import {
+  credentialSourceRef,
+  type LegacyCredentialSourceMetadata as CredentialSourceMetadata,
+} from "./credential-source-metadata.ts";
 import {
   credentialGatewayOperation,
   CREDENTIAL_GATEWAY_TIMEOUT_MS,
@@ -7,11 +10,10 @@ import type {
   AuditEvent,
   CredentialGatewayDriver,
   CredentialRefreshDriver,
-  CredentialSource,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
-  CredentialSourceMetadata,
+  LegacyCredentialSource as CredentialSource,
   ResourceRef,
 } from "@openclaw-enterprise/contracts";
 
@@ -292,7 +294,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
     ) as Pick<CredentialSourceDeviceAuthorization, "verificationUrl" | "userCode">;
     const response = (status: "pending" | "ready", expiresAt = session.expiresAt) => ({
       session: { id: sessionId, namespaceId },
-      ...(status === "ready" ? { source: credentialSourceMetadata(context.source).ref } : {}),
+      ...(status === "ready" ? { source: credentialSourceRef(context.source) } : {}),
       status,
       expiresAt,
       intervalSeconds: session.intervalSeconds,

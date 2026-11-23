@@ -2,7 +2,7 @@ import type { CredentialRefreshStatus } from "../token-service/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceType,
   Namespace,
 } from "../../index.ts";
@@ -15,7 +15,7 @@ export interface CredentialGatewayContext {
 export interface CredentialSourceContext extends CredentialGatewayContext {
   /** Resolved by Compute: `name` is the runtime placement shared with the paired Sandbox. */
   readonly namespace: Readonly<Namespace>;
-  readonly source: Readonly<CredentialSource>;
+  readonly source: Readonly<LegacyCredentialSource>;
 }
 
 export interface CredentialSourceInput {
@@ -35,7 +35,7 @@ export interface CredentialSourceStatus {
 export interface CredentialRevisionContext extends CredentialGatewayContext {
   readonly namespace: Readonly<Namespace>;
   readonly revision: Readonly<AgentRevision>;
-  readonly sources: readonly Readonly<CredentialSource>[];
+  readonly sources: readonly Readonly<LegacyCredentialSource>[];
   /** The paired Sandbox's workload, once provisioned; required for attachment status. */
   readonly sandbox?: SandboxResourceRef;
 }

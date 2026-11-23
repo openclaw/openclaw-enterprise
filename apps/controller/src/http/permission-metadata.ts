@@ -55,10 +55,8 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   switch (operationId) {
     case "recoverAgentFirstDeployment":
       return [requirement("deploy", "agent"), requirement("read", "configuration")];
-    case "disconnectNamespaceConnection":
+    case "deleteCredentialSource":
       return [primary("requested", "unless_consent_owner")];
-    case "listNamespaceConnections":
-      return [primary(), requirement("read", "credential_source", "each_returned")];
     case "getAgentSandboxPolicy":
     case "getAgentSandboxRecommendations":
     case "validateAgentSandboxPolicy":

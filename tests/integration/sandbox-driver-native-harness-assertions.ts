@@ -30,7 +30,7 @@ import type {
 import {
   admitLoggingConfiguration,
   type AgentRevision,
-  type CredentialSource,
+  type LegacyCredentialSource,
   type HarnessWorkloadRequirements,
   type SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
@@ -262,7 +262,7 @@ export async function verifyDedicatedCodexStartup({
     },
   });
   const { driver: compute, revision } = gateway;
-  const source: CredentialSource = {
+  const source: LegacyCredentialSource = {
     id: harnessAuth.sourceId,
     namespaceId: revision.namespaceId,
     type: harnessAuth.sourceType,

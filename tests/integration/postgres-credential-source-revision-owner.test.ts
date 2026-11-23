@@ -6,7 +6,7 @@ import type pg from "pg";
 import type {
   Agent,
   AgentRevision,
-  CredentialSource,
+  LegacyCredentialSource,
   Secret,
 } from "../../packages/contracts/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
@@ -64,7 +64,7 @@ async function fixture(t: TestContext, sourceCount = 2) {
         secrets: { api_key: { kind: "secret", namespaceId: ns.id, id: secret.id } },
         state: "ready",
         createdAt,
-      }) satisfies CredentialSource,
+      }) satisfies LegacyCredentialSource,
   );
   const listed = sources.map((source) => ({
     sourceId: source.id,

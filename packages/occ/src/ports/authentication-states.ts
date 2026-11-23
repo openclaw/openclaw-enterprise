@@ -16,8 +16,6 @@ export type DeviceAuthenticationChanges = Pick<
   "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
 >;
 
-export type OAuthSourceRef = Pick<OAuthAuthenticationState, "namespaceId" | "credentialSourceId">;
-
 export interface AuthenticationStateReadRepository {
   findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
 }
@@ -36,5 +34,5 @@ export interface AuthenticationStateRepository extends AuthenticationStateReadRe
     sessionId: string,
     at: string,
   ): Promise<OAuthAuthenticationState | undefined>;
-  expire(at: string, limit: number): Promise<readonly OAuthSourceRef[]>;
+  expire(at: string, limit: number): Promise<void>;
 }

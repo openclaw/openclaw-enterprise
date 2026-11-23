@@ -207,17 +207,14 @@ export function registerDeviceAuthorizationAgentCases(): void {
       fixture.gateway.calls.some((call) => call.operation === "removeSource"),
       false,
     );
-    const sources = await fixture.request("GET", fixture.sourcesPath);
-    const {
-      data: [source],
-    } = fixture.fixtureResponse(
-      sources,
+    const sourceList = await fixture.request("GET", fixture.sourcesPath);
+    const { data: sources } = fixture.fixtureResponse(
+      sourceList,
       200,
       CredentialSourceListResponse,
       "list credential sources",
     );
-    assert.equal(source?.id, ready.source.id);
-    assert.deepEqual(source.secrets, {});
+    assert.deepEqual(sources, [], "canonical Source listing omits the Gateway-owned device Source");
     assertNoCredentials(fixture);
   });
 

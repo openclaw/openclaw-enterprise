@@ -342,14 +342,15 @@ export function postgresConnectionTemplates(
         ]);
         return deleted.rowCount === 1;
       } catch (error) {
-        // A saved account or an unexpired consent attempt can still reference a version.
+        // A canonical Source or an unexpired consent attempt can still reference the Template.
         if (
           error instanceof Error &&
           "code" in error &&
           (error.code === "23001" || error.code === "23503") &&
           "constraint" in error &&
           (error.constraint === "authentication_states_template_version" ||
-            error.constraint === "saved_connections_template_version")
+            error.constraint === "credential_sources_connection_template_id_fkey" ||
+            error.constraint === "credential_sources_oauth_template_version")
         ) {
           throw new ResourceStateConflictError("The connection template is in use.");
         }

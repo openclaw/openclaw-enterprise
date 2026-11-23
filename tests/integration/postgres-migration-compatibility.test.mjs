@@ -1489,6 +1489,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1944,6 +1945,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2315,6 +2317,101 @@ test(
 );
 
 test(
+  "TokenService Source migration refuses a retained pending OAuth Source without mutation",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix: 90 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const clientId = `ccr_${randomUUID()}`;
+    const templateId = `ctp_${randomUUID()}`;
+    const sourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients
+         (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+       VALUES ($1,$2,'Namespace client','https://issuer.example.test','migration-client',
+         'https://issuer.example.test/token','none',now())`,
+      [clientId, namespaceId],
+    );
+    // The current Template version is a deferred foreign key, as it is during normal creation.
+    await db.app.query("BEGIN");
+    try {
+      await db.app.query(
+        `INSERT INTO occ.connection_templates(id,namespace_id,display_name,current_version,created_at)
+         VALUES($1,$2,'Migration template',1,now())`,
+        [templateId, namespaceId],
+      );
+      await db.app.query(
+        `INSERT INTO occ.oauth_connection_template_versions
+           (template_id,version,oauth_client_id,issuer,mode,authorization_url,token_url,scopes,
+            authorization_parameters,destinations,created_at)
+         VALUES($1,1,$2,'https://issuer.example.test','manual','https://issuer.example.test/auth',
+           'https://issuer.example.test/token',ARRAY['read'],'{}',
+           '[{"host":"api.example.test","port":443,"path":"/"}]',now())`,
+        [templateId, clientId],
+      );
+      await db.app.query("COMMIT");
+    } catch (error) {
+      await db.app.query("ROLLBACK");
+      throw error;
+    }
+    // Old OCC consumes the browser attempt before exchange. An uncertain exchange timeout
+    // retains this pending Source for retirement without an attempt or SavedConnection.
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at)
+       VALUES($1,$2,$3,'oauth2-refresh-token',$4::jsonb,'token_service','registering',now())`,
+      [
+        sourceId,
+        namespaceId,
+        `Connection ${randomUUID()}`,
+        JSON.stringify({
+          connection_template_id: templateId,
+          connection_template_version: "1",
+          oauth_client_id: clientId,
+        }),
+      ],
+    );
+    const sourceData = async () =>
+      (
+        await db.app.query(
+          "SELECT to_jsonb(s) AS source FROM occ.credential_sources s WHERE id=$1",
+          [sourceId],
+        )
+      ).rows;
+    const before = await historySnapshot(db);
+    const sourceBefore = await sourceData();
+    assert.equal(before.receipts.length, 90);
+    assert.equal(sourceBefore.length, 1);
+    // The exact PostgreSQL cause distinguishes the explicit preflight from a later failing CHECK.
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        assert.ok(error instanceof Error);
+        const failure = error.cause ?? error;
+        assert.ok(failure instanceof Error);
+        assert.ok("code" in failure);
+        assert.equal(failure.code, "55000");
+        assert.equal(
+          failure.message,
+          "Existing OAuth custody requires an approved transfer or confirmed reset before the selected TokenService can own OAuth Sources",
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await sourceData(), sourceBefore);
+  },
+);
+
+test(
   "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
   requiresHistoryPostgres,
   async (context) => {
@@ -2506,6 +2603,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2638,6 +2736,7 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2803,6 +2902,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preTokenServiceCredentialSources"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

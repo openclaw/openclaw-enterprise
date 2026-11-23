@@ -58,7 +58,7 @@ graph TD
 
 OCC authorizes creation and validates config and Secret reference fields against
 the selected type. If the type declares `rotation: refresh` and its provider has
-a prepared issuer, OCC returns [`501 NOT_IMPLEMENTED`](../reference/credential-sources.md#rotate-a-refresh-source)
+a prepared issuer, OCC returns [`501 NOT_IMPLEMENTED`](../reference/credential-sources/other-delivery-modes.md#rotate-a-refresh-source)
 before selecting Refresh, reading Secret values, creating the record or configuring either owner. Prepared issuers cannot rotate on demand.
 
 Gateway-owned types must match the Gateway catalog. OCC selects Refresh, reads Secrets, commits
@@ -301,7 +301,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 
 - [CredentialRefreshDriver contract](../reference/drivers/credential-refresh.md)
 - [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md#oauth2-refresh-sources)
-- [Credential sources](../reference/credential-sources.md#rotate-a-refresh-source)
+- [Credential sources](../reference/credential-sources/other-delivery-modes.md#rotate-a-refresh-source)
 - [Credential source lifecycle flow](credential-source-lifecycle.md)
 
 ## Manual Notes

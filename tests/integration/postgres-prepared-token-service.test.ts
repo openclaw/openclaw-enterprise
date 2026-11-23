@@ -296,13 +296,11 @@ test(
         agent,
         namespace,
         secret,
-        path,
       }: {
         app: Awaited<ReturnType<typeof postgresApp>>;
         agent: Agent;
         namespace: Namespace;
         secret: Secret & { ref: unknown };
-        path: string;
       }) {
         const catalog = await app.request("GET", "/installation", {});
         assert.equal(catalog.status, 200);
@@ -312,16 +310,16 @@ test(
           ),
           "installed issuer absent from source catalog",
         );
-        const created = await app.request("POST", path, {
-          body: {
-            name: "artifact-feed",
-            type: ref.id,
-            config: { channel: "build-notes", agent_id: agent.id },
-            secrets: { lease_key: secret.ref },
+        const source = await app.controller.createCredentialSource(app.principal.id, {
+          namespaceId: namespace.id,
+          name: "artifact-feed",
+          type: ref.id,
+          config: { channel: "build-notes", agent_id: agent.id },
+          secrets: {
+            lease_key: { kind: "secret", namespaceId: secret.namespaceId, id: secret.id },
           },
         });
-        assert.equal(created.status, 201, JSON.stringify(created.body));
-        return bindRuntimeSource(app, namespace, agent, created.data);
+        return bindRuntimeSource(app, namespace, agent, source);
       },
     };
     // The existing JS fixture supports both the in-memory console and this PostgreSQL app.
@@ -558,36 +556,38 @@ test(
         agent,
         namespace,
         secret,
-        path,
       }: {
         app: Awaited<ReturnType<typeof postgresApp>>;
         agent: Agent;
         namespace: Namespace;
         secret: Secret & { ref: unknown };
-        path: string;
       }) {
-        const created = await platform.request("POST", path, {
-          body: {
-            type: "github-app-metadata",
-            name: "rejected-repository",
-            config: {
-              authority: "execution",
-              app_id: fixtureAppId,
-              installation_id: fixtureInstallationId,
-              repository_id: fixtureRepositoryId,
-              repository: fixtureRepository,
-              agent_id: agent.id,
-            },
-            secrets: { private_key: secret.ref },
+        const created = await platform.controller.createCredentialSource(platform.principal.id, {
+          namespaceId: namespace.id,
+          type: "github-app-metadata",
+          name: "rejected-repository",
+          config: {
+            authority: "execution",
+            app_id: fixtureAppId,
+            installation_id: fixtureInstallationId,
+            repository_id: fixtureRepositoryId,
+            repository: fixtureRepository,
+            agent_id: agent.id,
+          },
+          secrets: {
+            private_key: { kind: "secret", namespaceId: secret.namespaceId, id: secret.id },
           },
         });
-        assert.equal(created.status, 201);
         const saved = await platform.state.read((unit) =>
-          unit.credentialSources.findCredentialSource(namespace.id, created.data.id),
+          unit.credentialSources.findCredentialSource(namespace.id, created.id),
         );
-        assert(saved?.egress?.adoption === "prepared" && saved.egress.schemaVersion === 2);
+        assert(
+          saved?.ownerCapability === "credential_proxy" &&
+            saved.egress?.adoption === "prepared" &&
+            saved.egress.schemaVersion === 2,
+        );
         source = saved.egress as PreparedGitHubEgressSource;
-        return bindRuntimeSource(platform, namespace, agent, created.data);
+        return bindRuntimeSource(platform, namespace, agent, created);
       },
     };
     const f = await staticEgressFixture(

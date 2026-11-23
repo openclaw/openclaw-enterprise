@@ -13,12 +13,6 @@ import type { TestContext } from "node:test";
 import type { Page, Response as BrowserResponse } from "playwright";
 import { createRequire } from "node:module";
 import type { Namespace, PresetTemplate } from "../../packages/contracts/src/index.ts";
-import type {
-  CredentialGatewayDriver,
-  CredentialSourceContext,
-  CredentialSourceInput,
-  CredentialSourceStatus,
-} from "../../packages/contracts/src/drivers/credential-gateway/index.ts";
 import {
   CreatePresetBody,
   ErrorResponse,
@@ -32,7 +26,9 @@ import {
   type InstallationWire,
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -73,19 +69,16 @@ import {
   DEDICATED_PLACEMENT_REQUIREMENT,
   dedicatedOpenClawSandboxRefusal,
   DEPENDENCY_UNAVAILABLE,
-  GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   referenceFormRefusal,
   RESOURCE_CONFLICT,
   unboundReferenceRefusal,
   codexApiKeyRefusal,
-  notIncluded,
 } from "../helpers/refusal-text.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type ConsoleOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]>;
 type ComputeOptions = NonNullable<Parameters<typeof createTestKubernetesComputeDriver>[1]>;
-type SourceCall = { sourceId: string; input: CredentialSourceInput };
 
 const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
 const typebox: unknown = require("typebox/value");
@@ -206,90 +199,43 @@ function provisioningDrivers(compute: ComputeOptions = {}) {
 // workspace files as OpenShell's does, so Create Agent's preflight admits the form's files.
 async function modelSourceFixture(
   t: TestContext,
-  {
-    compute,
-    ...options
-  }: ConsoleOptions & {
-    compute?: ComputeOptions;
-    now?: () => Date;
-    configurationDriver?: KubernetesConfigurationDriver | undefined;
-    filesystemConfiguration?: boolean;
-  } = {},
-  gatewayMethods: {
-    registerSource?: (
-      context: CredentialSourceContext,
-      input: CredentialSourceInput,
-      attempt: number,
-    ) => CredentialSourceStatus | Promise<CredentialSourceStatus>;
-  } = {},
+  { compute, ...options }: ConsoleOptions & { compute?: ComputeOptions } = {},
 ) {
   const sandboxDriver = { ...nativeSandboxDriver(), validateWorkspaceSetup() {} };
   assertSandboxDriver(sandboxDriver);
   const drivers = provisioningDrivers({ ...compute, sandboxDriver });
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
-  const fixture = await createConsoleAppFixture(t, { ...drivers, sandboxDriver, ...options });
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    ...drivers,
+    sandboxDriver,
+    configurationDriver: undefined,
+    filesystemConfiguration: true,
+    ...options,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
   await fixture.bootstrap();
-  const calls: SourceCall[] = [];
-  const removals: string[] = [];
-  const gateway: CredentialGatewayDriver = {
-    id: "console-credential-gateway",
-    capability: "credential_gateway",
-    implementation: "test-model-source",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "openai",
-          config: [
-            {
-              name: "authorized_base_url",
-              required: false,
-              description: "Authorize the Installation model destination.",
-            },
-          ],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-        // The OpenShell Gateway's Codex personal access token type, as its catalog lists it.
-        {
-          type: "codex-pat",
-          config: [],
-          secrets: [{ name: "access_token", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "codex_pat" },
-        },
-      ];
-    },
-    async registerSource(context, input) {
-      calls.push({ sourceId: context.source.id, input });
-      return gatewayMethods.registerSource
-        ? gatewayMethods.registerSource(context, input, calls.length)
-        : { state: "ready" };
-    },
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    async updateSource() {
-      assert.fail("these cases do not update a source");
-    },
-    async attachForRevision() {
-      assert.fail("these cases do not deploy a Sandbox");
-    },
-    async attachmentStatus() {
-      assert.fail("these cases do not deploy a Sandbox");
-    },
-    async withdraw() {
-      assert.fail("these cases do not withdraw a source");
-    },
-    async removeSource(context) {
-      removals.push(context.source.id);
-    },
-  };
   const controller = controllerOf(fixture);
-  controller.registerDriver(gateway);
-  controller.selectDriver("credential_gateway", gateway.id);
-  return { fixture, calls, removals };
+  const { driver } = useInstallationSecretDriver(controller);
+  assert.ok(driver.installationSecrets);
+  assert.ok(state);
+  const instanceId = await controller.activateTokenServiceInstance(
+    "console-token-service",
+    randomUUID(),
+  );
+  const owner = new OCCTokenServiceDriver(
+    "console-token-service",
+    controller.installation.id,
+    driver.installationSecrets,
+    instanceId,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  return { fixture };
 }
 
 // Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
@@ -316,14 +262,16 @@ async function openModelSourceForm(
   }
   await page.getByLabel("Authentication method").selectOption(method);
   await page.getByLabel("Agent name").fill("Source-backed " + harness);
-  const secret = checked(
-    SecretSchema,
-    await createModelCredentialSecret(page, "synthetic-source-model-key-" + harness),
-  );
+  const material = "synthetic-source-model-key-" + harness;
+  if (method === "api_key") {
+    await page.getByLabel("API key", { exact: true }).fill(material);
+  } else {
+    await createModelCredentialSecret(page, material);
+  }
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  return { page, secret };
+  return { page, material };
 }
 
 test("Dedicated Agent provisioning shows the API's 400 message for an inline model credential", async (t) => {
@@ -455,6 +403,7 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Revoked operate Agent");
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await selectSecret(page, "API key Secret", secret);
   await page.getByText("Secret selected. Create Agent binds it.").waitFor();
   const model = page.getByLabel("Model ID", { exact: true });
@@ -710,430 +659,54 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
 });
 
-test("Credential Gateway creation registers the same model source for both dedicated harnesses", async (t) => {
+test("Create Agent saves a managed static Source and binds its exact ID to a draft", async (t) => {
   for (const harness of ["openclaw", "codex"]) {
     await t.test(harness, async (t) => {
-      const { fixture, calls } = await modelSourceFixture(
-        t,
-        {},
-        {
-          registerSource(_context, _input, attempt) {
-            // A terminal failure is cleaned up by the actual registration owner.
-            return harness === "openclaw" && attempt === 1
-              ? { state: "failed" }
-              : { state: "ready" };
-          },
-        },
-      );
-      const namespace = await readyNamespace(fixture, "Console model source " + harness);
-      const { page, secret } = await openModelSourceForm(t, fixture, namespace, harness);
-      await page
-        .locator("#model-source-authorized_base_url")
-        .fill("https://models.example.test/v1");
+      const { fixture } = await modelSourceFixture(t);
+      const namespace = await readyNamespace(fixture, "Console model Source " + harness);
+      const { page, material } = await openModelSourceForm(t, fixture, namespace, harness);
       const requests = apiRequests(page, fixture.origin);
-      const sentinel = "synthetic-source-model-key-" + harness;
-      // Lose only the registration response. The real owner records the source first;
-      // checking it must recover that exact registration, never create another copy.
       const sourceUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
-      await page.route(sourceUrl, async (route) => {
-        if (route.request().method() !== "POST") {
-          return route.fallback();
-        }
-        const response = await route.fetch();
-        if (response.status() === 503) {
-          return route.fulfill({ response });
-        }
-        assert.equal(response.status(), 201);
-        await route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: {
-              code: "DEPENDENCY_UNAVAILABLE",
-              message: "Synthetic lost registration reply.",
-            },
-          }),
-        });
-      });
-      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-      if (harness === "openclaw") {
-        await page.getByRole("button", { name: "Check credential registration" }).click();
-        await page
-          .getByText(
-            "No credential registration is visible. Select Create Agent to retry the same registration.",
-            { exact: true },
-          )
-          .waitFor();
-        await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-      }
-      await page.getByRole("button", { name: "Check credential registration" }).waitFor();
-      assert.equal(
-        await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
-        true,
+      const sourceResponse = page.waitForResponse(
+        (response) => response.url() === sourceUrl && response.request().method() === "POST",
       );
+      const agentResponse = submitCreateAgent(page, fixture, namespace.id, { path: "agents" });
+      const enrolled = await sourceResponse;
+      assert.equal(enrolled.status(), 201);
+      const { data: source } = checked(CredentialSourceResponse, await enrolled.json());
+      const created = await agentResponse;
+      assert.equal(created.status(), 201);
+      const payload = object(created.request().postDataJSON());
+      assert.deepEqual(object(enrolled.request().postDataJSON()), {
+        name: `Source-backed ${harness} model credential`,
+        type: "static",
+        secret: { opaque: material },
+        config: { provider_preset: "openai" },
+      });
+      assert.deepEqual(payload.harnessAuth, { method: "credential_source", sourceId: source.id });
+      assert.deepEqual(payload.credentialSources, [{ sourceId: source.id }]);
+      assert.equal(JSON.stringify(payload).includes(material), false);
+      assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
       assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
-      await page.getByRole("button", { name: "Check credential registration" }).click();
-      await page
-        .getByText("Credential Source is ready. Select Create Agent to continue.", { exact: true })
-        .waitFor();
-      const response = await submitCreateAgent(page, fixture, namespace.id, {
-        path: "agents/provision",
-      });
-      assert.equal(response.status(), 503); // This fixture has no durable provisioning queue.
-      const payload = object(response.request().postDataJSON());
-      assert.deepEqual(payload.harnessAuth, {
-        method: "credential_source",
-        sourceId: present(calls.at(-1)).sourceId,
-      });
-      assert.equal(payload.executionMode, "dedicated");
-      assert.equal(calls.length, harness === "openclaw" ? 2 : 1);
-      assert.deepEqual(present(calls.at(-1)).input.secrets, { api_key: sentinel });
-      assert.deepEqual(present(calls.at(-1)).input.config, {
-        authorized_base_url: "https://models.example.test/v1",
-      });
-      const registrations = pathRequests(
-        requests,
-        "POST",
-        `/namespaces/${namespace.id}/credential-sources`,
+      await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+      const method = page.getByLabel("Authentication source", { exact: true });
+      assert.equal(await method.inputValue(), "credential_source");
+      assert.equal(await method.locator("option:checked").innerText(), "Credential Source");
+      assert.equal(
+        await page.getByRole("button", { name: "Sign in with OAuth" }).isVisible(),
+        false,
       );
-      assert.equal(registrations.length, calls.length);
-      for (const registration of registrations) {
-        assert.deepEqual(registration.body, present(registrations[0]).body);
-        assert.deepEqual(object(registration.body).secrets, { api_key: secret.ref });
+      if (harness === "codex") {
+        await method.selectOption("device_login");
+        assert.equal(
+          await page.getByRole("button", { name: "Sign in with OAuth" }).isVisible(),
+          true,
+        );
+      } else {
+        assert.equal(await method.locator('option[value="device_login"]').count(), 0);
       }
-      assert.equal(JSON.stringify(payload).includes(sentinel), false);
-      assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
     });
   }
-});
-
-test("Model source refusal survives repeated empty checks before explicit retry", async (t) => {
-  const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await readyNamespace(fixture, "Retained source refusal");
-  const { page, secret } = await openModelSourceForm(t, fixture, namespace);
-  const requests = apiRequests(page, fixture.origin);
-  const path = `/namespaces/${namespace.id}/credential-sources`;
-  const reason = "Model source registration is unavailable for this Installation.";
-  let refuse = true;
-  await page.route(`${fixture.origin}${path}`, (route) => {
-    if (route.request().method() === "POST" && refuse) {
-      return route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", reason));
-    }
-    return route.fallback();
-  });
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: reason }).waitFor();
-  const writes = nonAuthWriteRequests(requests);
-  const check = page.getByRole("button", { name: "Check credential registration" });
-  // Real empty list reads must preserve the POST refusal without retrying any writes.
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const reads = pathRequests(requests, "GET", path).length;
-    await check.click();
-    await waitForEnabled(check);
-    await page
-      .getByText(
-        `${reason} No credential registration is visible. The selected Secret remains saved. Resolve the reported problem with an administrator if needed, then select Create Agent to retry.`,
-        { exact: true },
-      )
-      .waitFor();
-    assert.equal(pathRequests(requests, "GET", path).length, reads + 1);
-    assert.deepEqual(nonAuthWriteRequests(requests), writes);
-    assert.equal(calls.length, 0);
-  }
-  // Once the reported problem is corrected, only the explicit retry registers the
-  // original source and carries the same saved Secret into provisioning.
-  refuse = false;
-  const response = await submitCreateAgent(page, fixture, namespace.id, {
-    path: "agents/provision",
-  });
-  assert.equal(response.status(), 503); // This fixture has no durable provisioning queue.
-  const registrations = pathRequests(requests, "POST", path);
-  assert.equal(registrations.length, 2);
-  assert.deepEqual(present(registrations[1]).body, present(registrations[0]).body);
-  assert.deepEqual(object(present(registrations[1]).body).secrets, { api_key: secret.ref });
-  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
-  assert.equal(
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/access-bindings`).length,
-    0,
-  );
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, {
-    method: "credential_source",
-    sourceId: present(calls[0]).sourceId,
-  });
-});
-
-test("source destination rejection allows correction only after confirming no registration exists", async (t) => {
-  const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await readyNamespace(fixture, "Source destination correction");
-  const { page } = await openModelSourceForm(t, fixture, namespace);
-  const field = page.locator("#model-source-authorized_base_url");
-  await field.fill("https://other.example.test/v1");
-  const path = `/namespaces/${namespace.id}/credential-sources`;
-  let refused = false;
-  await page.route(`**${path}`, async (route) => {
-    if (route.request().method() === "POST" && !refused) {
-      refused = true;
-      // UI recovery from the owner's documented pre-registration refusal. The source API
-      // suite separately exercises the real destination validator and absence of side effects.
-      return route.fulfill(
-        apiErrorResponse(
-          400,
-          "INVALID_REQUEST",
-          "Credential destination authorization must match the Installation model provider.",
-        ),
-      );
-    }
-    return route.fallback();
-  });
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Check credential registration" }).waitFor();
-  assert.equal(await field.isDisabled(), true);
-  assert.equal(calls.length, 0);
-  await page.getByRole("button", { name: "Check credential registration" }).click();
-  await waitForEnabled(field);
-  await page
-    .getByText(
-      "Credential destination authorization must match the Installation model provider. No credential registration exists. Correct the source configuration and try again.",
-      { exact: true },
-    )
-    .waitFor();
-  await field.fill("https://models.example.test/v1");
-  const result = await submitCreateAgent(page, fixture, namespace.id, { path: "agents/provision" });
-  assert.equal(result.status(), 503); // The fixture has no durable provisioning queue.
-  assert.equal(calls.length, 1);
-  assert.deepEqual(present(calls[0]).input.config, {
-    authorized_base_url: "https://models.example.test/v1",
-  });
-});
-
-test("Create checks the requested credential registration instead of binding a different source", async (t) => {
-  const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await readyNamespace(fixture, "Source response identity");
-  const root = `/namespaces/${namespace.id}`;
-  const path = `${root}/credential-sources`;
-  const otherSecret = await createSecret(fixture, namespace.id, "Other key", "other-test-value");
-  const other = await fixture.request("POST", path, {
-    body: { name: "Other model source", type: "openai", secrets: { api_key: otherSecret.ref } },
-  });
-  assert.equal(other.status, 201);
-  const { data: otherSource } = checked(CredentialSourceResponse, other.body);
-  const { page, secret } = await openModelSourceForm(t, fixture, namespace);
-  const requests = apiRequests(page, fixture.origin);
-  let registered: CredentialSourceResponse["data"] | undefined;
-  await page.route(`**${path}`, async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.fallback();
-    }
-    const response = await route.fetch();
-    assert.equal(response.status(), 201);
-    const { data, meta } = checked(CredentialSourceResponse, await response.json());
-    registered = data;
-    assert.equal(present(registered.secrets.api_key).id, secret.id);
-    assert.notEqual(registered.id, otherSource.id);
-    // Only the response is replaced. A subsequent list can distinguish both real registrations.
-    await route.fulfill({ status: 201, json: { data: otherSource, meta } });
-  });
-
-  const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  await create.click();
-  const check = page.getByRole("button", { name: "Check credential registration" });
-  await page
-    .getByRole("alert")
-    .filter({
-      hasText:
-        "Credential Source registration could not be confirmed. Check credential registration",
-    })
-    .waitFor();
-  assert.equal(
-    agentProvisionPostRequests(requests, namespace.id).length,
-    0,
-    "do not provision with the other credential source",
-  );
-  assert.equal(await create.isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => {
-    if (!(form instanceof HTMLFormElement)) {
-      throw new Error("Expected a form");
-    }
-    form.requestSubmit();
-  });
-  assert.equal(pathRequests(requests, "POST", path).length, 1);
-  assert.equal(pathRequests(requests, "POST", `${root}/iam/access-bindings`).length, 0);
-  await check.click();
-  await page.getByText("Credential Source is ready. Select Create Agent to continue.").waitFor();
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
-  const sent = page.waitForRequest((request) => request.url().endsWith("/agents/provision"));
-  await create.click();
-  assert.deepEqual(object((await sent).postDataJSON()).harnessAuth, {
-    method: "credential_source",
-    sourceId: present(registered).id,
-  });
-  assert.deepEqual(
-    calls.map(({ sourceId }) => sourceId),
-    [otherSource.id, present(registered).id],
-  );
-});
-
-test("Credential registration recovers a ready source after a same-name retry conflicts", async (t) => {
-  const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await readyNamespace(fixture, "Delayed source registration");
-  const { page } = await openModelSourceForm(t, fixture, namespace);
-  const requests = apiRequests(page, fixture.origin);
-  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
-  const sourceUrl = fixture.origin + sourcePath;
-  let delayedRegistration: unknown;
-  await page.route(sourceUrl, async (route) => {
-    if (route.request().method() !== "POST" || delayedRegistration) {
-      return route.fallback();
-    }
-    // The transport loses the response before the original request reaches OCC.
-    // Its exact body will arrive after the operator checks the currently empty list.
-    delayedRegistration = route.request().postDataJSON();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic delayed registration." },
-      }),
-    });
-  });
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Check credential registration" }).click();
-  await page
-    .getByText(
-      "No credential registration is visible. Select Create Agent to retry the same registration.",
-      { exact: true },
-    )
-    .waitFor();
-  // Complete the earlier real API request between the empty read and the explicit retry.
-  // Namespace/name uniqueness must reject the retry before another gateway registration.
-  const registered = await fixture.request("POST", sourcePath, { body: delayedRegistration });
-  assert.equal(registered.status, 201, JSON.stringify(registered.body));
-  const conflict = page.waitForResponse(
-    (response) => response.url() === sourceUrl && response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await conflict).status(), 409);
-  await page.getByRole("button", { name: "Check credential registration" }).click();
-  await page
-    .getByText("Credential Source is ready. Select Create Agent to continue.", { exact: true })
-    .waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Remove failed credential registration" }).isVisible(),
-    false,
-  );
-  const response = await submitCreateAgent(page, fixture, namespace.id, {
-    path: "agents/provision",
-  });
-  assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
-  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, {
-    method: "credential_source",
-    sourceId: resourceId(registered.data),
-  });
-  assert.equal(calls.length, 1);
-  const retries = pathRequests(requests, "POST", sourcePath);
-  assert.equal(retries.length, 2);
-  assert.deepEqual(present(retries[0]).body, present(retries[1]).body);
-});
-
-test("Credential registration removal preserves the safety fence and retries the exact source", async (t) => {
-  let now = Date.now();
-  const { fixture, calls, removals } = await modelSourceFixture(
-    t,
-    { now: () => new Date(now) },
-    {
-      registerSource(_context, _input, attempt) {
-        if (attempt === 1) {
-          throw new Error("Synthetic uncertain gateway outcome.");
-        }
-        return { state: "ready" };
-      },
-    },
-  );
-  const namespace = await readyNamespace(fixture, "Source removal recovery");
-  const { page, secret } = await openModelSourceForm(t, fixture, namespace, "openclaw");
-  const requests = apiRequests(page, fixture.origin);
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Check credential registration" }).click();
-  const remove = page.getByRole("button", { name: "Remove failed credential registration" });
-  await remove.waitFor();
-  // Removal deletes the registration on the server: the destructive tone (finding 1967).
-  assert.match(present(await remove.getAttribute("class")), /\bbutton--danger\b/);
-  const sourceId = present(calls[0]).sourceId;
-  const sourcePath = `/namespaces/${namespace.id}/credential-sources/${sourceId}`;
-  const deleted = () =>
-    page.waitForResponse(
-      (response) =>
-        response.url() === fixture.origin + sourcePath && response.request().method() === "DELETE",
-    );
-  // A refused removal names the grant DELETE checks and who grants it, not a bare denial
-  // followed by an outage hint (finding 2538).
-  await page.route(
-    fixture.origin + sourcePath,
-    (route) =>
-      route.request().method() === "DELETE"
-        ? route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL))
-        : route.fallback(),
-    { times: 1 },
-  );
-  const refused = deleted();
-  await remove.click();
-  assert.equal((await refused).status(), 403);
-  await page
-    .getByText(
-      `${notIncluded("removing this credential registration", "credential source delete on it")} The model Secret remains saved.`,
-      { exact: true },
-    )
-    .waitFor();
-  const first = deleted();
-  await remove.click();
-  assert.equal((await first).status(), 503);
-  // The real owner already removed the copy, but keeps the deleting record to
-  // fence late registration effects. The Console must retain the same cleanup handle.
-  const fenced = await fixture.request("GET", sourcePath);
-  assert.equal(fenced.status, 200, JSON.stringify(fenced.body));
-  assert.equal(object(fenced.data).state, "deleting");
-  assert.equal(
-    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
-    true,
-  );
-  await page.getByText(/Retry removal when the Credential Gateway is available/).waitFor();
-  now += 70_001;
-  const second = deleted();
-  await remove.click();
-  assert.equal((await second).status(), 204);
-  await page
-    .getByText(
-      "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.",
-      { exact: true },
-    )
-    .waitFor();
-  const response = await submitCreateAgent(page, fixture, namespace.id, {
-    path: "agents/provision",
-  });
-  assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
-  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, {
-    method: "credential_source",
-    sourceId: present(calls[1]).sourceId,
-  });
-  assert.equal(calls.length, 2);
-  assert.notEqual(present(calls[1]).sourceId, sourceId);
-  assert.deepEqual(present(calls[0]).input, present(calls[1]).input);
-  assert.deepEqual(removals, [sourceId, sourceId, sourceId]); // Initial abandonment, then both DELETEs.
-  // The refused DELETE (answered in the page), then the two that reached the API.
-  assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 3);
-  assert.deepEqual(
-    object(
-      present(pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`)[1])
-        .body,
-    ).secrets,
-    { api_key: secret.ref },
-  );
-  assert.equal(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${secret.id}`)).status,
-    200,
-  );
 });
 
 test("Agent Credentials saves its existing model source without replacing the binding", async (t) => {
@@ -1142,14 +715,13 @@ test("Agent Credentials saves its existing model source without replacing the bi
     filesystemConfiguration: true,
   });
   const namespace = await readyNamespace(fixture, "Saved Source authentication");
-  const secret = await createSecret(
-    fixture,
-    namespace.id,
-    "Source model key",
-    "synthetic-retained-source-key",
-  );
   const source = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-    body: { name: "Agent model source", type: "openai", secrets: { api_key: secret.ref } },
+    body: {
+      name: "Agent model source",
+      type: "static",
+      secret: { opaque: "synthetic-retained-source-key" },
+      config: { provider_preset: "openai" },
+    },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
   const configurationId = resourceId(
@@ -1778,98 +1350,24 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
 });
 
-// The same unplaceable Installation with a Credential Gateway. Create Agent registers the model
-// Secret as a Credential Source and binds that, which provisioning does not check before its plan,
-// so the preflight did not run: the form saved the Preset's model Secret and registered the source,
-// then provisioning answered the fixed 409 and left both behind (finding 2406). The preflight now
-// names the source type's login mode and refuses before either write, for a Secret the Preset
-// saves and for a Secret the form only registers. The fixture's Sandbox Driver refuses Embedded
-// execution, so the form trims the placement advice here too (finding 2419).
-async function assertGatewayPreflightRefusal({
-  page,
-  origin,
-  namespace,
-  calls,
-  method = "api_key",
-}: {
-  page: Page;
-  origin: string;
-  namespace: Pick<Namespace, "id">;
-  calls: SourceCall[];
-  method?: string;
-}) {
-  const requests = apiRequests(page, origin);
-  const root = `${origin}/namespaces/${namespace.id}`;
-  // The first answer: the preflight's, or (without it) the Secret save's or registration's.
-  const first = page.waitForResponse(
-    (response) =>
-      [`${root}/agents/validate`, `${root}/secrets`, `${root}/credential-sources`].includes(
-        response.url(),
-      ) && response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await first;
-  assert.equal(response.url(), `${root}/agents/validate`);
-  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, { method });
+// Placement validation must run before TokenService takes custody of the API key.
+test("Create Agent refuses an unplaceable Dedicated Agent before static Source custody", async (t) => {
+  const { fixture } = await modelSourceFixture(t, {
+    compute: { channelRuntime: true, routed: false },
+  });
+  const namespace = await readyNamespace(fixture, "Static Source unplaceable");
+  const { page } = await openModelSourceForm(t, fixture, namespace);
+  const requests = apiRequests(page, fixture.origin);
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents/validate",
+  });
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, { method: "api_key" });
   await assertPlacementRequirement(page, response);
-  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
-  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
     0,
   );
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
-  assert.equal(calls.length, 0);
-}
-
-test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Gateway write", async (t) => {
-  const unplaceable = { compute: { channelRuntime: true, routed: false } };
-  await t.test("Preset model Secret", async (t) => {
-    const { fixture, calls } = await modelSourceFixture(t, unplaceable);
-    const namespace = await readyNamespace(fixture, "Gateway Preset unplaceable");
-    const standard = checked(
-      CreatePresetBody,
-      JSON.parse(
-        await readFile(
-          new URL("../../deploy/presets/standard-codex.json", import.meta.url),
-          "utf8",
-        ),
-      ),
-    );
-    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-      body: { name: "Gateway Codex", template: standard.template },
-    });
-    assert.equal(preset.status, 201, JSON.stringify(preset.body));
-    const { page } = await newPage(t, fixture, { browser });
-    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption({ label: "Gateway Codex" });
-    await page.getByLabel("Name", { exact: true }).fill("gateway-codex");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
-    await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
-    await page.getByRole("button", { name: "Use Preset" }).click();
-    await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
-  });
-  await t.test("selected Secret", async (t) => {
-    const { fixture, calls } = await modelSourceFixture(t, unplaceable);
-    const namespace = await readyNamespace(fixture, "Gateway Secret unplaceable");
-    // The form's Secret dialog saved the model Secret; only the registration would follow.
-    const { page } = await openModelSourceForm(t, fixture, namespace);
-    await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
-  });
-  // A Codex service account token registers as the Gateway's codex_pat source type, so the
-  // preflight names that login mode.
-  await t.test("selected service account token", async (t) => {
-    const { fixture, calls } = await modelSourceFixture(t, unplaceable);
-    const namespace = await readyNamespace(fixture, "Gateway token unplaceable");
-    const { page } = await openModelSourceForm(t, fixture, namespace, "codex", "codex_pat");
-    await assertGatewayPreflightRefusal({
-      page,
-      origin: fixture.origin,
-      namespace,
-      calls,
-      method: "codex_pat",
-    });
-  });
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
 });
 
 // Without Agent provisioning, Create Agent saves a Configuration and then the Agent. Its

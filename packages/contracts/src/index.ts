@@ -1,6 +1,7 @@
 import type { Static } from "typebox";
 
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
+import type { ConnectionEndpoint } from "./connection-templates.ts";
 import type { DeploymentPolicy } from "./deployment-policy.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -81,7 +82,6 @@ export type {
   PreparedTokenIssuer,
   OAuthConnectionAccessToken,
   OAuthConnectionGrant,
-  OAuthRefreshTokenRegistration,
   OAuthRefreshTokenIssuer,
   OAuthConnectionClient,
   OAuthConnectionRegistration,
@@ -189,7 +189,6 @@ export type {
   StaticKeyTemplateValues,
   OAuthConnectionTemplateVersion,
   ConnectionSession,
-  SavedConnection,
 } from "./connection-templates.ts";
 export {
   ConnectionTemplateValidationError,
@@ -590,23 +589,70 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver-owned sources pin the selected Driver. The Token Service owns saved accounts directly. */
-type CredentialSourceOwner =
-  | {
-      readonly ownerCapability: "credential_gateway" | "credential_proxy";
-      readonly driverId: string;
-    }
-  | {
-      readonly ownerCapability: "token_service";
-      readonly driverId?: never;
-      /** Present for registrations owned by an Installation-selected credential store. */
-      readonly tokenServiceInstanceId?: string;
-    };
+interface OAuthSourceConsentBase {
+  readonly ownerPrincipalId: string;
+  readonly requestedScopes: readonly string[];
+  readonly grantedScopes: readonly string[];
+  readonly revocationRequestedBy?: string;
+  readonly revokedAt?: string;
+}
 
-export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
+export interface OAuthTemplateSourceConsent extends OAuthSourceConsentBase {
+  readonly kind: "connection_template";
+  readonly version: number;
+  readonly oauthClientId: string;
+}
 
-/** OCC source admission, including its owner and Secret references, never credential values. */
-export type CredentialSource = CredentialSourceOwner & {
+export interface BuiltinCodexOAuthAccount {
+  readonly accountId: string;
+  readonly planType: string;
+  readonly isFedramp: boolean;
+  readonly userId?: string;
+  readonly email?: string;
+  readonly accountUserId?: string;
+}
+
+export interface OAuthBuiltinCodexSourceConsent extends OAuthSourceConsentBase {
+  readonly kind: "builtin_codex";
+  readonly account: BuiltinCodexOAuthAccount;
+}
+
+/** The original, nonsecret authorization attached to an OAuth Source. */
+export type OAuthSourceConsent = OAuthTemplateSourceConsent | OAuthBuiltinCodexSourceConsent;
+
+interface TokenServiceCredentialSource {
+  readonly id: string;
+  readonly namespaceId: string;
+  readonly name: string;
+  readonly ownerCapability: "token_service";
+  readonly tokenServiceInstanceId: string;
+  readonly state: "ready" | "deleting";
+  readonly createdAt: string;
+}
+
+export interface StaticCredentialSource extends TokenServiceCredentialSource {
+  readonly type: "static";
+  readonly connectionTemplateId?: string;
+  readonly config: Readonly<Record<string, string>>;
+}
+
+interface OAuthCredentialSourceBase extends TokenServiceCredentialSource {
+  readonly type: "oauth2-refresh-token";
+}
+
+export type OAuthCredentialSource = OAuthCredentialSourceBase &
+  (
+    | { readonly connectionTemplateId: string; readonly consent: OAuthTemplateSourceConsent }
+    | { readonly connectionTemplateId?: never; readonly consent: OAuthBuiltinCodexSourceConsent }
+  );
+
+/** The selected TokenService creates and owns either supported Source type. */
+export type CredentialSource = StaticCredentialSource | OAuthCredentialSource;
+
+/** Existing Gateway and Proxy records remain internal to their current runtime owners. */
+export interface LegacyCredentialSource {
+  readonly ownerCapability: "credential_gateway" | "credential_proxy";
+  readonly driverId: string;
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -616,20 +662,55 @@ export type CredentialSource = CredentialSourceOwner & {
   readonly secrets: Readonly<Record<string, SecretReference>>;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
-};
+}
 
-export interface CredentialSourceMetadata {
-  readonly ownerCapability: CredentialSourceOwnerCapability;
-  readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
+/** Shared persistence still serves existing runtime owners; it is not the public Source contract. */
+export type StoredCredentialSource = CredentialSource | LegacyCredentialSource;
+
+export type CredentialSourceOwnerCapability = StoredCredentialSource["ownerCapability"];
+
+interface OAuthIssuerMetadata {
+  readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly clientId: string;
+}
+
+export interface OAuthTemplateSourceConsentMetadata
+  extends OAuthTemplateSourceConsent, OAuthIssuerMetadata {
+  readonly destinations: readonly ConnectionEndpoint[];
+  readonly resource?: string;
+  readonly mcpServerUrl?: string;
+}
+
+export type OAuthBuiltinCodexSourceConsentMetadata = OAuthBuiltinCodexSourceConsent;
+export type OAuthSourceConsentMetadata =
+  OAuthTemplateSourceConsentMetadata | OAuthBuiltinCodexSourceConsentMetadata;
+
+interface CredentialSourceMetadataBase {
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
-  readonly type: string;
-  readonly config: Readonly<Record<string, string>>;
-  readonly secrets: Readonly<Record<string, SecretReference>>;
-  readonly state: CredentialSourceState;
+  readonly state: "ready" | "deleting";
+  readonly createdAt: string;
   readonly ref: CredentialSourceReference;
 }
+
+export type CredentialSourceMetadata =
+  | (CredentialSourceMetadataBase & {
+      readonly type: "static";
+      readonly connectionTemplateId?: string;
+      readonly config: Readonly<Record<string, string>>;
+    })
+  | (CredentialSourceMetadataBase & { readonly type: "oauth2-refresh-token" } & (
+        | {
+            readonly connectionTemplateId: string;
+            readonly consent: OAuthTemplateSourceConsentMetadata;
+          }
+        | {
+            readonly connectionTemplateId?: never;
+            readonly consent: OAuthBuiltinCodexSourceConsentMetadata;
+          }
+      ));
 
 /**
  * An authorized request to revoke one credential source from one Agent revision. `revoked`
@@ -692,7 +773,7 @@ export type CredentialSourceSnapshot = {
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
-  source: CredentialSource,
+  source: StoredCredentialSource,
   snapshot: CredentialSourceSnapshot | undefined,
 ): boolean {
   if (!snapshot || source.id !== snapshot.sourceId || source.type !== snapshot.sourceType) {
@@ -791,7 +872,7 @@ export type ResolvedHarnessAuth =
       readonly backendRef: SecretBackendRef;
     })
   | (Extract<HarnessAuthSnapshot, { method: "credential_source"; credentialGatewayId: string }> & {
-      readonly source: Readonly<CredentialSource>;
+      readonly source: Readonly<LegacyCredentialSource>;
     })
   | (Extract<
       HarnessAuthSnapshot,

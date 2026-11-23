@@ -382,6 +382,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   // Reconnection is a separate, explicit authentication save with a newly completed login.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
+  await page.getByLabel("Authentication source").selectOption("device_login");
   await signInReady(page, advanceApiClock);
   assert.deepEqual(
     jsonObject((await fixture.request("GET", agentPath)).data).harnessAuth,
@@ -407,11 +408,12 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     { sourceId: otherSource.id },
     { sourceId: replaced.sourceId },
   ]);
-  const oldSource = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/credential-sources/${originalAuth.sourceId}`,
+  // Replacing a legacy Gateway login leaves its internal Source intact. Canonical public
+  // Source reads expose TokenService-owned Sources, so they cannot inspect this legacy row.
+  const oldSource = await fixture.controller.transact((state) =>
+    state.credentialSources.findCredentialSource(namespace.id, originalAuth.sourceId),
   );
-  assert.equal(oldSource.status, 200);
+  assert.equal(oldSource?.id, originalAuth.sourceId);
   assert.equal(
     gateway.calls.some((call) => call.operation === "removeSource"),
     false,
@@ -428,6 +430,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
 
   // Clearing a staged selection immediately restores the saved source. A concurrent save
   // must not adopt the cleared source while the session close is still pending.
+  await page.getByLabel("Authentication source").selectOption("device_login");
   await signInReady(page, advanceApiClock);
   const releaseDiscard = Promise.withResolvers<void>();
   const slowDiscard = Promise.withResolvers<number>();
@@ -456,6 +459,12 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   );
   await page.getByRole("button", { name: "Clear selection", exact: true }).click();
   await discardSent;
+  assert.equal(
+    await page
+      .getByLabel("Authentication source")
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
   const racedSave = page.waitForResponse(
     (response) => response.url().endsWith(agentPath) && response.request().method() === "PATCH",
   );
@@ -518,7 +527,7 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   );
   const save = page.getByRole("button", { name: "Save authentication source", exact: true });
   await save.waitFor();
-  await page.getByLabel("Authentication source").selectOption("credential_source");
+  await page.getByLabel("Authentication source").selectOption("device_login");
   await save.click();
   await page.getByText("Complete ChatGPT sign-in before saving.", { exact: true }).waitFor();
   await expectNoText(page, /Service unavailable/);
@@ -575,7 +584,7 @@ for (const savedAgent of [false, true]) {
       }
       await page
         .getByLabel(agent ? "Authentication source" : "Authentication method")
-        .selectOption("credential_source");
+        .selectOption(agent ? "device_login" : "credential_source");
       const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
       const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
       const starts = () =>
@@ -717,7 +726,7 @@ for (const savedAgent of [false, true]) {
       await page.getByRole("button", { name: "Start without Preset" }).click();
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
-    await page.getByLabel(methodLabel).selectOption("credential_source");
+    await page.getByLabel(methodLabel).selectOption(agent ? "device_login" : "credential_source");
     const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
     const held = await holdRequests(t, page, `**${beginPath}`, {
       once: true,
@@ -753,7 +762,7 @@ for (const savedAgent of [false, true]) {
     );
     // Method changes rerender controls; even a delivered click cannot repeat the write.
     await page.getByLabel(methodLabel).selectOption("api_key");
-    await page.getByLabel(methodLabel).selectOption("credential_source");
+    await page.getByLabel(methodLabel).selectOption(agent ? "device_login" : "credential_source");
     await start.dispatchEvent("click");
     await settlePageRequests(page);
     assert.equal(
@@ -792,7 +801,7 @@ async function openAgentOAuth(t: TestContext, name: string) {
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
-  await page.getByLabel("Authentication source").selectOption("credential_source");
+  await page.getByLabel("Authentication source").selectOption("device_login");
   const beginPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
   return {
     fixture,
@@ -1181,7 +1190,7 @@ test("a refused device login on Agent detail allows the same login to finish aft
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
-  await page.getByLabel("Authentication source").selectOption("credential_source");
+  await page.getByLabel("Authentication source").selectOption("device_login");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
 
   // Without credential source create the start is refused before any login exists.

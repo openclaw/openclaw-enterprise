@@ -676,9 +676,17 @@ async function buildStaticEgressFixture(
   };
   const secret = await post("secrets", { name: "provider-key", value: "synthetic-key-initial" });
   const path = `/namespaces/${namespace.id}/credential-sources`;
+  // These exchange cases serve a Source created by the former Gateway/Proxy enrollment path.
+  // Public Source enrollment now belongs to TokenService; use its prior controller owner only
+  // to establish realistic historical state before exercising current Agent and exchange paths.
+  const historicalSource = (input) =>
+    app.controller.createCredentialSource(app.principal.id, {
+      namespaceId: namespace.id,
+      ...input,
+    });
   let legacySource;
   if (includeLegacy) {
-    legacySource = await post("credential-sources", {
+    legacySource = await historicalSource({
       name: "approved-copy",
       type: "openai",
       config: { authorized_base_url: modelProvider.baseUrl },
@@ -713,7 +721,7 @@ async function buildStaticEgressFixture(
   }
   let source = protectedSourceOnly
     ? undefined
-    : await post("credential-sources", {
+    : await historicalSource({
         name: "inference",
         type: "openai",
         config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },

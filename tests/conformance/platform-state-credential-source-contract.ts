@@ -4,7 +4,7 @@ import type {
   Agent,
   AgentCredentialSourceBinding,
   AgentRevision,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceSnapshot,
   CredentialWithdrawal,
   HarnessAuthBinding,
@@ -83,7 +83,7 @@ export async function verifyCredentialSourceContract(
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt: new Date().toISOString(),
-  } satisfies CredentialSource;
+  } satisfies LegacyCredentialSource;
   const sourceBinding = {
     method: "credential_source",
     sourceId: source.id,
@@ -209,7 +209,7 @@ export async function verifyCredentialSourceContract(
     id: identifier("cs"),
     name: "Registering gateway " + randomUUID(),
     state: "registering",
-  } satisfies CredentialSource;
+  } satisfies LegacyCredentialSource;
   const abandonedSource = {
     ...registeringSource,
     id: identifier("cs"),
@@ -349,7 +349,7 @@ export async function verifyCredentialSourceContract(
           sender: { id: "contract-sender", generation: 1 },
           resolver: { id: "contract-resolver", generation: 1 },
         },
-      } satisfies CredentialSource;
+      } satisfies LegacyCredentialSource;
       await transaction.credentialSources.createCredentialSource(proxy);
       const proxyAgent = {
         ...probeAgent,
@@ -376,7 +376,7 @@ export async function verifyCredentialSourceContract(
         id: identifier("cs"),
         name: "Listed registering",
         state: "registering",
-      } satisfies CredentialSource;
+      } satisfies LegacyCredentialSource;
       await transaction.credentialSources.createCredentialSource(registering);
       const registeringAgent = {
         ...probeAgent,
@@ -730,7 +730,7 @@ export async function verifyCredentialSourceContract(
     type: "bearer-token",
     config: { host: "registry.example.com", env_var: "REGISTRY_TOKEN" },
     secrets: { token: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id } },
-  } satisfies CredentialSource;
+  } satisfies LegacyCredentialSource;
   const toolAgent = {
     ...sourceAgent,
     id: identifier("agt"),

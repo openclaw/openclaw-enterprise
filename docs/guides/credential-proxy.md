@@ -331,7 +331,7 @@ Unavailable evidence keeps cleanup pending without repeating the reduction or st
 a healthy Agent. Verify continuity on the selected release; readiness alone does
 not prove it. Static model sources do not renew tokens;
 existing Gateway refresh sources use their own
-[rotation procedure](../reference/credential-sources.md#rotate-a-refresh-source).
+[rotation procedure](../reference/credential-sources/other-delivery-modes.md#rotate-a-refresh-source).
 
 ## Diagnose before retrying
 

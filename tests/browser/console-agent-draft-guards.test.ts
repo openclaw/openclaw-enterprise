@@ -1133,16 +1133,13 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.ok(owner && credentialGateway && repositoryAdmission);
   t.after(() => owner.close());
   const sandbox = owner.require("sandbox");
-  // The supported Driver pair and model credential store are external boundaries.
-  // The controller still checks all permissions, computes admission and saves through HTTP.
-  t.mock.method(credentialGateway, "registerSource", async () => ({ state: "ready" }));
+  // The controller checks repository permissions, computes admission and saves through HTTP.
   let createdNamespaces = 0;
   const prefixes: Partial<Record<ResourceKind, string>> = {
     namespace: "ns",
     agent: "agt",
     agent_revision: "rev",
     configuration: "cfg",
-    credential_source: "cs",
     secret: "sec",
     sandbox_policy: "sbp",
   };
@@ -1228,15 +1225,22 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     "console-model",
     "synthetic-console-model",
   );
-  const sourceResponse = await fixture.request(
-    "POST",
-    `/namespaces/${namespaceId}/credential-sources`,
-    {
-      body: { name: "Console model", type: "openai", secrets: { api_key: secret.ref } },
-    },
+  // Protected repository policy still serves existing Gateway-owned model Sources. Seed that
+  // persisted legacy state directly; public Source enrollment now belongs to TokenService.
+  const source = await controller.transact((state) =>
+    state.credentialSources.createCredentialSource({
+      id: `cs_${crypto.randomUUID()}`,
+      namespaceId,
+      name: "Console model",
+      type: "openai",
+      config: {},
+      secrets: { api_key: secret.ref },
+      ownerCapability: "credential_gateway",
+      driverId: credentialGateway.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
   );
-  assert.equal(sourceResponse.status, 201, JSON.stringify(sourceResponse.body));
-  const source = resource(sourceResponse.data);
   const bindings = repositoryRefs.map((repositoryRef) => ({
     repositoryRef,
     profile: "github-repository",

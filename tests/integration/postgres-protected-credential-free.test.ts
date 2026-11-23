@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { Check } from "typebox/value";
 
-import { CredentialSourceSchema } from "../../packages/contracts/src/api/resources.ts";
-import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import { isArray, isRecord, parseJson } from "../helpers/egress-observation-values.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
@@ -15,11 +12,6 @@ import {
 } from "../helpers/postgres-protected-scenarios.ts";
 import { receipts as installedReceipts } from "../helpers/egress-custody-observations.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
-import {
-  credentialSourceFieldRequired,
-  PROTECTED_SOURCE_ROTATE_REFUSED,
-  PROTECTED_SOURCE_UPDATE_REFUSED,
-} from "../helpers/refusal-credential-admission.ts";
 
 type CaptureChanges = {
   target?: Partial<Capture["request"]["target"]>;
@@ -61,61 +53,24 @@ test(
           },
         },
       ),
-      async admitSource({ app, agent, namespace, path, origin, countSecretReads }) {
+      async admitSource({ app, agent, namespace, origin, countSecretReads }) {
         readsBeforeAdmission = countSecretReads();
-        const config = {
-          origin,
-          repository_id: String(repository.id),
-          repository: repository.full_name,
-          agent_id: agent.id,
-        };
-        const input = {
+        // Recreate a Source admitted by the former Proxy enrollment owner. The current public
+        // Source API cannot create this type; the rest of this case proves historical serving.
+        const source = await app.controller.createCredentialSource(app.principal.id, {
+          namespaceId: namespace.id,
           name: "identity-only",
           type: "credential-free-repository-metadata",
-          config,
-        };
-        const post = (body: typeof input & { config: { authority?: "execution" } }) =>
-          app.request("POST", path, { body });
-        // No implicit execution authority: the catalog requires it, and the refusal names it.
-        const implicit = await post(input);
-        assert.equal(implicit.status, 400, "no implicit execution authority");
-        assert.ok(Check(ErrorResponse, implicit.body));
-        assert.equal(
-          implicit.body.error.message,
-          credentialSourceFieldRequired("credential-free-repository-metadata", "config.authority"),
-        );
-        const { status, data: source } = await post({
-          ...input,
-          config: { ...config, authority: "execution" },
+          config: {
+            origin,
+            repository_id: String(repository.id),
+            repository: repository.full_name,
+            agent_id: agent.id,
+            authority: "execution",
+          },
         });
-        assert.equal(status, 201);
-        assert.ok(Check(CredentialSourceSchema, source));
         assert.equal(source.ownerCapability, "credential_proxy");
-        const listed = await app.request("GET", path);
-        assert.equal(listed.status, 200);
-        assert.ok(isArray(listed.data));
-        const listedSource = listed.data.find((entry) => isRecord(entry) && entry.id === source.id);
-        assert.ok(Check(CredentialSourceSchema, listedSource));
-        assert.equal(listedSource.ownerCapability, "credential_proxy");
-
-        const read = await app.request("GET", `${path}/${source.id}`);
-        assert.equal(read.status, 200);
-        assert.ok(Check(CredentialSourceSchema, read.data));
-        assert.equal(read.data.ownerCapability, "credential_proxy");
         assert.equal(source.egress?.adoption, "credential_free");
-        assert.deepEqual(source.secrets, {});
-        // Its grant was admitted once, at create: an update or rotation cannot change it, and
-        // the caller who may change the source is told to replace it (finding 2536).
-        for (const [method, suffix, options, message] of [
-          ["PATCH", "", { body: {} }, PROTECTED_SOURCE_UPDATE_REFUSED],
-          ["POST", "/rotate", {}, PROTECTED_SOURCE_ROTATE_REFUSED],
-        ] as const) {
-          const refused = await app.request(method, `${path}/${source.id}${suffix}`, options);
-          assert.equal(refused.status, 409, `${method}: ${JSON.stringify(refused.body)}`);
-          assert.ok(Check(ErrorResponse, refused.body));
-          assert.equal(refused.body.error.code, "RESOURCE_CONFLICT", method);
-          assert.equal(refused.body.error.message, message, method);
-        }
         return bindRuntimeSource(app, namespace, agent, source);
       },
     });

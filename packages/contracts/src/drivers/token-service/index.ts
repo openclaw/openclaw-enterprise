@@ -1,4 +1,11 @@
-import type { AccessBinding, CredentialSource, CredentialSourceReference } from "../../index.ts";
+import type {
+  AccessBinding,
+  CredentialSource,
+  CredentialSourceReference,
+  OAuthConnectionGrant,
+  OAuthBuiltinCodexSourceConsent,
+  OAuthTemplateSourceConsent,
+} from "../../index.ts";
 import type { Driver } from "../index.ts";
 
 export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
@@ -27,13 +34,37 @@ export interface SourceLifecycleConfig {
 type SecretFields = Readonly<Record<string, string>>;
 type SourceConfig = Readonly<Record<string, string>>;
 
-export interface SourceRegistrationInput {
-  readonly namespaceId: string;
-  readonly name: string;
-  readonly secret: SecretFields;
-  readonly lifecycleConfig: SourceLifecycleConfig;
-  readonly config: SourceConfig;
-}
+export type SourceRegistrationInput =
+  | {
+      readonly kind: "static";
+      readonly namespaceId: string;
+      readonly name: string;
+      readonly secret: SecretFields;
+      readonly lifecycleConfig: SourceLifecycleConfig;
+      readonly config: SourceConfig;
+      readonly connectionTemplateId?: string;
+    }
+  | ({
+      readonly kind: "oauth_refresh_token";
+      readonly namespaceId: string;
+      readonly name: string;
+      readonly grant: OAuthConnectionGrant;
+    } & (
+      | {
+          readonly connectionTemplateId: string;
+          readonly consent: Omit<
+            OAuthTemplateSourceConsent,
+            "revocationRequestedBy" | "revokedAt" | "requestedScopes" | "grantedScopes"
+          >;
+        }
+      | {
+          readonly connectionTemplateId?: never;
+          readonly consent: Omit<
+            OAuthBuiltinCodexSourceConsent,
+            "revocationRequestedBy" | "revokedAt" | "requestedScopes" | "grantedScopes"
+          >;
+        }
+    ));
 
 export type SourceUpdate =
   | {

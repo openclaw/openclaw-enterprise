@@ -6,10 +6,11 @@ import {
   createModelSecret,
   createSlackBotSecret,
   deviceLoginSourceTypes,
-  form,
   modelCredentialSourceTypes,
+  form,
   presetSecretsPath,
-  readyForm,
+  managedStaticForm,
+  provisionableForm,
 } from "../create-agent-form-data.mts";
 import {
   pluginCapabilities,
@@ -41,8 +42,6 @@ type CreateAgentScenario = {
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
-  credentialRegistrationOutcome?:
-    "invalid-config" | "refused" | "ready" | "different-source" | "deleting";
   extraSecrets?: readonly { id: string; name: string }[];
   namespaceStatus?: NamespaceStatus;
   namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
@@ -105,10 +104,19 @@ const oauthForm: StoryAction[] = [
 const startOAuthLogin: StoryAction[] = [...oauthForm, click("Sign in with OAuth")];
 
 const dedicatedOpenclawForm: StoryAction[] = [
-  ...readyForm,
+  ...form,
+  { selector: "#agent-name", value: "Research assistant" },
+  { selector: "#agent-model", value: "gpt-5.6-sol" },
   { selector: "#agent-harness", value: "openclaw" },
   { selector: ".launch-runtime summary", click: true },
   { selector: "#execution-mode", value: "dedicated" },
+  { selector: "#provider-api-key", value: "storybook-model-api-key" },
+];
+
+const provisionableOpenclawForm: StoryAction[] = [
+  ...dedicatedOpenclawForm,
+  { selector: "#model-credential-storage", value: "secret" },
+  { selector: "#provider-credential-secret", value: "sec_demo_model" },
 ];
 
 const passwordPresetForm: StoryAction[] = [
@@ -186,7 +194,7 @@ const presetQuotedSettingRefused: StoryAction[] = [
 ];
 
 const repositoryForm: StoryAction[] = [
-  ...readyForm,
+  ...provisionableForm,
   { selector: "#agent-name", value: "Repository assistant" },
 ];
 
@@ -227,7 +235,7 @@ const createWorkspaceFields: StoryAction[] = [
   { selector: ".launch-advanced summary", click: true },
   { selector: "#agent-name", value: "Workspace seed demo" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
-  ...createModelSecret("storybook-model-api-key"),
+  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -237,7 +245,7 @@ const createWorkspaceFields: StoryAction[] = [
 ];
 
 const createProvisioningSecrets: StoryAction[] = [
-  ...readyForm,
+  ...provisionableForm,
   { selector: "#agent-name", value: "Slack research assistant" },
   click("Configure Slack"),
   { selector: "#slack-dm-policy", value: "disabled" },
@@ -274,6 +282,7 @@ function ordinarySaveRefused(permission: "Secret operate" | "Configuration read"
     actions: [
       ...form,
       { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#model-credential-storage", value: "secret" },
       { selector: "#provider-credential-secret", value: "Demo model API key" },
       { selector: "#agent-model", value: "gpt-5.6-sol" },
       click("Create Agent"),
@@ -382,7 +391,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Model Secret access check",
     path: create,
-    actions: form,
+    actions: [...form, { selector: "#model-credential-storage", value: "secret" }],
     extraSecrets: [
       { id: "sec_storybook_first", name: "Sample A" },
       { id: "sec_storybook_second", name: "Sample B" },
@@ -401,7 +410,7 @@ export const createAgentFormScenarios = {
     name: "Browser chat opt-in",
     path: create,
     nativeAdminSetup: true,
-    actions: readyForm,
+    actions: provisionableForm,
     description:
       "Enable browser access during creation. Simulated UI proof; no runtime is deployed.",
     steps: [
@@ -415,7 +424,7 @@ export const createAgentFormScenarios = {
     path: create,
     nativeAdminSetup: true,
     observabilityDenied: true,
-    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    actions: [...provisionableForm, { selector: "#native-admin", click: true }],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
       "A Namespace creator without Installation access enables browser chat through ordinary Agent creation. This is simulated UI proof.",
@@ -429,7 +438,7 @@ export const createAgentFormScenarios = {
     name: "Browser chat selected",
     path: create,
     nativeAdminSetup: true,
-    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    actions: [...provisionableForm, { selector: "#native-admin", click: true }],
     description:
       "The explicit opt-in is selected before creation. The API prepares the exact Agent origin; this preview does not prove deployment or authentication.",
   },
@@ -445,7 +454,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Secret creation not permitted",
     path: create,
-    actions: form,
+    actions: [...form, { selector: "#model-credential-storage", value: "secret" }],
     secretCreateNotPermitted: true,
     description:
       "The Namespace permission answer denies Secret creation. Create new Secret... is disabled and names Secret create in this Namespace. The field also offers existing Secrets.",
@@ -462,6 +471,7 @@ export const createAgentFormScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
+      { selector: "#model-credential-storage", value: "secret" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
     ],
@@ -491,7 +501,7 @@ export const createAgentFormScenarios = {
     name: "Invalid Configuration JSON",
     path: create,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: "#configuration-json", value: '{\n  "agents": {\n    "defaults": {,\n  }\n}' },
       click("Create Agent"),
     ],
@@ -917,7 +927,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Initial deployment opens its Agent",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "running",
     description:
       "Once provisioning creates the Agent and hands off its first deployment, Create Agent opens that version's Deployment tab instead of waiting for the deployment to finish.",
@@ -931,7 +941,7 @@ export const createAgentProvisioningScenarios = {
     name: "Create pending",
     path: create,
     rules: [{ suffix: "/agents/provision", method: "POST", hold: true }],
-    actions: [...readyForm, click("Create Agent")],
+    actions: [...provisionableForm, click("Create Agent")],
     description:
       "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961).",
     steps: ["Hover Create Agent: the pointer is progress, not not-allowed."],
@@ -941,7 +951,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Initial deployment names its wait",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "REVISION_INCOMPLETE",
@@ -958,7 +968,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Initial deployment waits on a full Pod quota",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
@@ -975,7 +985,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Initial deployment cannot pull its image",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "REVISION_IMAGE_PULL_FAILED",
@@ -993,7 +1003,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "A newer deployment took over",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "failed",
     provisionedDeploymentError: {
       code: "REVISION_SUPERSEDED",
@@ -1010,7 +1020,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "failed",
     description:
       "The original provisioning request reports its first-deployment failure and links to the existing Agent and revision.",
@@ -1023,7 +1033,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Provisioning reply has an invalid version ID",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "failed",
     malformedProvisioningReply: "revision-id",
     rules: [
@@ -1049,7 +1059,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Provisioning failure has an unreadable message",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "failed",
     malformedProvisioningReply: "error-message",
     description:
@@ -1064,7 +1074,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Stopped before the first deployment",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisioningCancelledByStop: true,
     description:
       "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent.",
@@ -1077,7 +1087,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Initial deployment stopped",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisionedDeploymentStatus: "failed",
     provisionedDeploymentStopped: true,
     description:
@@ -1092,7 +1102,7 @@ export const createAgentProvisioningScenarios = {
     name: "Unsupported provisioning",
     path: create,
     unsupportedProvisioning: true,
-    actions: readyForm,
+    actions: provisionableForm,
     description:
       "When the runtime does not advertise first-time Agent provisioning, Codex creation saves a draft Configuration and Agent for later deployment.",
   },
@@ -1150,6 +1160,7 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#model-credential-storage", value: "secret" },
       ...createModelSecret("storybook-model-api-key"),
     ],
     description:
@@ -1162,6 +1173,7 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#model-credential-storage", value: "secret" },
       { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
       { selector: "#create-provider-credential-secret-name", value: "model\tkey" },
       { selector: "#create-provider-credential-secret-value", value: "to\u0000ken" },
@@ -1175,7 +1187,7 @@ export const createAgentProvisioningScenarios = {
     name: "Agent name the API would refuse",
     path: create,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: "#agent-name", value: "Research\u2028assistant" },
       click("Create Agent"),
     ],
@@ -1187,7 +1199,7 @@ export const createAgentProvisioningScenarios = {
     name: "Initial workspace file the API would refuse",
     path: create,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: ".launch-advanced summary", click: true },
       { selector: "#workspace-AGENTS-md", value: "a".repeat(16_385) },
       { selector: ".launch-advanced summary", click: true },
@@ -1323,117 +1335,65 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",
     path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
     actions: dedicatedOpenclawForm,
     description:
-      "Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation has the default runtime's native worker support and a model Credential Source catalog. Its selected dummy Secret is registered before provisioning; the Harness receives a placeholder.",
+      "Dedicated OpenClaw uses the same direct API-key entry as Codex. The simulated API registers a static Credential Source and saves the Agent as a draft.",
     steps: [
       "Confirm the Harness is OpenClaw and Execution mode is Dedicated.",
       "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
       "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
-      "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
-    ],
-  },
-  createSharedModelProviderSource: {
-    group: "Pages/Create Agent",
-    name: "Authorize shared model destination",
-    path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    actions: readyForm,
-    description:
-      "Enter destination authorization for the selected key. This does not change the Installation endpoint. The simulated API records the source and starts provisioning.",
-    steps: [
-      "Enter https://models.example.com/v1 under Authorized base url.",
-      "Create the Agent and inspect the source request: config.authorized_base_url is present; config.base_url is absent.",
-    ],
-  },
-  createSharedModelProviderRefusal: {
-    group: "Pages/Create Agent",
-    name: "Destination authorization refusal",
-    path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    credentialRegistrationOutcome: "invalid-config",
-    actions: readyForm,
-    description:
-      "The first source request receives a simulated destination mismatch. Check registration to confirm absence, then correct authorization and retry. Uncertain writes remain locked until checked.",
-    steps: [
-      "Select the simulated model Secret and enter https://other.example.com/v1.",
-      "Create the Agent, then choose Check credential registration. Confirm the destination refusal remains visible beside the correction instructions.",
-      "Correct the authorization to https://models.example.com/v1 and retry.",
+      "Create the Agent and inspect its draft. Open Configuration and confirm Dedicated execution and the OpenClaw Harness.",
     ],
   },
   createDedicatedCodexCredentialSource: {
     group: "Pages/Create Agent",
     name: "Codex with model Credential Source",
     path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    actions: readyForm,
+    actions: managedStaticForm,
     description:
-      "The same model Secret picker and Credential Gateway guidance apply to dedicated Codex. Creating the Agent registers its model source before guided provisioning.",
+      "Enter a dummy API key directly. The selected TokenService owns its static Credential Source; the Agent saves as a draft using that Source.",
     steps: [
-      "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
-      "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+      "Confirm API key is a masked field and the guidance explains Source custody and the draft save.",
+      "Create the Agent. Its draft opens with authentication bound to the returned Credential Source.",
     ],
   },
   createCredentialRegistrationRefused: {
     group: "Pages/Create Agent",
-    name: "Model credential registration refused",
+    name: "Credential Source outcome unknown",
     path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    credentialRegistrationOutcome: "refused",
-    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "POST",
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "The selected TokenService is unavailable.",
+      },
+    ],
+    actions: [...managedStaticForm, click("Create Agent")],
     description:
-      "The first registration receives a simulated refusal without saving a source. Empty registration checks retain the reason and the saved Secret. The next explicit Create Agent request simulates recovery.",
+      "A simulated TokenService outage leaves the Source creation outcome unknown. The form clears the entered key and does not retry the write automatically.",
     steps: [
-      "Select Check credential registration twice. Confirm the refusal and saved-Secret guidance remain visible after each check.",
-      "Select Create Agent to retry. The same registration and Secret are reused before simulated provisioning opens Agent details.",
+      "Read the unknown-outcome guidance. Confirm the password field is empty and a duplicate write is unavailable.",
     ],
   },
-  createCredentialRegistrationUnknown: {
+  createCredentialSourceDenied: {
     group: "Pages/Create Agent",
-    name: "Model credential registration outcome unknown",
+    name: "Credential Source creation denied",
     path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    credentialRegistrationOutcome: "ready",
-    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [...managedStaticForm, click("Create Agent")],
     description:
-      "The registration response is unavailable after the simulated Credential Source becomes ready. The form preserves the model Secret and asks the operator to check registration before retrying.",
-    steps: [
-      "Select Check credential registration. The saved source is found ready and Create Agent becomes available.",
-      "Create the Agent and confirm the source is reused, with no new model Secret or registration.",
-    ],
+      "The simulated API denies Source creation. No Agent or Namespace Secret is created.",
   },
-  createCredentialRegistrationMismatch: {
+  createCredentialSourcePending: {
     group: "Pages/Create Agent",
-    name: "Registration response identifies a different source",
+    name: "Credential Source creation pending",
     path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    credentialRegistrationOutcome: "different-source",
-    actions: dedicatedOpenclawForm,
+    rules: [{ suffix: "/credential-sources", method: "POST", hold: true }],
+    actions: [...managedStaticForm, click("Create Agent")],
     description:
-      "The simulated registration succeeds, but its response identifies another source in the same Namespace.",
-    steps: [
-      "Select Create Agent. The form asks you to check registration and does not start provisioning.",
-      "Select Check credential registration. The form finds the requested source and lets you continue without registering it again.",
-    ],
-  },
-  createCredentialRegistrationCleanup: {
-    group: "Pages/Create Agent",
-    name: "Remove failed model credential registration",
-    path: create,
-    credentialSourceTypes: modelCredentialSourceTypes,
-    credentialRegistrationOutcome: "deleting",
-    actions: [
-      ...dedicatedOpenclawForm,
-      click("Create Agent"),
-      click("Check credential registration"),
-    ],
-    description:
-      "An uncertain registration leaves a visible deleting source. Creation stays blocked until its gateway copy is removed; the model Secret remains saved for the next registration.",
-    steps: [
-      "Remove failed credential registration is a red-edged destructive button: it deletes the registration at once. Select it and confirm that the model Secret remains saved.",
-      "Create the Agent again. A fresh source registration uses the same model Secret before provisioning.",
-    ],
+      "The Source request remains pending. The form shows its submitting state and prevents a duplicate save.",
   },
   createEmbedded: {
     group: "Pages/Create Agent",
@@ -1573,7 +1533,6 @@ export const createAgentProvisioningScenarios = {
     name: "Repository-only Credential Proxy",
     path: create,
     actions: dedicatedOpenclawForm,
-    credentialSourceTypes: modelCredentialSourceTypes,
     openclawExecutionModes: ["dedicated"],
     repositoryOptions: [
       {
@@ -2479,7 +2438,7 @@ export const createAgentProvisioningScenarios = {
     name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
-    actions: [...readyForm, click("Create Agent")],
+    actions: [...provisionableForm, click("Create Agent")],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
       "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
@@ -2488,23 +2447,22 @@ export const createAgentProvisioningScenarios = {
       "The request log shows no /iam/ request.",
     ],
   },
-  createMemberCredentialGateway: {
+  createMemberCredentialSource: {
     group: "Pages/Create Agent",
-    name: "Member on a Credential Gateway Installation",
+    name: "Member creates a Credential Source",
     path: create,
     observabilityDenied: true,
-    credentialSourceTypes: modelCredentialSourceTypes,
     unsupportedProvisioning: true,
-    actions: readyForm,
+    actions: managedStaticForm,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member cannot read the Installation, but the Namespace's Agent capabilities list the Credential Gateway's model source types. Create Agent registers the selected model Secret as a credential source before it saves the Agent, so the deploy is not refused for Secret-backed Harness authentication.",
+      "A member without Installation read enters an API key and saves a static Credential Source before the Agent draft.",
     steps: [
-      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered with the model credential source types.",
-      "Enable Native admin UI is unavailable, and its hint says native admin setup needs guided provisioning, which only an Installation administrator can use.",
+      "The request log shows GET /installation refused; Source creation does not require the Gateway catalog.",
+      "Browser chat remains unavailable when guided provisioning is unavailable.",
       "Create the Agent and inspect the requests: POST …/credential-sources precedes POST …/agents, whose harnessAuth names the new source. The Agent page opens on its draft.",
     ],
-    gap: "The fixture simulates the Credential Gateway. The Default users PostgreSQL test reads the route from the real API.",
+    gap: "Source and IAM responses are simulated; this story does not prove custody or authorization.",
   },
   createRestricted: {
     group: "Pages/Create Agent",
@@ -2780,7 +2738,11 @@ export const createAgentOutcomeScenarios = {
     group: "Pages/Create Agent",
     name: "API key storage denied",
     path: create,
-    actions: readyForm,
+    actions: [
+      ...form,
+      { selector: "#model-credential-storage", value: "secret" },
+      ...createModelSecret("storybook-model-api-key"),
+    ],
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
@@ -2796,7 +2758,7 @@ export const createAgentOutcomeScenarios = {
     group: "Pages/Create Agent",
     name: "Credential access retry",
     path: create,
-    actions: [...readyForm, click("Create Agent")],
+    actions: [...provisionableForm, click("Create Agent")],
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
@@ -2813,7 +2775,7 @@ export const createAgentOutcomeScenarios = {
     name: "Invalid JSON",
     path: create,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: ".launch-advanced summary", click: true },
       { selector: "#configuration-json", value: "[]" },
       click("Create Agent"),
@@ -2837,7 +2799,7 @@ export const createAgentOutcomeScenarios = {
       // The first Namespace check after the refusal fails; the refused draft survives it.
       { path: "/namespaces", skip: 1, status: 503, code: "DEPENDENCY_UNAVAILABLE", once: true },
     ],
-    actions: [...readyForm, click("Create Agent")],
+    actions: [...provisionableForm, click("Create Agent")],
     description:
       "Provisioning admission conflicts before any separate Configuration save. The refusal replaces the submitting status and takes focus. Edit the request and retry from the same draft.",
     steps: [
@@ -2860,7 +2822,7 @@ export const createAgentOutcomeScenarios = {
         once: true,
       },
     ],
-    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    actions: [...provisionableOpenclawForm, click("Create Agent")],
     description:
       "The Installation lost its provisioning Sandbox Driver after the form loaded. The API refuses dedicated OpenClaw with a 409 that names the missing Driver, and the Console shows that reason instead of an unknown outcome.",
     steps: [
@@ -2874,7 +2836,7 @@ export const createAgentOutcomeScenarios = {
     path: create,
     unsupportedProvisioning: true,
     rules: [{ suffix: "/agents/validate", method: "POST", hold: true, once: true }],
-    actions: readyForm,
+    actions: provisionableForm,
     description: "The first configuration check stays pending until the Console stops waiting.",
     steps: [
       "Select Create Agent. After 15 seconds, the timeout message takes focus and the button is available again.",
@@ -2897,7 +2859,7 @@ export const createAgentOutcomeScenarios = {
         once: true,
       },
     ],
-    actions: [...readyForm, { ...click("Create Agent"), focus: true }],
+    actions: [...provisionableForm, { ...click("Create Agent"), focus: true }],
     description:
       "Another Agent in this Namespace has the name. The configuration check refuses it before anything is saved: the refusal line keeps the API's sentence, the Agent name field shows a short error under it and takes focus.",
     steps: [
@@ -2923,7 +2885,7 @@ export const createAgentOutcomeScenarios = {
       },
     ],
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: ".plugin-json > summary", click: true },
       { selector: "#agent-plugins", value: pluginSelections },
       // Pressed as a person would, so focus starts on the button that disables.
@@ -2954,7 +2916,7 @@ export const createAgentOutcomeScenarios = {
       },
     ],
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: ".plugin-json > summary", click: true },
       { selector: "#agent-plugins", value: pluginSelections },
       // Pressed as a person would, so focus starts on the button that disables.
@@ -2979,7 +2941,7 @@ export const createAgentOutcomeScenarios = {
         status: 503,
       },
     ],
-    actions: [...readyForm, click("Create Agent")],
+    actions: [...provisionableForm, click("Create Agent")],
     description:
       "The create request was accepted, but provisioning status is temporarily unavailable. Refresh and inspect saved state.",
   },

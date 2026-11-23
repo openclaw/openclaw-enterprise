@@ -17,7 +17,7 @@ import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "
 import type {
   Agent,
   AgentRevision,
-  CredentialSource,
+  StoredCredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
   HarnessExecutionMode,
@@ -81,7 +81,7 @@ export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
   /** Non-model sources resolved again at dispatch, in admission order. */
-  readonly credentialSources?: readonly Readonly<CredentialSource>[];
+  readonly credentialSources?: readonly Readonly<StoredCredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
@@ -405,7 +405,7 @@ export interface ComputeDriver extends Driver {
   /** Check source consent against the resolved settings before any credential delivery. */
   validateHarnessCredentialSources?(
     harness: RevisionHarnessDescriptor,
-    sources: readonly Readonly<import("../../index.ts").CredentialSource>[],
+    sources: readonly Readonly<import("../../index.ts").StoredCredentialSource>[],
   ): void;
   /**
    * Withdraw expired Git access or a durably withdrawn standing or finite grant.
@@ -512,7 +512,7 @@ export interface ComputeDriver extends Driver {
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
-    source: Readonly<CredentialSource>,
+    source: Readonly<StoredCredentialSource>,
     signal: AbortSignal,
     options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;
