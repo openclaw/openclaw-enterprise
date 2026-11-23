@@ -131,6 +131,16 @@ If a creation result is uncertain, inspect the repository before submitting agai
 To withdraw creation, save Read for the repository and redeploy. Verify that the
 old Sandbox retires.
 
+#### Native GitHub API actions
+
+To limit direct requests for **every Agent using this registration**, set
+`apiActions` beside `permissions` in one repository’s `namespaces` entry.
+Git fetch and push keep their saved grants. Omit `apiActions` to include new
+eligible actions or set `"apiActions": { "allow": [] }` for Git only.
+Review the [limits](#known-limits) and redeploy to apply changes.
+
+<div data-repository-actions></div>
+
 #### Known limits
 
 OpenShell matches the method, path and query of a request. It does not inspect
