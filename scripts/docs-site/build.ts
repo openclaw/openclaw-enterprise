@@ -136,15 +136,21 @@ const config: DocsConfig = JSON.parse(fs.readFileSync(path.join(docs, "docs.json
 const md = createMarkdownRenderer();
 const githubAnchors = createGithubAnchorReader(md);
 const pages = new Map<string, Page>();
+const pagesByRoute = new Map<string, Page>();
 const unpublished = new Set<string>();
 const escape = (value: unknown) => md.utils.escapeHtml(String(value));
-const route = (source: string) =>
-  "/" +
-  source
-    .replace(/(?:^|\/)README\.md$/, "")
-    .replace(/\.md$/, "")
-    .replace(/\/$/, "") +
-  (source === "README.md" ? "" : "/");
+
+function pageRoute(source: string) {
+  if (source === "README.md") {
+    return "/";
+  }
+  const route = "/" + source.replace(/\/README\.md$/, "").replace(/\.md$/, "") + "/";
+  // Reject empty, dot and parent segments before the filesystem can normalize them.
+  if (/\/\.{0,2}\//.test(route) || route.includes("\\")) {
+    throw new Error("Invalid page route " + route + " for " + source);
+  }
+  return route;
+}
 
 // GitHub's heading slug is the canonical heading ID, so permalinks, the table of
 // contents, and source links agree. The renderer's own ID stays as an alias.
@@ -263,12 +269,17 @@ for (const file of walk(docs)) {
     (token) => token.type === "heading_open" && token.tag === "h1",
   );
   const title = frontmatter?.title ?? parsed.tokens[firstHeading + 1]?.content ?? source;
-  pages.set(source, {
+  const route = pageRoute(source);
+  const existing = pagesByRoute.get(route);
+  if (existing) {
+    throw new Error("Duplicate page route " + route + ": " + existing.source + " and " + source);
+  }
+  const page: Page = {
     source,
     file,
     text,
     title,
-    route: route(source),
+    route,
     searchable: frontmatter?.searchable !== false,
     humanVerified,
     lastVerified,
@@ -276,7 +287,9 @@ for (const file of walk(docs)) {
     headingIds,
     parsed,
     html: "",
-  });
+  };
+  pages.set(source, page);
+  pagesByRoute.set(route, page);
 }
 // Former published routes remain usable without retaining duplicate source pages.
 const redirects = config.redirects ?? [];
@@ -289,7 +302,7 @@ function checkRedirectTarget(target: unknown) {
     throw new Error("Invalid redirect target: " + target);
   }
   const url = new URL(target, "https://local.invalid");
-  const page = [...pages.values()].find((candidate) => candidate.route === url.pathname);
+  const page = pagesByRoute.get(url.pathname);
   if (
     url.origin !== "https://local.invalid" ||
     !page ||
@@ -305,7 +318,7 @@ for (const redirect of redirects) {
     typeof redirect.from !== "string" ||
     !/^\/(?:[a-z0-9-]+\/)+$/.test(redirect.from) ||
     redirectSources.has(redirect.from) ||
-    [...pages.values()].some((page) => page.route === redirect.from)
+    pagesByRoute.has(redirect.from)
   ) {
     throw new Error("Invalid or duplicate redirect route: " + redirect?.from);
   }
@@ -422,9 +435,7 @@ function resolveLink(page: PageSource, href: string): string {
   if (href.startsWith("#") || href.startsWith("?") || href === "") {
     target = page.file;
   } else if (href.startsWith("/")) {
-    const linked = [...pages.values()].find(
-      (candidate) => candidate.route.replace(/\/$/, "") === pathname.replace(/\/$/, ""),
-    );
+    const linked = pagesByRoute.get(pathname.endsWith("/") ? pathname : pathname + "/");
     target = linked?.file ?? path.join(docs, pathname);
   } else {
     const sourcePath = href.split(/[?#]/, 1)[0]!;

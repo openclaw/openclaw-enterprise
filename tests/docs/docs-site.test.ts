@@ -194,10 +194,33 @@ test("docs validation rejects broken links, anchors and navigation through the C
   const validate = () => buildDocs(fixture, "--check");
   await writeFile(
     join(fixture, "docs/README.md"),
-    "# Home\n\n[Example](example.md#local-heading)\n",
+    "# Home\n\n[Example](example.md#local-heading)\n\n" +
+      "[Short](/example?q=1#local-heading)\n\n[Full](/example/?q=2#local-heading)\n",
   );
-  let result = validate();
+  const redirect = { from: "/old/", to: "/example/#local-heading" };
+  const withRedirect = { ...config, redirects: [redirect] };
+  await writeDocsConfig(fixture, withRedirect);
+  let result = buildDocs(fixture);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  const home = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.ok(home.includes('href="/example/?q=1#local-heading"'));
+  assert.ok(home.includes('href="/example/?q=2#local-heading"'));
+
+  // Redirects require the exact published route and cannot replace a page.
+  for (const to of ["/example#local-heading", "/example/#missing"]) {
+    redirect.to = to;
+    await writeDocsConfig(fixture, withRedirect);
+    result = validate();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Missing redirect page or heading/);
+  }
+  redirect.from = "/example/";
+  redirect.to = "/";
+  await writeDocsConfig(fixture, withRedirect);
+  result = validate();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Invalid or duplicate redirect route/);
+  await writeDocsConfig(fixture, config);
 
   // Duplicate headings: the site ID counts from -2, its GitHub alias from -1.
   // Links outside docs/ resolve against GitHub's heading slugs and HTML anchors.
@@ -224,6 +247,7 @@ test("docs validation rejects broken links, anchors and navigation through the C
   for (const target of [
     "missing.md",
     "example.md#missing-heading",
+    "/example#nonexistent",
     "example.md#setup-3",
     "../CONTRIBUTING.md#pnpm-checks-2",
   ]) {
@@ -296,6 +320,64 @@ test("docs validation rejects broken links, anchors and navigation through the C
   result = validate();
   assert.notEqual(result.status, 0, "Build accepted a page outside navigation");
   assert.match(result.stderr + result.stdout, /Page missing from navigation: orphan\.md/);
+});
+
+test("docs reject unsafe and duplicate page routes before touching output", async (t) => {
+  const pages = ["README", "example"];
+  const { directory: fixture, config } = await createDocsFixture(t, "enterprise-docs-routes-", {
+    pages,
+    logo: true,
+  });
+  const docs = join(fixture, "docs");
+  await writeFile(join(docs, "README.md"), "# Home\n");
+  await writeFile(join(docs, "example.md"), "# Flat page\n");
+  const output = join(fixture, "dist/docs");
+  await mkdir(output, { recursive: true });
+  const parent = join(fixture, "dist/index.html");
+  const home = join(output, "index.html");
+  await writeFile(parent, "sibling");
+  await writeFile(home, "previous build");
+
+  // Stripping .md from a README directory can escape the output or alias its home page.
+  for (const [directory, diagnostic] of [
+    ["...md", "Invalid page route /../"],
+    ["chapter/...md", "Invalid page route /chapter/../"],
+    ["..md", "Invalid page route /./"],
+    ["chapter/.md", "Invalid page route /chapter//"],
+    ["example", "Duplicate page route /example/"],
+  ] as const) {
+    const slug = directory + "/README";
+    const source = slug + ".md";
+    await mkdir(join(docs, directory), { recursive: true });
+    await writeFile(join(docs, source), "# Folder index\n");
+    pages.push(slug);
+    await writeDocsConfig(fixture, config);
+    for (const args of [["--check"], []]) {
+      const result = buildDocs(fixture, ...args);
+      assert.equal(result.status, 1, source);
+      assert.ok(result.stderr.includes(diagnostic), result.stderr);
+      assert.ok(result.stderr.includes(source), result.stderr);
+      if (directory === "example") {
+        assert.ok(result.stderr.includes("example.md"), result.stderr);
+      }
+      assert.equal(await readFile(parent, "utf8"), "sibling");
+      assert.equal(await readFile(home, "utf8"), "previous build");
+    }
+    pages.pop();
+    await writeFile(join(docs, source), "---\npublished: false\n---\n# Folder index\n");
+  }
+
+  // Unpublished indexes do not own routes or displace the flat page.
+  await writeDocsConfig(fixture, config);
+  const result = buildDocs(fixture);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const manifest: { source: string; route: string }[] = JSON.parse(
+    await readFile(join(output, "manifest.json"), "utf8"),
+  );
+  const examples = manifest.filter((page) => page.route === "/example/");
+  assert.equal(examples.length, 1);
+  assert.equal(examples[0]?.source, "example.md");
+  assert.match(await readFile(join(output, "example/index.html"), "utf8"), /id="flat-page"/);
 });
 
 test("docs validation checks Markdown links in deploy example YAML comments", async (t) => {
