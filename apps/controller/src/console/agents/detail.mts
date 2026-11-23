@@ -5312,6 +5312,12 @@ export async function renderAgentDetail(
       // Lay the view out in one frame and scroll in the next: content below that moves in the
       // frame that scrolls counts as shifted (finding 1413).
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
+      // A reader can move to another control while the first Logs read is pending.
+      const logsTab = tabControls.get("logs");
+      const focused = document.activeElement;
+      if (activated && focused && focused !== document.body && focused !== logsTab) {
+        return;
+      }
       if (tabContext.isCurrent() && !deleting) {
         // A strip clicked in view with the output starting on screen stays put (finding 1518).
         // A link or address that opens Logs scrolls the output into view as before.
@@ -5320,7 +5326,7 @@ export async function renderAgentDetail(
           tabs.getBoundingClientRect().top >= 0 &&
           content.getBoundingClientRect().top < innerHeight - Math.min(200, innerHeight / 3);
         if (stripKept || scrolledOnReveal) {
-          tabControls.get("logs")?.focus({ preventScroll: true });
+          logsTab?.focus({ preventScroll: true });
         } else {
           openVersionDetail({ animate: activated });
         }

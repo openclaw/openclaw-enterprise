@@ -349,6 +349,64 @@ for (const viewport of [
       true,
     );
   });
+
+  test(`the first Logs response keeps focus on the version chooser at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+    const marker = "first log output after moving focus";
+    computeDriver.state.lines = [line(1, marker)];
+    const { page } = await newPage(t, fixture, { context: { viewport, reducedMotion: "reduce" } });
+    await trackSettledFetches(page);
+    // Hold the first-view deadline until the successful response can be released.
+    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.runFor(100);
+
+    const logPath = revisionLogsPath(logs);
+    const firstLog = await holdRequests(t, page, (url) => url.pathname === logPath, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
+    const chooser = page.getByRole("combobox", { name: "Viewing version" });
+    const chooserFocused = () =>
+      chooser.evaluate((node) => node === globalThis.document.activeElement);
+
+    await logsTab.focus();
+    await page.keyboard.press("Enter");
+    assert.equal((await firstLog.requested)?.status(), 200);
+    assert.equal(await logsTab.getAttribute("aria-selected"), "true");
+    assert.equal(await logsTab.evaluate((node) => node.matches(":focus")), true);
+    for (let steps = 0; steps < 12 && !(await chooserFocused()); steps += 1) {
+      await page.keyboard.press("Shift+Tab");
+    }
+    assert.equal(await chooserFocused(), true, "Shift+Tab moved focus to the version chooser");
+    await page.locator(".agent-logs-pending").waitFor({ state: "attached" });
+    assert.equal(await settledFetches(page, logPath), 0);
+    const scrollBefore = await page.evaluate(() => globalThis.scrollY);
+
+    firstLog.release();
+    await page.getByRole("log", { name: "Runtime log output" }).getByText(marker).waitFor();
+    await waitForIdleFetches(page);
+    // Advance past the post-render frame and timer. Reduced motion makes any scroll immediate.
+    await page.clock.runFor(100);
+
+    assert.equal(await logsTab.getAttribute("aria-selected"), "true");
+    assert.equal(
+      await chooserFocused(),
+      true,
+      "the first Logs response moved focus from the chooser",
+    );
+    assert.equal(await page.evaluate(() => globalThis.scrollY), scrollBefore);
+  });
 }
 
 test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {

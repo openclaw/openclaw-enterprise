@@ -2907,7 +2907,8 @@ export function createAgentDetailScenarios({
         description:
           "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
         steps: [
-          "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
+          "Focus Logs and press Enter. While runtime status is loading, press Shift+Tab until Viewing version has focus. When the output appears, focus stays on Viewing version and the page stays at the same scroll position.",
+          "Reset the story, open Logs again, and leave focus on the tab. When the output appears, Logs keeps focus and the panel scrolls into view if needed.",
         ],
       },
       runtimeLogsStartupWarnings: {
