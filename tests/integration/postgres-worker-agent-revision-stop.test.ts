@@ -3092,20 +3092,28 @@ revisionTest(
     await neighbor.stop();
     const neighborStop = await neighbor.requestStop(neighborOwner);
 
+    const due = await fixture.advanceMaintenance(revision);
+    const scheduled = due.rows[0];
     const maintenance = {
       id: revision.id,
-      idempotencyKey: `agent_revision:${revision.id}:maintenance:${randomUUID()}`,
+      idempotencyKey: scheduled?.idempotency_key ?? `agent_revision:${revision.id}:maintenance:0`,
     };
-    await fixture.state.transactWithQueue((_unit, queue) =>
-      queue.enqueue({
-        idempotencyKey: maintenance.idempotencyKey,
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: revision.id,
-        actorId: fixture.actor.id,
-        availableAt: new Date(0),
-      }),
-    );
+    if (scheduled === undefined) {
+      const work = await fixture.state.transactWithQueue((_unit, queue) =>
+        queue.enqueue({
+          idempotencyKey: maintenance.idempotencyKey,
+          namespaceId: fixture.namespace.id,
+          agentId: owner.id,
+          revisionId: revision.id,
+          actorId: fixture.actor.id,
+          availableAt: new Date(0),
+        }),
+      );
+      assert.equal(work.state, "queued", "expected a new maintenance pass");
+    } else {
+      assert.equal(due.rowCount, 1, "expected one scheduled maintenance pass");
+      assert.equal(scheduled.actor_id, fixture.actor.id, "scheduled maintenance keeps its actor");
+    }
     const stop = await fixture.requestStop(owner);
 
     // Maintenance may observe stopped intent first, but only the Agent-stop claim
@@ -3176,12 +3184,13 @@ revisionTest(
     const preparedBeforeStop = [...prepared];
 
     // Maintenance of the stopped revision, as a delayed or redelivered item would run it.
-    const staleMaintenance = async () => {
+    // Use distinct low buckets so neither pass reuses a clock-scheduled or terminal row.
+    const staleMaintenance = async (bucket: number) => {
       const item = {
         id: first.id,
-        idempotencyKey: `agent_revision:${first.id}:maintenance:${randomUUID()}`,
+        idempotencyKey: `agent_revision:${first.id}:maintenance:${bucket}`,
       };
-      await fixture.state.transactWithQueue((_unit, queue) =>
+      const work = await fixture.state.transactWithQueue((_unit, queue) =>
         queue.enqueue({
           idempotencyKey: item.idempotencyKey,
           namespaceId: fixture.namespace.id,
@@ -3191,6 +3200,7 @@ revisionTest(
           availableAt: new Date(0),
         }),
       );
+      assert.equal(work.state, "queued", "expected a new stale maintenance pass");
       await fixture.work(item, "succeeded");
       return required((await fixture.workResult(item)).rows[0]).reason_code;
     };
@@ -3198,7 +3208,7 @@ revisionTest(
     for (const row of (await fixture.advanceMaintenance(first)).rows) {
       await fixture.work({ id: first.id, idempotencyKey: row.idempotency_key }, "succeeded");
     }
-    assert.equal(await staleMaintenance(), "REVISION_MAINTENANCE_SUPERSEDED");
+    assert.equal(await staleMaintenance(0), "REVISION_MAINTENANCE_SUPERSEDED");
     assert.deepEqual(prepared, preparedBeforeStop, "stopped maintenance never prepares");
 
     const second = await fixture.revision(owner, 2);
@@ -3212,7 +3222,7 @@ revisionTest(
 
     // Running again under the new revision does not revive the stopped one either.
     const preparedAfterStart = [...prepared];
-    await staleMaintenance();
+    await staleMaintenance(1);
     assert.ok(!prepared.slice(preparedAfterStart.length).includes(first.id));
     assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, second.id);
   },
