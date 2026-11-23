@@ -718,6 +718,9 @@ test("Policy denials on the draft says where denials and suggestions come from",
   await assertNoWindowControls();
 });
 
+const nativeRepo = { repository: "example/native", access: "write" } as const;
+const peerRepo = { repository: "example/peer", access: "read" } as const;
+
 const delegatedPolicyGrant = {
   id: "python-demo",
   binary: "/usr/bin/python3.11",
@@ -1088,6 +1091,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   const app = { repository: "example/application", access: "read" } as const;
   const tooling = { repository: "example/tooling", access: "write" } as const;
   const grants = [app, tooling];
+  const ceiling = [...grants, nativeRepo, peerRepo];
   const repositoryRefs = ["application", "tooling"];
   const registry = {
     version: 1,
@@ -1109,12 +1113,34 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       ],
     })),
   };
+  const nativeRegistrations = [nativeRepo, peerRepo].map(({ repository }, index) => ({
+    repository,
+    repositoryId: String(900 + index),
+    repositoryRef: repository.slice("example/".length),
+    namespaces: [
+      {
+        namespaceId,
+        profiles: ["github-repository"],
+        nativeGit: "v1",
+        permissions: {
+          contents: "write",
+          metadata: "read",
+          issues: "write",
+          pull_requests: "write",
+        },
+      },
+    ],
+  }));
+  const fixtureRegistry = {
+    ...registry,
+    repositories: [...registry.repositories, ...nativeRegistrations],
+  };
   const sandboxId = "console-repository-sandbox";
   const workspaceProtocol = openShellWorkspaceProtocol();
   const installation = await loadedProxyInstallation(t, {
     profile: "repository",
     id: sandboxId,
-    registry,
+    registry: fixtureRegistry,
     createOpenShellBackend: (definition) =>
       createOpenShellBackend(definition, {
         gatewayClient: completeOpenShellGatewayClient({
@@ -1161,7 +1187,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       backendId: repositoryAdmission.backendId,
       policy: repositoryAdmission.policy,
     },
-    repositoryNetworkPolicyCeiling: grants,
+    repositoryNetworkPolicyCeiling: ceiling,
     repositoryCredentials: true,
     namespaceLifecycleBindings,
     driverConfigurations: [
@@ -1298,7 +1324,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespaceId, mixedAgent.agent.id, "draft", "policy"),
+    detailUrl(fixture, namespaceId, mixedAgent.agent.id, "draft", "configuration"),
   );
   const manage = page.getByRole("button", { name: "Manage rules", exact: true });
   const panel = page.getByRole("region", { name: "Repository network policy" });
@@ -1307,8 +1333,11 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   const save = panel.getByRole("button", { name: "Save repository policy", exact: true });
   const confirm = page.getByRole("button", { name: "Save deny-all policy", exact: true });
   const put = (path: string) => responseTo(page, "PUT", fixture.origin + path);
-  await manage.click();
-  await panel.getByText(/Legacy repository access applies/).waitFor();
+  const add = (repository: string) =>
+    panel.getByRole("button", { name: `Add access for ${repository}`, exact: true });
+  await page.getByRole("link", { name: "Set repository permissions" }).click();
+  const permissions = page.getByRole("button", { name: "Manage permissions", exact: true });
+  await permissions.click();
   await panel.getByText("Save the first list before deploying this Agent.").waitFor();
   const legacyPolicy = (await mixedAgent.read()).policy;
   await panel.getByRole("button", { name: "Deny all repositories", exact: true }).click();
@@ -1316,17 +1345,23 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await confirm.click();
   assert.equal((await emptyRefusal).status(), 409);
   assert.deepEqual((await mixedAgent.read()).policy, legacyPolicy);
-  assert.deepEqual(await a.locator("option").allTextContents(), ["No access", "Read"]);
   assert.equal(await save.isEnabled(), false);
-  await a.selectOption("read");
-  await b.selectOption("write");
+  await add(app.repository).click();
+  assert.equal(await a.inputValue(), "read");
+  assert.deepEqual(await a.locator("option").allTextContents(), ["No access", "Read-only"]);
+  await add(tooling.repository).click();
+  assert.equal(await b.inputValue(), "write");
   const firstSave = put(mixedAgent.base);
   await save.click();
   const saved = await firstSave;
   assert.equal(saved.status(), 200, await saved.text());
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, grants);
 
-  await page.reload();
+  await page
+    .getByText(/Repository policy v\d+ saved\./)
+    .first()
+    .waitFor();
+  await page.getByRole("tab", { name: "Policy denials" }).click();
   await manage.click();
   await waitForInputValue(a, "read");
   await waitForInputValue(b, "write");
@@ -1373,12 +1408,16 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   editsAllowed = false;
   await manage.click();
   await waitForInputValue(b, "read");
+  // Undoing a removal must preserve saved Read-only under a Write ceiling.
+  await b.selectOption("");
+  await add(tooling.repository).click();
+  assert.equal(await b.inputValue(), "read");
   assert.equal(await save.isEnabled(), false);
   await a.selectOption("");
   const refused = put(mixedAgent.base);
   await save.click();
   assert.equal((await refused).status(), 409);
-  await waitForInputValue(a, "");
+  await add(app.repository).waitFor();
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, narrowed);
   await panel.getByRole("button", { name: "Discard repository changes", exact: true }).click();
   await waitForInputValue(a, "read");
@@ -1424,7 +1463,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal(pathRequests(requests, "PUT", mixedAgent.base).length, requestsBeforeRefresh);
 
   await panel.getByRole("button", { name: "Discard repository changes", exact: true }).click();
-  await waitForInputValue(a, "");
+  await add(app.repository).waitFor();
   await waitForInputValue(b, "write");
   assert.equal(await save.isEnabled(), false);
   await b.selectOption("read");
@@ -1477,13 +1516,21 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await panel
     .getByText("Saved repository policy: Deny all repositories", { exact: true })
     .waitFor();
-  assert.equal(await panel.getByText(/Legacy repository access applies/).count(), 0);
+  assert.equal(await panel.getByText("No repository policy saved.").count(), 0);
   assert.equal(pathRequests(requests, "POST", `${mixedAgent.base}/apply`).length, 0);
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByText(/Deploying this policy requires supporting Drivers/).waitFor();
   const scopedRevision = await emptyAgent.deploy();
   assert.equal(scopedRevision.sandboxPolicy?.version, denyAll.version);
   assert.deepEqual(scopedRevision.sandboxPolicy?.repositoryNetworkPolicy?.grants, []);
+  await page.goto(
+    detailUrl(fixture, namespaceId, emptyAgent.agent.id, scopedRevision.id, "configuration").href,
+  );
+  await page.getByRole("link", { name: "Edit repository permissions" }).click();
+  const dialog = page.getByRole("dialog", { name: "Repository permissions" });
+  await dialog.getByText("Saved repository policy: Deny all repositories").waitFor();
+  assert.equal(await dialog.evaluate((node) => node.matches(":modal")), true);
+  await dialog.getByRole("button", { name: "Done" }).click();
 
   // A real deployment creates history even before a Worker selects an active revision.
   const legacy = await createAgent("Previously deployed");
@@ -1512,6 +1559,55 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal(refusedLegacy.status, 409);
   assert.match(JSON.stringify(refusedLegacy.body), /Create a new Agent/);
   assert.deepEqual((await legacy.read()).policy, legacyView.policy);
+
+  // The native Agent uses its own filtered grant, without changing the Namespace policy.
+  const custom = await createAgent("Contributor", [
+    { repositoryRef: "native", profile: "github-repository" },
+    { repositoryRef: "peer", profile: "github-repository" },
+  ]);
+  const disabled = await fixture.request("PATCH", `${custom.base}/editing`, {
+    body: { enabled: false },
+  });
+  assert.equal(disabled.status, 200);
+  await page.goto(detailUrl(fixture, namespaceId, custom.agent.id, "draft", "repositories").href);
+  await permissions.click();
+  await page.getByRole("button", { name: "Enable policy editing" }).click();
+  await add(nativeRepo.repository).click();
+  assert.equal(await add(app.repository).count(), 0);
+  const withheld = panel.getByText(/The Agent cannot open pull requests in any repository/);
+  assert.equal(await withheld.isVisible(), true);
+  await add(peerRepo.repository).click();
+  assert.equal(await withheld.isVisible(), false);
+  const row = panel.getByRole("group", { name: nativeRepo.repository, exact: true });
+  assert.equal(await row.getByRole("combobox").inputValue(), "write");
+  const issue = row.getByRole("checkbox", { name: "Create issues" });
+  const pull = row.getByRole("checkbox", { name: "Open pull requests" });
+  assert.equal(await issue.isVisible(), false);
+  await row.getByText("Advanced · Customize access").click();
+  assert.equal(await issue.isChecked(), true);
+  assert.equal(await pull.isChecked(), true);
+  await issue.uncheck();
+  const restricted = [{ ...nativeRepo, apiActions: { deny: ["issues:create"] } }, peerRepo];
+  const result = put(custom.base);
+  await save.click();
+  const response = await result;
+  assert.equal(response.status(), 200, await response.text());
+  assert.deepEqual(record((await custom.read()).policy).repositoryNetworkPolicy, restricted);
+  await page.reload();
+  await permissions.click();
+  await row.getByText("Issue creation off", { exact: true }).waitFor();
+  await row.getByText("Advanced · Customize access").click();
+  assert.equal(await issue.isChecked(), false);
+  assert.equal(await pull.isChecked(), true);
+  await issue.check();
+  await pull.uncheck();
+  const changed = put(custom.base);
+  await save.click();
+  assert.equal((await changed).status(), 200);
+  assert.deepEqual(record((await custom.read()).policy).repositoryNetworkPolicy, [
+    { ...nativeRepo, apiActions: { deny: ["pull_requests:create"] } },
+    peerRepo,
+  ]);
 });
 
 test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {

@@ -5752,7 +5752,8 @@ html:has(#create-agent-form) {
 .sandbox-policy-editor > :first-child:empty {
   display: none;
 }
-.sandbox-policy-form {
+.sandbox-policy-form,
+.sandbox-repository-form {
   display: grid;
   gap: var(--space-3);
 }
@@ -5771,6 +5772,42 @@ html:has(#create-agent-form) {
 .sandbox-policy-form input {
   width: 100%;
   min-width: 0;
+}
+.sandbox-repository-grant {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding-block: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.sandbox-repository-grant > .resource-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sandbox-repository-grant > select {
+  min-width: 0;
+  max-width: 100%;
+}
+.sandbox-repository-ungranted {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.sandbox-repository-grant > .repository-customize,
+.sandbox-repository-restrictions {
+  flex-basis: 100%;
+  margin: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.sandbox-repository-grant .repository-option {
+  margin-top: var(--space-2);
+}
+.sandbox-repository-grant .repository-option .hint {
+  display: block;
 }
 .sandbox-rule-collection {
   display: grid;

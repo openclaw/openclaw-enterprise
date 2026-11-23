@@ -3,6 +3,8 @@ import type {
   AgentRuntimeLogPageWire,
   DriverConfigurationDescriptor,
   JSONSchema,
+  RepositoryApiAction,
+  RepositoryApiActions,
   RepositoryNetworkGrant,
   RuntimeLogRecord,
   SandboxNetworkGrant,
@@ -16,7 +18,7 @@ import {
   configurationErrors,
   configurationAction,
 } from "../configuration-fields.mjs";
-import { button, dismissOnBackdrop, element, mayReturnFocus } from "../dom.mjs";
+import { button, dismissOnBackdrop, element, mayReturnFocus, setUnavailable } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   askForGrant,
@@ -39,11 +41,13 @@ function readableRepositoryGrants(value: unknown): value is RepositoryGrants {
   const repositories = new Set<string>();
   return value.every((grant: unknown) => {
     const fields = responseFields(grant);
-    const { repository, access } = fields;
+    const { repository, access, apiActions } = fields;
+    const hasFilter = Object.hasOwn(fields, "apiActions");
     if (
-      Object.keys(fields).length !== 2 ||
+      Object.keys(fields).length !== (hasFilter ? 3 : 2) ||
       typeof repository !== "string" ||
-      (access !== "read" && access !== "write")
+      (access !== "read" && access !== "write") ||
+      (hasFilter && !readableRepositoryApiActions(apiActions))
     ) {
       return false;
     }
@@ -55,6 +59,64 @@ function readableRepositoryGrants(value: unknown): value is RepositoryGrants {
   });
 }
 
+const REPOSITORY_CREATION_OPTIONS = [
+  ["pull_requests:create", "Open pull requests"],
+  ["issues:create", "Create issues"],
+] as const satisfies readonly (readonly [RepositoryApiAction, string])[];
+
+const REPOSITORY_API_ACTION_NAMES = {
+  "pull_requests:create": "Pull request creation",
+  "issues:create": "Issue creation",
+  "pull_requests:read": "Pull request reading",
+  "issues:read": "Issue reading",
+} satisfies Record<RepositoryApiAction, string>;
+
+function repositoryAccessLabel(access: RepositoryNetworkGrant["access"]) {
+  return access === "write" ? "Contributor" : "Read-only";
+}
+
+function readableRepositoryApiActionNames(value: unknown): value is RepositoryApiAction[] {
+  return (
+    Array.isArray(value) &&
+    new Set(value).size === value.length &&
+    value.every(
+      (item) => typeof item === "string" && Object.hasOwn(REPOSITORY_API_ACTION_NAMES, item),
+    )
+  );
+}
+
+function readableRepositoryApiActions(value: unknown): value is RepositoryApiActions {
+  const fields = responseFields(value);
+  return (
+    Object.keys(fields).length === 1 &&
+    readableRepositoryApiActionNames(Object.hasOwn(fields, "allow") ? fields.allow : fields.deny)
+  );
+}
+
+function readableRepositoryCeiling(value: unknown): value is RepositoryGrants {
+  return (
+    readableRepositoryGrants(value) && value.every(({ apiActions }) => apiActions === undefined)
+  );
+}
+
+function sameApiActionNames(a: readonly RepositoryApiAction[], b: readonly RepositoryApiAction[]) {
+  return a.length === b.length && a.every((name) => b.includes(name));
+}
+
+function sameRepositoryApiActions(
+  expected: RepositoryApiActions | undefined,
+  actual: RepositoryApiActions | undefined,
+) {
+  if (expected && "allow" in expected) {
+    return (
+      actual !== undefined && "allow" in actual && sameApiActionNames(expected.allow, actual.allow)
+    );
+  }
+  return (
+    (!actual || "deny" in actual) && sameApiActionNames(expected?.deny ?? [], actual?.deny ?? [])
+  );
+}
+
 function sameRepositoryGrants(expected: RepositoryGrants | undefined, actual: unknown) {
   if (expected === undefined) {
     return actual === undefined;
@@ -62,8 +124,52 @@ function sameRepositoryGrants(expected: RepositoryGrants | undefined, actual: un
   if (!readableRepositoryGrants(actual) || expected.length !== actual.length) {
     return false;
   }
-  const byRepository = new Map(actual.map(({ repository, access }) => [repository, access]));
-  return expected.every(({ repository, access }) => byRepository.get(repository) === access);
+  const byRepository = new Map(actual.map((grant) => [grant.repository, grant]));
+  return expected.every(({ repository, access, apiActions }) => {
+    const grant = byRepository.get(repository);
+    return grant?.access === access && sameRepositoryApiActions(apiActions, grant.apiActions);
+  });
+}
+
+function repositoryApiActionAllowed(
+  filter: RepositoryApiActions | undefined,
+  action: RepositoryApiAction,
+) {
+  return filter && "allow" in filter
+    ? filter.allow.includes(action)
+    : !filter?.deny.includes(action);
+}
+
+function changeRepositoryApiAction(
+  filter: RepositoryApiActions | undefined,
+  action: RepositoryApiAction,
+  allowed: boolean,
+): RepositoryApiActions | undefined {
+  if (filter && "allow" in filter) {
+    return {
+      allow: allowed
+        ? [...new Set([...filter.allow, action])]
+        : filter.allow.filter((name) => name !== action),
+    };
+  }
+  const deny = allowed
+    ? (filter?.deny ?? []).filter((name) => name !== action)
+    : [...new Set([...(filter?.deny ?? []), action])];
+  return deny.length ? { deny } : undefined;
+}
+
+function repositoryRestrictionText({ access, apiActions }: RepositoryNetworkGrant) {
+  if (!apiActions) {
+    return "";
+  }
+  return (Object.keys(REPOSITORY_API_ACTION_NAMES) as RepositoryApiAction[])
+    .filter(
+      (action) =>
+        (access === "write" || action.endsWith(":read")) &&
+        !repositoryApiActionAllowed(apiActions, action),
+    )
+    .map((action) => `${REPOSITORY_API_ACTION_NAMES[action]} off`)
+    .join(" · ");
 }
 
 function repositoryPolicySummary({
@@ -75,10 +181,10 @@ function repositoryPolicySummary({
   if (grants === undefined) {
     if (
       repositoryNetworkPolicySaveSupported ||
-      (readableRepositoryGrants(repositoryNetworkPolicyCeiling) &&
+      (readableRepositoryCeiling(repositoryNetworkPolicyCeiling) &&
         repositoryNetworkPolicyCeiling.length > 0)
     ) {
-      return "No repository policy saved. Legacy repository access applies.";
+      return "No repository policy saved.";
     }
     return undefined;
   }
@@ -98,13 +204,20 @@ function repositoryStopGuidance(view: SandboxPolicyViewWire | undefined) {
     : "To end current access, stop the Agent and confirm its workload has stopped.";
 }
 
-function repositoryGrantList(grants: RepositoryGrants) {
+function repositoryGrantList(grants: RepositoryGrants, scope: "agent" | "namespace" = "agent") {
   return element(
     "ul",
     {},
-    ...grants.map(({ repository, access }) =>
-      element("li", {}, element("span", { className: "resource-id" }, repository), ` · ${access}`),
-    ),
+    ...grants.map((grant) => {
+      const restrictions = repositoryRestrictionText(grant);
+      const access = scope === "namespace" ? grant.access : repositoryAccessLabel(grant.access);
+      return element(
+        "li",
+        {},
+        element("span", { className: "resource-id" }, grant.repository),
+        ` · ${access}${restrictions ? ` · ${restrictions}` : ""}`,
+      );
+    }),
   );
 }
 
@@ -385,10 +498,19 @@ export function renderAgentSandboxPolicy(
     descriptor,
     policyReadAllowed,
     sandboxLogSource,
+    repositoryEditor,
   }: {
-    agent: Pick<Agent, "id" | "namespaceId" | "activeRevisionId" | "desiredRuntimeState">;
+    agent: Pick<
+      Agent,
+      "id" | "namespaceId" | "activeRevisionId" | "desiredRuntimeState" | "repositoryBindings"
+    >;
     revisionId: string;
     descriptor?: DriverConfigurationDescriptor;
+    repositoryEditor?: {
+      openOnLoad: Promise<void> | undefined;
+      canOpen(): boolean;
+      policyReadable(): Promise<boolean | undefined>;
+    };
     // The caller's advisory sandbox policy read answer; undefined when it is unknown.
     policyReadAllowed?: Promise<boolean | undefined>;
     // Whether the viewed version has a Sandbox log source, from its snapshot; undefined when it
@@ -405,6 +527,7 @@ export function renderAgentSandboxPolicy(
   const section = element("section", { className: "sandbox-policy" });
   const policyCard = element("section", { className: "agent-card sandbox-network-card" });
   const policySummary = element("div");
+  const repositoryStatus = element("p", { className: "hint", role: "status" });
   const policyPanel = element("section", { className: "sandbox-policy-editor" });
   const dialogTitle = element("h2", { id: "sandbox-policy-dialog-title" }, "Manage network rules");
   const dialog = element("dialog", {
@@ -424,7 +547,10 @@ export function renderAgentSandboxPolicy(
       "div",
       { className: "dialog-header" },
       dialogTitle,
-      button("×", closeDialog, { tone: "ghost", "aria-label": "Close network rules" }),
+      button("×", closeDialog, {
+        tone: "ghost",
+        "aria-label": repositoryEditor ? "Close repository permissions" : "Close network rules",
+      }),
     ),
     dialogBody,
     dialogActions,
@@ -543,11 +669,11 @@ export function renderAgentSandboxPolicy(
               "No ordinary network rules are delegated. Installation defaults still apply.",
             ),
           ]),
-      ...(readableRepositoryGrants(repositoryCeiling)
+      ...(readableRepositoryCeiling(repositoryCeiling)
         ? [
             element("h4", {}, "Repository limits for this Namespace"),
             repositoryCeiling.length
-              ? repositoryGrantList(repositoryCeiling)
+              ? repositoryGrantList(repositoryCeiling, "namespace")
               : element(
                   "p",
                   { className: "notice" },
@@ -1474,7 +1600,7 @@ export function renderAgentSandboxPolicy(
     renderEditor();
     policyPanel
       .querySelector<HTMLElement>(
-        '[aria-labelledby="sandbox-repository-policy-title"] select, [aria-labelledby="sandbox-repository-policy-title"] button',
+        '[aria-labelledby="sandbox-repository-policy-title"] :is(select, button):not([hidden], [hidden] *)',
       )
       ?.focus();
   }
@@ -1482,36 +1608,184 @@ export function renderAgentSandboxPolicy(
   function repositoryPolicyForm(loaded: SandboxPolicyViewWire, ceiling: RepositoryGrants) {
     const { policy } = loaded;
     const limits = new Map(ceiling.map(({ repository, access }) => [repository, access]));
+    const filterOptions = new Map<string, readonly RepositoryApiAction[]>();
+    if (Array.isArray(loaded.repositoryApiActionFilters)) {
+      for (const option of loaded.repositoryApiActionFilters) {
+        const { repository, access, available } = responseFields(option);
+        if (
+          typeof repository === "string" &&
+          limits.has(repository) &&
+          (access === "read" || access === "write") &&
+          readableRepositoryApiActionNames(available)
+        ) {
+          if (access === "read") {
+            limits.set(repository, "read");
+          }
+          filterOptions.set(repository, available);
+        }
+      }
+      for (const repository of limits.keys()) {
+        if (!filterOptions.has(repository)) {
+          limits.delete(repository);
+        }
+      }
+    }
     const saved = policy.repositoryNetworkPolicy ?? [];
+    const savedByRepository = new Map(saved.map((grant) => [grant.repository, grant]));
     const proposed = new Map(
-      (repositoryDraft?.grants ?? saved).map(({ repository, access }) => [repository, access]),
+      (repositoryDraft?.grants ?? saved).map((grant) => [grant.repository, grant]),
     );
     const repositories = new Set([
+      // Native action options cover the Agent's selected repositories. Keep saved
+      // and proposed entries visible even if their binding was removed.
       ...limits.keys(),
       ...saved.map(({ repository }) => repository),
       ...proposed.keys(),
     ]);
-    const fields = [...repositories].map((repository) => {
+    const fields = [...repositories].map((repository, index) => {
       const limit = limits.get(repository);
       const selected = proposed.get(repository);
-      const choice = element("select", {}, element("option", { value: "" }, "No access"));
-      if (limit) {
-        choice.append(element("option", { value: "read" }, "Read"));
-      }
+      // Preserve an existing filter when the access level changes. Read-only itself bars creation.
+      const previous = selected ?? savedByRepository.get(repository);
+      let apiActions = previous?.apiActions;
+      let lastAccess = previous?.access;
+      const available = filterOptions.get(repository);
+      const labelId = `sandbox-repository-name-${index}`;
+      const name = element(
+        "span",
+        { className: "resource-id", id: labelId, tabindex: -1 },
+        repository,
+      );
+      const choice = element(
+        "select",
+        { "aria-labelledby": labelId },
+        element("option", { value: "" }, "No access"),
+      );
       if (limit === "write") {
-        choice.append(element("option", { value: "write" }, "Write"));
+        choice.append(element("option", { value: "write" }, repositoryAccessLabel("write")));
       }
-      if (selected && (!limit || (selected === "write" && limit === "read"))) {
+      if (limit) {
+        choice.append(element("option", { value: "read" }, repositoryAccessLabel("read")));
+      }
+      if (selected && (!limit || (selected.access === "write" && limit === "read"))) {
         choice.append(
           element(
             "option",
-            { value: selected, disabled: true },
-            `${repositoryDraft === undefined ? "Saved" : "Proposed"} ${selected} (unavailable)`,
+            { value: selected.access, disabled: true },
+            `${repositoryDraft === undefined ? "Saved" : "Proposed"} ${repositoryAccessLabel(selected.access)} (unavailable)`,
           ),
         );
       }
-      choice.value = selected ?? "";
-      return { repository, choice };
+      choice.value = selected?.access ?? "";
+      const add = limit
+        ? button(
+            "Add access",
+            () => {
+              if (formIsCurrent()) {
+                choice.value = lastAccess === "read" ? lastAccess : limit;
+                updateDraft();
+                choice.focus();
+              }
+            },
+            { "aria-label": `Add access for ${repository}` },
+          )
+        : null;
+      const ungranted = element(
+        "div",
+        { className: "sandbox-repository-ungranted" },
+        element("span", {}, "No access"),
+        add,
+      );
+      choice.addEventListener("change", () => {
+        if (formIsCurrent()) {
+          if (choice.value === "write" || choice.value === "read") {
+            lastAccess = choice.value;
+          }
+          updateDraft();
+          if (choice.hidden) {
+            (add ?? name).focus();
+          }
+        }
+      });
+      const restrictions = element("p", { className: "hint sandbox-repository-restrictions" });
+      const unavailable = element(
+        "p",
+        { className: "hint sandbox-repository-restrictions" },
+        "Saving this repository’s action restrictions is unavailable. Remove this grant to save changes to the list.",
+      );
+      const details =
+        limit === "write" && available
+          ? element(
+              "details",
+              { className: "repository-customize" },
+              element(
+                "summary",
+                {},
+                element("span", { className: "repository-chevron", "aria-hidden": "true" }),
+                "Advanced · Customize access",
+              ),
+              ...REPOSITORY_CREATION_OPTIONS.map(([action, label], actionIndex) => {
+                const permitted = available.includes(action);
+                const id = `${labelId}-action-${actionIndex}`;
+                const checkbox = element("input", {
+                  type: "checkbox",
+                  "aria-labelledby": id,
+                  checked: permitted && repositoryApiActionAllowed(apiActions, action),
+                });
+                const reason = permitted
+                  ? null
+                  : element(
+                      "span",
+                      { className: "hint", id: `${id}-reason` },
+                      "Unavailable within approved repository access.",
+                    );
+                if (reason) {
+                  setUnavailable(checkbox, true, reason);
+                }
+                checkbox.addEventListener("change", () => {
+                  if (formIsCurrent() && choice.value === "write" && permitted) {
+                    apiActions = changeRepositoryApiAction(apiActions, action, checkbox.checked);
+                    updateDraft();
+                  }
+                });
+                return element(
+                  "label",
+                  { className: "repository-option" },
+                  checkbox,
+                  element("span", {}, element("span", { id }, label), reason),
+                );
+              }),
+            )
+          : null;
+      const row = element(
+        "div",
+        { className: "sandbox-repository-grant", role: "group", "aria-labelledby": labelId },
+        name,
+        ungranted,
+        choice,
+        restrictions,
+        unavailable,
+        details,
+      );
+      function selectedGrant(): RepositoryNetworkGrant | undefined {
+        const access = choice.value;
+        if (access === "read" || access === "write") {
+          return { repository, access, ...(apiActions ? { apiActions } : {}) };
+        }
+        return undefined;
+      }
+      function renderGrant() {
+        const grant = selectedGrant();
+        choice.hidden = grant === undefined;
+        ungranted.hidden = !choice.hidden;
+        restrictions.textContent = grant ? repositoryRestrictionText(grant) : "";
+        restrictions.hidden = !restrictions.textContent;
+        unavailable.hidden = !grant?.apiActions || available !== undefined;
+        if (details) {
+          details.hidden = grant?.access !== "write";
+        }
+      }
+      return { row, selectedGrant, renderGrant };
     });
     const save = element(
       "button",
@@ -1523,17 +1797,30 @@ export function renderAgentSandboxPolicy(
         discardRepositoryDraft();
       }
     });
+    const missingGrant = element(
+      "p",
+      { role: "status", className: "hint" },
+      "This list leaves a selected repository without access. The Agent cannot open pull requests in any repository. Give it at least Read-only access to each selected repository or remove unused selections.",
+    );
     const form = element(
       "form",
-      { className: "sandbox-policy-form" },
-      ...fields.map(({ repository, choice }) =>
-        element("label", {}, element("span", { className: "resource-id" }, repository), choice),
-      ),
-      element(
-        "p",
-        { className: "hint" },
-        "Saving checks the complete list against the selected Drivers and the Agent’s repository access.",
-      ),
+      { className: "sandbox-repository-form" },
+      filterOptions.size
+        ? element(
+            "p",
+            { className: "hint" },
+            "Contributor can push code, create issues and open pull requests wherever permitted. Choose Read-only to prevent writes.",
+          )
+        : null,
+      ...fields.map(({ row }) => row),
+      missingGrant,
+      filterOptions.size
+        ? null
+        : element(
+            "p",
+            { className: "hint" },
+            "Grant access only to repositories selected for this Agent.",
+          ),
       save,
       discard,
     );
@@ -1553,32 +1840,45 @@ export function renderAgentSandboxPolicy(
     function canSave(grants: RepositoryGrants) {
       return (
         grants.length > 0 &&
-        grants.every(({ repository, access }) => {
+        grants.every(({ repository, access, apiActions }) => {
           const limit = limits.get(repository);
-          return limit === "write" || limit === access;
+          return (
+            (limit === "write" || limit === access) &&
+            (!apiActions || filterOptions.has(repository))
+          );
         })
       );
     }
     function updateActions() {
+      for (const { renderGrant } of fields) {
+        renderGrant();
+      }
+      const grants = repositoryDraft?.grants ?? saved;
+      const eligible = grants.filter(({ repository }) => filterOptions.has(repository));
+      missingGrant.hidden =
+        eligible.length >= (agent.repositoryBindings?.length ?? filterOptions.size) ||
+        !eligible.some(
+          ({ repository, apiActions, access }) =>
+            access === "write" &&
+            repositoryApiActionAllowed(apiActions, "pull_requests:create") &&
+            filterOptions.get(repository)?.includes("pull_requests:create"),
+        );
       save.disabled = repositoryDraft === undefined || !canSave(repositoryDraft.grants);
       discard.hidden = repositoryDraft === undefined;
     }
-    form.addEventListener("change", () => {
-      if (!formIsCurrent()) {
-        return;
-      }
+    function updateDraft() {
       const grants: RepositoryNetworkGrant[] = [];
-      for (const { repository, choice } of fields) {
-        const access = choice.value;
-        if (access === "read" || access === "write") {
-          grants.push({ repository, access });
+      for (const { selectedGrant } of fields) {
+        const grant = selectedGrant();
+        if (grant) {
+          grants.push(grant);
         }
       }
       repositoryDraft = sameRepositoryGrants(saved, grants)
         ? undefined
         : { saved: policy.repositoryNetworkPolicy, grants };
       updateActions();
-    });
+    }
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const next = repositoryDraft?.grants;
@@ -1600,8 +1900,12 @@ export function renderAgentSandboxPolicy(
     const panel = element(
       "section",
       { "aria-labelledby": "sandbox-repository-policy-title" },
-      element("h3", { id: "sandbox-repository-policy-title" }, "Repository network policy"),
-      element("p", {}, summary),
+      element(
+        "h3",
+        { id: "sandbox-repository-policy-title", hidden: Boolean(repositoryEditor) },
+        "Repository network policy",
+      ),
+      !repositoryEditor || saved?.length === 0 ? element("p", {}, summary) : null,
     );
     const hint = (text: string) => element("p", { className: "hint" }, text);
     if (repositoryDraft?.conflicted) {
@@ -1633,7 +1937,7 @@ export function renderAgentSandboxPolicy(
       panel.append(hint("Save the first list before deploying this Agent."));
     }
     // The hint admits submissions. The PUT still validates the exact list.
-    if (canPropose && readableRepositoryGrants(ceiling) && ceiling.length) {
+    if (canPropose && readableRepositoryCeiling(ceiling) && ceiling.length) {
       panel.append(repositoryPolicyForm(loaded, ceiling));
     } else {
       if (saved?.length) {
@@ -1744,6 +2048,10 @@ export function renderAgentSandboxPolicy(
   }
 
   function renderEditor() {
+    if (repositoryEditor) {
+      renderRepositoryDialog();
+      return;
+    }
     dialogTitle.textContent = view?.editingEnabled ? "Manage network rules" : "View network rules";
     if (editingRules) {
       dialogTitle.textContent = "Edit network rule";
@@ -2380,7 +2688,7 @@ export function renderAgentSandboxPolicy(
         repositoryDraft.conflicted = true;
       }
       failedApplicationInspected = inspectFailure && loaded.policy.application?.state === "failed";
-      if (view.capability === null && !repositoryPolicySummary(view)) {
+      if (!repositoryEditor && view.capability === null && !repositoryPolicySummary(view)) {
         // The draft tab reads no logs or suggestions, so the unsupported state is shown from here too.
         void policySupported();
         return;
@@ -2489,6 +2797,16 @@ export function renderAgentSandboxPolicy(
   }
 
   function renderPolicy() {
+    if (repositoryEditor) {
+      if (dialog.open) {
+        renderRepositoryDialog();
+      } else {
+        repositoryStatus.textContent = repositoryDraft
+          ? "Unsaved changes. Open Manage permissions to save or discard them."
+          : feedback.textContent;
+      }
+      return;
+    }
     if (policyReadDenied) {
       policySummary.replaceChildren(
         element("h2", {}, "Network policy"),
@@ -2771,6 +3089,132 @@ export function renderAgentSandboxPolicy(
     } else if (feedback.textContent) {
       policySummary.append(feedback);
     }
+  }
+
+  // Both entry points use the same draft, save confirmation and withdrawal checks.
+  // The Repositories tab never requests Sandbox logs or recommendations.
+  function renderRepositoryDialog() {
+    dialogTitle.textContent = "Repository permissions";
+    dialogActions.replaceChildren(button("Done", closeDialog, { disabled: mutation }));
+    policyPanel.replaceChildren(feedback);
+    if (policyReadDenied) {
+      policyPanel.append(element("p", { role: "status" }, POLICY_READ_DENIED));
+      return;
+    }
+    if (policyReadUnavailable) {
+      policyPanel.append(policySummary);
+      return;
+    }
+    if (!view) {
+      policyPanel.append(element("p", { role: "status" }, "Loading repository permissions…"));
+      return;
+    }
+    dialogActions.append(
+      button("Refresh policy", () => void loadPolicy(true), { disabled: mutation }),
+    );
+    if (unknownOutcome) {
+      return;
+    }
+    if (!view.repositoryNetworkPolicySaveSupported && !view.policy.repositoryNetworkPolicy) {
+      policyPanel.append(
+        element(
+          "p",
+          { role: "status" },
+          view.unavailableReason ??
+            `Repository policy is unavailable for this draft. ${REPOSITORY_POLICY_DEPLOY_GUIDANCE}`,
+        ),
+      );
+      return;
+    }
+    if (!view.editingEnabled) {
+      policyPanel.append(
+        element(
+          "p",
+          { className: "hint" },
+          "Editing is off for this Agent’s network policy. Enabling it requires Installation and Agent administration.",
+        ),
+        button("Enable policy editing", () => void setPolicyEditing(false), { disabled: mutation }),
+      );
+    } else if (!mutation && !hasEditAuthority()) {
+      policyPanel.append(...policyEditingExplanation());
+    }
+    const panel = repositoryPolicyPanel(view);
+    if (panel) {
+      policyPanel.append(panel);
+    }
+    if (view.policy.additions.length) {
+      policyPanel.append(
+        element(
+          "p",
+          { className: "hint" },
+          "To set repository grants, first remove and save ordinary network rules in Policy denials.",
+        ),
+      );
+    }
+    if (view.policy.repositoryNetworkPolicy !== undefined) {
+      policyPanel.append(
+        element(
+          "p",
+          { className: "hint" },
+          `Deploy a new version to apply saved permissions. ${agent.desiredRuntimeState === "running" ? repositoryStopGuidance(view) : ""}`,
+        ),
+      );
+    }
+  }
+
+  if (repositoryEditor) {
+    const open = button(
+      "Manage permissions",
+      async () => {
+        if (!current() || mutation || dialog.open || !repositoryEditor.canOpen()) {
+          return;
+        }
+        // Read on demand. The policy has separate authority from the binding editor.
+        const sequence = ++policyReadSequence;
+        view = undefined;
+        policyReadUnavailable = false;
+        policyReadDenied = false;
+        if (!unknownOutcome) {
+          feedback.textContent = "";
+        }
+        openPolicyDialog();
+        dialogInvoker = open;
+        const allowed = await repositoryEditor.policyReadable();
+        if (!current() || !dialog.open || sequence !== policyReadSequence) {
+          return;
+        }
+        if (allowed === false) {
+          policyReadDenied = true;
+          renderRepositoryDialog();
+        } else {
+          await loadPolicy();
+        }
+      },
+      { "aria-haspopup": "dialog" },
+    );
+    section.append(
+      element(
+        "section",
+        { className: "agent-card" },
+        element("h2", {}, "Repository permissions"),
+        element(
+          "p",
+          { className: "hint" },
+          "Choose what this Agent can do in each repository. Deploy a new version to apply changes.",
+        ),
+        open,
+        repositoryStatus,
+      ),
+      dialog,
+    );
+    // The shell reparents the page on reveal. Opening earlier drops the dialog
+    // from the browser's modal layer, leaving it scrolled behind the page.
+    void repositoryEditor.openOnLoad?.then(() => {
+      if (open.isConnected && current()) {
+        open.click();
+      }
+    });
+    return section;
   }
 
   filter.addEventListener("input", () => {

@@ -1,5 +1,20 @@
 # Review policy denials and change one Agent's network access
 
+## Repository access
+
+To change one Agent's access, choose **Edit repository permissions** on its Configuration snapshot
+or open its version draft and choose **Repositories → Manage permissions**.
+Save the first repository policy before you deploy. An Agent previously deployed without one needs a new Agent ID to use these controls.
+
+1. Enable policy editing if prompted. Choose **Add access** beside the repository you want.
+2. **Contributor** is the default where Write is permitted. The Agent can push code, open pull requests and create issues within its approved GitHub permissions. Choose **Read-only** to prevent writes.
+3. To keep push access but turn off **Create issues** or **Open pull requests**, expand **Advanced · Customize access**. These choices narrow access for this Agent only.
+4. Choose **Save repository policy** and deploy the new version. Saving alone leaves the running version unchanged.
+
+[Namespace limits and GitHub permissions](../../reference/repository-credentials/access-levels.md#native-git-delivery) apply to every Agent using the registration. If a bound repository has no grant, the Agent can't open PRs anywhere. Unbind an unused repository and redeploy.
+
+## Network denials
+
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab

@@ -13,7 +13,7 @@ denials and recommendations.
 
 ## Entry Points
 
-- Trigger: console Policy denials tab or `occ agent policy`.
+- Trigger: [Repositories](../guides/topics/agent-sandbox-policy.md#repository-access), Policy denials or `occ agent policy`.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: ready Namespace, active Agent, exact grants, editing enabled for

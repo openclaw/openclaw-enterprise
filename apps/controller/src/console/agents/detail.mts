@@ -15,6 +15,7 @@ import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
+import { renderAgentSandboxPolicy } from "./sandbox-policy.mjs";
 import {
   storedConfigurationProblem,
   type StoredConfigurationRule,
@@ -909,6 +910,12 @@ export async function renderAgentDetail(
   let visibleRevisionsLoaded = false;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
+  let configureRepositories =
+    tab === "repositories" && url.searchParams.get("repositoryAccess") === "1";
+  const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
+    agent.executionMode === "dedicated" &&
+    configuredHarnessId(values) === "codex" &&
+    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -1017,8 +1024,14 @@ export async function renderAgentDetail(
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
   // With `deploy`, a draft link brings that draft's Deploy new version into view instead.
-  function versionLink(label: string, revision: string, tab: string, { deploy = false } = {}) {
-    const node = element("a", { href: context.pageUrl(target(revision, tab)) }, label);
+  function versionLink(
+    label: string,
+    revision: string,
+    tab: string,
+    { deploy = false, permissions = false } = {},
+  ) {
+    const destination = target(revision, tab) + (permissions ? "&repositoryAccess=1" : "");
+    const node = element("a", { href: context.pageUrl(destination) }, label);
     node.addEventListener("click", (event) => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
         return;
@@ -1042,7 +1055,7 @@ export async function renderAgentDetail(
       }
       // The load this navigation starts is the next one.
       linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
-      context.navigate(target(revision, tab));
+      context.navigate(destination);
     });
     return node;
   }
@@ -4602,6 +4615,16 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
+      hasRepositoryPermissions(values)
+        ? element(
+            "p",
+            { className: "hint" },
+            versionLink("Set repository permissions", "draft", "repositories"),
+            currentRevisionId || visibleRevisions.length
+              ? " for the next deployment."
+              : " before the first deployment to control this Agent’s access.",
+          )
+        : null,
       checklist,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
@@ -5356,6 +5379,26 @@ export async function renderAgentDetail(
       statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
+      if (hasRepositoryPermissions(values)) {
+        content.append(
+          renderAgentSandboxPolicy(context, {
+            agent,
+            revisionId: selected,
+            repositoryEditor: {
+              openOnLoad: configureRepositories ? revealed : undefined,
+              policyReadable: () => rereadPermissions().then((fresh) => fresh?.sandboxPolicyRead),
+              canOpen: () => {
+                if (draftEditorBlocksNavigation()) {
+                  showLeaveBlock();
+                  return false;
+                }
+                return true;
+              },
+            },
+          }),
+        );
+      }
+      configureRepositories = false;
       content.append(renderRepositoryTab(context, data));
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
@@ -6188,7 +6231,11 @@ export async function renderAgentDetail(
           "div",
           { className: "agent-toolbar-actions" },
           versionLink("Draft credentials", "draft", "credentials"),
-          versionLink("Draft repositories", "draft", "repositories"),
+          hasRepositoryPermissions(values)
+            ? versionLink("Edit repository permissions", "draft", "repositories", {
+                permissions: true,
+              })
+            : versionLink("Draft repositories", "draft", "repositories"),
         );
         // A URL without a revision can show a different active version on Back.
         for (const link of draftLinks.querySelectorAll("a")) {

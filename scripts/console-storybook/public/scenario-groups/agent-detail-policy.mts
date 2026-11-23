@@ -264,7 +264,7 @@ export function createAgentDetailPolicyScenarios({
                 description:
                   "The Namespace delegates repository access. An earlier version was deployed without a repository policy.",
                 steps: [
-                  "Open View network limits. Check that example/application is read and example/tooling is write.",
+                  "Open View network limits. Check that example/application is Read-only and example/tooling is Contributor.",
                   "Open Manage rules. Check the guidance to create a new Agent and verify that no repository save controls appear.",
                 ],
               }
@@ -275,8 +275,8 @@ export function createAgentDetailPolicyScenarios({
                 description:
                   "An Agent can propose repository access within the Namespace limits before its first deployment.",
                 steps: [
-                  "Open Manage rules, select Read for example/application and Write for example/tooling, and save.",
-                  "Reopen Manage rules, change example/tooling to Read, and refresh. Check that Read is still selected, then save.",
+                  "Open Manage rules and choose Add access for each repository. Check that application defaults to Read-only and tooling to Contributor, then save.",
+                  "Reopen Manage rules, change example/tooling to Read-only, and refresh. Check that Read-only is still selected, then save.",
                   "Set example/application to No access and save. The story rejects the partial list. Check that the choice stays selected, then discard the repository changes.",
                   "Reload the story from its initial state and choose Deny all repositories. Confirm the empty policy remains distinct from legacy access.",
                 ],
@@ -286,10 +286,10 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 policyCeiling: [],
                 steps: [
-                  "Open Manage rules. Set example/application to Read and example/tooling to Write, then save.",
-                  "Reopen Manage rules and change example/tooling to Read. Save and observe the simulated version conflict.",
+                  "Open Manage rules, choose Add access for both repositories, then save.",
+                  "Reopen Manage rules and change example/tooling to Read-only. Save and observe the simulated version conflict.",
                   "Refresh policy. The current grants show example/tooling only. Discard repository changes to resume editing.",
-                  "Set example/tooling to Read and save. Check that example/application still has No access.",
+                  "Set example/tooling to Read-only and save. Check that example/application still has No access.",
                 ],
               }
             : {}),
