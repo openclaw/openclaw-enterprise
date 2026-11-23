@@ -34,6 +34,7 @@
     "tests/integration/installation-preflight-render.test.ts",
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
+    "tests/conformance/kubernetes-channel-egress-drain.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
@@ -266,6 +267,12 @@
     },
     {
       "path": "tests/conformance/iam.test.ts"
+    },
+    {
+      "path": "tests/conformance/kubernetes-channel-egress-drain.test.ts",
+      "expectedTests": [
+        "a channel listener cannot be reassigned until Envoy finishes draining its old chain"
+      ]
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"

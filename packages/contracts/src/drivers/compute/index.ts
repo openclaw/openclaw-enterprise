@@ -16,6 +16,7 @@ import type {
 import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
+  AgentNetworkProxy,
   AgentRevision,
   CredentialSource,
   CredentialSourceType,
@@ -83,6 +84,11 @@ export interface ComputeRevisionContext {
   /** Non-model sources resolved again at dispatch, in admission order. */
   readonly credentialSources?: readonly Readonly<CredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
+  /** Exact authorized Secret identity for the Gateway channel proxy; never projected to Gateway. */
+  readonly networkProxyCredential?: Pick<
+    SecretEnvironmentProjection,
+    "secretId" | "namespaceId" | "agentId" | "backendRef"
+  >;
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
 
@@ -313,6 +319,11 @@ export interface ComputeDriver extends Driver {
   readonly supportsWorkspaceSetup?: true;
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;
+  /** Admit a Gateway-channel-only upstream selection and return private immutable routing intent. */
+  admitGatewayChannelProxy?(
+    selection: Readonly<AgentNetworkProxy>,
+    context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
+  ): Promise<string>;
   readonly capability: "compute";
   /** Deployment must observe and provision Agent-owned runtime credentials before saving a revision. */
   readonly requiresAgentRuntimeCredentials?: true;
