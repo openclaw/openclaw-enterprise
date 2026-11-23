@@ -24,7 +24,11 @@ import {
 function selectedRepositoryGitNetworkGrants({
   repositories,
   permissions,
+  mixedNativeGit,
 }: ReturnType<typeof resolveSelectedRepositoryScope>): readonly RepositoryNetworkGrant[] {
+  if (mixedNativeGit) {
+    return [];
+  }
   const access = permissions.contents;
   return access === "read" || access === "write"
     ? Object.freeze(repositories.map(({ repository }) => Object.freeze({ repository, access })))
@@ -190,7 +194,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         sessionDurationSeconds: this.#duration,
         ...(selected === undefined
           ? {}
-          : { selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected) }),
+          : {
+              selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
+              ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
+            }),
       });
     } catch {
       throw new ScopeViolationError(
