@@ -291,38 +291,52 @@ interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
 
-Older `dev-up` installations set `agentNativeAdmin.sharedCookieDomain`,
-which the chart refuses; pass a copy without it:
+Privately copy older `dev-up` values, removing only the rejected
+`agentNativeAdmin.sharedCookieDomain`. Keep the original values file and the
+converted copy for recovery.
 
 ```bash
 CANDIDATE_ARGS=()
-if [[ "$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES")" == true ]]; then
-  (umask 077; yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml)
-  CANDIDATE_ARGS=(--candidate-values /secure/occ/candidate-values.yaml)
-fi
+candidate_failed() { echo "$1 failed" >&2; exit 1; }
+cookie=$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES" 2>/dev/null) || candidate_failed Detection
+case "$cookie" in
+  true)
+    candidate=$(umask 077; mktemp "${VALUES}.candidate.XXXXXX") || candidate_failed mktemp
+    yq -e 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > "$candidate" 2>/dev/null || candidate_failed Conversion
+    CANDIDATE_ARGS=(--candidate-values "$candidate")
+    ;;
+  false) ;;
+  *) candidate_failed Validation ;;
+esac
 ```
 
-Choose exactly one invocation below. Both options together perform a combined
-release; omitting one leaves that image selection unchanged.
+Choose exactly one. Omitted images remain unchanged.
+
+**Controller only (does not create Agent revisions).**
 
 ```bash
-# Controller only: no Agent revisions are requested.
 scripts/upgrade-production-images \
   --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
+```
 
-# Runtime only: use a fresh UPGRADE_EVIDENCE for a new release.
+**Runtime only.**
+
+```bash
 scripts/upgrade-production-images \
   --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
+```
 
-# Combined: use a fresh UPGRADE_EVIDENCE for a new release.
+**Combined.**
+
+```bash
 scripts/upgrade-production-images \
   --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" --release "$RELEASE" \
@@ -382,10 +396,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 
 Helm must be deployed, initialization successful, both rollouts complete, and
 both displayed images equal the selected controller image (or the previous one
-for runtime-only). To inspect the live runtime selection after a runtime change,
-recover the Installation Secret with the commands above into a separate private
-file and check `drivers.compute.configuration.images.gateway` and `.agent` with
-`yq`; both must equal `RUNTIME_IMAGE`. Compare the before and after Installation ID, Namespace and
+for runtime-only). For runtime changes, assign `VALUES` and `INSTALLATION`
+distinct unused private paths in the saved-input retrieval subshell. After
+retrieving the live inputs, use `yq` there to confirm `INSTALLATION`'s
+`.drivers.compute.configuration.images.gateway` and
+`.drivers.compute.configuration.images.agent` equal `RUNTIME_IMAGE`.
+Compare the before and after Installation ID, Namespace and
 Agent inventory, and each PVC's UID and bound volume name. A different UID for
 the same namespace and claim name identifies a replacement claim. Verify
 representative PostgreSQL records, Secrets, workspace and gateway data, and a
