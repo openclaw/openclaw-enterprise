@@ -6196,16 +6196,19 @@ export class ControllerWorker {
     const owner = this.provisioningController.selectedDriver("token_service");
     const instanceId = this.provisioningController.currentTokenServiceInstanceId();
     const sources = new Map<string, Readonly<CredentialSource>>();
-    for (const binding of policy.bindings) {
+    for (const { sourceRef } of policy.bindings) {
       if (
-        binding.sourceRef.namespaceId !== revision.namespaceId ||
-        binding.sourceRef.kind !== "credential_source"
+        sourceRef.namespaceId !== revision.namespaceId ||
+        sourceRef.kind !== "credential_source"
       ) {
         throw new DependencyUnavailableError(
           "The staged source does not belong to the Agent Namespace.",
         );
       }
-      const snapshot = revisionCredentialSourceSnapshot(revision, binding.sourceRef.id);
+      if (sources.has(sourceRef.id)) {
+        continue;
+      }
+      const snapshot = revisionCredentialSourceSnapshot(revision, sourceRef.id);
       if (!snapshot || snapshot.tokenServiceInstanceId !== instanceId) {
         throw new DependencyUnavailableError(
           "The staged source does not belong to the selected TokenService instance.",

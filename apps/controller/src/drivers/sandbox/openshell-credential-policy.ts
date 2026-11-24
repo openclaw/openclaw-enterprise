@@ -1,7 +1,9 @@
-import type {
-  DeploymentCredentialBinding,
-  DeploymentPolicy,
-  DeploymentRequestMatch,
+import {
+  pathCovered,
+  validRequestPath,
+  type DeploymentCredentialBinding,
+  type DeploymentPolicy,
+  type DeploymentRequestMatch,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 
@@ -41,44 +43,13 @@ export function credentialPolicyFailure(): never {
   );
 }
 
-function pathCovers(allowed: string, requested: string): boolean {
-  if (allowed === requested || allowed === "/**") {
-    return true;
-  }
-  if (!allowed.endsWith("/**")) {
-    return false;
-  }
-  const base = allowed.slice(0, -3);
-  return requested === base || requested.startsWith(`${base}/`);
-}
-
-function validHttpPath(path: string): boolean {
-  if (!path.startsWith("/") || path.includes("//")) {
-    return false;
-  }
-  const base = path.endsWith("/**") ? path.slice(0, -3) : path;
-  if (!/^(?:[A-Za-z0-9._~!$&'()+,:=@/-]|%20|%[89A-F][0-9A-F])*$/.test(base)) {
-    return false;
-  }
-  try {
-    return decodeURIComponent(base)
-      .split("/")
-      .every((segment) => {
-        const normalized = segment.normalize("NFKC");
-        return normalized !== "." && normalized !== ".." && !/[/%\\?#;*\p{Cc}]/u.test(normalized);
-      });
-  } catch {
-    return false;
-  }
-}
-
 /** Only exact and terminal subtree selectors can establish that Source routes are disjoint. */
 export function openShellCredentialPathsOverlap(left: string, right: string): boolean {
   return (
-    !validHttpPath(left) ||
-    !validHttpPath(right) ||
-    pathCovers(left, right) ||
-    pathCovers(right, left)
+    !validRequestPath(left, true) ||
+    !validRequestPath(right, true) ||
+    pathCovered(right, left) ||
+    pathCovered(left, right)
   );
 }
 
@@ -128,7 +99,7 @@ function inheritSubtreeRules(
         route.host.toLowerCase() === ancestor.host.toLowerCase() &&
         route.port === ancestor.port &&
         route.provider === ancestor.provider &&
-        pathCovers(ancestor.path, route.path)
+        pathCovered(route.path, ancestor.path)
       ) {
         for (const rule of ancestor.rules) {
           if (
@@ -169,8 +140,7 @@ function checkedHttpRequest(request: DeploymentRequestMatch): {
     port > 65535 ||
     request.ports[0]?.to !== port ||
     !/^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/.test(selector.method) ||
-    typeof path !== "string" ||
-    !validHttpPath(path)
+    !validRequestPath(path, true)
   ) {
     credentialPolicyFailure();
   }
@@ -196,7 +166,7 @@ function networkCoversRequest(
     (selector.type === "http" &&
       request.requestPolicy?.type === "http" &&
       selector.method === request.requestPolicy.method &&
-      pathCovers(selector.path, request.requestPolicy.path))
+      pathCovered(request.requestPolicy.path, selector.path))
   );
 }
 
@@ -208,10 +178,19 @@ export function compileOpenShellCredentialPolicy(
   readonly credentialRoutes: readonly OpenShellCredentialRoute[];
   readonly publicRoutes: readonly OpenShellPublicRoute[];
 } {
-  if (policy.bindings.length < 1 || policy.injectionPolicies.length !== policy.bindings.length) {
+  const injections = new Map(
+    policy.injectionPolicies.map(({ bindingRef, allowedRequests }) => [
+      bindingRef,
+      allowedRequests,
+    ]),
+  );
+  if (
+    policy.bindings.length < 1 ||
+    injections.size !== policy.injectionPolicies.length ||
+    injections.size !== policy.bindings.length
+  ) {
     credentialPolicyFailure();
   }
-  const refs = new Set<string>();
   const environments = new Set<string>();
   const routes = new Map<
     string,
@@ -232,9 +211,10 @@ export function compileOpenShellCredentialPolicy(
   }
   for (const binding of policy.bindings) {
     const environment = binding.projection.environment;
+    const requests = injections.get(binding.bindingRef);
     if (
       !binding.bindingRef ||
-      refs.has(binding.bindingRef) ||
+      !requests?.length ||
       (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
       binding.sourceRef.kind !== "credential_source" ||
       !binding.sourceRef.id ||
@@ -245,16 +225,10 @@ export function compileOpenShellCredentialPolicy(
     ) {
       credentialPolicyFailure();
     }
-    refs.add(binding.bindingRef);
+    injections.delete(binding.bindingRef);
     environments.add(environment);
     const provider = openShellCredentialProviderName(binding);
-    const injections = policy.injectionPolicies.filter(
-      (value) => value.bindingRef === binding.bindingRef,
-    );
-    if (injections.length !== 1 || injections[0]!.allowedRequests.length < 1) {
-      credentialPolicyFailure();
-    }
-    for (const request of injections[0]!.allowedRequests) {
+    for (const request of requests) {
       const { method, path, port } = checkedHttpRequest(request);
       if (
         !policy.networkAccessPolicy.allowed.some((network) =>

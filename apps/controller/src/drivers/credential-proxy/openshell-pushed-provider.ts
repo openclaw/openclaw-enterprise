@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 
 import type {
   DeploymentCredentialBinding,
-  CredentialInjectionPolicy,
   CredentialDeploymentConfiguration,
   CredentialDeploymentRef,
   CredentialDeploymentContext,
@@ -602,25 +601,14 @@ export function openShellPushedPolicyMatches(
   );
 }
 
-export function assertOpenShellPushedBinding(
+export function assertOpenShellPushedBindingScope(
   context: CredentialDeploymentContext,
   binding: DeploymentCredentialBinding,
-  policies: readonly CredentialInjectionPolicy[],
 ): void {
-  const admitted = context.revision.credentialDeployment;
   if (
     context.revision.executionAdmission.version !== 8 ||
     context.revision.executionAdmission.mode !== "standalone" ||
-    !admitted ||
-    !admitted.bindings.some((candidate) => isDeepStrictEqual(candidate, binding)) ||
-    !isDeepStrictEqual(admitted.injectionPolicies, policies) ||
-    !binding.bindingRef ||
-    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
-    binding.sourceRef.kind !== "credential_source" ||
-    !binding.sourceRef.id ||
-    binding.sourceRef.namespaceId !== context.namespace.id ||
-    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.projection.environment) ||
-    binding.projection.presentation !== "bearer"
+    binding.sourceRef.namespaceId !== context.namespace.id
   ) {
     refuse();
   }
