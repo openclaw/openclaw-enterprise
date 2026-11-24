@@ -29,7 +29,7 @@
     "tests/browser/console-agent-plugin-approvers.test.ts",
     "tests/browser/console-agent-plugin-refusals.test.ts",
     "tests/browser/docs-compute-matrix.test.ts",
-    "tests/browser/docs-repository-actions.test.ts",
+    "tests/browser/docs-repository-limits.test.ts",
     "tests/browser/console-namespace-not-ready.test.ts",
     "tests/browser/console-secrets.test.ts",
     "tests/browser/console-namespace-delete.test.ts",
@@ -91,7 +91,7 @@
       "path": "tests/browser/docs-compute-matrix.test.ts"
     },
     {
-      "path": "tests/browser/docs-repository-actions.test.ts"
+      "path": "tests/browser/docs-repository-limits.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-github-prepared.test.ts"

@@ -921,7 +921,7 @@ dialog::backdrop {
   --scalar-font-code: ui-monospace, monospace;
 }
 
-[data-repository-actions]:not(:empty) {
+[data-repository-limits]:not(:empty) {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: clamp(16px, 3vw, 24px);
@@ -929,31 +929,25 @@ dialog::backdrop {
   font-size: 15px;
   line-height: 1.5;
 
-  .access-title,
-  .action-presets,
-  .example-levels {
+  .grant,
+  .levels {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: end;
     gap: 12px;
   }
 
-  [data-title] {
-    font-size: 21px;
+  .grant {
+    justify-content: space-between;
   }
 
-  [data-recommended] {
-    border-radius: 6px;
-    padding: 3px 9px;
-    background: var(--verified-bg);
-    color: var(--verified-ink);
-    font-size: 13px;
+  .grant label {
+    flex-wrap: wrap;
     font-weight: 600;
   }
 
   [data-reset] {
-    margin-left: auto;
-    padding: 5px 10px;
+    padding: 8px 12px;
     font-size: 14px;
   }
 
@@ -969,7 +963,7 @@ dialog::backdrop {
 
   dt,
   summary span,
-  .action-limits {
+  .hint {
     font-weight: 400;
     color: var(--muted);
     font-size: 14px;
@@ -980,9 +974,6 @@ dialog::backdrop {
     font-weight: 600;
   }
 
-  .access-scope,
-  [data-default],
-  [data-mode],
   details > div {
     color: var(--text);
     margin-top: 12px;
@@ -998,18 +989,6 @@ dialog::backdrop {
 
   summary::marker {
     color: var(--brand);
-  }
-
-  fieldset {
-    border: none;
-    padding: 0;
-    margin: 16px 0 0;
-    min-width: 0;
-  }
-
-  legend {
-    padding: 0;
-    font-weight: 600;
   }
 
   label {
@@ -1028,23 +1007,16 @@ dialog::backdrop {
     accent-color: var(--brand);
   }
 
-  .action-options,
-  [data-action] {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    border-bottom: 1px solid var(--line);
-    padding-block: 8px;
-  }
-
-  .action-presets {
-    justify-content: space-between;
-    margin-top: 12px;
-  }
-
-  .example-levels label {
-    flex: 1 0 165px;
+  .levels label {
+    flex: 1 1 180px;
+    min-width: 0;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .hint {
+    margin-top: 0;
+    margin-left: 26px;
   }
 
   pre,
@@ -1070,8 +1042,6 @@ dialog::backdrop {
   }
 
   @media (max-width: 520px) {
-    .action-options,
-    [data-action],
     dl {
       grid-template-columns: 1fr;
     }
@@ -1082,8 +1052,9 @@ dialog::backdrop {
       justify-content: space-between;
       align-items: baseline;
     }
-    [data-reset] {
-      margin: 0;
+    .grant label {
+      flex-direction: column;
+      align-items: flex-start;
     }
   }
 }

@@ -122,27 +122,17 @@ repository network ACL and enforceable native policy. If either is missing,
 credential delivery is refused rather than falling back to broader online
 authorization. Withdrawal and Stop remain available.
 
-#### Native GitHub API actions
+#### Preview Namespace limits
 
-**For one Agent**, edit its [repository network policy](../sandbox-policies.md#repository-network-policy).
-If the draft offers **Repositories → Manage permissions**, start there.
-Choose **Read-only** (Read) or **Contributor** (Write), save the policy, and deploy.
+Choose an example grant to preview direct requests. Open **Advanced** to
+generate limits for every Agent that uses the registration. The preview does
+not read or save your policy.
 
-**For every Agent using the registration**, set `apiActions` in that repository’s
-Namespace entry. The checklist generates the setting without saving it.
-For full permitted access, leave the filter out. Otherwise, open **Advanced**:
+<div data-repository-limits></div>
 
-- **Include new eligible actions automatically** (default): uncheck what to deny.
-  If OCE adds an action later, it is eligible only if the Agent’s grant and the
-  approved permissions also allow it.
-- **Fixed list:** turn off that option. Only checked actions can become eligible,
-  even if every action shown today is checked. Choose **Git only** to allow none.
-
-Filters limit **direct requests**. For example, turning off PR reads does not
-hide PRs returned by an issue read. See [known limits](#known-limits) and
-[when PR creation is blocked](#pull-request-creation).
-
-<div data-repository-actions></div>
+To change one Agent, edit its [saved grant](../sandbox-policies.md#repository-network-policy)
+and deploy. Review the [indirect effects](#known-limits). For example, issue
+reads can return pull requests even if you block direct pull request access.
 
 #### Issue creation
 
@@ -165,7 +155,7 @@ Inspect the repository before retrying an uncertain creation result.
 
 #### Cut over existing registrations
 
-Remove retired settings such as `scopedRest` and `createIssues`. Review each
+Remove retired REST-version and issue-switch configuration fields. Review each
 Namespace's Issues and Pull requests permissions and any `apiActions` restriction
 before deployment. An existing Agent draft can gain eligible REST routes at its
 next deployment. Changed grant identities can interrupt an older revision's
@@ -196,10 +186,8 @@ creation route in that state gets no new credential until the Agent is
 redeployed.
 
 If a creation result is uncertain, inspect the repository before submitting again.
-To keep Git push and issue creation eligible but block direct PR creation for
-everyone using this registration, deny `pull_requests:create`. To withdraw
-writes from one Agent instead, save Read for that Agent. Redeploy the affected
-Agents and verify that their old Sandboxes retire.
+To withdraw creation, save Read for the repository and redeploy. Verify that the
+old Sandbox retires.
 
 #### Known limits
 
