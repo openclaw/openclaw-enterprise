@@ -42,10 +42,9 @@ SandboxPolicy `read`: it admits and returns the saved additions. When saved
 additions exist, Agent deploy and an Agent update that leaves repository bindings
 also require SandboxPolicy `read` before any refusal that names them. Reads require
 `read` on both resources. Ordinary Agent `update` does not authorize these operations.
-The editing switch is temporary until the platform Guardrails primitive owns
-these restrictions. Its controller and HTTP operation are named
-`TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`; callers must
-expect this API to change when Guardrails replaces it.
+`TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing` is a temporary
+controller/HTTP operation; callers must expect replacement when Guardrails owns
+these restrictions.
 Disabling editing preserves additions and admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
 Without per-Agent network policy support, enabling editing returns HTTP 409;
@@ -81,23 +80,20 @@ exactly; a symlink or alternate interpreter path is a different executable.
 `*.example.com` covers one DNS label, not the apex or deeper subdomains. A
 wildcard addition requires that exact wildcard in the ceiling. Port coverage may
 combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. An Installation delegation ceiling and an Agent's additions
-can each contain at most 16,384 grants, with at most 16 ranges per grant. Policy
-preview, update, and apply requests have a separate 32 MiB body limit; an explicit
-`maxBodyBytes` override still applies. JSON escaping and whitespace count toward
-that byte limit. Preview, update, and apply share a replica-local budget per principal:
-2 requests per second with a burst of 10 across Agents. A depleted budget returns
-`429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before reading the body. OpenShell additionally
-limits each grant to 1024 distinct ports. These writes also share the
-[early authorization budget](api-explorer.md#write-request-limits) with Preset and
-Configuration writes.
+unsupported constraints. Ceilings and Agent additions allow 16,384 grants,
+with up to 16 ranges each; OpenShell additionally caps each grant at 1024 distinct ports.
+Preview, update and apply accept 32 MiB including JSON escaping and whitespace,
+subject to an explicit `maxBodyBytes` override. They share a replica-local,
+per-principal budget of 2 requests/second, burst 10, across Agents; exhaustion
+returns `429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before body reads.
+They also share the [early authorization budget](api-explorer.md#write-request-limits)
+with Preset and Configuration writes.
 
-Helm stores the complete trusted startup document in one Kubernetes Secret for
-API, worker and preflight. All decoded fields must fit the
-[1 MiB Secret limit](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
-Measure compact UTF-8 bytes; variable grant sizes prevent a fixed Helm entry count.
+Helm stores complete trusted startup for API, worker and preflight in one Secret.
+All decoded fields must fit the [1 MiB limit](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
+Measure compact UTF-8 bytes; variable grant sizes prevent a fixed entry count.
 The 16,384-rule fixture's ceiling alone is 1,780,053 bytes and cannot fit.
-File startup proof establishes schema capacity, not full-size Helm deployability.
+File startup proves schema capacity, not full-size Helm deployability.
 
 Default rules, workspace access, model credential delivery and Compute isolation
 retain their owners. Users cannot submit provider YAML, alter defaults, share
@@ -174,6 +170,13 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
 
 `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
+
+GET `repositoryApiMaxima` shows eligible native Git and API levels before Agent grants apply.
+
+To keep Git Write and disable PR creation, send
+`{"repository":"owner/name","access":"write","apiLimits":{"pull_requests":"read"}}`
+in the policy PUT. Preserve the other grants, then deploy again. The initial
+grant and ceiling exclude API limits. See [API limits](repository-credentials/access-levels.md#api-limits).
 
 PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
 

@@ -1499,7 +1499,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preSandboxPolicyCapacity"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preSandboxPolicyCapacity"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1957,7 +1958,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preSandboxPolicyCapacity"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preSandboxPolicyCapacity"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2522,7 +2524,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preSandboxPolicyCapacity"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preSandboxPolicyCapacity"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2655,7 +2658,8 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [92, "preSandboxPolicyCapacity"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preSandboxPolicyCapacity"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2823,7 +2827,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preSandboxPolicyCapacity"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preSandboxPolicyCapacity"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2852,7 +2857,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [92, "ALTER TABLE"],
+                [93, "ALTER TABLE"],
+                [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
@@ -2888,6 +2894,10 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 92) {
+          // Fail replacement of the policy validator after the action check and grants exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_api_limits_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =
@@ -3695,7 +3705,7 @@ test(
   requiresHistoryPostgres,
   async (t) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 92 });
+    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 93 });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
       computeAdmission: true,
@@ -3724,7 +3734,16 @@ test(
     // Keep scoped repository grants while increasing ordinary network-rule capacity.
     await db.app.query(
       "UPDATE occ.sandbox_policies SET version=version+1, document=jsonb_set(jsonb_set(document,'{version}',to_jsonb(version+1)),'{repositoryNetworkPolicy}',$2::jsonb) WHERE namespace_id=$1",
-      [namespaceId, JSON.stringify([{ repository: "example/project", access: "read" }])],
+      [
+        namespaceId,
+        JSON.stringify([
+          {
+            repository: "example/project",
+            access: "read",
+            apiLimits: { issues: "none", pull_requests: "read" },
+          },
+        ]),
+      ],
     );
     const retained = await read();
     await assert.rejects(write(33), {

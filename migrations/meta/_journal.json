@@ -650,7 +650,14 @@
       "idx": 93,
       "version": "7",
       "when": 1787000000093,
-      "tag": "0093_sandbox_policy_capacity",
+      "tag": "0093_agent_repository_api_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1787000000094,
+      "tag": "0094_sandbox_policy_capacity",
       "breakpoints": true
     }
   ]

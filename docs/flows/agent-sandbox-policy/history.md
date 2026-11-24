@@ -8,6 +8,12 @@ Dated changes from both branches are preserved here. See the [parent flow](../ag
 
 ## Changelog
 
+- 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
+
+- 2026-11-23 20:29: Trace Agent API limits. (authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef - 9c5e29d947)
+
+- 2026-11-23 22:52: Trace Agent action filters. (authoring-run/0fa0ac1a-8ca1-46b3-896e-de8b1a400b39 - e01544b5df)
+
 - 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
 
 - 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
