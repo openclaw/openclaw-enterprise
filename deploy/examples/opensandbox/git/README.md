@@ -7,8 +7,11 @@ draft pull request checks. This test never contacts GitHub.
 
 First run the [Docker startup probe](../docker/README.md). Reuse its checkout,
 Python environment, and cached images after cleanup. Run on the Docker host
-so the test can reach the fixture's loopback sockets. Use synthetic credentials
-and keep the daemon dedicated to this run. Another OpenSandbox server can
+so the test can reach the fixture's loopback sockets. Container UID 1000 must
+map to the host user who runs the test. With rootful Docker and no user
+namespace remapping, run as host UID 1000. Keep the socket directory private.
+
+Use synthetic credentials and keep the daemon dedicated to this run. Another OpenSandbox server can
 adopt or expire allocations and remove orphaned egress sidecars. Both
 checks refuse existing allocations, sidecars and execd installers.
 
