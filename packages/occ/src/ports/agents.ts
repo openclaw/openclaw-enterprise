@@ -6,6 +6,7 @@ import type {
 } from "./agent-reads.ts";
 import type {
   Agent,
+  AgentNetworkProxy,
   AgentCredentialSourceBinding,
   AgentDesiredRuntimeState,
   AgentRevision,
@@ -81,6 +82,7 @@ export interface AgentRepository extends AgentReadRepository {
     credentialSources?: readonly AgentCredentialSourceBinding[],
     gatewayManagedMode?: boolean,
     pluginDriver?: PluginDriverIdentity | null,
+    networkProxy?: AgentNetworkProxy | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,

@@ -29,7 +29,7 @@ import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
-import { lockNamespace } from "./resource-scope.ts";
+import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 export interface StartNamespaceConnectionInput {
   readonly selectedScopes?: readonly string[];
@@ -47,6 +47,10 @@ export interface CompleteNamespaceConnectionInput {
 }
 export const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
+const connectionOwnerPermissions: readonly Permission[] = [
+  { resourceKind: "credential_source", action: "read" },
+  { resourceKind: "credential_source", action: "operate" },
+];
 function connectionConsentScopes(
   version: Readonly<OAuthConnectionTemplateVersion>,
   selection?: readonly string[],
@@ -126,13 +130,16 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     namespaceId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
     await authorizeCreate(principalId, namespaceId);
-    return deps.read(async (state) =>
-      (await state.connectionTemplates.listConnectionTemplates()).filter(
-        (t) =>
-          (t.current.mode === "static_bearer" || t.current.oauthClientId !== undefined) &&
-          (t.namespaceId === undefined || t.namespaceId === namespaceId),
-      ),
-    );
+    return deps.read(async (state) => {
+      await exactNamespace(state, namespaceId);
+      const templates = await state.connectionTemplates.listConnectionTemplates();
+      return templates.filter(
+        (template) =>
+          (template.current.mode === "static_bearer" ||
+            template.current.oauthClientId !== undefined) &&
+          (template.namespaceId === undefined || template.namespaceId === namespaceId),
+      );
+    });
   }
   async function startNamespaceConnection(
     principalId: string,
@@ -161,6 +168,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       const client = await connectionClientForVersion(state, input.namespaceId, version);
+      await connectionOwnerPolicy(state, input.namespaceId);
       const started = startBrowserAuthorization(
         browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
       );
@@ -246,6 +254,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       ) {
         throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
       }
+      await connectionOwnerPolicy(state, session.namespaceId);
       return {
         version,
         client: await connectionClientForVersion(state, session.namespaceId, version),
@@ -373,45 +382,56 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     return client;
   }
 
+  async function connectionOwnerPolicy(
+    state: Pick<PlatformReadView, "iamPolicy">,
+    namespaceId: string,
+  ) {
+    const bindingDriver = deps.iamPolicyDriver("createNamespaceAccessBinding");
+    if (bindingDriver.namespacePolicyTransaction !== "platform-unit-of-work") {
+      throw new DependencyUnavailableError(
+        "The IAM Driver cannot grant connection access transactionally.",
+      );
+    }
+    const roleId = `role_${namespaceId}_connection_owner`;
+    const role = await state.iamPolicy.getRole(namespaceId, roleId);
+    if (
+      role !== undefined &&
+      (role.namespaceId !== namespaceId ||
+        role.permissions.length !== connectionOwnerPermissions.length ||
+        !connectionOwnerPermissions.every((required) =>
+          role.permissions.some((existing) => isDeepStrictEqual(existing, required)),
+        ))
+    ) {
+      throw new ResourceConflictError(
+        "The connected account owner Role requires exactly credential source read and operate.",
+      );
+    }
+    const roleDriver = role === undefined ? deps.iamPolicyDriver("createNamespaceRole") : undefined;
+    return { bindingDriver, roleDriver, roleId };
+  }
+
   async function grantConnectionOwner(
     state: PlatformUnitOfWork,
     namespaceId: string,
     principalId: string,
     sourceId: string,
   ): Promise<void> {
-    const driver = deps.iamPolicyDriver("createNamespaceAccessBinding");
-    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
-      throw new DependencyUnavailableError(
-        "The IAM Driver cannot grant connection access transactionally.",
-      );
-    }
-    const roleId = `role_${namespaceId}_connection_owner`;
-    const permissions: readonly Permission[] = [
-      { resourceKind: "credential_source", action: "read" },
-      { resourceKind: "credential_source", action: "operate" },
-    ];
-    const role = await state.iamPolicy.getRole(namespaceId, roleId);
-    if (role === undefined) {
-      const roleDriver = deps.iamPolicyDriver("createNamespaceRole");
+    const { bindingDriver, roleDriver, roleId } = await connectionOwnerPolicy(state, namespaceId);
+    if (roleDriver !== undefined) {
       await iamPolicyOperation(() =>
         roleDriver.createNamespaceRole!(
           { policy: state.iamPolicy },
-          { id: roleId, namespaceId, name: "Connected account owner", permissions },
+          {
+            id: roleId,
+            namespaceId,
+            name: "Connected account owner",
+            permissions: connectionOwnerPermissions,
+          },
         ),
-      );
-    } else if (
-      role.namespaceId !== namespaceId ||
-      role.permissions.length !== permissions.length ||
-      !permissions.every((required) =>
-        role.permissions.some((existing) => isDeepStrictEqual(existing, required)),
-      )
-    ) {
-      throw new ResourceConflictError(
-        "The connected account owner Role requires exactly credential source read and operate.",
       );
     }
     await iamPolicyOperation(() =>
-      driver.createNamespaceAccessBinding!(
+      bindingDriver.createNamespaceAccessBinding!(
         { policy: state.iamPolicy },
         {
           id: `binding_${sourceId}_connection_owner`,

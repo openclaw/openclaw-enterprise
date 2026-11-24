@@ -35,6 +35,59 @@ export function assertSlackChannelDestination(response: unknown, channelId: stri
   }
 }
 
+/** Check the exact destination and both memberships without requiring channel-read scope on the sender. */
+export async function verifySlackChannelAccess({
+  channelId,
+  gatewayToken,
+  senderToken,
+  gatewayIdentity,
+  senderIdentity,
+}: {
+  readonly channelId: string;
+  readonly gatewayToken: string;
+  readonly senderToken: string;
+  readonly gatewayIdentity: SlackIdentity;
+  readonly senderIdentity: SlackIdentity;
+}): Promise<void> {
+  assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
+  assert.notEqual(gatewayIdentity.user_id, senderIdentity.user_id);
+  const info = await slackApi("conversations.info", gatewayToken, { channel: channelId });
+  assertSlackChannelDestination(info, channelId);
+  assert.equal(
+    asRecord(info.channel)?.is_member,
+    true,
+    "The Gateway bot must join the exact test channel.",
+  );
+  const required = new Set([gatewayIdentity.user_id, senderIdentity.user_id]);
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await slackApi("conversations.members", gatewayToken, {
+      channel: channelId,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const id of page.members) {
+      required.delete(id);
+    }
+    cursor = page.response_metadata?.next_cursor || undefined;
+    if (cursor) {
+      assert.ok(
+        !cursors.has(cursor) && cursors.size < 100,
+        "Slack channel membership pagination did not terminate.",
+      );
+      cursors.add(cursor);
+    }
+  } while (cursor && required.size > 0);
+  assert.equal(
+    required.size,
+    0,
+    `Invite the Gateway and distinct sender bots to channel ${channelId}.`,
+  );
+  // The sender must independently read the channel used for delivery observation.
+  await slackApi("conversations.history", senderToken, { channel: channelId, limit: 1 });
+}
+
 type MessageMethod = "conversations.history" | "conversations.replies";
 type MessageQuery = {
   [Method in MessageMethod]: [method: Method, token: string, params: SlackRequests[Method][0]];

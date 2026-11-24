@@ -123,6 +123,12 @@ test(
     assert.ok(peerTemplates.includes(shared.id));
     assert.ok(!peerTemplates.includes(scopedId));
     assert.ok(!peerTemplates.includes(oauthId));
+    const missingNamespaceId = `ns_${randomUUID()}`;
+    const missingPath = `/namespaces/${missingNamespaceId}/connection-templates`;
+    // An Installation-wide grant still requires the requested Namespace to exist.
+    const missingTemplates = await inject("GET", missingPath);
+    assert.equal(missingTemplates.statusCode, 404, missingTemplates.body);
+    assert.equal(missingTemplates.json().error.code, "NOT_FOUND");
 
     const member = { email: `reader-${randomUUID()}@example.test`, password: randomUUID() };
     const auth = await createPostgresControllerAuth({
@@ -143,12 +149,14 @@ test(
       payload: { displayName: "Unauthorized API key", ...settings },
     });
     assert.equal(denied.statusCode, 403, denied.body);
-    const deniedUse = await app.inject({
-      method: "GET",
-      url: `/namespaces/${namespaceId}/connection-templates`,
-      headers: session,
-    });
-    assert.equal(deniedUse.statusCode, 403, deniedUse.body);
+    for (const id of [namespaceId, missingNamespaceId]) {
+      const deniedUse = await app.inject({
+        method: "GET",
+        url: `/namespaces/${id}/connection-templates`,
+        headers: session,
+      });
+      assert.equal(deniedUse.statusCode, 403, deniedUse.body);
+    }
 
     const path = `/connection-templates/${shared.id}`;
     const read = await inject("GET", path);

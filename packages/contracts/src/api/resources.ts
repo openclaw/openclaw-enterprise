@@ -18,6 +18,7 @@ import {
   CredentialSourceReference,
   CredentialSourceType,
   GatewayManagedModeSchema,
+  AgentNetworkProxySchema,
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
   ModelProviderId,
@@ -444,6 +445,7 @@ export const AgentSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     gatewayManagedMode: GatewayManagedModeSchema,
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     pluginDriver: Type.Optional(Type.Ref("PluginDriverIdentity")),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -465,6 +467,7 @@ const ConfigurationReadErrorSchema = Type.Object(
       Type.Literal("pluginApprovers"),
       Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
+      Type.Literal("networkProxy"),
       Type.Literal("harnessAuth"),
       Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
@@ -476,7 +479,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -489,6 +492,7 @@ export const AgentReadSchema = Type.Union(
           "pluginApprovers",
           "repositoryBindings",
           "repositoryAccess",
+          "networkProxy",
           "harnessAuth",
           "credentialSources",
         ]).properties,
@@ -1460,6 +1464,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
@@ -1564,6 +1569,7 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
+      "networkProxy",
       "createdAt",
     ]).properties,
     harness: Type.Object(

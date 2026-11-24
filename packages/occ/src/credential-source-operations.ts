@@ -918,31 +918,6 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     }
   }
 
-  /** Resolve the immutable Source identity for an exact update without requiring a read grant. */
-  async function credentialSourceUpdateIdentity(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<{ readonly managed: boolean; readonly type: string }> {
-    namespaceIdentity(namespaceId);
-    return dependencies.transactions.transact(async (state) => {
-      const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
-      await dependencies.authority.authorize(principalId, "update", resource);
-      await exactNamespace(state, namespaceId);
-      const source = await state.credentialSources.lockCredentialSource(
-        namespaceId,
-        credentialSourceId,
-      );
-      await dependencies.authority.authorize(principalId, "update", resource);
-      if (!isManagedTokenServiceSource(source)) {
-        throw new ScopeViolationError(
-          "The credential source does not belong to the exact Namespace.",
-        );
-      }
-      return { managed: true, type: source.type };
-    });
-  }
-
   async function readCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -1066,7 +1041,6 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
   }
 
   return {
-    credentialSourceUpdateIdentity,
     createCredentialSource,
     updateCredentialSource,
     rotateCredentialSource,
