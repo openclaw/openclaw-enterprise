@@ -1300,8 +1300,10 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
 }
 
 test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {
-  const { fixture, controller, namespaceId, app, tooling, grants, secret } =
-    await repositoryPolicyConsole(t, true);
+  const { fixture, controller, namespaceId, app, tooling, secret } = await repositoryPolicyConsole(
+    t,
+    true,
+  );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const agents = `/namespaces/${namespaceId}/agents`;

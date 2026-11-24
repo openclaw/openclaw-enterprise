@@ -3107,7 +3107,9 @@ export function renderAgentSandboxPolicy(
 
   function repositoryDeploymentStatus(loaded: SandboxPolicyViewWire) {
     const { policy, defaultsRevisionId, deployedPolicyVersion } = loaded;
-    if (!policy.repositoryNetworkPolicy) return "";
+    if (!policy.repositoryNetworkPolicy) {
+      return "";
+    }
     const saved = `Saved policy v${policy.version}`;
     const next = policy.repositoryNetworkPolicy.length
       ? "Deploy a new version to apply changes."
