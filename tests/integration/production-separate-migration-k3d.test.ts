@@ -88,7 +88,10 @@ test(
     // Use the same approved manifest in both runtime slots. The explicit incumbent
     // tag makes the dedicated slot a distinct reference for the image upgrade.
     const bootstrapStarted = performance.now();
-    const f = await installObservabilityControlPlane(t, { initialAgentImageTag: "incumbent" });
+    const f = await installObservabilityControlPlane(t, {
+      initialAgentImageTag: "incumbent",
+      metricsProbes: false,
+    });
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
     const { kubeconfigPath, kubernetesContext } = f.selection;

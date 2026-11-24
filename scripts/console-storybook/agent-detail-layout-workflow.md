@@ -8,6 +8,12 @@ then press End and Left to focus the tab before last. Narrow the window to
 920 px, then 390 px. Confirm the label and focus ring stay clear of both faded
 edges and the selected panel stays open.
 
+Open **Pages / Agent detail / Plugin selections, viewer cannot update the Agent**
+and **Plugins in admitted version**. Select **Plugins** in each story. At
+390 px and 920 px, check that the entire long plugin ID and the indented JSON fit
+inside the card without horizontal scrolling. Focus **Plugins** and press Tab to
+reach the JSON. At desktop width, check that the long ID fits on one line.
+
 At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
 edit. Scroll until **Save Configuration** is near the middle of the window and
 **Danger zone** is out of view below it. Save and check that **Edit Configuration**
@@ -140,6 +146,10 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    missing file shows **Missing** in the tabs and phone picker. The browser
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
+   Check **Components / Workspace / Gateway unreachable**: one notice above the
+   files names the four files, each file shows the reason under its editor, and
+   no file shows **Needs attention**. Choose **Retry**; the notice goes and the
+   four files load.
 7. Open **Pages / Agent detail / New version in progress, then current**. Follow
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during
