@@ -5314,35 +5314,30 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
 }
 
-function isTopologyAgentPod(pod, topology) {
-  return (
-    pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-    pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id
+function selectReadyAgentPod(pods, topology, revisionId = topology.revision.id, previousUid) {
+  return pods.find(
+    (pod) =>
+      typeof pod.metadata.uid === "string" &&
+      pod.metadata.uid !== "" &&
+      pod.metadata.uid !== previousUid &&
+      pod.metadata.deletionTimestamp === undefined &&
+      pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
+      pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
+      pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
+      pod.status.phase === "Running" &&
+      hasReadyCondition(pod),
   );
 }
 
 async function waitForReadyAgentPod(topology, revisionId, previousUid) {
   return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () =>
-    (await topologyPods(topology)).find(
-      (pod) =>
-        pod.metadata.uid !== previousUid &&
-        isTopologyAgentPod(pod, topology) &&
-        pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
-        hasReadyCondition(pod),
-    ),
+    selectReadyAgentPod(await topologyPods(topology), topology, revisionId, previousUid),
   );
 }
 
 async function kubectlInReadyAgentPod(topology, ...args) {
   const result = await waitFor("the current ready dedicated Harness Pod", async () => {
-    const pod = (await topologyPods(topology)).find(
-      (candidate) =>
-        candidate.metadata.deletionTimestamp === undefined &&
-        isTopologyAgentPod(candidate, topology) &&
-        candidate.metadata.labels?.["openclaw.dev/revision"] === topology.revision.id &&
-        candidate.status.phase === "Running" &&
-        hasReadyCondition(candidate),
-    );
+    const pod = selectReadyAgentPod(await topologyPods(topology), topology);
     if (pod === undefined) {
       return undefined;
     }
@@ -7139,6 +7134,7 @@ export {
   resource,
   resources,
   secretRotationProbe,
+  selectReadyAgentPod,
   storedSecret,
   waitFor,
   waitForReadyGatewayPod,

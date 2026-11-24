@@ -39,6 +39,7 @@ import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
+import { selectReadyAgentPod } from "../helpers/harness-topology-k3d-real.mjs";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
   assertAllowedCredentialRoute as assertAllowedCredentialRouteJs,
@@ -277,6 +278,50 @@ ${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exit
     }
   });
 }
+
+test("a dedicated Harness selects a live Ready Pod for the requested revision", () => {
+  const topology = { agent: { id: "worker" }, revision: { id: "current" } };
+  function pod(uid: string | undefined, revision = "next", deletionTimestamp?: string) {
+    return {
+      metadata: {
+        uid,
+        deletionTimestamp,
+        labels: {
+          "openclaw.dev/workload-role": "agent",
+          "openclaw.dev/agent": "worker",
+          "openclaw.dev/revision": revision,
+        },
+      },
+      status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] },
+    };
+  }
+
+  const terminating = pod("terminating", "next", "2026-01-01T00:00:00Z");
+  const pending = pod("pending");
+  pending.status.phase = "Pending";
+  const unready = pod("unready");
+  unready.status.conditions = [
+    { type: "ContainersReady", status: "True" },
+    { type: "Ready", status: "False" },
+  ];
+  const gateway = pod("gateway");
+  gateway.metadata.labels["openclaw.dev/workload-role"] = "gateway";
+  const peer = pod("peer");
+  peer.metadata.labels["openclaw.dev/agent"] = "peer";
+  const current = pod("current", "current");
+  const pods = [terminating, pending, unready, gateway, peer, pod(undefined), pod(""), current];
+
+  // A rollout waits for the next revision before updating topology.revision.
+  assert.equal(selectReadyAgentPod(pods, topology, "next"), undefined);
+  const replacement = pod("replacement");
+  assert.equal(selectReadyAgentPod([...pods, replacement], topology, "next"), replacement);
+  assert.equal(selectReadyAgentPod([replacement, ...pods], topology), current);
+
+  // A restart within the same revision must also skip the previous UID.
+  const restarted = pod("restarted");
+  const restart = [...pods, replacement, restarted];
+  assert.equal(selectReadyAgentPod(restart, topology, "next", "replacement"), restarted);
+});
 
 test("a kubectl read retries a dropped exec stream and returns the next attempt's output", async () => {
   const { sleeps, logs, options } = recordingOptions();
