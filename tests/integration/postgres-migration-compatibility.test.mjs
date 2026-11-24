@@ -2759,7 +2759,7 @@ test(
 );
 
 test(
-  "Codex device cutover discards cancelled and expired logins and preserves live logins on refusal",
+  "Codex device cutover discards completed, cancelled and expired logins after live logins settle",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
@@ -2786,7 +2786,7 @@ test(
        VALUES ($1,$2,'Channel startup token','secrets','fixture','slack-bot','value',$3,now())`,
       [channelSecretId, namespaceId, randomUUID()],
     );
-    const addLogin = async (phase, lifetime) => {
+    const addLogin = async (phase, lifetime, version) => {
       const sourceId = `cs_${randomUUID()}`;
       const sessionId = `sec_${randomUUID()}`;
       await db.app.query(
@@ -2798,7 +2798,7 @@ test(
         `INSERT INTO occ.authentication_states
            (id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
          VALUES($1,'device_authorization',$2,$3,now()+$4::interval,$5::jsonb,$6,now(),
-           $7,$8,1)`,
+           $7,$8,$9)`,
         [
           sessionId,
           namespaceId,
@@ -2813,15 +2813,17 @@ test(
           }),
           phase,
           phase === "cancelled" ? null : "sealed-challenge",
-          phase === "cancelled" ? null : "sealed-poll-state",
+          phase === "pending" ? "sealed-poll-state" : null,
+          version,
         ],
       );
       return sessionId;
     };
-    // Main retains cancelled handles and can reach cutover before its expiry sweep runs.
-    await addLogin("cancelled", "1 hour");
-    await addLogin("pending", "-1 hour");
-    const activeId = await addLogin("pending", "1 hour");
+    // Main keeps a successful poll receipt for 24 hours and can retain cancelled or expired handles.
+    await addLogin("ready", "24 hours", 3);
+    await addLogin("cancelled", "1 hour", 2);
+    await addLogin("pending", "-1 hour", 1);
+    const activeId = await addLogin("pending", "1 hour", 1);
     const retainedData = async () =>
       (
         await db.app.query(
@@ -2834,7 +2836,7 @@ test(
     const before = await historySnapshot(db);
     const retainedBefore = await retainedData();
     assert.equal(before.receipts.length, 94);
-    assert.equal(retainedBefore.length, 3);
+    assert.equal(retainedBefore.length, 4);
     assert.deepEqual(
       await runHistoryMigration(db, "production", undefined, undefined, (error) => {
         assert.ok(error instanceof Error);

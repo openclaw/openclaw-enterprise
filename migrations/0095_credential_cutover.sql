@@ -18,7 +18,7 @@ END $$;
 DO $$
 BEGIN
   DELETE FROM occ.authentication_states
-    WHERE kind = 'device_authorization' AND (phase = 'cancelled' OR expires_at <= now());
+    WHERE kind = 'device_authorization' AND (phase IN ('ready','cancelled') OR expires_at <= now());
   IF EXISTS (SELECT 1 FROM occ.authentication_states WHERE kind = 'device_authorization') THEN
     RAISE EXCEPTION 'Cancel or let outstanding Codex device logins expire before cutover' USING ERRCODE = '55000';
   END IF;

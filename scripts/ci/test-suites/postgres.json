@@ -36,7 +36,7 @@
         "Namespace GitHub App Clients enforce Source ownership after upgrading 0095",
         "Credential cutover retires obsolete Gateway bindings and preserves Channel Secrets",
         "TokenService Source migration refuses a retained pending OAuth Source without mutation",
-        "Codex device cutover discards cancelled and expired logins and preserves live logins on refusal",
+        "Codex device cutover discards completed, cancelled and expired logins after live logins settle",
         "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
         "Drizzle generates repository schema migrations without redundant regeneration",
         "Migration rejects legacy active_runtime state without changing persisted rows",
