@@ -137,24 +137,7 @@ export function registerDeviceAuthorizationAgentCases(): void {
       resource: login.source,
     });
     const agentPath = `/namespaces/${fixture.namespace.id}/agents/${agent.id}`;
-    const refused = await fixture.request("POST", `${agentPath}/deploy`, { body: {} });
-    assert.equal(refused.status, 409, JSON.stringify(refused.body));
-    assert.equal(
-      (
-        await fixture.request("PATCH", `${agentPath}/sandbox-policy/networking/editing`, {
-          body: { enabled: true },
-        })
-      ).status,
-      200,
-    );
-    assert.equal(
-      (
-        await fixture.request("PUT", `${agentPath}/sandbox-policy/networking`, {
-          body: { expectedVersion: 1, additions: [grant] },
-        })
-      ).status,
-      200,
-    );
+    // The Installation ceiling qualifies the stock preset without an Agent-authored rule.
     const deployment = await fixture.request("POST", `${agentPath}/deploy`, { body: {} });
     assert.equal(deployment.status, 202, JSON.stringify(deployment.body));
     const publicRevision = fixture.fixtureResponse(
@@ -166,12 +149,13 @@ export function registerDeviceAuthorizationAgentCases(): void {
     const deployed = await fixture.state.read((view) =>
       view.revisions.findRevision(fixture.namespace.id, agent.id, publicRevision.id),
     );
-    assert.ok(deployed);
-    assert.equal(deployed.credentialDeployment?.bindings.length, 1);
+    assert.ok(deployed?.credentialDeployment);
+    assert.equal(deployed.credentialDeployment.bindings.length, 1);
+    assert.deepEqual(deployed.sandboxPolicy?.additions ?? [], []);
+    const requests = deployed.credentialDeployment.injectionPolicies[0]?.allowedRequests;
+    assert.deepEqual(deployed.credentialDeployment.networkAccessPolicy.allowed, requests);
     assert.deepEqual(
-      deployed.credentialDeployment?.injectionPolicies[0]?.allowedRequests.map(
-        ({ binary, host, requestPolicy }) => [binary, host, requestPolicy],
-      ),
+      requests?.map(({ binary, host, requestPolicy }) => [binary, host, requestPolicy]),
       [
         [
           grant.binary,
