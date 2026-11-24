@@ -100,7 +100,11 @@ test(
     await appendHistory(historicalRevisions + 1, 1, "queued");
     const pending = await read();
     assert.equal(pending.selected.deploymentInProgress, true);
-    assert.equal(pending.selected.repositoryWorkerRestart, undefined);
+    assert.equal(pending.selected.repositoryWorkerRestart, "unknown");
+    assert.ok(
+      pending.queries <= small.queries + 2,
+      "one queued revision must not cause a query for each historical revision",
+    );
 
     // A retained lifecycle row with no exact reconcile key makes the inventory incomplete.
     await appendHistory(historicalRevisions + 2, 1, "failed_permanent", "invalid-key");
