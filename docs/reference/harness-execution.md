@@ -192,16 +192,18 @@ Configuration takes effect on the next deployment.
 
 ### Native runtime selection
 
-Select `provider/model` (model IDs may contain slashes) and `agentRuntime.id`
-(`openclaw` or `codex`). Agent entries must agree on primary model and Harness.
-Fallbacks must use that provider and Harness; admission preserves their order.
+Agent entries must agree on the primary `provider/model` and Harness. Fallbacks
+share both provider and Harness and retain their order.
 
-The [model policy resolver](../../packages/occ/src/configured-harness.ts) selects
-OpenClaw for no model or an unambiguous built-in provider. OpenAI, Codex, custom
-and plugin-routed providers require explicit runtime policy. Catalog entries
-accept full references or IDs after the first slash; each must be a selected
-primary or fallback. Codex accepts `codex`, or `openai` with the Codex plugin
-enabled for WebSocket app-server transport.
+The [resolver](../../packages/occ/src/configured-harness.ts) defaults to
+OpenClaw for unambiguous built-ins or no selection. OpenAI, Codex, custom
+and plugin-routed providers require `agentRuntime.id` (`openclaw` or `codex`).
+Codex accepts `codex`, or `openai` with the Codex WebSocket app-server plugin enabled.
+
+Catalog rows accept primary and fallback references or IDs. Alternatives require
+IDs without the provider prefix, such as `vendor/model`. Use the primary's provider.
+Set both models' `agentRuntime.id` to `codex` in `agents.defaults.models`.
+Include the alternative's exact reference in `agents.defaults.modelPolicy.allow` if set.
 
 On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
 path keeps `reasoning`, `thinkingLevelMap`, and

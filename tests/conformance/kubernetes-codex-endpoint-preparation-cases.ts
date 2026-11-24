@@ -95,6 +95,7 @@ export async function checkExplicitCodexProviderProjection(
     const plain = `${sourceProvider}/plain-model`;
     const child = `${sourceProvider}/vendor/organization/child`;
     const childFallback = `${sourceProvider}/codex/child-fallback`;
+    const manual = `${sourceProvider}/vendor/manual-model`;
     const childSelection = { primary: child, fallbacks: [childFallback, "primary"] };
     const settings = {
       model: { primary, fallbacks: [fallback, plain] },
@@ -102,8 +103,10 @@ export async function checkExplicitCodexProviderProjection(
         [primary]: { agentRuntime: { id: "codex" }, alias: "primary" },
         [fallback]: { agentRuntime: { id: "codex" }, alias: sourceProvider },
         [plain]: { agentRuntime: { id: "codex" } },
+        [manual]: { agentRuntime: { id: "codex" } },
         [`${sourceProvider}/*`]: { agentRuntime: { id: "codex" } },
       },
+      modelPolicy: { allow: [primary, fallback, plain, manual] },
     };
     fixture.revision.configuration = admitLoggingConfiguration(
       {
@@ -126,7 +129,10 @@ export async function checkExplicitCodexProviderProjection(
                 model: sourceProvider === "codex" ? structuredClone(childSelection) : child,
               },
             },
-            alias: { subagents: { model: "primary" } },
+            alias: {
+              subagents: { model: "primary" },
+              modelPolicy: { allow: [primary] },
+            },
             providerAlias: { subagents: { model: sourceProvider } },
             inherited: {},
           },
@@ -142,6 +148,7 @@ export async function checkExplicitCodexProviderProjection(
                 // Full OCE catalog refs must not strip the native "codex/" namespace.
                 { id: fallback, name: "Fallback model" },
                 { id: "plain-model", name: "Plain model" },
+                { id: "vendor/manual-model", name: "Manual model" },
               ],
             },
           },
@@ -179,6 +186,9 @@ export async function checkExplicitCodexProviderProjection(
     const alias = renderedRecord(entries.alias, "alias agent entry");
     const providerAlias = renderedRecord(entries.providerAlias, "provider alias agent entry");
     assert.equal(renderedRecord(alias.subagents, "alias subagents").model, "primary");
+    assert.deepEqual(alias.modelPolicy, {
+      allow: [`${qualified}vendor/organization/model`],
+    });
     assert.equal(
       renderedRecord(providerAlias.subagents, "provider alias subagents").model,
       sourceProvider,
@@ -190,6 +200,7 @@ export async function checkExplicitCodexProviderProjection(
         `${qualified}vendor/organization/model`,
         `${qualified}codex/native`,
         `${qualified}plain-model`,
+        `${qualified}vendor/manual-model`,
         `${qualified}*`,
       ]);
       assert.equal(
@@ -198,6 +209,14 @@ export async function checkExplicitCodexProviderProjection(
         "primary",
       );
     }
+    assert.deepEqual(defaults.modelPolicy, {
+      allow: [
+        `${qualified}vendor/organization/model`,
+        `${qualified}codex/native`,
+        `${qualified}plain-model`,
+        `${qualified}vendor/manual-model`,
+      ],
+    });
     const models = renderedRecord(document.models, "rendered model settings");
     const providers = renderedRecord(models.providers, "rendered model providers");
     assert.deepEqual(
@@ -210,6 +229,7 @@ export async function checkExplicitCodexProviderProjection(
         },
         { id: "openai-compatible/codex/native", name: "Fallback model" },
         { id: "openai-compatible/plain-model", name: "Plain model" },
+        { id: "openai-compatible/vendor/manual-model", name: "Manual model" },
         {
           id: "openai-compatible/vendor/organization/child",
           name: "vendor/organization/child",
