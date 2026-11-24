@@ -257,7 +257,10 @@ test(
     assert.equal((await row(first))?.retirement_blocked, "provider_present");
     // The answer carries the reason the Worker recorded; never the Provider name.
     await assert.rejects(retire(), (error: Error) => {
-      assert.match(error.message, new RegExp(`^2 Source copies unretired .*/${first} \\(provider_present\\) \\+1\\. `));
+      assert.match(
+        error.message,
+        new RegExp(`^2 Source copies unretired .*/${first} \\(provider_present\\) \\+1\\. `),
+      );
       assert.doesNotMatch(error.message, /oce-github-token/);
       return true;
     });
@@ -503,10 +506,9 @@ test(
       return { revisionId: revision.id, work, desired, activate };
     };
     const setWork = (revisionId: string, set: string) =>
-      pool.query(
-        `UPDATE occ.controller_work SET ${set} WHERE revision_id=$1 AND state='queued'`,
-        [revisionId],
-      );
+      pool.query(`UPDATE occ.controller_work SET ${set} WHERE revision_id=$1 AND state='queued'`, [
+        revisionId,
+      ]);
     // The work clause alone keeps these two: each Agent is stopped and runs no revision.
     const queued = await seeded();
     await queued.work();
@@ -532,8 +534,12 @@ test(
     assert.ok(await stopped.activate());
     await stopped.work();
     assert.equal(
-      (await setWork(stopped.revisionId, "state='succeeded',completed_at=clock_timestamp(),reason_code='DEPLOYED'"))
-        .rowCount,
+      (
+        await setWork(
+          stopped.revisionId,
+          "state='succeeded',completed_at=clock_timestamp(),reason_code='DEPLOYED'",
+        )
+      ).rowCount,
       1,
     );
     await stopped.desired("running", "stopped");
@@ -673,7 +679,10 @@ test(
 
     // DELETE first: once the copy is retired it commits, and the next deploy finds no ready
     // Source to record a copy for.
-    assert.equal(await new PostgresOpenShellGitRouteStore(f.pool).retireSourceCopy(revisionId), true);
+    assert.equal(
+      await new PostgresOpenShellGitRouteStore(f.pool).retireSourceCopy(revisionId),
+      true,
+    );
     await f.retire();
     await assert.rejects(
       f.state.transact(async (unit) => {

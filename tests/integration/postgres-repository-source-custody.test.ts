@@ -432,7 +432,10 @@ test(
     await otherSource.hold.release();
 
     // Retired after the read-back: the revision is never lent the value again.
-    assert.equal(await new PostgresOpenShellGitRouteStore(f.pool).retireSourceCopy(f.revisionId), true);
+    assert.equal(
+      await new PostgresOpenShellGitRouteStore(f.pool).retireSourceCopy(f.revisionId),
+      true,
+    );
     const retired = await custody.lock(f.ref);
     assert.ok(retired);
     assert.equal(await retired.recorded(f.revisionId), false);

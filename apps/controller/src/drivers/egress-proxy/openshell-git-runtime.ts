@@ -2422,7 +2422,11 @@ export class OpenShellGitRuntime {
           entry.preview.verifyInstallBy = performance.now() + 30_000;
           const lent = material as { credentialSource?: string; credentialSourceVersion?: string };
           if (lent.credentialSourceVersion !== undefined && lent.credentialSource !== undefined) {
-            await this.recordSourceCopyInstalled(entry, rotated.provider, lent.credentialSourceVersion);
+            await this.recordSourceCopyInstalled(
+              entry,
+              rotated.provider,
+              lent.credentialSourceVersion,
+            );
           }
         } catch (error) {
           if (
