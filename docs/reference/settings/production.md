@@ -125,8 +125,8 @@ Restrict API access. [Check ledger capacity](../../guides/topics/audit-log.md)
 before enablement. Rejected requests can fill the ledger.
 
 With Helm-managed routing, changing the switch starts maintenance for affected
-Gateways. A Gateway restart can interrupt a turn. An audited Gateway starts
-a turn only after the control plane confirms its audit record. See
+Gateways. A Gateway restart can interrupt a turn. The Gateway queues
+runtime events locally and delivers them in the background. See
 [Agent runtime audit](../../guides/topics/audit-log.md#agent-runtime-activity).
 
 ### External sign-in and trusted proxies

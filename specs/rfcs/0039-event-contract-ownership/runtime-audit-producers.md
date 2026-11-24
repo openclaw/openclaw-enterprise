@@ -49,12 +49,30 @@ OCC authenticates each producer and obtains its scope from the saved
 registration. It rejects events for another revision and actions outside the
 producer's role. OCC uses the existing PostgreSQL audit log.
 
-The producer saves required admission evidence before it starts covered work.
-If it cannot save that evidence, it stops admission and reports the failure.
-It gives each new execution attempt a new ID. It keeps an event's ID when it
-retries delivery. OCC accepts identical copies as one record and rejects a
-different record with the same event ID. If the producer stops before it
-observes the result, the result remains unknown.
+Treat `openclaw.runtime.turn.admitted` as an observation. It means the
+Gateway was about to send work to the Agent. It proves neither permission
+nor execution. This proposal excludes it from the
+[required admission records](index.md#3-reuse-state-and-postgresql).
+OCC must still save its own required records before forwarding a chat request.
+
+The Gateway queues runtime events on the Agent's persistent Gateway volume
+and sends them to OCC in the background. The turn can start without
+confirmation from PostgreSQL. The queue survives Pod replacement.
+Deleting the Agent removes the queue.
+
+Keep each event until OCC confirms delivery. Retry temporary failures.
+Hold other refusals for an operator to retry. Send an event only for its
+original revision, source and endpoint. Limit the queue to 256 events
+per revision, source and endpoint and 512 per Agent, including held events.
+If the queue is full or
+unavailable, chat continues. The Gateway warns that events may be missing.
+
+Without `before_turn_start`, the Gateway cannot report turn admission.
+Without `onSessionCreated`, it can miss the creation of a session.
+
+Give each execution attempt a new ID. Keep the event ID when retrying
+delivery. OCC accepts identical copies as one record and rejects a different
+record with the same ID. A missing turn result leaves the outcome unknown.
 
 Return the records through the Agent audit API. Keep the exact Agent grant
 check and save a disclosure record before returning each page. The payload
@@ -74,7 +92,12 @@ protected prompt and response storage.
    event ID, a new model attempt has a new ID, and a missing result remains
    unknown.
 4. Reject a write for another revision and a write after revocation. Check
-   that the credential gives no read access. Reject a
-   required admission write and confirm that execution does not start.
-5. Disable audit and repeat the normal deployment and chat workflow. Confirm
+   that the credential gives no read access.
+5. Temporarily refuse the PostgreSQL write for a turn admission event.
+   Confirm that the user receives a reply. Restore writes. Confirm that
+   the API returns the original event ID once, with no extra model request.
+6. Replace the Gateway Pod with an event held for retry. Confirm that the
+   operator can retry delivery for the original revision only. Fill the
+   queue and confirm that chat continues with a Gateway warning.
+7. Disable audit and repeat the normal deployment and chat workflow. Confirm
    that the workflow succeeds and creates no runtime audit records.

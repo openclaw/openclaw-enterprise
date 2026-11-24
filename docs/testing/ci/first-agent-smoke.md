@@ -122,14 +122,24 @@ same text. Each JSON response must have a different turn ID. The test
 compares the message ID for each turn with the ID in chat history. An
 authorized reader must get the exact text through the audit API.
 
-For each runtime, the first HTTP message must create one session record.
-After the second message, the count must still be one. Creating an empty
-chat must produce one session record and zero turns.
+The session and admission checks require a Gateway with `onSessionCreated`
+and `before_turn_start`. The first HTTP message must create one session
+record. After the second message, the count must still be one. Creating an
+empty chat must produce one session record and zero turns.
 
-The test then makes PostgreSQL refuse `openclaw.runtime.turn.admitted` for
-the revision. The HTTP request must return 500. The model request count must
-stay at its previous value. For dedicated OpenClaw, the test counts requests
-in the OpenShell log. The other two tests use the test provider’s request log.
+Before the second message, the test makes PostgreSQL refuse
+`openclaw.runtime.turn.admitted` for the revision. The user must receive
+a reply while the database refuses this record. After writes resume,
+the audit API must return the original event ID once for the same turn.
+Retrying delivery must cause no extra
+model request. The test counts requests in the OpenShell log for dedicated
+OpenClaw and in the test provider’s log for the other two runtimes.
+
+For Codex, the test makes the control plane reject the Gateway credential
+when the user creates an empty chat. The Gateway must hold the event after
+HTTP 401. The test restores access and runs the
+[retry command](../../guides/topics/audit-log.md#recover-delayed-runtime-events).
+The API must then show one session record for the chat.
 
 In both OpenClaw modes, the test also sends two user messages in one
 HTTP request. The turn must finish. Its audit event must omit the message

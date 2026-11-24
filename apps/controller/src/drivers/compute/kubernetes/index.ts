@@ -10586,6 +10586,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "destination.json": JSON.stringify({
             url: managed.endpoint,
             source: this.gatewayRuntimeAuditScope(revision).runtimeSource,
+            revisionId: revision.id,
           }),
         },
       },
@@ -18132,10 +18133,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
       if (auditTarget !== undefined && auditRevisionId !== undefined) {
-        variables.push({
-          name: "OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN",
-          value: RUNTIME_AUDIT_PLUGIN,
-        });
         volumes.push({
           name: RUNTIME_AUDIT_VOLUME,
           secret: {

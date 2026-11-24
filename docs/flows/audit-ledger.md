@@ -1,17 +1,16 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/d108b4d9-d114-4611-befc-6fb2787baee3"
 ---
 
 # Audit ledger flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) records audit evidence as controller requests and
-reconciliation work run. This flow follows PostgreSQL event append, commit,
-the internal State repository's list operation, and the Agent audit API. See the
-[audit guide](../guides/topics/audit-log.md) for the operator boundary.
+OpenClaw Control Plane (OCC) records API requests, worker jobs and Gateway
+observations in PostgreSQL. The [audit guide](../guides/topics/audit-log.md)
+explains which records an analyst can read.
 
 ## Entry Points
 
@@ -73,6 +72,14 @@ graph TD
   Linked["Open a linked turn"] -->|Both grants| Lookup["Read the saved message"]
   Lookup -->|Recheck access| Disclose["Commit the disclosure"]
   Disclose -->|Confirmed| Text["Return message text"]
+  Gateway["Gateway observes a turn"] --> Local{"Queue event on disk?"}
+  Local -->|Yes| Continue["Continue chat"]
+  Local -->|Yes| Deliver["Send to OCC in background"]
+  Local -->|No| Warn["Warn of missing record"]
+  Warn --> Continue
+  Deliver -->|Temporary failure| Retry["Retry in 15 seconds"]
+  Deliver -->|Other refusal| Hold["Hold for operator retry"]
+  Deliver -->|Committed| Ledger
 
   classDef storage fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -249,31 +256,30 @@ Agent, and window.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureGatewayRuntimeAudit`
 and `apps/controller/src/http/runtime-audit.ts`
 
-With audit and managed Gateway routing, Helm creates a private HTTPS listener.
-Compute mounts the revision token and CA certificate, permits the connection,
-and stores the token hash in PostgreSQL. Compute revokes the grant after stop
+With audit and managed routing, Helm creates a private HTTPS listener.
+Compute mounts the revision token and CA certificate, permits the connection
+and stores the token hash in PostgreSQL. It revokes the grant after stop
 and deletes the Secret at retirement.
 
-`PostgresWorkQueue.scheduleGatewayAuditMaintenance` compares the setting with
-grants for running revisions. Each check queues up to eight updates.
-Maintenance checks the original deployer’s authority. Compute updates the
-Gateway Deployment. With audit off, Compute removes the grant after replacement.
+`PostgresWorkQueue.scheduleGatewayAuditMaintenance` queues up to eight
+Gateway updates per check when grants differ from the setting. Maintenance
+checks the original deployer’s authority. With audit off, Compute removes
+the grant after replacing the Gateway.
 
-Compute requires `oce-runtime-audit` through `OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN`.
-The launcher checks `build.json` for session and admission support before
-starting an audited Gateway. Before dispatch, the Gateway supplies both IDs.
-`deploy/runtime/managed-runtime-audit/sink.mjs:admitTurn` sends
-`openclaw.runtime.turn.admitted` to OCC. OCC validates the revision grant and
-appends the event in one transaction. After PostgreSQL commits, OCC sends
-HTTP 204. Dispatch requires this response within two seconds.
+Without `onSessionCreated`, the plugin uses `session_start` and can miss new
+chats. Only `before_turn_start` triggers `openclaw.runtime.turn.admitted`.
+Chat continues without OCC confirmation.
 
-When the Gateway saves a new session ID, the plugin queues its creation record.
-It keeps up to 256 [observations](../guides/topics/audit-log.md#agent-runtime-activity)
-in `/home/node/.openclaw/pending-runtime-audit/observations.sqlite` until OCC confirms delivery.
-It warns and discards records on overflow or permanent refusal. After a restart,
-it checks the credential fingerprint, source, and destination before retrying.
-OCC accepts identical copies once and rejects conflicting IDs. Kubernetes deletes
-the queue with the Pod.
+`deploy/runtime/managed-runtime-audit/sink.mjs:createAuditSink` keeps queued
+events in `/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite`
+across Pod replacements. It sends them in the background. OCC checks the
+grant and appends the event in one transaction. The plugin removes the
+event after OCC confirms commit with HTTP 204.
+[Retries](../guides/topics/audit-log.md#recover-delayed-runtime-events)
+preserve its ID, revision, source and destination. OCC stores identical
+copies once and rejects conflicting IDs.
+
+The plugin warns of queue failure or overflow. Agent deletion removes the queue.
 
 ### 8. An analyst opens the user message for a turn
 
@@ -338,6 +344,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 09:37: Trace background delivery of Gateway turn records. (authoring-run/d108b4d9-d114-4611-befc-6fb2787baee3 - 3e0ed219b6022212dbe331dfe48c940e3d24a94e)
 
 - 2026-11-20 16:35: Trace audit setting changes for running Gateways. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - fb0f4dc39a9b736919375069d258bab9c7d98b75)
 

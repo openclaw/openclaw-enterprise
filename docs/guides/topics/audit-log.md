@@ -95,50 +95,72 @@ If PostgreSQL loses confirmation of a result commit, `worker.error` reports
 Enable [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
 on a Helm installation with managed Gateway routing. OCE supplies the
 `oce-runtime-audit` plugin and a credential for each Agent revision whose
-Gateway runs on the control cluster. A configuration that disables this
-plugin prevents setup. If startup reports missing audit support, select
-a current OCE Gateway image.
+Gateway runs on the control cluster. Disabling this plugin prevents setup.
 
-When you change the switch, the worker updates affected Gateways through
-maintenance. Kubernetes restarts each Gateway with the same Agent revision
-and chat history. This can interrupt a turn. Until the restart finishes,
-a chat request can fail or use the previous setting. After you enable audit,
-send a message and check its turn in the Agent audit API. If the record is missing, check the
-maintenance result. Maintenance requires the original deployer's permission
-to deploy the Agent. If maintenance fails permanently, correct the cause and
-deploy the Agent. The API uses `runtime_activity` for the following records.
+Changing the setting restarts affected Gateways. The Agent revision and chat
+history remain. During restart, turns can fail or use the previous setting.
+Check the next turn in the audit API. If missing, check maintenance.
+The original deployer needs permission to deploy. After permanent failure,
+correct the cause and deploy the Agent.
+
+The API returns these `runtime_activity` records.
 
 | Action                                     | What the Gateway observed                                                                                             |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `openclaw.runtime.session.started`         | The Gateway saved a new session ID. This includes an empty chat and a chat created by its first message.              |
+| `openclaw.runtime.session.started`         | OpenClaw reported a new session. Some Gateway versions omit empty chats or sessions created by the first message.     |
 | `openclaw.runtime.session.ended`           | OpenClaw reported that it deleted the session.                                                                        |
-| `openclaw.runtime.turn.admitted`           | The Gateway asked to run a turn. PostgreSQL saved this record before the Gateway could send the work to the agent.    |
+| `openclaw.runtime.turn.admitted`           | The Gateway was about to send work to the Agent. Only Gateways with `before_turn_start` report this event.            |
 | `openclaw.runtime.turn.started`            | The Gateway observed the start of a run with an identified session.                                                   |
 | `openclaw.runtime.turn.completed`          | The Gateway observed a final result for the run. Read `details.outcome`.                                              |
 | `openclaw.runtime.model_call.started`      | Embedded OpenClaw reported that it started a model call.                                                              |
 | `openclaw.runtime.model_call.completed`    | Embedded OpenClaw reported the result of the call. The same `modelCallId` links the two records.                      |
 | `openclaw.runtime.model_response.observed` | The Codex connection reported a provider response. `responseIdHash` identifies the response without storing its text. |
 
-Find a run by `sessionId` and `turnId`. OpenClaw can reuse a run ID during
-recovery. Each dispatch needs its own admission record. A missing result leaves
-the outcome unknown. OCE uses a hash for IDs that contain spaces, exceed 256
-characters, or fail an audit format check. The [message link](#open-the-message-for-a-turn)
-requires the original session ID and message ID. It works with a hashed turn ID.
+Find a turn by `sessionId` and `turnId`. Recovery can reuse a turn ID.
+Admission proves neither permission nor execution. A missing result means
+the outcome is unknown. OCE hashes IDs that fail format checks or exceed
+256 characters. [Message links](#open-the-message-for-a-turn) require
+original session and message IDs but allow hashed turn IDs.
 
-Dedicated OpenClaw reports the turn. Individual model calls stay in the worker.
-Codex reports model responses. Requests that fail before a response can be
-missing. Embedded OpenClaw reports model calls. A provider can retry within
-one call. The audit API cannot give an exact attempt count.
+Dedicated OpenClaw omits individual model calls. Codex can miss requests
+without responses. Embedded OpenClaw can miss retries within a call.
 
-The Gateway waits up to two seconds for the control plane to confirm a turn
-admission. If the write fails or the confirmation is missing, the Gateway
-stops the turn. Check the control plane and [audit storage](#manage-audit-storage)
-if new chat requests fail.
+The Gateway queues events locally and sends them in the background.
+Chat continues if PostgreSQL cannot save a runtime event.
 
-The Gateway can keep up to 256 other events on local disk. It retries delivery
-after a restart in the same Pod. If the queue is full, the plugin warns and
-omits new observations. Deleting the Pod removes pending events. The control
-plane keeps events it already saved in PostgreSQL.
+The [Control Plane chat API](../../reference/agent-http-chat.md) must still
+save its own request record before it forwards a message to the Gateway.
+
+### Recover delayed runtime events
+
+The Gateway retries network errors and HTTP 408, 429 and 5xx after
+15 seconds. HTTP 204 confirms delivery. Other responses hold the event.
+The Gateway keeps 256 events per revision, source and endpoint, up to
+512 per Agent. Held events count toward both limits. Pod replacement
+preserves events. Agent deletion removes them. A full or unavailable
+queue can lose new events. The Gateway warns.
+Drain the queue before switching revisions when possible.
+
+To check delivery, set `namespace` and `pod` to the Gateway's Kubernetes
+namespace and Pod name. You need permission to run commands in that Pod.
+
+```sh
+kubectl exec -n "$namespace" "$pod" -c gateway -- node /app/oce-plugins/oce-runtime-audit/sink.mjs status
+```
+
+`pending` counts events awaiting delivery. `held` lists event IDs and HTTP
+statuses. `otherScope` counts events for another revision, source or endpoint.
+Only the original revision, source and endpoint can deliver those events.
+
+Correct the cause of the refusal. Set `eventId` to the held ID.
+
+```sh
+kubectl exec -n "$namespace" "$pod" -c gateway -- node /app/oce-plugins/oce-runtime-audit/sink.mjs retry "$eventId"
+```
+
+The Gateway checks every 15 seconds. A retry does not repeat the turn.
+Run `status` again. The audit API uses a different event ID.
+Find recent turns by revision, session and turn ID.
 
 ### Agent runtime logs
 
@@ -176,8 +198,7 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 ```
 
 If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. An audited Gateway refuses new turns. It can queue
-observations from work that already started. See [Agent runtime activity](#agent-runtime-activity).
+withhold audit results. The Gateway can still queue [runtime events](#agent-runtime-activity).
 The control plane worker cannot claim covered jobs or save the
 results of audited attempts until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing
@@ -228,9 +249,8 @@ it does not correlate separate attempts to the same person or browser.
 
 ## Read an Agent’s audit events
 
-This API requires PostgreSQL, the Native IAM Driver, and enabled Control Plane
-audit. If you receive `501`, check that audit is enabled and the Installation
-uses the Native IAM Driver.
+For HTTP `501`, check that the Installation uses PostgreSQL, Native IAM and
+Control Plane audit.
 
 Sign in with a human account. Ask an Installation administrator to
 [bind a Namespace Role](../../reference/authorization.md#manage-namespace-policy)
@@ -244,10 +264,9 @@ saved action, such as Agent creation, deployment admission, or activation.
 They include an Agent revision ID when OCC verifies that revision belongs to
 the Agent. A work ID connects job records without exposing the internal work key.
 
-The default page contains up to 50 records. Set `limit` to a number from
-1 through 100 to change the size. If the response includes a `nextCursor`,
-send it as `cursor` on the next request. Use the same session and Agent within
-15 minutes of the first page. OCC keeps the first page's time window.
+Set `limit` to 1–100 records per page. The default is 50. Send `nextCursor` as
+`cursor` within 15 minutes of the first page. Use the same session and Agent.
+OCC keeps the first page's time window.
 
 OCC saves a disclosure record before it sends each page, including an empty
 page. If it cannot confirm the write, it returns `503` and withholds the page.

@@ -27,6 +27,7 @@ import {
   signInConsole,
   wireField,
   withRefusedTurnWrite,
+  withRejectedAuditCredential,
   type KubernetesAccess,
   type LocalSetup,
   type SmokeStack,
@@ -309,6 +310,7 @@ export async function assertAgentTurnAudit(
     runtimeSource,
     sessionId,
     turnId,
+    admissionId,
     model,
     responseIdHash,
     previousIds,
@@ -319,6 +321,7 @@ export async function assertAgentTurnAudit(
     runtimeSource: "openclaw" | "codex";
     sessionId?: string;
     turnId?: string;
+    admissionId?: string;
     model?: string;
     responseIdHash?: string;
     previousIds?: ReadonlySet<string>;
@@ -405,6 +408,9 @@ export async function assertAgentTurnAudit(
           1,
           `${label}: expected one admission for the completed turn`,
         );
+        if (admissionId !== undefined) {
+          assert.equal(admissions[0]!.id, admissionId, `${label}: retry changed the event ID`);
+        }
       }
       return {
         done: value !== undefined,
@@ -550,21 +556,17 @@ function openHttpChat(stack: KubernetesAccess & Pick<LocalSetup, "api">, agent: 
   const nonce = `OCE_SMOKE_${randomUUID()}`;
   const text = `Reply with exactly this nonce and no other text: ${nonce}`;
 
-  function post(inputs: string[], expectedStatus = 200) {
+  async function send(inputs = [text]) {
     const timeout = AbortSignal.timeout(3 * minute);
-    return stack.api(
+    const result = await stack.api(
       "POST",
       `/agents/${agent.id}/chat`,
       { user, messages: inputs.map((content) => ({ role: "user", content })) },
       {
         response: "chat",
-        expectedStatus,
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       },
     );
-  }
-  async function send(inputs = [text]) {
-    const result = await post(inputs);
     const choices = wireField(result, "choices");
     assert.ok(Array.isArray(choices) && choices.length === 1);
     const reply = wireField(choices[0], "message");
@@ -573,7 +575,7 @@ function openHttpChat(stack: KubernetesAccess & Pick<LocalSetup, "api">, agent: 
     assert.ok(typeof turnId === "string" && turnId.length > 0);
     return turnId;
   }
-  return { nonce, text, send, post };
+  return { nonce, text, send };
 }
 
 async function httpMessageIds(stack: KubernetesAccess, gateway: GatewayPod, sessionId: string) {
@@ -582,6 +584,63 @@ async function httpMessageIds(stack: KubernetesAccess, gateway: GatewayPod, sess
   const sessionKey = wireField(session, "key");
   assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
   return savedUserMessageIds(stack, gateway, sessionKey, sessionId);
+}
+
+async function recoverChatCreation(
+  stack: KubernetesAccess & Pick<LocalSetup, "state">,
+  gateway: GatewayPod,
+  revisionId: string,
+  reader: AuditReader,
+  createChat: () => Promise<string>,
+) {
+  const queue = (...args: string[]) =>
+    kubectl(stack, [
+      "exec",
+      "-n",
+      gateway.namespace,
+      gateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "node",
+      "/app/oce-plugins/oce-runtime-audit/sink.mjs",
+      ...args,
+    ]);
+  // A rejected credential must leave the new session's record in the queue.
+  const { sessionId, eventId } = await withRejectedAuditCredential(stack, revisionId, async () => {
+    const sessionId = await createChat();
+    const eventId = await waitFor(
+      "a held audit event after the listener rejected the Gateway credential",
+      async () => {
+        const { stdout } = await queue("status");
+        const held = wireField(JSON.parse(stdout), "held");
+        assert.ok(Array.isArray(held) && held.length <= 1);
+        if (held.length === 0) {
+          return { done: false };
+        }
+        assert.equal(wireField(held[0], "status"), 401);
+        const id = wireField(held[0], "eventId");
+        assert.ok(typeof id === "string" && id.length > 0);
+        return { done: true, value: id };
+      },
+      minute,
+    );
+    assert.ok(eventId);
+    return { sessionId, eventId };
+  });
+  const page = await reader.readAudit();
+  assert.ok(
+    !page.events.some(
+      (event) =>
+        event.event === "runtime_activity" &&
+        event.action === "openclaw.runtime.session.started" &&
+        event.details.sessionId === sessionId,
+    ),
+    "the listener accepted a record before manual recovery",
+  );
+  // The original credential works again. Release only the event the operator selected.
+  await queue("retry", eventId);
+  return sessionId;
 }
 
 export async function checkHttpTurnAudit(
@@ -598,8 +657,7 @@ export async function checkHttpTurnAudit(
   const gateway = await readyGateway(stack, agent.id, revisionId);
   const chat = openHttpChat(stack, agent);
   const { nonce, text } = chat;
-  async function send(responseNumber: number, inputs = [text]) {
-    const turnId = await chat.send(inputs);
+  async function readTurn(responseNumber: number, turnId: string, admissionId?: string) {
     if (runtime !== "dedicated-openclaw") {
       await assertModelAnswered(nonce, agent.label, responseNumber);
     }
@@ -608,17 +666,37 @@ export async function checkHttpTurnAudit(
       revisionId,
       runtimeSource: runtime === "codex" ? "codex" : "openclaw",
       turnId,
+      ...(admissionId ? { admissionId } : {}),
       ...(runtime === "codex" ? codexResponse(nonce, responseNumber) : {}),
       ...(runtime === "embedded-openclaw" ? { model: defaultAgentModel } : {}),
     });
   }
 
   // The first HTTP request creates the session. The next request reuses it.
-  const initialRequests = await countModelRequests();
-  const first = await send(1);
+  const first = await readTurn(1, await chat.send());
   const sessionId = first.details.sessionId;
   await checkSessionStarted(reader, revisionId, sessionId);
-  const second = await send(2);
+  // Keep PostgreSQL rejecting the admission until the second HTTP reply arrives.
+  const before = await countModelRequests();
+  const { turn, refusedId } = await withRefusedTurnWrite(
+    stack,
+    revisionId,
+    "admitted",
+    async () => {
+      const id = await chat.send();
+      const requests = await countModelRequests();
+      assert.ok(requests > before, `${agent.label}: the turn did not reach the model`);
+      return { id, requests };
+    },
+  );
+  // Recovery must deliver the original event once without repeating the model request.
+  const second = await readTurn(2, turn.id, refusedId);
+  assert.equal(
+    await countModelRequests(),
+    turn.requests,
+    `${agent.label}: audit delivery repeated a model request`,
+  );
+  log(`${agent.label}: chat succeeded during audit failure and the original record arrived once`);
   assert.notEqual(first.details.turnId, second.details.turnId);
   assert.equal(second.details.sessionId, sessionId);
   const ids = await httpMessageIds(stack, gateway, sessionId);
@@ -626,7 +704,7 @@ export async function checkHttpTurnAudit(
   await assertAgentAuditMessage(reader, second, { messageId: ids.second, text });
   if (runtime !== "codex") {
     // An HTTP turn can have a reply even when it has no single original user message.
-    const combined = await send(3, ["An earlier user message.", text]);
+    const combined = await readTurn(3, await chat.send(["An earlier user message.", text]));
     assert.equal(combined.details.messageId, undefined);
     await assert.rejects(reader.readMessage(combined.id), /HTTP 404$/);
   }
@@ -634,28 +712,24 @@ export async function checkHttpTurnAudit(
   await checkSessionStarted(reader, revisionId, sessionId);
 
   // Creating an empty chat must record the session before any user sends a message.
-  const created = await gatewayRpc(stack, gateway, "sessions.create", {
-    key: `agent:main:empty-${randomUUID()}`,
-    agentId: "main",
-  });
-  const emptySessionId = wireField(created, "sessionId");
-  assert.ok(typeof emptySessionId === "string" && emptySessionId.length > 0);
+  async function createChat() {
+    const created = await gatewayRpc(stack, gateway, "sessions.create", {
+      key: `agent:main:empty-${randomUUID()}`,
+      agentId: "main",
+    });
+    const id = wireField(created, "sessionId");
+    assert.ok(typeof id === "string" && id.length > 0);
+    return id;
+  }
+  const emptySessionId =
+    runtime === "codex"
+      ? await recoverChatCreation(stack, gateway, revisionId, reader, createChat)
+      : await createChat();
   await checkSessionStarted(reader, revisionId, emptySessionId, { empty: true });
+  if (runtime === "codex") {
+    log(`${agent.label}: recovered the held chat creation record with the Gateway retry command`);
+  }
   log(`${agent.label}: recorded one start for the HTTP session and one for the empty session`);
-
-  // Check the request counter with successful turns before refusing the next admission.
-  const before = await countModelRequests();
-  assert.ok(
-    before > initialRequests,
-    `${agent.label}: the model request counter missed the HTTP turns`,
-  );
-  await withRefusedTurnWrite(stack, revisionId, "admitted", () => chat.post([text], 500));
-  assert.equal(
-    await countModelRequests(),
-    before,
-    `${agent.label}: refused turn reached the model`,
-  );
-  log(`${agent.label}: PostgreSQL refused admission before a model request`);
 }
 
 async function connectedNodeIds(stack: KubernetesAccess, gateway: GatewayPod) {
@@ -678,11 +752,10 @@ export async function waitForAuditMode(
     `${agent.label} Gateway to apply audit=${enabled} on ${revisionId}`,
     async () => {
       const pods = await readyGatewayPods(stack, agent.id, revisionId);
-      const gateway = pods[0]?.spec?.containers?.find(({ name }) => name === "gateway");
-      const required = gateway?.env?.some(
-        ({ name, value }) => name === "OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN" && !!value,
+      const hasAuditCredential = pods[0]?.spec?.volumes?.some(
+        ({ name, secret }) => name === "runtime-audit" && !!secret?.secretName,
       );
-      if (pods.length !== 1 || !gateway || Boolean(required) !== enabled) {
+      if (pods.length !== 1 || hasAuditCredential !== enabled) {
         return { done: false };
       }
       if (runtime !== "embedded-openclaw") {

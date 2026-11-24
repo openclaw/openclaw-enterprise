@@ -852,6 +852,7 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
       assert.deepEqual(JSON.parse(destination.data["destination.json"]), {
         url: target.endpoint,
         source: grant.runtimeSource,
+        revisionId: revision.id,
       });
       const plugin = "oce-runtime-audit";
       const { plugins } = JSON.parse(destination.data["openclaw.json"]);

@@ -29,7 +29,7 @@ export function createApi(origin: string, key: string) {
     method: string,
     path: string,
     body?: unknown,
-    options?: { response: "chat"; signal: AbortSignal; expectedStatus?: number },
+    options?: { response: "chat"; signal: AbortSignal },
   ) => {
     const url = new URL(path, origin);
     assert.equal(
@@ -63,11 +63,7 @@ export function createApi(origin: string, key: string) {
     }
     // The chat route returns native Chat Completions JSON. Keep its body out of failure logs.
     if (options?.response === "chat") {
-      assert.equal(
-        response.status,
-        options.expectedStatus ?? 200,
-        `${method} ${path}: chat failed`,
-      );
+      assert.equal(response.status, 200, `${method} ${path}: chat failed`);
       return envelope;
     }
     if (!response.ok) {
@@ -214,8 +210,7 @@ export interface Pod {
     labels?: Record<string, string>;
   };
   spec?: {
-    containers?: { name: string; env?: { name: string; value?: string }[] }[];
-    volumes?: { configMap?: { name?: string } }[];
+    volumes?: { name: string; configMap?: { name?: string }; secret?: { secretName?: string } }[];
   };
   status?: {
     phase?: string;
@@ -534,8 +529,7 @@ export async function withRefusedTurnWrite<T>(
   const action = `openclaw.runtime.turn.${phase}`;
   const query = (sql: string, options?: RunOptions) =>
     queryAudit(stack, { revision_id: revisionId, action }, sql, options);
-  // PostgreSQL logs the event ID even when the transaction fails. The restart
-  // test uses it to identify a second delivery of the same event.
+  // PostgreSQL logs the rejected event ID. Compare it with the audit API after recovery.
   const pattern = new RegExp(`${marker} (aud_[a-f0-9-]{36})`);
   try {
     await query(`
@@ -582,6 +576,37 @@ export async function withRefusedTurnWrite<T>(
     `,
       { signal: undefined },
     );
+  }
+}
+
+export async function withRejectedAuditCredential<T>(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  exercise: () => Promise<T>,
+) {
+  // Replace the immutable grant in one statement. The worker still sees the
+  // enrollment, but the listener rejects the Gateway's original credential.
+  // Applying the same substitution twice restores the digest inside PostgreSQL.
+  const swap = () =>
+    queryRevision(
+      stack,
+      revisionId,
+      `WITH prior AS (
+        DELETE FROM occ.gateway_runtime_audit_grants
+        WHERE revision_id = :'revision_id' RETURNING *
+      )
+      INSERT INTO occ.gateway_runtime_audit_grants
+        (namespace_id, agent_id, revision_id, runtime_source, token_digest)
+      SELECT namespace_id, agent_id, revision_id, runtime_source,
+        translate(token_digest, '0123456789abcdef', 'fedcba9876543210') FROM prior
+      RETURNING revision_id;`,
+      { signal: undefined },
+    );
+  assert.equal(await swap(), revisionId);
+  try {
+    return await exercise();
+  } finally {
+    assert.equal(await swap(), revisionId);
   }
 }
 

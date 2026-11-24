@@ -139,20 +139,28 @@ function createService(runtime) {
         return;
       }
       using setup = new DisposableStack();
-      const sink = createAuditSink();
+      let sink;
+      try {
+        sink = createAuditSink();
+      } catch {
+        process.emitWarning("Runtime audit could not start. Gateway audit records may be missing.");
+        return;
+      }
       if (!sink) {
         return;
       }
       setup.defer(sink.close);
       const inputs = new Map();
       const owner = { sink, turns: new Map(), inputs };
-      setup.defer(
-        runtime.events.onSessionCreated(({ sessionId }) => {
-          if (active === owner) {
-            sink.emit({ action: "openclaw.runtime.session.started", sessionId });
-          }
-        }),
-      );
+      if (typeof runtime.events.onSessionCreated === "function") {
+        setup.defer(
+          runtime.events.onSessionCreated(({ sessionId }) => {
+            if (active === owner) {
+              sink.emit({ action: "openclaw.runtime.session.started", sessionId });
+            }
+          }),
+        );
+      }
       setup.defer(
         runtime.events.onSessionTranscriptUpdate((update) =>
           recordInput(inputs, sink.source, update),
@@ -180,19 +188,22 @@ export default {
   id,
   name: "Runtime audit",
   register(api) {
-    if (
-      api.registrationMode !== "full" ||
-      process.env.OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN !== id
-    ) {
+    if (api.registrationMode !== "full") {
       return;
     }
     api.registerService(createService(api.runtime));
+    // This is a dispatch observation. Never require the plugin or await delivery.
     api.on("before_turn_start", ({ sessionId, runId }) => {
-      if (!active) {
-        throw new Error("The runtime audit service is unavailable.");
-      }
-      return active.sink.admitTurn(sessionId, runId);
+      active?.sink.emit({ action: "openclaw.runtime.turn.admitted", sessionId, turnId: runId });
     });
+    if (typeof api.runtime.events.onSessionCreated !== "function") {
+      // TODO: Remove when the supported Gateway reports every session creation.
+      api.on("session_start", ({ sessionId, resumedFrom }) => {
+        if (sessionId !== resumedFrom) {
+          active?.sink.emit({ action: "openclaw.runtime.session.started", sessionId });
+        }
+      });
+    }
     api.agent.events.registerAgentEventSubscription({
       id,
       streams: ["lifecycle"],

@@ -318,21 +318,6 @@ RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
     pnpm build:docker \
     && pnpm_config_verify_deps_before_run=false pnpm ui:build
 
-FROM openclaw-build AS runtime-build-metadata
-ARG OCC_BUILD_REVISION=""
-# Older hosts ignore unknown hooks. Check the host that this image packages.
-RUN --network=none node --import ./scripts/tsx.mjs --input-type=module <<'NODE'
-import { writeFileSync } from "node:fs";
-import { isPluginHookName } from "./src/plugins/hook-types.ts";
-import { createPluginRuntime } from "./src/plugins/runtime/index.ts";
-
-const commit = process.env.OCC_BUILD_REVISION || null;
-if (commit && !/^[a-f0-9]{40}$/.test(commit)) throw new Error("Invalid OCE build revision");
-const runtimeAudit = isPluginHookName("before_turn_start") &&
-  typeof createPluginRuntime().events.onSessionCreated === "function";
-writeFileSync("/tmp/build.json", JSON.stringify({ commit, runtimeAudit }));
-NODE
-
 FROM openclaw-dependency-inputs AS openclaw-production-deps
 # Build asset hooks need all plugin dependencies; the shipped runtime keeps only
 # the selected plugins and the upstream required bundled dependencies.
@@ -538,7 +523,7 @@ ARG OCC_BUILD_REVISION=""
 LABEL org.openclaw.image.revision=${OPENCLAW_COMMIT}
 RUN node -e 'const fs = require("node:fs"); const provenance = JSON.parse(fs.readFileSync("/opt/oce/runtime/provenance.json", "utf8")); if (!/^[a-f0-9]{40}$/.test(process.argv[1]) || provenance.commit !== process.argv[1]) throw new Error("OpenClaw label must match packaged provenance");' "$OPENCLAW_COMMIT"
 LABEL org.opencontainers.image.revision=${OCC_BUILD_REVISION}
-COPY --from=runtime-build-metadata /tmp/build.json /opt/oce/runtime/build.json
+RUN node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision || null}));' "$OCC_BUILD_REVISION"
 
 # Keep this last: a client change then rebuilds only this layer (see repository-client-build).
 COPY --from=repository-client-build /build/.build/runtime-client/ /
