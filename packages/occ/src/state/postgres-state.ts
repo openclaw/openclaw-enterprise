@@ -3480,6 +3480,14 @@ export class PostgresPlatformState implements PlatformStateStore {
           ],
         );
       },
+      stampRepositorySourceCopies: async (namespaceId, credentialSourceId, version) => {
+        await client.query(
+          `UPDATE occ.repository_source_copies
+           SET expected_source_version=$3,expected_at=clock_timestamp()
+           WHERE namespace_id=$1 AND credential_source_id=$2 AND retired_at IS NULL`,
+          [namespaceId, credentialSourceId, version],
+        );
+      },
       findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
         (
           await client.query(
@@ -3506,7 +3514,8 @@ export class PostgresPlatformState implements PlatformStateStore {
       findRepositorySourceDeliveries: async (namespaceId, credentialSourceId, agentId) =>
         (
           await client.query(
-            `SELECT revision_id,confirmed_source_version,confirmed_at,
+            `SELECT revision_id,expected_source_version,expected_at,
+               confirmed_source_version,confirmed_at,
                unknown_write_version IS NOT NULL AS unreconciled_write
              FROM occ.repository_source_copies
              WHERE namespace_id=$1 AND credential_source_id=$2 AND agent_id=$3
@@ -3516,9 +3525,13 @@ export class PostgresPlatformState implements PlatformStateStore {
           )
         ).rows.map((value) => {
           const row = value as PostgresRow;
+          const expected = optionalText(row, "expected_source_version");
           const confirmed = optionalText(row, "confirmed_source_version");
           return Object.freeze({
             revisionId: text(row, "revision_id"),
+            ...(expected === undefined
+              ? {}
+              : { expectedSourceVersion: expected, expectedAt: timestamp(row, "expected_at") }),
             ...(confirmed === undefined
               ? {}
               : { confirmedSourceVersion: confirmed, confirmedAt: timestamp(row, "confirmed_at") }),

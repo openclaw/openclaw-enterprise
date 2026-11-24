@@ -142,6 +142,11 @@ export interface OpenShellGitRouteStore {
     provider: string,
     sourceVersion: string,
   ): Promise<boolean>;
+  /**
+   * Records that the target Sandbox's supervisor activated the Provider credential for this Source
+   * version. False when the revision has no unretired copy whose last write was that version.
+   */
+  recordSourceCopyConfirmed?(revisionId: string, sourceVersion: string): Promise<boolean>;
   /** Copies not retired whose revision has no pending work and is not running. */
   idleSourceCopies?(): Promise<readonly OpenShellGitIdleSourceCopy[]>;
   retireSourceCopy?(revisionId: string): Promise<boolean>;
@@ -832,6 +837,22 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
              SET provider_name=$2,source_version=$3,installed_at=clock_timestamp()
              WHERE revision_id=$1 AND retired_at IS NULL`,
             [revisionId, provider, sourceVersion],
+          )
+        ).rowCount === 1,
+    );
+  }
+
+  async recordSourceCopyConfirmed(revisionId: string, sourceVersion: string): Promise<boolean> {
+    return this.query(
+      async (c) =>
+        (
+          await c.query(
+            // Only the version this copy's last write installed: never a later one, never a
+            // retired copy.
+            `UPDATE occ.repository_source_copies
+             SET confirmed_source_version=$2,confirmed_at=clock_timestamp()
+             WHERE revision_id=$1 AND source_version=$2 AND retired_at IS NULL`,
+            [revisionId, sourceVersion],
           )
         ).rowCount === 1,
     );

@@ -660,7 +660,12 @@ interface PlatformSnapshot {
    * Keyed by revision. This adapter has no Worker and no Gateway, so no Provider can hold a copy:
    * a copy counts as retired once the PostgreSQL Worker's idle rule holds for its revision.
    */
-  readonly repositorySourceCopies: Map<string, Readonly<RepositorySourceCopy>>;
+  readonly repositorySourceCopies: Map<
+    string,
+    Readonly<
+      RepositorySourceCopy & { readonly expectedSourceVersion?: string; readonly expectedAt?: string }
+    >
+  >;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
@@ -2422,11 +2427,16 @@ function repositories(
       return saved;
     },
     findCredentialSource,
-    // No Worker writes here, so no copy records an accepted Provider write.
+    // No Worker runs here, so no copy records a confirmed delivery or an unknown write.
     findRepositorySourceDeliveries: async (namespaceId, credentialSourceId, agentId) =>
       unretiredSourceCopies(namespaceId, credentialSourceId)
         .filter((copy) => copy.agentId === agentId)
-        .map(({ revisionId }) => Object.freeze({ revisionId })),
+        .map(({ revisionId, expectedSourceVersion, expectedAt }) =>
+          Object.freeze({
+            revisionId,
+            ...(expectedSourceVersion === undefined ? {} : { expectedSourceVersion, expectedAt }),
+          }),
+        ),
     findCredentialWithdrawal,
     listCredentialWithdrawals: async (namespaceId, revisionId) =>
       Object.freeze(
@@ -2705,6 +2715,15 @@ function repositories(
     // when its Agent is deleted, as revision cleanup retires it on PostgreSQL.
     findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
       unretiredSourceCopies(namespaceId, credentialSourceId),
+    stampRepositorySourceCopies: async (namespaceId, credentialSourceId, version) => {
+      const expectedAt = new Date().toISOString();
+      for (const copy of unretiredSourceCopies(namespaceId, credentialSourceId)) {
+        snapshot.repositorySourceCopies.set(
+          copy.revisionId,
+          Object.freeze({ ...copy, expectedSourceVersion: version, expectedAt }),
+        );
+      }
+    },
     deleteCredentialSource: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
         return false;

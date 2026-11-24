@@ -1028,9 +1028,10 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
 
 type ProtectedPolicyFixture = Pick<
   AdmissionFixture,
-  "collection" | "controller" | "request" | "state"
+  "app" | "collection" | "controller" | "request" | "state"
 > & {
   readonly actorId: string;
+  requestWithoutGrants(app: App, grant: (principalId: string) => void): Promise<Request>;
   readonly namespace: Pick<Namespace, "id">;
   readonly protectedDriver: InstalledDriver;
   readonly iamState: Parameters<typeof grantRole>[0] & { readonly identities: Identity[] };

@@ -257,6 +257,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
           this.store.update(this.storageRef(ref), stored.stored),
         );
         version = stored.version;
+        if (isRepositoryTokenSource(found)) {
+          // Each unretired copy now expects this version; its delivery reads pending until the
+          // Worker confirms the target Sandbox activated this same version.
+          await credentialSources.stampRepositorySourceCopies(ref.namespaceId, ref.id, version);
+        }
       } else if (update.lifecycleConfig) {
         await withComputeAbortSignal(signal, () =>
           this.store.withValue(this.storageRef(ref), async () => undefined),

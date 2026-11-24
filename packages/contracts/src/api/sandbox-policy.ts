@@ -86,14 +86,28 @@ const RepositorySourceDeliverySchema = Type.Object(
   {
     revisionId: RevisionId,
     state: Type.Union(
-      [Type.Literal("pending"), Type.Literal("provider_updated"), Type.Literal("unreconciled")],
+      [Type.Literal("pending"), Type.Literal("confirmed"), Type.Literal("unreconciled")],
       {
         description:
-          "provider_updated: OpenShell accepted the conditional Provider write of the Source's current version for this revision. It does not prove that the Sandbox applied it. pending: no accepted write of the current version is recorded, so the Sandbox can still hold an earlier value. unreconciled: a Provider write's outcome is unknown; replacing or deleting the Source answers 409 until the Agent is stopped or redeployed.",
+          "confirmed: this revision's Sandbox activated the Provider credential written for the committed version (committedSourceVersion equals confirmedSourceVersion), or, when no replacement committed since the copy was recorded, activated its first value. pending: no such activation is recorded, so the Sandbox can still hold an earlier value. unreconciled: a Provider write's outcome is unknown; replacing or deleting the Source answers 409 until the Agent is stopped or redeployed.",
       },
     ),
-    providerUpdatedAt: Type.Optional(
-      Type.String({ description: "When the accepted write was recorded (provider_updated)." }),
+    committedSourceVersion: Type.Optional(
+      Type.String({
+        description:
+          "The version the last replacement committed while this copy existed. Absent when none did.",
+      }),
+    ),
+    committedAt: Type.Optional(
+      Type.String({ description: "When that replacement committed." }),
+    ),
+    confirmedSourceVersion: Type.Optional(
+      Type.String({
+        description: "The last version this revision's Sandbox was seen to activate.",
+      }),
+    ),
+    confirmedAt: Type.Optional(
+      Type.String({ description: "When that activation was observed." }),
     ),
   },
   { additionalProperties: false },

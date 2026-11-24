@@ -1637,6 +1637,26 @@ export class OpenShellGitRuntime {
   }
 
   /**
+   * The supervisor activated this Source version for the revision: the policy read shows its
+   * delivery confirmed. A failure leaves it pending there and never fails the route.
+   */
+  private async recordSourceCopyConfirmed(entry: Entry, sourceVersion: string): Promise<void> {
+    let recorded: boolean | undefined;
+    try {
+      recorded = await this.routes?.recordSourceCopyConfirmed?.(entry.revision.id, sourceVersion);
+    } catch {
+      recorded = false;
+    }
+    if (recorded === false) {
+      this.emit?.({
+        event: "worker.error",
+        code: "OPENSHELL_GIT_SOURCE_COPY_UNCONFIRMED",
+        ...this.identity(entry),
+      });
+    }
+  }
+
+  /**
    * Retires the revision's recorded repository Source copy: deletes every prepared Git Provider
    * labelled for the revision and records the retirement only once a fresh listing of the
    * Workspace finds none. OpenShell refuses to delete a Provider that a Sandbox still attaches,
@@ -2475,6 +2495,9 @@ export class OpenShellGitRuntime {
               credentialSourceVersion: lent.credentialSourceVersion,
               ...this.identity(entry),
             });
+            if (lent.credentialSourceVersion !== undefined) {
+              await this.recordSourceCopyConfirmed(entry, lent.credentialSourceVersion);
+            }
           }
         }
       } else {

@@ -22,6 +22,7 @@ type CountedOperation =
 export type FixtureSourceCopy = Omit<OpenShellGitIdleSourceCopy, "retired"> & {
   provider?: string;
   sourceVersion?: string;
+  confirmedSourceVersion?: string;
   retirementBlocked?: string;
   retired: boolean;
   idle: boolean;
@@ -83,6 +84,14 @@ export function routeStore(): FixtureStore {
         return false;
       }
       Object.assign(copy, { provider, sourceVersion });
+      return true;
+    },
+    async recordSourceCopyConfirmed(revisionId, sourceVersion) {
+      const copy = unretired(revisionId);
+      if (copy?.sourceVersion !== sourceVersion) {
+        return false;
+      }
+      copy.confirmedSourceVersion = sourceVersion;
       return true;
     },
     async idleSourceCopies() {

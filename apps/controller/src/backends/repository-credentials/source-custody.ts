@@ -242,14 +242,15 @@ export function createRepositorySourceCustody(options: {
               // reconciliation settles it. The loan reports it.
               if (outcome === "applied") {
                 // A confirmed conditional write also settles an earlier uncertain one: that was
-                // conditional on an older Provider resource version, which never recurs.
+                // conditional on an older Provider resource version, which never recurs. The
+                // Gateway accepting it is not delivery: the runtime records the Sandbox's
+                // activation of the version (confirmed_source_version) when it observes it.
                 await fenced((c) =>
                   c.query(
                     `UPDATE occ.repository_source_copies
-                     SET confirmed_source_version = $4, confirmed_at = clock_timestamp(),
-                       unknown_write_version = NULL, unknown_write_at = NULL
+                     SET unknown_write_version = NULL, unknown_write_at = NULL
                      WHERE ${where}`,
-                    [...copy, version],
+                    [...copy],
                   ),
                 );
               } else if (made) {

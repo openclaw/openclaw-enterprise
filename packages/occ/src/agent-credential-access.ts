@@ -62,10 +62,6 @@ interface AgentCredentialAccessDependencies {
     "assertCredentialSourceOwnerSelected" | "credentialSourceOwner" | "credentialSourceType"
   >;
   readonly requireTokenServiceOwner: (instanceId?: string) => void;
-  /** The Source's current custody version. Only the version leaves the TokenService read. */
-  readonly currentSourceVersion: (
-    source: Readonly<CredentialSource> & { readonly tokenServiceInstanceId: string },
-  ) => Promise<string | undefined>;
   readonly offersProtectedType: (type: string) => boolean;
 }
 
@@ -146,7 +142,6 @@ export function createAgentCredentialAccess({
   timestamp,
   sourceDrivers,
   requireTokenServiceOwner,
-  currentSourceVersion,
   offersProtectedType,
 }: AgentCredentialAccessDependencies) {
   function authorizeSourceOperate(principalId: string, namespaceId: string, sourceId: string) {
@@ -348,8 +343,10 @@ export function createAgentCredentialAccess({
    * The policy read's view of the Source the registry selects for the Agent's Git credential.
    * Its ID, name, state, ceiling, the effective access and the delivery state need exact
    * `credential_source:read` on the Source, the decision the Source API's own read takes; without
-   * it the caller learns only that a Source is selected. The returned step reads the Source's
-   * current version outside the caller's transaction.
+   * it the caller learns only that a Source is selected. Delivery comes from the copy records
+   * alone, never from TokenService: a copy is confirmed when the version its Sandbox activated is
+   * the version the last replacement committed (versions are random, so equality), or, when no
+   * replacement committed since the copy was recorded, once its Sandbox activated any version.
    */
   async function readRepositoryCredentialSource(
     state: PlatformReadView,
@@ -358,7 +355,7 @@ export function createAgentCredentialAccess({
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
     limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
-  ): Promise<() => Promise<RepositoryCredentialView>> {
+  ): Promise<RepositoryCredentialView> {
     const ref = { kind: "credential_source", namespaceId: agent.namespaceId, id: sourceId } as const;
     let readable = false;
     try {
@@ -367,7 +364,7 @@ export function createAgentCredentialAccess({
       // An authorization outage hides the Source; the saved grants stay readable.
     }
     if (!readable) {
-      return async () => ({ kind: "credential_source", readable: false });
+      return { kind: "credential_source", readable: false };
     }
     const source = await state.credentialSources.findCredentialSource(agent.namespaceId, sourceId);
     let ceiling: RepositoryNetworkPolicyCeiling | undefined;
@@ -388,46 +385,39 @@ export function createAgentCredentialAccess({
       sourceId,
       agent.id,
     );
-    return async () => {
-      let version: string | undefined;
-      if (
-        ceiling !== undefined &&
-        isManagedTokenServiceSource(source) &&
-        source.state === "ready" &&
-        copies.some(({ confirmedSourceVersion }) => confirmedSourceVersion !== undefined)
-      ) {
-        try {
-          version = await currentSourceVersion(source);
-        } catch {
-          // Without the current version no revision counts as updated: all stay pending.
-        }
-      }
-      const deliveries = copies.map(
-        ({ revisionId, confirmedSourceVersion, confirmedAt, unreconciledWrite }) =>
-          (unreconciledWrite
-            ? { revisionId, state: "unreconciled" }
-            : version !== undefined && confirmedSourceVersion === version
-              ? { revisionId, state: "provider_updated", providerUpdatedAt: confirmedAt }
-              : { revisionId, state: "pending" }) as RepositorySourceDeliveryView,
-      );
-      if (source === undefined || ceiling === undefined) {
-        return {
-          kind: "credential_source",
-          id: sourceId,
-          ...(source === undefined ? {} : { name: source.name }),
-          state: "unavailable",
-          deliveries,
-        };
-      }
+    const deliveries = copies.map((copy): RepositorySourceDeliveryView => {
+      const confirmed =
+        copy.confirmedSourceVersion !== undefined &&
+        (copy.expectedSourceVersion === undefined ||
+          copy.confirmedSourceVersion === copy.expectedSourceVersion);
+      return {
+        revisionId: copy.revisionId,
+        state: copy.unreconciledWrite ? "unreconciled" : confirmed ? "confirmed" : "pending",
+        ...(copy.expectedSourceVersion === undefined
+          ? {}
+          : { committedSourceVersion: copy.expectedSourceVersion, committedAt: copy.expectedAt }),
+        ...(copy.confirmedSourceVersion === undefined
+          ? {}
+          : { confirmedSourceVersion: copy.confirmedSourceVersion, confirmedAt: copy.confirmedAt }),
+      };
+    });
+    if (source === undefined || ceiling === undefined) {
       return {
         kind: "credential_source",
         id: sourceId,
-        name: source.name,
-        state: source.state,
-        ceiling: [...ceiling],
-        effectiveRepositoryNetworkPolicy: effectiveRepositoryGrants(grants, [...limits, ceiling]),
+        ...(source === undefined ? {} : { name: source.name }),
+        state: "unavailable",
         deliveries,
       };
+    }
+    return {
+      kind: "credential_source",
+      id: sourceId,
+      name: source.name,
+      state: source.state,
+      ceiling: [...ceiling],
+      effectiveRepositoryNetworkPolicy: effectiveRepositoryGrants(grants, [...limits, ceiling]),
+      deliveries,
     };
   }
 

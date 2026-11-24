@@ -18,12 +18,15 @@ export interface RepositorySourceCopy {
 }
 
 /**
- * What the copy record (0093) holds about the Source writes of one revision's copy. The Worker
- * records `confirmedSourceVersion` when OpenShell accepts its conditional Provider write of that
- * version; the Sandbox's own application of it is not recorded.
+ * What the copy record holds about the delivery of a Source to one revision's copy. TokenService
+ * stamps `expectedSourceVersion` when a replacement commits while the copy is unretired (0094);
+ * the Worker records `confirmedSourceVersion` when the target Sandbox's supervisor activated the
+ * Provider credential it wrote for that version (0093).
  */
 export interface RepositorySourceDelivery {
   readonly revisionId: string;
+  readonly expectedSourceVersion?: string;
+  readonly expectedAt?: string;
   readonly confirmedSourceVersion?: string;
   readonly confirmedAt?: string;
   /** The Worker recorded a Provider write of the Source whose outcome is unknown. */
@@ -139,6 +142,15 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
    * before the deployment is queued. The Worker completes and retires it.
    */
   recordRepositorySourceCopy(copy: RepositorySourceCopy): Promise<void>;
+  /**
+   * Stamps every copy of the Source that the Worker has not confirmed retired with the version a
+   * replacement commits. Runs in the replacing transaction, under its lock on the Source row.
+   */
+  stampRepositorySourceCopies(
+    namespaceId: string,
+    credentialSourceId: string,
+    version: string,
+  ): Promise<void>;
   /**
    * The copies of the source that the Worker has not confirmed retired, oldest first, with the
    * reason the Worker's last attempt kept each one when it recorded one.

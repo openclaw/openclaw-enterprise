@@ -99,7 +99,7 @@ interface SandboxPolicyDependencies {
         readonly selectedGrants?: RepositoryNetworkPolicyCeiling;
       }
     | undefined;
-  /** The registry-selected Source as the caller may read it; completes outside the read. */
+  /** The registry-selected Source as the caller may read it, from platform state only. */
   readonly readRepositoryCredentialSource: (
     state: PlatformReadView,
     principalId: string,
@@ -107,7 +107,7 @@ interface SandboxPolicyDependencies {
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
     limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
-  ) => Promise<() => Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>>;
+  ) => Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
@@ -376,7 +376,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   ) {
     requireNetworkPolicyFacet(facet);
     await authorizePolicyRead(principalId, namespaceId, agentId);
-    const { repositoryCredential, ...view } = await read(async (state) => {
+    return read(async (state) => {
       await exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const policy = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -414,6 +414,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             )
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
+      const repositoryCredential = await repositoryCredentialView(
+        state,
+        principalId,
+        agent,
+        policy,
+        repositoryNetworkPolicyCeiling,
+      );
       return {
         policy,
         configuration: await policyConfigurationDescriptor(
@@ -441,18 +448,9 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
               defaultsRevisionId: revision.id,
               deployedPolicyVersion: revision.sandboxPolicy.version,
             }),
-        repositoryCredential: await repositoryCredentialView(
-          state,
-          principalId,
-          agent,
-          policy,
-          repositoryNetworkPolicyCeiling,
-        ),
+        ...(repositoryCredential === undefined ? {} : { repositoryCredential }),
       };
     });
-    return repositoryCredential === undefined
-      ? view
-      : { ...view, repositoryCredential: await repositoryCredential() };
   }
 
   /**
@@ -466,15 +464,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     agent: Readonly<Agent>,
     policy: Readonly<SandboxPolicy>,
     installationCeiling: RepositoryNetworkPolicyCeiling,
-  ): Promise<
-    (() => Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>) | undefined
-  > {
+  ): Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]> | undefined> {
     const selection = dependencies.repositoryCredentialSelection(agent);
     if (selection === undefined) {
       return undefined;
     }
     if (selection.credentialSource === undefined) {
-      return async () => ({ kind: "github_app" });
+      return { kind: "github_app" };
     }
     return dependencies.readRepositoryCredentialSource(
       state,
