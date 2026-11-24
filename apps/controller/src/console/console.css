@@ -3896,6 +3896,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     inline-size: min(100%, max(4.5rem, 5.5em));
   }
   .agent-table .agent-row-action {
+    scroll-margin-block: var(--space-2);
     gap: var(--space-1);
     min-block-size: 34px;
     block-size: auto;
