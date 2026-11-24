@@ -867,9 +867,12 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       async (c) =>
         (
           await c.query(
+            // The Provider is read back gone, so a write whose outcome was unknown can no
+            // longer take effect: an update of a missing Provider is refused.
             `UPDATE occ.repository_source_copies
              SET retired_at=clock_timestamp(),retirement_blocked=NULL,
-               retirement_attempted_at=clock_timestamp()
+               retirement_attempted_at=clock_timestamp(),
+               unknown_write_version=NULL,unknown_write_at=NULL
              WHERE revision_id=$1 AND retired_at IS NULL`,
             [revisionId],
           )

@@ -11,6 +11,18 @@ export interface MaterialWriteHold {
    * Never throws.
    */
   confirm(): Promise<boolean>;
+  /**
+   * Records durably, before dispatch, that a write of the held material may take effect: the
+   * record stays until the outcome is settled, so an uncertain write keeps the material's owner
+   * fenced after the hold ends. False (or a throw) means nothing may be sent.
+   */
+  dispatching?(): Promise<boolean>;
+  /**
+   * Settles the recorded write, before the hold is released: `applied` when the Gateway confirmed
+   * it, `unapplied` when it was proven not applied (never sent, or refused by its precondition).
+   * A write with any other outcome is never settled here. Never throws.
+   */
+  settled?(outcome: "applied" | "unapplied"): Promise<void>;
   /** Ends the hold. Idempotent; never throws. */
   release(): Promise<void>;
 }

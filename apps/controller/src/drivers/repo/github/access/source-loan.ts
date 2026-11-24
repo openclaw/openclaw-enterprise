@@ -58,6 +58,15 @@ export interface RepositorySourceCustody {
          * copies, so it cannot pass between this read and the Provider write.
          */
         readonly recorded: (revisionId: string) => Promise<boolean>;
+        /**
+         * The fence of a Provider write of `version` for the revision: `dispatching` records it
+         * on the copy as a write whose outcome is unknown, committed before dispatch; `settled`
+         * clears it once the outcome is known. Replacement and retirement refuse while it stands.
+         */
+        readonly write: (
+          revisionId: string,
+          version: string,
+        ) => Required<Pick<MaterialWriteHold, "dispatching" | "settled">>;
       }
     | undefined
   >;
@@ -236,6 +245,9 @@ export function createRepositorySourceMaterialReader<
       ) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
       }
+      // The loan's lifetime is anchored here, before the authority check, so no write of it,
+      // however late it lands, carries access past 15 minutes after that check.
+      const checkedAt = clock.now();
       if (!(await custody.operate(source.session, ref))) {
         throw new RepositorySourceLoanRefusal(sourceId, "operate_denied");
       }
@@ -271,7 +283,12 @@ export function createRepositorySourceMaterialReader<
         bytes.fill(0);
       }
       reported.delete(revisionKey(source));
-      return { resolved, hold: locked.hold };
+      // The Provider write records itself on the revision's copy before it is dispatched.
+      const hold: MaterialWriteHold = {
+        ...locked.hold,
+        ...locked.write(source.session.revisionId, resolved.version),
+      };
+      return { resolved, hold, checkedAt };
     } catch (error) {
       await locked.hold.release();
       throw error;
@@ -286,7 +303,7 @@ export function createRepositorySourceMaterialReader<
         refuse(error, source);
         return undefined;
       }
-      const window = Math.floor(clock.now() / loanWindowMs);
+      const window = Math.floor(checked.checkedAt / loanWindowMs);
       const current = identity(source, window, checked.resolved.version);
       let value: string | undefined = checked.resolved.credential;
       return withWriteHold(

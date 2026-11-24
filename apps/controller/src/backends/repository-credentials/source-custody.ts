@@ -179,7 +179,94 @@ export function createRepositorySourceCustody(options: {
           );
           return copies.rows.length === 1;
         };
-        return { source, hold, recorded };
+        // The fence of one Provider write of this Source's value for a revision (0093). Each
+        // statement commits on its own connection: the holding session commits only when the
+        // hold ends, and a record that died with it would not fence anything.
+        const fenced = async <T>(
+          work: (c: Pick<PostgresClient, "query">) => Promise<T>,
+        ): Promise<T> => {
+          const c = await lockPool.connect();
+          try {
+            await c.query("BEGIN");
+            await c.query(
+              `SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
+              [`${LOCK_TIMEOUT_MS}ms`, `${STATEMENT_TIMEOUT_MS}ms`],
+            );
+            const result = await work(c);
+            await c.query("COMMIT");
+            c.release();
+            return result;
+          } catch (error) {
+            await c.query("ROLLBACK").catch(() => {});
+            c.release(true);
+            throw error;
+          }
+        };
+        const write = (revisionId: string, version: string) => {
+          const copy = [revisionId, namespaceId, sourceId] as const;
+          const where = `revision_id = $1 AND namespace_id = $2 AND credential_source_id = $3
+            AND retired_at IS NULL`;
+          // Whether this write made the record: an earlier uncertain write's record is kept.
+          let made = false;
+          const fence: Required<Pick<MaterialWriteHold, "dispatching" | "settled">> = {
+            async dispatching() {
+              if (!hold.held()) {
+                return false;
+              }
+              return fenced(async (c) => {
+                const { rows } = await c.query(
+                  `SELECT unknown_write_version FROM occ.repository_source_copies
+                   WHERE ${where} FOR UPDATE`,
+                  [...copy],
+                );
+                if (rows.length !== 1) {
+                  return false;
+                }
+                made = (rows[0] as { unknown_write_version: string | null }).unknown_write_version === null;
+                if (made) {
+                  await c.query(
+                    `UPDATE occ.repository_source_copies
+                     SET unknown_write_version = $4, unknown_write_at = clock_timestamp()
+                     WHERE ${where}`,
+                    [...copy, version],
+                  );
+                }
+                return true;
+              });
+            },
+            async settled(outcome) {
+              try {
+                if (outcome === "applied") {
+                  // A confirmed conditional write also settles an earlier uncertain one: that was
+                  // conditional on an older Provider resource version, which never recurs.
+                  await fenced((c) =>
+                    c.query(
+                      `UPDATE occ.repository_source_copies
+                       SET confirmed_source_version = $4, confirmed_at = clock_timestamp(),
+                         unknown_write_version = NULL, unknown_write_at = NULL
+                       WHERE ${where}`,
+                      [...copy, version],
+                    ),
+                  );
+                } else if (made) {
+                  await fenced((c) =>
+                    c.query(
+                      `UPDATE occ.repository_source_copies
+                       SET unknown_write_version = NULL, unknown_write_at = NULL
+                       WHERE ${where} AND unknown_write_version = $4`,
+                      [...copy, version],
+                    ),
+                  );
+                }
+                made = false;
+              } catch {
+                // The record stays: the Source stays fenced until reconciliation settles it.
+              }
+            },
+          };
+          return fence;
+        };
+        return { source, hold, recorded, write };
       } catch (error) {
         if (!returned) {
           await client.query("ROLLBACK").catch(() => {});
