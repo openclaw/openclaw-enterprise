@@ -14,19 +14,28 @@ build and import commands. Local digests vary by build and platform; read them
 from the imported images instead of copying a sample digest.
 
 Prerequisites: Docker, k3d, and [yq v4](https://github.com/mikefarah/yq).
+Keep exclusive control of this trial and its Docker engine through cleanup.
 Create a disposable single-server cluster without changing your kubeconfig:
 
 ```bash
-export CLUSTER="occ-images-$(date +%s)"
-export OCC_EXAMPLE_DIRECTORY="$(mktemp -d)"
-k3d cluster create "$CLUSTER" --image +v1.35 --servers 1 --agents 0 \
+unset CLUSTER KUBECONFIG_FILE CONTEXT OCC_EXAMPLE_DIRECTORY cluster_candidate suffix &&
+OCC_EXAMPLE_DIRECTORY="$(mktemp -d)" &&
+suffix="$(od -An -N 8 -tx1 /dev/urandom)" &&
+suffix="${suffix//[[:space:]]/}" &&
+[[ "$suffix" =~ ^[0-9a-f]{16}$ ]] &&
+cluster_candidate="occ-images-$suffix" &&
+k3d cluster create "$cluster_candidate" --image +v1.35 --servers 1 --agents 0 \
   --api-port 127.0.0.1:random \
-  --kubeconfig-update-default=false --kubeconfig-switch-context=false
-k3d kubeconfig get "$CLUSTER" > "$OCC_EXAMPLE_DIRECTORY/kubeconfig"
-chmod 600 "$OCC_EXAMPLE_DIRECTORY/kubeconfig"
-export KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig"
-export CONTEXT="k3d-$CLUSTER"
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false &&
+k3d kubeconfig get "$cluster_candidate" > "$OCC_EXAMPLE_DIRECTORY/kubeconfig" &&
+chmod 600 "$OCC_EXAMPLE_DIRECTORY/kubeconfig" &&
+export CLUSTER="$cluster_candidate" &&
+export OCC_EXAMPLE_DIRECTORY KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig" CONTEXT="k3d-$CLUSTER"
 ```
+
+Stop if any setup step fails or its outcome is uncertain. Do not delete a cluster by
+the attempted name until you confirm this trial created it. Keep the attempted
+name in the private `cluster_candidate` shell variable until you resolve the failure.
 
 In the same Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments),
 then build and import the images:
@@ -80,7 +89,9 @@ Set the remaining database, HTTPS, network, and storage inputs for your trial
 CRDs, GatewayClass, service-key Secret, and matching Installation settings.
 The images alone do not configure
 those dependencies or prove an Agent model turn. When finished with the trial,
-run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
+confirm it still owns the named cluster on the same Docker engine. k3d deletes by
+name, so the kubeconfig cannot confirm ownership. Run
+`KUBECONFIG="${KUBECONFIG_FILE:?}" k3d cluster delete "${CLUSTER:?}"`.
 
 For an already installed, persistent Helm release on k3d, follow
 [local k3d image upgrades](local-k3d-image-upgrade.md) to preserve its state.

@@ -61,7 +61,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   }
   if (driver.capability === "token_service") {
     return [
-      "registerSource",
+      "createSource",
       "updateSource",
       "resolveCredential",
       "forceRefresh",

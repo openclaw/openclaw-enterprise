@@ -5,7 +5,6 @@ import { RUNTIME_STATUS_PATH } from "../../apps/controller/src/drivers/compute/k
 import {
   type AgentRevision,
   type ComputePendingReason,
-  type ComputeReadiness,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -14,6 +13,7 @@ import {
   nativeHarnessResource,
   nativeSandboxIdentity,
   type createDedicatedDeployKubernetesFixture,
+  type DedicatedDeployFixture,
 } from "./kubernetes-dedicated-deploy-fixture.ts";
 
 type Transport = ReturnType<typeof createDedicatedDeployKubernetesFixture>;
@@ -48,16 +48,7 @@ type CreateFixture = (options: {
   revision?: RevisionOverrides;
   sandboxDriver?: SandboxProvisioner;
   splitCluster?: true;
-}) => Transport & {
-  state: TransportState & { connected: boolean };
-  namespace: string;
-  gatewayNamespace: string;
-  gatewayName: string;
-  gateway: Transport;
-  agentName: string;
-  prepare: () => Promise<ComputeReadiness>;
-  markWorkloadsReady: () => void;
-};
+}) => DedicatedDeployFixture;
 
 function openClawRevision(mode: AgentRevision["harness"]["mode"]): RevisionOverrides {
   return {

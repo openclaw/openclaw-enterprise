@@ -21,7 +21,7 @@ import {
   routedRevision,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
-import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import {
   dedicatedRevision,
   namespaceContext,
@@ -80,14 +80,19 @@ function assertSerializedRevision(
   assert.deepEqual(value, expected, "Serialization must retain the admitted revision");
 }
 
+function managedSandboxInstallation() {
+  const installation = buildSandboxInstallation();
+  const configuration = installation.drivers.sandbox.configuration;
+  configuration.integrationMode = "service";
+  configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  return installation;
+}
+
 export function registerManagedOpenShellStartupCases(): void {
   test("managed preparation admits workspace nodes through Envoy without Sandbox network peers", async (t) => {
     for (const harnessId of ["codex", "openclaw"]) {
       await t.test(harnessId, async () => {
-        const configuration = sandboxInstallation().drivers.sandbox.configuration;
-        configuration.integrationMode = "service";
-        configuration.gateway = {};
-        configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+        const configuration = managedSandboxInstallation().drivers.sandbox.configuration;
         const client = workspaceGatewayClient();
         const sandbox = new ManagedOpenShellSandbox(configuration, {
           id: "openshell-sandbox",
@@ -170,11 +175,7 @@ export function registerManagedOpenShellStartupCases(): void {
   });
 
   test("startup selects managed OpenShell through integrationMode alone and preserves storage ownership", async (t) => {
-    const configuration = sandboxInstallation();
-    configuration.drivers.sandbox.configuration.integrationMode = "service";
-    configuration.drivers.sandbox.configuration.gateway = {};
-    configuration.drivers.sandbox.configuration.kubernetes.sandboxDataMount.mountPath =
-      "/sandbox/oce/workspace";
+    const configuration = managedSandboxInstallation();
     const composed = await loadInstallationFile(t, configuration);
     assert.ok(composed && composed.computeDriver instanceof KubernetesComputeDriver);
     assert.equal(composed.installation.drivers.compute.id, "compute-kubernetes");
@@ -369,10 +370,8 @@ export function registerManagedOpenShellStartupCases(): void {
   test("Kubernetes final Agent cleanup deletes managed Sandbox state before shared resources and refuses foreign ownership", async (t) => {
     for (const foreign of [false, true]) {
       await t.test(foreign ? "foreign Sandbox" : "owned Sandbox and retry", async () => {
-        const configuration = sandboxInstallation();
+        const configuration = managedSandboxInstallation();
         const sandboxOptions = configuration.drivers.sandbox.configuration;
-        sandboxOptions.integrationMode = "service";
-        sandboxOptions.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
         const initialContext = namespaceContext();
         const context = {
           ...initialContext,

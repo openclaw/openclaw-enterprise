@@ -6,7 +6,7 @@ import type {
   StaticMaterialEvidence,
 } from "../../packages/contracts/src/index.ts";
 import type { SendAttempt } from "../../packages/occ/src/egress-send-receipts.ts";
-import type { PlatformStateStore } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { isRecord, parseJson } from "../helpers/egress-observation-values.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";

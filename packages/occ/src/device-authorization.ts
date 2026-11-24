@@ -2,6 +2,12 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:
 
 import { ResourceStateConflictError } from "./errors.ts";
 
+export type DeviceAuthenticationState = DeviceAuthorizationSession & {
+  readonly kind: "device_authorization";
+  readonly id: string;
+  readonly version: number;
+};
+
 /** OCC stores the user challenge and provider handle as separate ciphertexts. */
 export interface DeviceAuthorizationSession {
   readonly actorId: string;

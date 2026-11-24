@@ -1,7 +1,7 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-24 11:24"
-last_updated_session: "authoring-run/b6bdb7b2-6bd6-4074-9551-f936deb0ad23"
+updated: "2026-11-24 11:55"
+last_updated_session: "authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2"
 ---
 
 # Agent HTTP chat flow
@@ -17,7 +17,7 @@ effects. OCC can deliver queued audit records after the relay closes.
 ## Entry Points
 
 - Source: `apps/controller/src/index.ts:perform`
-- Source: `packages/occ/src/index.ts:resolveAgentChat`
+- Source: `packages/occ/src/agent-queries.ts:resolveAgentChat`
 - Source: `apps/controller/src/http/agent-chat.ts:relayAgentChat`
 - Assumptions: selected IAM and Compute Drivers, an authenticated session or
   service key, exact-Agent `operate`, and an enabled private runtime route.
@@ -73,7 +73,7 @@ If the write fails, OCC logs the error and continues these checks.
 session/CSRF or service-key verifier and selected IAM Driver. With Control
 Plane audit on, `requireRequestAuditAdmission` queues
 `openclaw.api.request.admitted` before the handler runs.
-The HTTP route has no Namespace input. `packages/occ/src/index.ts:resolveAgentChat` finds stored
+The HTTP route has no Namespace input. `packages/occ/src/agent-queries.ts:resolveAgentChat` finds stored
 ownership once per check, enforces a service key's Namespace scope and authorizes `operate`.
 Denial audit uses the error's authoritative resource; the route does not copy
 stored ownership into request parameters.
@@ -81,7 +81,7 @@ A caller with only `read` gets `403`; a hidden or absent Agent gets `404`.
 
 ### 2. Select the running revision and private route
 
-`packages/occ/src/index.ts:resolveAgentChat` checks capability absence before
+`packages/occ/src/agent-queries.ts:resolveAgentChat` checks capability absence before
 lifecycle availability, then checks the saved Compute owner before invoking the
 Driver. It returns the selected revision with the endpoint result.
 
@@ -169,6 +169,8 @@ repeats a chat request to recover an audit record.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 11:55: Update the source for HTTP permission checks. (authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2 - bf3d0ed3a444c0c70768c713d66efee717152b7a)
 
 - 2026-11-24 11:24: Trace HTTP chat records from the API volume to PostgreSQL after an outage. (authoring-run/b6bdb7b2-6bd6-4074-9551-f936deb0ad23 - 24f84269c9fa2ae3dc49461b071931b1b27a27fa)
 

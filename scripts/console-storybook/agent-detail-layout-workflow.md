@@ -3,6 +3,38 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
+then press End and Left to focus the tab before last. Narrow the window to
+920 px, then 390 px. Confirm the label and focus ring stay clear of both faded
+edges and the selected panel stays open.
+
+Open **Pages / Agent detail / Plugin selections, viewer cannot update the Agent**
+and **Plugins in admitted version**. Select **Plugins** in each story. At
+390 px and 920 px, check that the entire long plugin ID and the indented JSON fit
+inside the card without horizontal scrolling. Focus **Plugins** and press Tab to
+reach the JSON. At desktop width, check that the long ID fits on one line.
+
+At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
+edit. Scroll until **Save Configuration** is near the middle of the window and
+**Danger zone** is out of view below it. Save and check that **Edit Configuration**
+has focus in view and **Danger zone** stays below the window. The signed-in test
+in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
+
+Reopen **Edit Configuration**. In **Configuration JSON**, select a few characters
+with Shift+Left. Switch browser tabs and return. After the access check, press
+Shift+Left again. The selection should extend one more character to the left.
+
+At desktop and 390-pixel widths, open **Pages / Agent detail / Channels access
+could not be checked on tab return** in its own preview tab. Open **Edit Slack**
+with the keyboard, then choose **Cancel** and confirm focus returns to **Edit
+Slack**. Switch to another browser tab and return. The fixture returns one
+HTTP 503 for the Agent permission check. Confirm **Channels** stays selected
+and receives focus. Read the access-check message on the Channels panel and
+check that the Slack card and **Deploy new version** describe why their actions
+are unavailable. Choose **Refresh** in the page header and check that **Edit
+Slack** is available again and the access-check message clears. Reload the
+preview to repeat.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,
@@ -108,10 +140,15 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    **Open draft** and **Browser chat settings**. In **Browser chat off,
    read-only caller**, it asks you to ask someone who can edit the
    Configuration and offers no settings link.
-5. Open **Components / Workspace / Keep unsaved files**. Choose Instructions and
-   User context. Each keeps its edits and Unsaved indicator. Read every file's
-   role description. Save one file, then Reload another; each action affects
-   that file alone. Return through another Agent tab and check selection survives.
+5. Open **Components / Workspace / Workspace Navigation** (Keep unsaved files).
+   Clear User context.
+   Switch files and check their role descriptions and Unsaved indicators.
+   Check that selection survives switching Agent tabs. Select Instructions,
+   open Namespaces and go Back. The draft survives and warns that AGENTS.md
+   changed. Enter `Previous guidance` and repeat that round trip. The warning
+   stays visible and Save stays enabled. Enter `Updated guidance` to match
+   the simulated file. The warning clears and Save is disabled. Edit and save
+   AGENTS.md, then reload USER.md. Each action affects only its file.
 6. Repeat file selection on a phone using **Workspace file**. Check the editor
    fits the screen. Check Missing file, Save needs Agent operate, Write outcome
    unknown, and Reread keeps a focused editor's caret. A deployment poll must
@@ -120,10 +157,17 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    missing file shows **Missing** in the tabs and phone picker. The browser
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
+   Check **Components / Workspace / Gateway unreachable**: one notice above the
+   files names the four files, each file shows the reason under its editor, and
+   no file shows **Needs attention**. Choose **Retry**; the notice goes and the
+   four files load.
 7. Open **Pages / Agent detail / New version in progress, then current**. Follow
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during
    that reread: busy feedback is immediate and only one user refresh follows.
+   Reset again. Tab to **v7** under **Latest visible deployment** before
+   completion. When the badge reads **Completed**, check that focus stays visible.
+   Press Enter to open **Deployment** for v7.
 
 8. In **New version queued**, fold **Deployment details**, then Tab to **Run
    diagnostics for this version**. Routine polls keep the fold and the visible
@@ -183,6 +227,13 @@ answers are not IAM enforcement; saved feedback is not backend persistence proof
 Open **Pages / Agent detail / Danger zone on Configuration** on desktop and phone.
 Switch from Workspace files to Configuration to see stop status and deletion controls.
 Switch back to verify the entire card disappears.
+
+Open **Components / Deletion / Status unavailable after deletion request** on
+desktop and at 390 px. Wait for the status check to return you to **Agents** in
+the same Namespace. Check that an information notice above the list says deletion
+was requested and cleanup could not be confirmed. The row still shows **Deleting**.
+Open **Namespaces**, then return to **Agents** and check that the notice has cleared.
+Use **Reset story** to repeat the simulated status response.
 
 11. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
     selected version and its latest readable deployment failed. Check that **Stop

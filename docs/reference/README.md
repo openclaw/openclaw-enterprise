@@ -29,7 +29,8 @@ requests and explains the responses. Use the [interactive API reference](api-exp
 to inspect paths, schemas, permissions, error codes, and examples. The
 [Markdown reference](api.md) provides a text-only view for browsing and site search.
 Both use the generated [OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).
-Follow [create and deploy an Agent](../guides/http-api-agent.md) for the complete workflow.
+Follow [create and deploy an Agent](../guides/http-api-agent.md) for the complete workflow. Use the
+[Agent automation API](agent-automations.md) to manage native cron jobs.
 
 ## Metrics
 

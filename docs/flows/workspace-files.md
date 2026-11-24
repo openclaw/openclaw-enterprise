@@ -1,22 +1,21 @@
 ---
 created: 2026-08-31
-updated: 2026-11-11
-last_updated_session: authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19
+updated: 2026-11-23
+last_updated_session: authoring-run/49bec6dd-1c1d-4c16-932a-ea8c0ccfdae0
 ---
 
 # Agent Workspace Files Flow
 
 ## Overview
 
-OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. Compute prepares storage; the execution provider
-initializes it before activation.
+OCC stages authenticated files privately: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`,
+and `USER.md`. Compute prepares storage. The execution provider initializes it
+before activation.
 
-File operations authorize the exact active Agent through its Compute-resolved
-private Envoy endpoint.
+File operations authorize the exact active Agent through its
+private Compute-resolved Envoy endpoint.
 
-See [Harness workspace initialization](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
-for dedicated Codex and OpenClaw.
+See [dedicated Codex and OpenClaw workspace initialization](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
 See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
@@ -25,11 +24,11 @@ See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for
 - `apps/controller/src/index.ts:createFastifyApp` accepts initial contents through
   `POST /namespaces/:namespaceId/agents` and handles live `GET` and
   `PUT /namespaces/:namespaceId/agents/:agentId/workspace/files/:name`.
-- `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
-  setup state; `deployAgentWithAuthorization` rechecks it, completed too, before
-  each revision.
+- `packages/occ/src/agent-drafts.ts:createAgent` authorizes and saves private setup.
+  `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` rechecks even completed
+  setup before each revision.
 
-Live access requires the Agent's private HTTPRoute and native gateway. Configure
+Live access requires a private HTTPRoute and native gateway. Configure
 Envoy Gateway, trust, and network restrictions through
 [deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); the
 [routing contract](../reference/gateway-routing.md) covers credentials, hostnames,
@@ -78,14 +77,11 @@ rejects unknown names, invalid Unicode, NUL, and values above 16 KiB UTF-8.
 An absent or empty map follows ordinary startup without setup state; see
 the [create body limit](../reference/agents.md#initial-contents-at-creation).
 
-`packages/occ/src/index.ts:createAgent` checks Namespace-scoped Agent creation,
-exact Configuration read, and existing binding permissions. Its transaction
-creates a stopped Agent and, when keys were supplied, a private `workspaceSetups`
-record keyed by exact Namespace/Agent. No AgentRevision is created. Inputs do
+`packages/occ/src/agent-drafts.ts:createAgent` checks Namespace Agent create, exact Configuration read, and binding permissions. One transaction creates the stopped Agent and a private `workspaceSetups` record for supplied keys, keyed by Namespace and Agent. Deployment creates the first Agent revision. Inputs do
 not enter the Agent, Configuration, Agent revision snapshot, public response, or
 metadata-only create audit. API strings are preserved; Console textareas use LF newlines.
 
-`packages/occ/src/index.ts:updateAgent` keeps an omitted Configuration ID.
+`packages/occ/src/agent-drafts.ts:updateAgent` keeps an omitted Configuration ID.
 Completed setup is rechecked when the resolved Configuration ID or execution
 mode changes. Saving Gateway managed mode alone keeps both. Pending setup is
 checked on each update.
@@ -149,7 +145,7 @@ completion metadata. Drivers remove or replace private delivery bytes with
 metadata.
 
 Failed or never-deployed Agents retain pending inputs. Agent deletion removes
-the setup record through `packages/occ/src/index.ts:deleteAgent`; Driver
+the setup record through `packages/occ/src/agent-termination.ts:deleteAgent`; Driver
 cleanup owns runtime storage. No public endpoint reads or updates setup, and
 live edits after activation do not update it.
 
@@ -171,10 +167,10 @@ without endpoint support cannot serve workspace files.
 ### 5. OCC admits one exact-Agent file operation
 
 `apps/controller/src/index.ts:createFastifyApp` requires a valid user
-session or scoped service API key. Native Agent credentials cannot invoke this
-administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
-and, for session callers, passes the browser CSRF boundary. OCC resolves the
-selected AgentRevision before Compute endpoint resolution. After that grant, an
+session or scoped service API key. Native Agent credentials are rejected.
+`GET` requires Agent `read` and `PUT` requires `operate`.
+Both session requests undergo [browser checks](../reference/agents/workspace-files.md#live-file-access).
+OCC resolves the selected AgentRevision before Compute endpoint resolution. After that grant, an
 Agent with no running version (stopped, never deployed, or still activating)
 gets `409 RESOURCE_CONFLICT` naming the Agent and the next step.
 
@@ -251,23 +247,27 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   stripped; specifically, `thinkingLevels` would trigger native fallback.
   [Capabilities](../reference/harness-execution.md#native-runtime-selection)
   are authored, not inferred.
-- At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
-  valuing, replaced or dropped settings. `occ agent logs` exposes names; the
-  Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).
+- In `occ agent logs`, `runtime.gateway_settings_overridden` lists setting names only.
+  The [Collector](common-logging.md#7-collector-exports-only-operational-classes) omits those names.
   Admission rejects non-list `codexDynamicToolsExclude` and non-object Codex plugin
   `config`, `cron`, `cron.triggers`, `models`, `models.providers`, or components of
   `agents.defaults.compaction.memoryFlush`. It returns `400 INVALID_REQUEST`
   naming the path without creating a revision. OCC's earlier model check returns
   the same error for non-object provider rows or `models` that are not Agent-model
   catalog lists.
-- Default reads cover the enrolled Agent's Harness workspace and managed skill
-  roots for previews, browsing, bootstrap and outputs. Symlinks are not followed;
-  explicit policies remain authoritative.
-- `runtime-entrypoints.ts:configureWorkspaceNodePlugins` defaults writes to
-  owner documents, memory, `skills/**`, the two ClawHub lockfiles,
-  `.openclaw/skill-installs/**`, and staged inbound files. It leaves explicit
-  node and wildcard policies unchanged. `file.create` preserves existing files.
-  Reads above 16 MiB retain caller and node limits; command admission does not replace path authorization.
+- `runtime-entrypoints.ts:configureWorkspaceNodePlugins` grants default reads of
+  the Harness workspace and managed skill roots. Symlinks are not followed.
+  Default writes cover owner documents, memory, `skills/**`, both ClawHub lockfiles,
+  `.openclaw/skill-installs/**` and staged inbound files. `file.create` preserves existing files.
+  Admitted commands require path authorization. Reads above 16 MiB retain caller and node limits.
+
+**Bounded replies on paired nodes.** Even a `boundedReplies`-only
+`plugins.entries["file-transfer"].config.nodes[deviceId]` entry suppresses generated
+grants and shadows display-name and wildcard (`*`) policies, including denies.
+Generated grants have no supported opt-in. In a complete saved device-ID policy,
+change only `boundedReplies` to `true`. [Save all Configuration `values`](../reference/configuration.md#create-read-update-and-delete)
+with the generation you read as `expectedGeneration`. After deployment, match the
+active revision's `configurationId` and `configurationGeneration` to the save response.
 
 The chart supplies worker credentials/public trust; Compute installs Envoy access.
 Memory uses node duplex and native file workers; index/embedding configuration
@@ -345,22 +345,18 @@ replays it. Cleanup closes the native client.
 - Check revision/work status, Driver support, native release/defaults
   identity and durable workspace placement. Missing initialized storage needs
   operator recovery, not creation payload replay or completion-marker deletion.
-- A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
-  reload the Console create form and resubmit. Creation
-  does not prove runtime initialization; verify the selected version and live content.
+- For stale `workspaceDefaultsId` (`409 RESOURCE_CONFLICT`), reload and resubmit
+  the Console form. Verify the active revision and live content after deployment.
 - First use, retry, and redeploy require
   [real-workflow proof](../../specs/plans/34-agent-workspace-files-setup.md#verification).
-- For `503 DEPENDENCY_UNAVAILABLE`, check the Compute routing settings and key
-  mount, then the Gateway, Certificate, SecurityPolicy, and HTTPRoute status.
-  Check DNS/CA trust and exact NetworkPolicy peers before changing native auth.
-- `403 FORBIDDEN` can indicate missing exact-Agent IAM or session PUT CSRF
-  rejection. Granting a native service scope does not change human IAM.
-- An authenticated native upgrade failure can indicate missing trusted-proxy
-  configuration, a simultaneous token, a loopback real IP, or absent native
-  identity scopes. Do not fix it by inventing a forwarded address.
-- [Testing](../testing/README.md) distinguishes fixture and runtime proof: a
-  calculated URL, ready proxy or rendered chart does not prove file writes or
-  model use.
+- For `503 DEPENDENCY_UNAVAILABLE`, check Compute routing and key mount, then Gateway,
+  Certificate, SecurityPolicy, HTTPRoute, DNS, CA trust and exact NetworkPolicy peers
+  before changing native auth.
+- For `403 FORBIDDEN`, check Agent IAM and session headers. Native scopes cannot
+  grant human IAM permissions.
+- For authenticated native upgrade failures, check trusted proxies, simultaneous tokens,
+  loopback real IP and native identity scopes. Never fabricate forwarded addresses.
+- Confirm writes and model use with [runtime checks](../testing/README.md).
 
 ## Related docs
 
@@ -375,6 +371,11 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 00:59: Clarify browser checks. (authoring-run/49bec6dd-1c1d-4c16-932a-ea8c0ccfdae0 - fc352442c5ac75f023ec877deeb93636e238dd33)
+- 2026-11-22 09:27: Explain bounded reply policy selection. (authoring-run/50df6805-135e-42e6-a549-2a24c9b17fb8 - 1a8d9d9f46da702b830d50cc53215317d602ab4c)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
 

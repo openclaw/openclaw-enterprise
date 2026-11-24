@@ -128,8 +128,9 @@ while it started. See [Agent logs](../topics/agent-logs.md).
 The Console cannot roll back or deploy an old version again. See
 [Agent revisions](../topics/agent-revisions.md) for the lifecycle.
 
-Select **Open draft** to open the current saved settings. Edit and save
-Configuration, plugin selections, channel settings, or credentials.
+Select **Open draft** to open the current saved settings. If you can read the Configuration,
+select **Draft credentials** or **Draft repositories** in the snapshot to open that tab.
+Edit and save Configuration, plugin selections, channel settings, or credentials.
 **Prepare this version**, above the tabs, checks off saved settings and
 credentials and holds **Deploy new version** with its status. A model credential
 the last deployment rejected keeps the credentials step open: deploying again
@@ -226,7 +227,9 @@ administrators [share Agents](agent-sharing.md) from the **Access** tab.
 **Stop Agent**, in the **Danger zone** card at the end of the **Configuration** tab, opens a confirmation explaining that shutdown interrupts running
 work but preserves version history, credentials, gateway state, and workspace
 files. A chat that was mid-reply can keep showing the reply as in progress;
-reload it after the Agent is deployed again. **Cancel** closes it without a
+reload it after the Agent is deployed again. If the reply is missing,
+[check for resumed work and completed actions](../../reference/agents/interrupted-turns.md)
+before repeating the task. **Cancel** closes the confirmation without a
 write. Confirming requires `operate` permission on this Agent, regardless of the
 viewed version or tab.
 
@@ -252,7 +255,8 @@ model credential Secret: both are kept even when Create Agent made them.
 Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
 once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
 `delete` permission is required. After deletion starts, cleanup status replaces the tabs.
-The page checks it every few seconds and returns to Agents once the Agent is gone.
+The page checks it every few seconds. If that check cannot find the Agent, the Console
+returns to Agents and says cleanup is unconfirmed.
 **Refresh deletion status** checks it immediately. **Request deletion again**
 opens a new confirmation for an already deleting Agent. Use it after fixing a
 cleanup failure that exhausted its retries; cleanup still queued or running

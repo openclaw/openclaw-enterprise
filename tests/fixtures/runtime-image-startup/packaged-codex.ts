@@ -3,10 +3,12 @@ import type { codexRpc, list, parseJson, record, text } from "./wire.ts";
 export async function probePackagedCodex(
   {
     historicalCodex,
+    expectBundledRepositoryRestSkill,
     stagingCodexVersion,
     deadlineMs,
   }: {
     historicalCodex: boolean;
+    expectBundledRepositoryRestSkill: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
   },
@@ -94,6 +96,8 @@ export async function probePackagedCodex(
             "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
           "openclaw-planned-completion.patch":
             "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+          "openclaw-http-chat-input.patch":
+            "bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8",
           "openclaw-node-setup-renewal.patch":
             "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
         }),
@@ -216,7 +220,7 @@ export async function probePackagedCodex(
 
   // Install two real local bundles without credentials or model calls. Feature
   // enablement stays on, so only OCE's plugin policy can exclude their skills.
-  const { mkdirSync, mkdtempSync, writeFileSync } = process.getBuiltinModule("node:fs");
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = process.getBuiltinModule("node:fs");
   const { tmpdir } = process.getBuiltinModule("node:os");
   const { createInterface } = process.getBuiltinModule("node:readline");
   const { spawn } = process.getBuiltinModule("node:child_process");
@@ -254,7 +258,7 @@ export async function probePackagedCodex(
   );
   const native = spawn(platformBinary, ["app-server", "--listen", "stdio://"], {
     cwd: workspace,
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, HOME: root, CODEX_HOME: codexHome },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = createInterface({ input: native.stdout });
@@ -274,12 +278,30 @@ export async function probePackagedCodex(
     fail(new Error("Native plugin proof timed out: " + stderr));
     native.kill("SIGKILL");
   }, deadlineMs);
+  async function listSkills() {
+    const catalog = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
+    return asList(catalog.data)
+      .flatMap((entry) => asList(read(entry).skills))
+      .map(read);
+  }
+
   try {
     await rpc("initialize", {
       clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" },
       capabilities: { experimentalApi: true },
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    if (expectBundledRepositoryRestSkill) {
+      const name = "github-repository-rest";
+      const path = resolve("/etc/codex/skills", name, "SKILL.md");
+      assert.ok(typeof process.getuid === "function" && process.getuid() !== 0);
+      const matches = (await listSkills()).filter((skill) => skill.name === name);
+      assert.equal(matches.length, 1, "Codex should discover the bundled skill in a fresh home.");
+      const [skill] = matches;
+      assert.ok(skill?.enabled === true);
+      assert.equal(skill.scope, "admin");
+      assert.equal(realpathSync(asText(skill.path)), realpathSync(path));
+    }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.
     if (!historicalCodex) {
@@ -325,10 +347,7 @@ export async function probePackagedCodex(
           .sort((a, b) => a.name.localeCompare(b.name)),
         names.map((name) => ({ name, installed: true, enabled: enabledNames.includes(name) })),
       );
-      const skills = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
-      const fixtureSkills = asList(skills.data)
-        .flatMap((entry) => asList(read(entry).skills))
-        .map(read)
+      const fixtureSkills = (await listSkills())
         .filter((skill) => names.some((name) => asText(skill.name).startsWith(name + ":")))
         .map(({ name, pluginId }) => ({ name: asText(name), pluginId }));
       assert.deepEqual(
@@ -338,9 +357,10 @@ export async function probePackagedCodex(
     }
     process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
-    clearTimeout(deadline);
     lines.close();
     native.kill("SIGTERM");
     await closed;
+    clearTimeout(deadline);
+    rmSync(root, { recursive: true, force: true });
   }
 }

@@ -10,10 +10,8 @@ import type {
   Secret,
 } from "@openclaw-enterprise/contracts";
 import type { RepositorySessionRepository } from "../../packages/occ/src/ports/repository-sessions.ts";
-import type {
-  ConfigurationOwnership,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { ConfigurationOwnership } from "../../packages/occ/src/ports/configurations.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { verifyRepositorySessionCases } from "./repository-session-state-cases.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.ts";
 

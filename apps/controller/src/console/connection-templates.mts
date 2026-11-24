@@ -4,10 +4,13 @@ import type {
   McpAuthorizationMetadata,
   Namespace,
   OAuthClient,
+  StaticKeyDestination,
 } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
   openOAuthClientRegistration,
+  isOAuthTemplate,
+  type OAuthTemplate,
   advertisedClientMethods,
   availabilityLabel,
   availableInNamespace,
@@ -31,13 +34,26 @@ export async function connectionTemplates(context: Context) {
   })) as ConnectionTemplate[];
 }
 
-function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () => void) {
+function destinationEditor(
+  initial: readonly (ConnectionEndpoint | StaticKeyDestination)[],
+  onEdit: () => void,
+  includeMethod = false,
+) {
   const body = element("tbody");
   const panel = element("details", { className: "connection-destinations" });
   const summary = element("summary");
   const rows = new Map<HTMLTableRowElement, ReturnType<typeof inputs>>();
-  function inputs(value?: ConnectionEndpoint) {
+  function inputs(value?: ConnectionEndpoint | StaticKeyDestination) {
     return {
+      ...(includeMethod && {
+        method: element("input", {
+          "aria-label": "Method",
+          required: true,
+          maxLength: 16,
+          value: value && "method" in value ? value.method : "GET",
+          spellcheck: false,
+        }),
+      }),
       host: element("input", {
         "aria-label": "Host",
         required: true,
@@ -112,14 +128,19 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
   );
   const table = element(
     "table",
-    { className: "connection-destination-table", "aria-label": "HTTPS destinations" },
+    {
+      className: `connection-destination-table${includeMethod ? " connection-destination-table--static" : ""}`,
+      "aria-label": includeMethod ? "HTTP destinations" : "HTTPS destinations",
+    },
     element(
       "thead",
       {},
       element(
         "tr",
         {},
-        ...["Host", "Port", "Path", ""].map((label) => element("th", { scope: "col" }, label)),
+        ...[...(includeMethod ? ["Method"] : []), "Host", "Port", "Path", ""].map((label) =>
+          element("th", { scope: "col" }, label),
+        ),
       ),
     ),
     body,
@@ -127,14 +148,30 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
   panel.append(summary, element("div", { className: "connection-destination-scroll" }, table), add);
   return {
     element: panel,
-    controls: () => Array.from(rows.values()).flatMap(({ host, port, path }) => [host, port, path]),
+    controls: () =>
+      Array.from(rows.values()).flatMap(({ method, host, port, path }) =>
+        method ? [method, host, port, path] : [host, port, path],
+      ),
     values: () =>
-      Array.from(rows.values(), ({ host, port, path }) => ({
+      Array.from(rows.values(), ({ method, host, port, path }) => ({
+        ...(method && { method: method.value.trim() }),
         host: host.value.trim(),
         port: Number(port.value),
         path: path.value.trim(),
       })),
   };
+}
+
+function destinationKeys(rows: readonly StaticKeyDestination[]) {
+  return JSON.stringify(
+    [
+      ...new Set(
+        rows.map(({ method, host, port, path }) =>
+          JSON.stringify([method, host.toLowerCase(), port, path]),
+        ),
+      ),
+    ].sort(),
+  );
 }
 
 const installationWide = "installation-wide";
@@ -175,7 +212,7 @@ export function renderConnectionTemplates(
     "Connection templates",
     create,
     "Template",
-    ["Availability", "OAuth client", "Version"],
+    ["Availability", "Authentication", "Details", "Version"],
   );
   section.classList.add("connection-template-catalog");
   let clients: OAuthClient[] = [];
@@ -200,7 +237,8 @@ export function renderConnectionTemplates(
       showRows(
         savedTemplates.map((template) => {
           const scope = availabilityLabel(template, namespaces);
-          const registrationId = template.current.oauthClientId;
+          const oauth = isOAuthTemplate(template);
+          const registrationId = oauth ? template.current.oauthClientId : undefined;
           let clientName: string | undefined;
           if (registrationId !== undefined) {
             if (clientNames === undefined) {
@@ -218,7 +256,10 @@ export function renderConnectionTemplates(
             name: template.displayName,
             details: [
               scope,
-              clientName ?? "No OAuth client assigned",
+              oauth ? "OAuth" : "Static Bearer",
+              oauth
+                ? (clientName ?? "No OAuth client assigned")
+                : `${template.current.destinations.length} ${template.current.destinations.length === 1 ? "destination" : "destinations"}`,
               String(template.current.version),
             ],
             actions: [
@@ -272,7 +313,7 @@ export function renderConnectionTemplates(
               return;
             }
             const latest = savedTemplates.find((t) => t.id === saved.id);
-            if (latest && context.isCurrent() && section.isConnected) {
+            if (latest && isOAuthTemplate(latest) && context.isCurrent() && section.isConnected) {
               edit(latest);
             }
           },
@@ -292,13 +333,15 @@ export function openConnectionTemplateEditor(
     currentNamespace: string | null;
     clients: readonly OAuthClient[];
     template?: ConnectionTemplate | undefined;
+    oauthOnly?: boolean;
     onSaved: (saved: ConnectionTemplate) => void;
     onUnconfirmed: () => void;
-    onRegister?: (saved: ConnectionTemplate) => void;
+    onRegister?: (saved: OAuthTemplate) => void;
   },
 ) {
   const { parent, namespaces, currentNamespace, clients, template } = options;
   const version = template?.current;
+  const oauthVersion = version?.mode === "static_bearer" ? undefined : version;
   const dialog = element("dialog", {
     className: "dialog dialog--framed connection-template-dialog",
     "aria-label": template ? "Edit connection template" : "Create connection template",
@@ -309,33 +352,46 @@ export function openConnectionTemplateEditor(
     value: template?.displayName ?? "",
   });
   const scope = availabilitySelect(namespaces, currentNamespace, template);
+  const authentication = element(
+    "select",
+    { id: "connection-template-authentication", disabled: !!template },
+    option("oauth", "OAuth"),
+    ...(!options.oauthOnly ? [option("static_bearer", "Static Bearer")] : []),
+  );
+  authentication.value = version?.mode === "static_bearer" ? "static_bearer" : "oauth";
   const mode = element(
     "select",
     { id: "connection-template-mode" },
     option("manual", "Enter OAuth details manually"),
     option("mcp_discovery", "Discover from an MCP server URL"),
   );
-  mode.value = version?.mode ?? "manual";
+  mode.value = oauthVersion?.mode ?? "manual";
   const issuer = element("input", {
     type: "url",
     required: true,
-    value: version?.issuer ?? "",
+    value: oauthVersion?.issuer ?? "",
   });
   const authorizationUrl = element("input", {
     type: "url",
     required: true,
-    value: version?.authorizationUrl ?? "",
+    value: oauthVersion?.authorizationUrl ?? "",
   });
   const tokenUrl = element("input", {
     type: "url",
     required: true,
-    value: version?.tokenUrl ?? "",
+    value: oauthVersion?.tokenUrl ?? "",
   });
   const revocationUrl = element("input", {
     type: "url",
-    value: version?.revocationUrl ?? "",
+    value: oauthVersion?.revocationUrl ?? "",
   });
-  const destinations = destinationEditor(version?.destinations ?? [], markEdited);
+  const destinations = destinationEditor(oauthVersion?.destinations ?? [], markEdited);
+  const staticDestinations = destinationEditor(
+    version?.mode === "static_bearer" ? version.destinations : [],
+    markEdited,
+    true,
+  );
+  staticDestinations.element.open = true;
   const manual = element(
     "fieldset",
     { className: "connection-template-fields" },
@@ -345,7 +401,7 @@ export function openConnectionTemplateEditor(
     field({ label: "Token URL", control: tokenUrl }),
     field({ label: "Revocation URL (optional)", control: revocationUrl }),
     destinations.element,
-    version?.mode === "manual"
+    oauthVersion?.mode === "manual"
       ? element(
           "p",
           { className: "hint" },
@@ -357,7 +413,7 @@ export function openConnectionTemplateEditor(
     id: "connection-template-server",
     type: "url",
     required: true,
-    value: version?.mcp?.serverUrl ?? "",
+    value: oauthVersion?.mcp?.serverUrl ?? "",
   });
   const authority = element("select");
   const authorityField = field({ label: "Authorization server", control: authority });
@@ -378,9 +434,9 @@ export function openConnectionTemplateEditor(
     option("unrestricted", "No template limit"),
     option("restricted", "Limit to approved scopes"),
   );
-  scopeLimit.value = version?.scopes.length ? "restricted" : "unrestricted";
+  scopeLimit.value = oauthVersion?.scopes.length ? "restricted" : "unrestricted";
   const scopes = element("textarea", { rows: 2, "data-trim": "" });
-  scopes.value = version?.scopes.join("\n") ?? "";
+  scopes.value = oauthVersion?.scopes.join("\n") ?? "";
   const approvedScopes = field({
     label: "Approved OAuth scopes",
     control: scopes,
@@ -399,7 +455,7 @@ export function openConnectionTemplateEditor(
       .map(([key, value]) => `${key}=${value}`)
       .join("\n");
   }
-  parameters.value = formatParameters(version?.authorizationParameters ?? {});
+  parameters.value = formatParameters(oauthVersion?.authorizationParameters ?? {});
   const client = element("select");
   const status = element("p", { className: "hint", role: "status" });
   let edited = false;
@@ -407,7 +463,7 @@ export function openConnectionTemplateEditor(
     ? button(
         template ? "Register a new OAuth client" : "Create template and register OAuth client",
         () => {
-          if (template && !edited) {
+          if (template && isOAuthTemplate(template) && !edited) {
             dialog.close();
             options.onRegister?.(template);
           } else {
@@ -417,15 +473,19 @@ export function openConnectionTemplateEditor(
         { size: "sm" },
       )
     : undefined;
-  const save = button(template ? "Save new version" : "Create template", () => void submit(), {
-    tone: "primary",
-  });
+  const save = button(
+    template
+      ? version?.mode === "static_bearer"
+        ? "Save changes"
+        : "Save new version"
+      : "Create template",
+    () => void submit(),
+    { tone: "primary" },
+  );
   const close = button("Cancel", () => dialog.close());
-  const inputs = element(
+  const oauthFields = element(
     "fieldset",
     { className: "connection-template-fields" },
-    field({ label: "Template name", control: name }),
-    field({ label: "Template availability", control: scope }),
     field({ label: "OAuth configuration", control: mode }),
     manual,
     remote,
@@ -448,6 +508,26 @@ export function openConnectionTemplateEditor(
         })
       : null,
     register ?? null,
+  );
+  const staticFields = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    element("legend", {}, "Static Bearer destinations"),
+    element(
+      "p",
+      { className: "hint" },
+      "Configure the uppercase HTTP method, host, port, and exact path for each destination. End a path with /** to include its subtree. This template contains no credential.",
+    ),
+    staticDestinations.element,
+  );
+  const inputs = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    field({ label: "Template name", control: name }),
+    field({ label: "Template availability", control: scope }),
+    !options.oauthOnly ? field({ label: "Authentication method", control: authentication }) : null,
+    staticFields,
+    oauthFields,
   );
   dialog.append(
     element(
@@ -473,7 +553,7 @@ export function openConnectionTemplateEditor(
       options.onUnconfirmed();
     }
   });
-  let observed = version?.observed;
+  let observed = oauthVersion?.observed;
   let discoveryEpoch = 0;
   let busy = false;
   let uncertain = false;
@@ -540,6 +620,9 @@ export function openConnectionTemplateEditor(
     clientChoices();
   }
   function showMode() {
+    const isStatic = authentication.value === "static_bearer";
+    staticFields.hidden = staticFields.disabled = !isStatic;
+    oauthFields.hidden = oauthFields.disabled = isStatic;
     manual.hidden = manual.disabled = mode.value !== "manual";
     remote.hidden = remote.disabled = mode.value === "manual";
     discoveryEpoch++;
@@ -591,25 +674,31 @@ export function openConnectionTemplateEditor(
     }
   });
   async function submit(continueRegistration = false) {
+    const isStatic = authentication.value === "static_bearer";
     if (
       busy ||
+      uncertain ||
       !validateFields([
         scope,
         name,
-        scopes,
-        ...(mode.value === "manual"
-          ? [issuer, authorizationUrl, tokenUrl, revocationUrl, ...destinations.controls()]
-          : [server]),
+        ...(isStatic
+          ? staticDestinations.controls()
+          : [
+              scopes,
+              ...(mode.value === "manual"
+                ? [issuer, authorizationUrl, tokenUrl, revocationUrl, ...destinations.controls()]
+                : [server]),
+            ]),
       ])
     ) {
       return;
     }
-    if (mode.value !== "manual" && !observed?.issuer) {
+    if (!isStatic && mode.value !== "manual" && !observed?.issuer) {
       status.textContent = "Discover the MCP server and select its authorization server first.";
       return;
     }
     const authorizationParameters: Record<string, string> = Object.create(null);
-    for (const line of parameters.value.trim().split("\n").filter(Boolean)) {
+    for (const line of isStatic ? [] : parameters.value.trim().split("\n").filter(Boolean)) {
       const split = line.indexOf("=");
       if (split < 1 || Object.hasOwn(authorizationParameters, line.slice(0, split))) {
         status.textContent = "Enter each authorization parameter once as name=value.";
@@ -619,23 +708,36 @@ export function openConnectionTemplateEditor(
     }
     const approved =
       scopeLimit.value === "restricted" ? [...new Set(scopes.value.trim().split(/\s+/))] : [];
-    const body = {
-      displayName: name.value.trim(),
-      ...(!template && { namespaceId: availabilityNamespace(scope) }),
-      ...(client.value && { oauthClientId: client.value }),
-      scopes: approved,
-      authorizationParameters,
-      ...(mode.value === "manual"
-        ? {
-            mode: "manual",
-            issuer: issuer.value.trim(),
-            authorizationUrl: authorizationUrl.value.trim(),
-            tokenUrl: tokenUrl.value.trim(),
-            ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
-            destinations: destinations.values(),
-          }
-        : { mode: "mcp_discovery", serverUrl: server.value.trim(), issuer: observed!.issuer }),
-    };
+    const staticValues: StaticKeyDestination[] = staticDestinations.values().map((row) => ({
+      host: row.host,
+      port: row.port,
+      path: row.path,
+      method: row.method!,
+    }));
+    const body = isStatic
+      ? {
+          displayName: name.value.trim(),
+          ...(!template && { namespaceId: availabilityNamespace(scope) }),
+          mode: "static_bearer",
+          destinations: staticValues,
+        }
+      : {
+          displayName: name.value.trim(),
+          ...(!template && { namespaceId: availabilityNamespace(scope) }),
+          ...(client.value && { oauthClientId: client.value }),
+          scopes: approved,
+          authorizationParameters,
+          ...(mode.value === "manual"
+            ? {
+                mode: "manual",
+                issuer: issuer.value.trim(),
+                authorizationUrl: authorizationUrl.value.trim(),
+                tokenUrl: tokenUrl.value.trim(),
+                ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
+                destinations: destinations.values(),
+              }
+            : { mode: "mcp_discovery", serverUrl: server.value.trim(), issuer: observed!.issuer }),
+        };
     setBusy(true);
     status.textContent = "Saving connection template…";
     try {
@@ -650,16 +752,22 @@ export function openConnectionTemplateEditor(
       }
       if (
         !saved.id ||
+        !Number.isSafeInteger(saved.current.version) ||
+        saved.current.version < 1 ||
         (template &&
           (saved.id !== template.id || saved.current.version < template.current.version)) ||
         saved.displayName !== body.displayName ||
-        (saved.current.oauthClientId ?? "") !== client.value ||
-        saved.current.issuer !== body.issuer
+        (isStatic
+          ? saved.current.mode !== "static_bearer" ||
+            destinationKeys(saved.current.destinations) !== destinationKeys(staticValues)
+          : !isOAuthTemplate(saved) ||
+            (saved.current.oauthClientId ?? "") !== client.value ||
+            saved.current.issuer !== ("issuer" in body ? body.issuer : undefined))
       ) {
         throw Error("Unconfirmed connection template");
       }
       dialog.close();
-      if (continueRegistration && options.onRegister) {
+      if (continueRegistration && options.onRegister && isOAuthTemplate(saved)) {
         options.onRegister(saved);
       } else {
         options.onSaved(saved);
@@ -668,10 +776,19 @@ export function openConnectionTemplateEditor(
       const code = requestFailure(cause).status;
       uncertain = code === undefined || code >= 500 || code === 408;
       if (dialog.open) {
-        status.textContent = failure(cause, "the template change");
+        if (uncertain) {
+          close.textContent = "Close";
+          status.textContent =
+            "The template may have been saved. Close this dialog and check the template list before trying again.";
+        } else {
+          status.textContent = failure(cause, "the template change");
+        }
       }
     } finally {
       setBusy(false);
+      if (uncertain && dialog.open && context.isCurrent()) {
+        close.focus();
+      }
     }
   }
   server.addEventListener("input", () => {
@@ -687,11 +804,12 @@ export function openConnectionTemplateEditor(
     }
   });
   mode.addEventListener("change", showMode);
+  authentication.addEventListener("change", showMode);
   for (const control of [issuer, tokenUrl, revocationUrl, scope]) {
     control.addEventListener("input", () => clientChoices());
   }
   showMode();
-  clientChoices(version?.oauthClientId);
+  clientChoices(oauthVersion?.oauthClientId);
   dialog.showModal();
   name.focus();
 }

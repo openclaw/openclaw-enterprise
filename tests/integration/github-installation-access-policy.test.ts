@@ -10,7 +10,7 @@ import {
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { validateGitHubRepositoryRegistry as registry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { normalizedRepositoryAccess } from "../../packages/occ/src/state/repository-credential-state.ts";
+import { normalizedRepositoryAccess } from "../../packages/occ/src/repository-credential-validation.ts";
 
 // Runtime policy decisions cannot detect accidental widening of this constructor input.
 // @ts-expect-error Repository policy receives identity fields, never a transport client.

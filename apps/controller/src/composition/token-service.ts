@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 
 import type { InstallationSecretStore } from "@openclaw-enterprise/contracts";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  type OpenClawController,
+  type PlatformStateStore,
+} from "@openclaw-enterprise/occ";
+import { asRecord } from "@openclaw-enterprise/utils";
 
+import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
+import { OpenShellTokenServiceDriver } from "../drivers/token-service/openshell.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -37,9 +44,76 @@ async function credentialStoreIdentity(
 export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
+  state: PlatformStateStore,
+  options: { bindSourceUpdatePlacement?: boolean } = {},
 ): Promise<void> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
+    return;
+  }
+  const delivery = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  if (selection.implementation === OpenShellTokenServiceDriver.implementation) {
+    const backend = drivers.openShellTokenServiceBackend;
+    if (!backend || !(delivery instanceof OpenShellCredentialProxyDriver)) {
+      throw new Error("The OpenShell TokenService requires its paired native Credential Proxy.");
+    }
+    const client = backend.client.clientForNamespace("");
+    const readStoreIdentity = async (signal: AbortSignal) => {
+      const [workspace, info] = await Promise.all([
+        client.getWorkspace("default", signal),
+        client.getGatewayInfo?.(signal),
+      ]);
+      const extensions = Array.isArray(info?.extensions) ? info.extensions : [];
+      const credentialDrivers = extensions.map(asRecord).filter((extension) => {
+        const kind = extension?.kind;
+        return kind === 2 || kind === "EXTENSION_KIND_CREDENTIAL_DRIVER";
+      });
+      const credentialStore = credentialDrivers[0];
+      if (
+        workspace?.name !== "default" ||
+        !workspace.id ||
+        !uuid.test(workspace.id) ||
+        (workspace.phase !== "WORKSPACE_PHASE_ACTIVE" && workspace.phase !== 1) ||
+        credentialDrivers.length !== 1 ||
+        credentialStore?.configured_name !== "openshell-driver-db-credstore" ||
+        credentialStore.implementation_name !== "openshell/openshell-driver-db-credstore"
+      ) {
+        throw new DependencyUnavailableError(
+          "The OpenShell TokenService preview requires the Gateway's local credential store.",
+        );
+      }
+      // The Gateway persists this undeletable Workspace in the same database as local Providers.
+      return workspace.id;
+    };
+    const storeIdentity = await readStoreIdentity(AbortSignal.timeout(30_000));
+    const instanceId = await controller.activateTokenServiceInstance(
+      selection.id,
+      `openshell:${backend.id}:${storeIdentity}`,
+    );
+    const owner = new OpenShellTokenServiceDriver({
+      id: selection.id,
+      tokenServiceInstanceId: instanceId,
+      backend,
+      state,
+      resolveNamespace: async (namespace, signal) => {
+        if ((await readStoreIdentity(signal)) !== storeIdentity) {
+          throw new DependencyUnavailableError("The OpenShell TokenService store changed.");
+        }
+        const placed = await drivers.computeDriver.resolveSandboxNamespace?.(namespace);
+        if (!placed) {
+          throw new DependencyUnavailableError(
+            "The OpenShell TokenService Namespace placement is unavailable.",
+          );
+        }
+        return placed;
+      },
+      credentialProxy: delivery,
+    });
+    delivery.bindNativeSourceResolver((sourceRef, signal) =>
+      owner.resolveNativeProvider({ sourceRef, tokenServiceInstanceId: instanceId }, signal),
+    );
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
     return;
   }
   const store = drivers.secretDriver.installationSecrets;
@@ -57,7 +131,35 @@ export async function installTokenServiceDriver(
     controller.installation.id,
     store,
     instanceId,
+    state,
+    delivery,
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
+  if (
+    delivery instanceof OpenShellCredentialProxyDriver &&
+    options.bindSourceUpdatePlacement !== false
+  ) {
+    const { OpenShellCredentialDeliveryRefusedError } =
+      await import("../drivers/credential-proxy/openshell-pushed-provider.ts");
+    delivery.bindSourceNamespaceResolver(async (sourceRef, signal) => {
+      signal.throwIfAborted();
+      if (controller.selectedDriver("credential_proxy_delivery") !== delivery) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      const namespace = await state.read((view) =>
+        view.namespaces.findNamespace(sourceRef.namespaceId),
+      );
+      if (namespace?.status !== "ready") {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      const compute = controller.selectedDriver("compute");
+      const placed = await compute.resolveSandboxNamespace?.(namespace);
+      signal.throwIfAborted();
+      if (placed?.id !== sourceRef.namespaceId || placed.status !== "ready") {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      return placed;
+    });
+  }
 }

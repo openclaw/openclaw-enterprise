@@ -958,18 +958,21 @@ test(
         path: join(workspaceRoot, "USER.md"),
         content: retainedFiles["USER.md"],
       };
-      const proofOptions = {
+      const proofOptions = (revisionId) => ({
         stateDirectory,
         state: recorded,
         environment: env,
         namespaceId: nativeNamespace.id,
         agentId: nativeAgent.id,
         workspaceFile,
-      };
+        credentialProxyScope: stack.ownsInstallation
+          ? { actorId: nativeAgent.servicePrincipalId, sourceId: nativeSource.id, revisionId }
+          : undefined,
+      });
       async function proveNativeTurn(revisionId, options) {
         try {
           return await assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions,
+            ...proofOptions(revisionId),
             ...options,
           });
         } catch (error) {

@@ -3,9 +3,9 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   AuthenticationStateRepository,
   DeviceAuthenticationChanges,
-  DeviceAuthenticationState,
   OAuthAuthenticationState,
-} from "./platform-state.ts";
+} from "../ports/authentication-states.ts";
+import type { DeviceAuthenticationState } from "../device-authorization.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 const oauthKeys = [

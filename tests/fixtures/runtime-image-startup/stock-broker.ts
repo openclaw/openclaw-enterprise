@@ -2,7 +2,8 @@ import type { ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_pr
 import type { commandResult, codexRpc, list, parseJson, record, text } from "./wire.ts";
 
 type ProbeInput = {
-  descriptor: object;
+  descriptor: { manifest: { generation: string } };
+  repositoryGitHelperPath: string;
   entrypoint: string;
   materialInit: string;
   nativeGitInit: string;
@@ -45,20 +46,29 @@ export async function probeStockBroker(
   );
   assert.equal(material.status, 0, "repository material initialization failed");
   markStockBrokerStage("native-git-init");
-  const preparation = cp.spawnSync(
-    process.execPath,
-    ["-e", input.nativeGitInit, "/run/oce/repository-credentials"],
-    {
-      stdio: "inherit",
-    },
-  );
+  const repositoryRoot = "/run/oce/repository-credentials";
+  const preparation = cp.spawnSync(process.execPath, ["-e", input.nativeGitInit, repositoryRoot], {
+    stdio: "inherit",
+  });
   assert.equal(preparation.status, 0, "repository native Git initialization failed");
+  const expectedHelper = `!'/usr/local/bin/node' '${input.repositoryGitHelperPath}' manifest '${repositoryRoot}' '${input.descriptor.manifest.generation}'`;
+  // Git's generated per-origin helper list resets earlier helpers and installs one command.
+  const helpers = cp.spawnSync(
+    "git",
+    [
+      "config",
+      "--no-includes",
+      "--file",
+      repositoryRoot + "/gitconfig",
+      "--null",
+      "--get-all",
+      "credential.https://git.oce.svc.helper",
+    ],
+    { encoding: "utf8" },
+  );
   assert.ok(
-    fs
-      .readFileSync("/run/oce/repository-credentials/gitconfig", "utf8")
-      .includes(
-        "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/git-helper.js",
-      ),
+    helpers.status === 0 && helpers.stdout === `\0${expectedHelper}\0`,
+    "repository-native-git-helper-mismatch",
   );
   const brokerCaBundle = fs
     .readdirSync("/run/oce/repository-credentials/sessions")

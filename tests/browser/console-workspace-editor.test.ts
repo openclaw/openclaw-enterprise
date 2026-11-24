@@ -3,7 +3,7 @@
 import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
@@ -35,6 +35,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 
 import {
+  settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
@@ -59,11 +60,17 @@ declare global {
 }
 
 async function chooseWorkspaceFile(page: Page, name: string) {
-  const picker = page.getByRole("combobox", { name: "Workspace file", exact: true });
+  const picker = page
+    .getByRole("combobox", { name: "Workspace file", exact: true })
+    .filter({ visible: true });
+  const tab = page
+    .getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) })
+    .filter({ visible: true });
+  await picker.or(tab).first().waitFor();
   if (await picker.isVisible()) {
     await picker.selectOption(name);
   } else {
-    await page.getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) }).click();
+    await tab.click();
   }
 }
 
@@ -83,13 +90,15 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
     publicOrigin: true,
     workspaceFilesAccess: {
       async read({ revision, filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
-        return {
-          status: "ok",
-          file: {
-            name: filename,
-            content: await readFile(join(root, revision.agentId, filename), "utf8"),
-          },
-        };
+        try {
+          const content = await readFile(join(root, revision.agentId, filename), "utf8");
+          return { status: "ok", file: { name: filename, content } };
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+            return { status: "missing" };
+          }
+          throw error;
+        }
       },
       async write({
         revision,
@@ -123,30 +132,39 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   }
   // Textareas show CRLF as LF; an untouched read must not enable Save or write.
   const original = "# Saved AGENTS.md\r\n# Windows instructions\r\n";
-  await writeFile(join(root, agent.id, "AGENTS.md"), original);
+  const updated = "# Updated AGENTS.md\r\n# Other writer's instructions\r\n";
+  const originalText = original.replaceAll("\r\n", "\n");
+  const draft = "# Unsaved instructions\n";
+  const matchingDraft = "# Shared SOUL.md\n";
+  const agentsFile = join(root, agent.id, "AGENTS.md");
+  const agentsPath = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  await writeFile(agentsFile, original);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace");
   await login(page, fixture, url);
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   const file = page.getByLabel("AGENTS.md", { exact: true });
-  assert.equal(await file.inputValue(), original.replaceAll("\r\n", "\n"));
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Save AGENTS.md", exact: true, includeHidden: true })
-      .isEnabled(),
-    false,
-  );
+  const save = page.getByRole("button", {
+    name: "Save AGENTS.md",
+    exact: true,
+    includeHidden: true,
+  });
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await save.isEnabled(), false);
   assert.equal(
     await page
       .getByRole("button", { name: "Save USER.md", exact: true, includeHidden: true })
       .isEnabled(),
     false,
   );
-  assert.equal(await readFile(join(root, agent.id, "AGENTS.md"), "utf8"), original);
+  assert.equal(await readFile(agentsFile, "utf8"), original);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   await chooseWorkspaceFile(page, "AGENTS.md");
-  await file.fill("# Unsaved instructions\n");
+  await file.fill(draft);
+  await waitForWorkspaceEditors(page, ["SOUL.md"]);
+  await chooseWorkspaceFile(page, "SOUL.md");
+  await page.getByLabel("SOUL.md", { exact: true }).fill(matchingDraft);
   await chooseWorkspaceFile(page, "USER.md");
   await page.getByLabel("USER.md", { exact: true }).fill("");
   await page
@@ -158,12 +176,12 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   await page
     .getByRole("combobox", { name: "Workspace file", exact: true })
     .selectOption("AGENTS.md");
-  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await file.inputValue(), draft);
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
-  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await file.inputValue(), draft);
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
@@ -171,27 +189,96 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   await chooseWorkspaceFile(page, "AGENTS.md");
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor({ state: "attached" });
   assert.equal(await file.inputValue(), "# Saved AGENTS.md\n");
+
+  // Another writer changes two files while the draft owner is away.
+  await writeFile(agentsFile, updated);
+  await writeFile(join(root, agent.id, "SOUL.md"), "# Shared SOUL.md\r\n");
+  const returningRead = await holdRequests(t, page, `${fixture.origin}${agentsPath}`, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByLabel("Search Agents").fill("Workspace draft owner");
   await page.getByRole("link", { name: "Workspace draft owner", exact: true }).click();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  await waitForWorkspaceEditors(page, ["AGENTS.md"]);
-  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal((await returningRead.requested)?.status(), 200);
+  await chooseWorkspaceFile(page, "USER.md");
+  returningRead.release();
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md"]);
+  await chooseWorkspaceFile(page, "AGENTS.md");
+  assert.equal(await file.inputValue(), draft);
+
+  const warning = page.getByText(/AGENTS\.md changed since you started editing/);
+  await file.fill(originalText);
+  assert.equal(await save.isEnabled(), true, "The previous disk content is now a change");
+  assert.equal(await warning.isVisible(), true);
+  async function revisit() {
+    await page.getByRole("link", { name: "← Agents" }).click();
+    await page.getByLabel("Search Agents").waitFor();
+    await page.goBack();
+    await waitForWorkspaceEditors(page, ["AGENTS.md"]);
+    await chooseWorkspaceFile(page, "AGENTS.md");
+  }
+  // Leaving a second time hasn't resolved the conflict or written the draft.
+  await revisit();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(
+    await warning.isVisible(),
+    true,
+    "A second return must still warn about overwriting the changed file",
+  );
+  assert.equal(await readFile(agentsFile, "utf8"), updated);
+
+  // If the other writer removes the file, the old instructions are still a draft.
+  await unlink(agentsFile);
+  await revisit();
+  await page.getByText("AGENTS.md is missing. Save to create it.").waitFor();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(
+    await save.isEnabled(),
+    true,
+    "A missing file must keep the deliberate revert savable",
+  );
+  await writeFile(agentsFile, updated);
+  await revisit();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await warning.isVisible(), true);
+
+  // Matching the new file settles the conflict. A subsequent edit starts from that file.
+  await file.fill(updated.replaceAll("\r\n", "\n"));
+  assert.equal(await save.isDisabled(), true, "Save stays disabled when the editor matches disk");
+  await settlePageRequests(page);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await warning.isVisible(), false);
+  await file.fill(originalText);
+  await revisit();
+  assert.equal(await file.inputValue(), originalText);
+  assert.equal(await warning.isVisible(), false);
+  assert.equal(await save.isEnabled(), true);
+
   const saved = page.waitForResponse(
     (response) =>
-      response.request().method() === "PUT" &&
-      response.url().endsWith("/workspace/files/AGENTS.md"),
+      response.request().method() === "PUT" && response.url() === `${fixture.origin}${agentsPath}`,
   );
-  await chooseWorkspaceFile(page, "AGENTS.md");
-  await page
-    .getByRole("button", { name: "Save AGENTS.md", exact: true, includeHidden: true })
-    .click();
+  await save.click();
   assert.equal((await saved).status(), 200);
+  assert.deepEqual(nonAuthWriteRequests(requests), [
+    { method: "PUT", path: agentsPath, body: { content: originalText } },
+  ]);
+  assert.equal(await readFile(agentsFile, "utf8"), originalText);
+  assert.equal(await readFile(join(root, other.id, "AGENTS.md"), "utf8"), "# Saved AGENTS.md\n");
+  assert.equal(await readFile(join(root, agent.id, "USER.md"), "utf8"), "# Saved USER.md\n");
+
+  // A draft that already matches the new disk content needs no Save or unsaved notice.
+  await chooseWorkspaceFile(page, "SOUL.md");
+  assert.equal(await page.getByLabel("SOUL.md", { exact: true }).inputValue(), matchingDraft);
   assert.equal(
-    await readFile(join(root, agent.id, "AGENTS.md"), "utf8"),
-    "# Unsaved instructions\n",
+    await page.getByRole("button", { name: "Save SOUL.md", exact: true }).isDisabled(),
+    true,
   );
+  await page.getByText("SOUL.md loaded.", { exact: true }).waitFor({ state: "visible" });
   await chooseWorkspaceFile(page, "USER.md");
   await page
     .getByRole("button", { name: "Reload USER.md", exact: true, includeHidden: true })
@@ -203,12 +290,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   await page.goBack();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor({ state: "attached" });
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Save AGENTS.md", exact: true, includeHidden: true })
-      .isDisabled(),
-    true,
-  );
+  assert.equal(await save.isDisabled(), true);
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
 });
 
@@ -919,6 +1001,238 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
   await settlePageRequests(page);
   assert.equal(workspaceReads(), 4);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+});
+
+// A deployed Agent's Workspace tab over the real Console, Fastify, and IAM paths, before sign-in.
+// While `gateway.down` is set, the controller answers every file read and write as it does when
+// the Agent's gateway is unavailable. Otherwise a read returns a line that names its file.
+async function unreachableWorkspace(t: TestContext, marker: string) {
+  const gateway = { down: false };
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
+        return gateway.down
+          ? { status: "unavailable" }
+          : { status: "ok", file: { name: filename, content: `# ${filename}\n` } };
+      },
+      async write() {
+        return { status: "unavailable" };
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(`Unreachable ${marker}`, { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    `Unreachable ${marker} Agent`,
+    nativeValues(marker),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const filePath = (name: string) =>
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/${name}`;
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const section = page.locator(".workspace-files");
+  const notice = section.locator(":scope > [role=alert]");
+  const form = (name: string) =>
+    section.locator("form").filter({ has: page.getByLabel(name, { exact: true }) });
+  return {
+    fixture,
+    gateway,
+    page,
+    filePath,
+    section,
+    notice,
+    form,
+    url: detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+    retry: notice.getByRole("button", { name: "Retry", exact: true }),
+    reload: (name: string) =>
+      page.getByRole("button", { name: `Reload ${name}`, exact: true }).click(),
+    // The request ID that a file shows under its editor, after the reason that the gateway did
+    // not answer.
+    async requestId(name: string) {
+      const text = await form(name)
+        .getByText(WORKSPACE_UNREACHABLE, { exact: false })
+        .textContent();
+      const id = text?.slice(WORKSPACE_UNREACHABLE.length) ?? "";
+      assert.match(id, /^ Request ID: req_[0-9a-f-]{36}$/, `${name} request ID`);
+      return id;
+    },
+    // Every request so far has been applied and none is in flight, so a count is neither an
+    // early one nor short of a read that Retry started.
+    async settled(requests: Record<string, number>) {
+      for (const [name, count] of Object.entries(requests)) {
+        await waitForSettledFetches(page, filePath(name), count);
+      }
+      await waitForIdleFetches(page);
+      for (const [name, count] of Object.entries(requests)) {
+        assert.equal(await settledFetches(page, filePath(name)), count, `${name} requests`);
+      }
+    },
+  };
+}
+
+// A read that nothing answered keeps its reason and request ID under its file. One notice above
+// the files names those files, with one Retry that repeats their reads, and none of them is
+// marked Needs attention. A refusal about one file stays with that file.
+test("an unreachable Workspace gateway shows one notice whose Retry rereads the files", async (t) => {
+  const { fixture, gateway, page, filePath, section, notice, form, retry, reload, url, ...files } =
+    await unreachableWorkspace(t, "gateway");
+  gateway.down = true;
+  // The API limits the first USER.md read. That refusal is about one file, not the gateway.
+  await page.route(
+    fixture.origin + filePath("USER.md"),
+    (route) => route.fulfill({ ...proxyErrorResponse(429), headers: { "retry-after": "30" } }),
+    { times: 1 },
+  );
+  await login(page, fixture, url);
+  const attention = section.getByText("Needs attention", { exact: true });
+  const user = page.getByRole("tab", { name: /USER\.md/ });
+  const limited = form("USER.md").getByText(tooManyRequestsIn(30), { exact: false });
+  const hasFocus = (locator: Locator) =>
+    locator.evaluate((node) => node === node.ownerDocument.activeElement);
+  const oneNotice = async (text: string, names: string[]) => {
+    await notice.getByText(text, { exact: true }).waitFor();
+    // Each named file shows the ID of its own request. Only the rate-limited file is marked.
+    const ids = await Promise.all(names.map(files.requestId));
+    assert.equal(new Set(ids).size, names.length);
+    assert.equal(await attention.count(), 1);
+    assert.equal(await user.getByText("Needs attention", { exact: true }).count(), 1);
+    assert.equal(await limited.count(), 1);
+  };
+  const three = "AGENTS.md, SOUL.md and IDENTITY.md could not be read. Retry reads them again.";
+  await files.settled({ "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 });
+  await oneNotice(three, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
+
+  // The gateway still does not answer. Retry repeats the three unanswered reads only, the
+  // notice returns, and keyboard focus is back on Retry instead of lost with the removed button.
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await files.settled({ "AGENTS.md": 2, "SOUL.md": 2, "IDENTITY.md": 2, "USER.md": 1 });
+  await oneNotice(three, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
+  assert.equal(await hasFocus(retry), true);
+
+  // The gateway answers: the notice goes, the three files load, and focus moves to the selected
+  // file's tab. USER.md keeps its own refusal until its own Reload.
+  gateway.down = false;
+  await page.keyboard.press("Enter");
+  await files.settled({ "AGENTS.md": 3, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
+  assert.equal(await notice.textContent(), "");
+  assert.equal(await section.getByText(WORKSPACE_UNREACHABLE, { exact: false }).count(), 0);
+  assert.equal(await hasFocus(page.getByRole("tab", { name: /AGENTS\.md/ })), true);
+  assert.equal(await attention.count(), 1);
+  assert.equal(await limited.count(), 1);
+
+  // A later Reload that nothing answers brings the notice back for that file alone. At phone
+  // width the tabs are not shown, so focus moves to the Workspace file picker instead.
+  gateway.down = true;
+  await reload("AGENTS.md");
+  await files.settled({ "AGENTS.md": 4 });
+  await oneNotice("AGENTS.md could not be read. Retry reads it again.", ["AGENTS.md"]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  gateway.down = false;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await files.settled({ "AGENTS.md": 5, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
+  await waitForWorkspaceEditors(page, ["AGENTS.md"]);
+  assert.equal(await notice.textContent(), "");
+  assert.equal(
+    await hasFocus(page.getByRole("combobox", { name: "Workspace file", exact: true })),
+    true,
+  );
+});
+
+// Retry repeats only the reads that have nothing to lose. A file whose own Reload got no answer
+// while it holds unsaved edits or an unknown save is not named in the notice. Its next read is
+// the reader's own Reload of that file, which replaces the edits and settles the save.
+test("the Workspace notice's Retry leaves a file with unsaved edits for its own Reload", async (t) => {
+  const { fixture, gateway, page, filePath, notice, form, retry, reload, url, ...files } =
+    await unreachableWorkspace(t, "draft");
+  await login(page, fixture, url);
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]);
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  const draft = "# Unsaved instructions\n";
+  await editor.fill(draft);
+  // The gateway does not answer the AGENTS.md Reload, so the edits stay in the browser.
+  gateway.down = true;
+  await reload("AGENTS.md");
+  await files.settled({ "AGENTS.md": 2 });
+  // The gateway is back, and the USER.md Reload fails for another reason: its request does not
+  // reach the API.
+  gateway.down = false;
+  await page.route(fixture.origin + filePath("USER.md"), (route) => route.abort(), { times: 1 });
+  await chooseWorkspaceFile(page, "USER.md");
+  await reload("USER.md");
+  await files.settled({ "USER.md": 2 });
+  // Each file shows its own reason. The notice names only the file that Retry reads again, and
+  // the file that waits for its own Reload is marked.
+  await form("USER.md").getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
+  const requestId = await files.requestId("AGENTS.md");
+  await notice
+    .getByText("USER.md could not be read. Retry reads it again.", { exact: true })
+    .waitFor();
+  const marked = page.getByRole("tab", { name: /AGENTS\.md/ }).getByText("Needs attention");
+  assert.equal(await marked.count(), 1);
+
+  await retry.click();
+  await waitForWorkspaceEditors(page, ["USER.md"]);
+  await files.settled({ "AGENTS.md": 2, "USER.md": 3 });
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await files.requestId("AGENTS.md"), requestId);
+  assert.equal(await marked.count(), 1);
+  assert.equal(await notice.textContent(), "");
+
+  await chooseWorkspaceFile(page, "AGENTS.md");
+  await reload("AGENTS.md");
+  await waitForInputValue(editor, "# AGENTS.md\n");
+});
+
+test("the Workspace notice's Retry leaves a file with an unknown save for its own Reload", async (t) => {
+  const { fixture, gateway, page, notice, form, retry, reload, url, ...files } =
+    await unreachableWorkspace(t, "save");
+  // A phone: the Workspace file picker replaces the tabs.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, url);
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]);
+  // The gateway answers neither the SOUL.md save nor the Reload that would settle it.
+  gateway.down = true;
+  await chooseWorkspaceFile(page, "SOUL.md");
+  await page.getByLabel("SOUL.md", { exact: true }).fill("# Unsaved personality\n");
+  await page.getByRole("button", { name: "Save SOUL.md", exact: true }).click();
+  await form("SOUL.md").getByText("Outcome unknown.", { exact: false }).waitFor();
+  await reload("SOUL.md");
+  // The first read, the save, and this Reload.
+  await files.settled({ "SOUL.md": 3 });
+  await chooseWorkspaceFile(page, "USER.md");
+  await reload("USER.md");
+  await files.settled({ "USER.md": 2 });
+  // The selected file shows the reason with the ID of its own request. The notice names only
+  // the file that Retry reads again.
+  const reason = (name: string) => form(name).getByText(WORKSPACE_UNREACHABLE, { exact: false });
+  await reason("USER.md").waitFor();
+  const userId = await files.requestId("USER.md");
+  await chooseWorkspaceFile(page, "SOUL.md");
+  await reason("SOUL.md").waitFor();
+  const soulId = await files.requestId("SOUL.md");
+  assert.notEqual(soulId, userId);
+  await notice
+    .getByText("USER.md could not be read. Retry reads it again.", { exact: true })
+    .waitFor();
+
+  gateway.down = false;
+  await retry.click();
+  await waitForWorkspaceEditors(page, ["USER.md"]);
+  await files.settled({ "SOUL.md": 3, "USER.md": 3 });
+  assert.equal(
+    await page.locator('#workspace-file-picker option[value="SOUL.md"]').textContent(),
+    "Personality · SOUL.md — Check save",
+  );
+  await reason("SOUL.md").waitFor();
+  assert.equal(await files.requestId("SOUL.md"), soulId);
+  assert.equal(await notice.textContent(), "");
 });
 
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {

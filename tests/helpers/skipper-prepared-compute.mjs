@@ -161,11 +161,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   assertSecretReference(secret);
   assert.ok(hasResourceId(secret), "expected the model Secret ID");
   const values = createHarnessConfiguration("codex", defaultAgentModel);
-  values.agents.defaults.workspace = "/home/node/workspace";
+  const workspaceRoot = "/home/node/workspace";
+  values.agents.defaults.workspace = workspaceRoot;
   Object.assign(values.plugins.entries.codex.config.appServer, {
     approvalPolicy: "never",
     sandbox: "workspace-write",
-    remoteWorkspaceRoot: "/home/node/workspace",
+    remoteWorkspaceRoot: workspaceRoot,
   });
   const config = await create("configurations", { kind: "agent", values });
   assert.ok(hasResourceId(config), "expected the configuration ID");
@@ -291,6 +292,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     /occ-repository-app|prepared-repository|custody\.key|private-key\.pem|openshell/i,
   );
   assert.ok(
+    hc.volumeMounts.some(
+      (m) => m.mountPath === workspaceRoot && m.name === "openclaw-workspace" && !m.readOnly,
+    ),
+    "Codex and the Agent container must share the retained workspace for the fixture barrier",
+  );
+  assert.ok(
     hc.volumeMounts.some((m) => m.mountPath === "/run/oce/repository-credentials" && m.readOnly),
   );
   assert.ok(
@@ -338,6 +345,59 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     );
     assert.equal(record(await api("GET", agentPath)).activeRevisionId, revision.id);
   };
+  /** @param {string[]} command */
+  async function execWithdrawalProbe(...command) {
+    const { name, namespace, uid } = harness.metadata;
+    assert.equal((await resource("pod", name, "-n", namespace)).metadata.uid, uid);
+    const { stdout } = await kubectlWithTimeout(
+      10_000,
+      "exec",
+      name,
+      "-n",
+      namespace,
+      "-c",
+      "agent",
+      "--",
+      ...command,
+    );
+    return stdout;
+  }
+  /** @param {string} dir @param {string} head */
+  async function withdrawalBarrierPath(dir, head) {
+    const match = /^skipper-([a-f0-9]{16})$/.exec(dir);
+    assert.ok(match);
+    assert.match(head, /^[a-f0-9]{40}$/);
+    const checkout = join(workspaceRoot, dir);
+    const actual = await execWithdrawalProbe(
+      "sh",
+      "-c",
+      'cd "$1" && test "$(git rev-parse --show-toplevel)" = "$(pwd -P)" && git rev-parse --verify HEAD',
+      "sh",
+      checkout,
+    );
+    assert.equal(
+      actual.trim(),
+      head,
+      "operator must see the checkout that the native command just modified",
+    );
+    return join(checkout, ".oce-git-withdrawal-" + match[1]);
+  }
+  /** @param {string} path @param {"ready" | "release"} operation */
+  async function withdrawalBarrier(path, operation) {
+    assert.match(
+      path,
+      /^\/home\/node\/workspace\/skipper-([a-f0-9]{16})\/\.oce-git-withdrawal-\1$/,
+    );
+    const stdout = await execWithdrawalProbe(
+      "sh",
+      "-c",
+      'if [ -d "$1/ready" ] && [ ! -L "$1/ready" ]; then if [ "$2" = release ]; then : > "$1/release" || exit; fi; printf "ready\\n"; fi',
+      "sh",
+      path,
+      operation,
+    );
+    return stdout === "ready\n";
+  }
   const gatewayTarget = [
     gateway.metadata.name,
     "-n",
@@ -528,6 +588,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     stable,
     sendScript,
     ordinaryChat,
+    withdrawalBarrier,
+    withdrawalBarrierPath,
   };
 }
 
@@ -642,8 +704,14 @@ export async function sendSkipperChat({
     }
     throw error;
   });
-  const { status, category, content, gatewayTransportCause, gatewayFetchElapsedMs } =
-    JSON.parse(text);
+  const {
+    status,
+    category,
+    content,
+    gatewayTransportCause,
+    gatewayListener,
+    gatewayFetchElapsedMs,
+  } = JSON.parse(text);
   if (status === 200 && category === undefined) {
     return content;
   }
@@ -681,6 +749,7 @@ export async function sendSkipperChat({
       gatewayChatPhase,
       gatewayCategory: category,
       gatewayTransportCause,
+      gatewayListener,
       gatewayFetchElapsedMs,
       httpStatus: status,
       runtimeSignal,
@@ -753,12 +822,35 @@ export async function inGateway(prompt, sessionKey, invocationId, measureNativeG
           break;
       }
     }
+    let gatewayListener;
+    if (measureNativeGit && gatewayTransportCause === "socket-closed" && !signal.aborted) {
+      gatewayListener = "unavailable";
+      const port = process.env.OPENCLAW_GATEWAY_PORT || "8080";
+      if (/^[0-9]+$/.test(port)) {
+        const probe = new AbortController();
+        try {
+          // Any response headers establish that the listener answered.
+          await fetch("http://127.0.0.1:" + port + "/readyz", {
+            redirect: "manual",
+            signal: AbortSignal.any([signal, probe.signal, AbortSignal.timeout(500)]),
+          });
+          gatewayListener = "responding";
+        } catch (probeError) {
+          if (probeError?.cause?.code === "ECONNREFUSED") {
+            gatewayListener = "unreachable";
+          }
+        } finally {
+          probe.abort();
+        }
+      }
+    }
     // Fetch can reject a refused redirect as an unclassified transport error.
     const timingEligible = category === "client-deadline" || gatewayTransportCause !== undefined;
     process.stdout.write(
       JSON.stringify({
         status: 0,
         category,
+        gatewayListener,
         gatewayTransportCause:
           category === "transport" ? (gatewayTransportCause ?? "other") : undefined,
         ...(timingEligible && elapsedMs !== undefined && elapsedMs >= 0 && elapsedMs <= 240_000

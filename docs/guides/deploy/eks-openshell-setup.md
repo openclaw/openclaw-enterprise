@@ -17,13 +17,13 @@ After preparation, [install OCE](eks-openshell-installation.md) in the same prot
 
 ### Prepare AWS infrastructure
 
-Provision the following through your reviewed AWS infrastructure workflow. The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
+Provision the following through your reviewed AWS infrastructure workflow. For a dedicated cluster, use the [Terraform reference and installation handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster). The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
 
 Use an authorized AWS account and role. The Kubernetes operator needs permission to create namespaces, RBAC, Secrets and storage claims; Kubernetes access does not replace OCC IAM grants.
 
 Choose a cluster whose workloads can trust the OpenShell Gateway with its
 [cluster-wide Kubernetes authority](../../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
-For stock OpenShell v0.1.8 operator mode, namespace selectors do not restrict
+For stock OpenShell v0.1.9 operator mode, namespace selectors do not restrict
 that authority. Use a dedicated evaluation cluster when other tenants must
 remain outside this trust boundary.
 
@@ -161,7 +161,17 @@ aws ecr get-login-password --region "$AWS_REGION" | \
 
 Retain these values for image publication. Builder login does not authorize node pulls.
 
-[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.8 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.9 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+
+<a id="openshell-gateway-upgrade-recovery"></a>
+
+**Before upgrading an OpenShell Gateway from 0.1.8 to 0.1.9, stop Gateway writes and back up its database.** For the default encrypted database credential store, also secure a backup of its key-encryption key. [Credential storage](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/deploy/helm/openshell/README.md#credential-storage)
+
+Version 0.1.9 applies migration 10. The 0.1.8 Gateway refuses to open the migrated database. To return to 0.1.8, stop the 0.1.9 Gateway, restore the pre-upgrade database and its matching key if used, then start 0.1.8. Restoration discards Gateway database writes made after the backup. For a SQLite database, include its `-wal` and `-shm` files in the backup and the restore. After the restore, redeploy every running Agent. A Sandbox whose supervisor renewed its session after the backup can no longer authenticate, and its Agent fails every request while it still shows as active. [SQLite migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/sqlite/010_add_mutation_admission_expiry_index.sql) · [PostgreSQL migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/postgres/010_add_mutation_admission_expiry_index.sql)
+
+<a id="openshell-gateway-admission-limit"></a>
+
+The OpenShell values that the installation renders set `mutation_admission_limit_per_caller` to 5000 under `gatewayConfig."openshell.gateway"`. OpenShell 0.1.9 sets 1000 by default. This setting is the number of durable request admissions that one caller can hold. The OCC controller is one caller for every Namespace, an Agent redeploy uses about three admissions, and the Gateway keeps completed admissions for `mutation_replay_window_seconds` (default 24 hours). If deployments report [`SANDBOX_ADMISSION_LIMIT_REACHED`](../../reference/drivers/openshell-sandbox.md#troubleshooting) at your deploy rate, increase the value in the OpenShell Helm values and upgrade the release.
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 

@@ -1,6 +1,7 @@
-import { readFile, statfs, writeFile } from "node:fs/promises";
+import { constants, open, readFile, statfs, writeFile } from "node:fs/promises";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { withoutCutLine } from "./failure-redaction.ts";
 import { nodeLogExcerpt, redactCredentialLine } from "./k3d-node-log.ts";
 import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.ts";
 
@@ -184,20 +185,24 @@ export async function captureK3dDiagnostics({
       partial,
     }: { maxOutputChars?: number; partial?: (output: CommandOutput) => Value } = {},
   ): Promise<Observation<Value>> {
+    // execFile keeps the last maxOutputChars characters of each stream. Every projection
+    // here redacts line by line, so the cut line can go before it.
+    const whole = (text: unknown) =>
+      typeof text === "string" ? withoutCutLine(text, text.length >= maxOutputChars) : "";
     try {
-      const output = await execFile(command, args, {
+      const { stdout, stderr } = await execFile(command, args, {
         timeoutMs: diagnosticCommandTimeoutMs,
         maxOutputChars,
       });
-      return { status: "ok", value: project(output) };
+      return { status: "ok", value: project({ stdout: whole(stdout), stderr: whole(stderr) }) };
     } catch (error) {
       // A broken command or response must never replace the bootstrap failure.
       const result = asRecord(error);
       if (result?.timedOut !== true) {
         return { status: "unavailable" };
       }
-      const stdout = typeof result.stdout === "string" ? result.stdout : "";
-      const stderr = typeof result.stderr === "string" ? result.stderr : "";
+      const stdout = whole(result.stdout);
+      const stderr = whole(result.stderr);
       if (partial && (stdout || stderr)) {
         try {
           return { status: "timed-out", value: partial({ stdout, stderr }) };
@@ -280,4 +285,98 @@ export async function captureK3dDiagnostics({
     mode: 0o600,
   });
   console.error(`[prepare:${lane}] k3d diagnostics saved to ${statePath}.diagnostics.json`);
+}
+
+async function readDiagnosticRecord(path: string) {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 1024 * 1024) {
+      return;
+    }
+    const bytes = Buffer.alloc(stat.size + 1);
+    const { bytesRead } = await file.read(bytes);
+    if (bytesRead === stat.size) {
+      return asRecord(JSON.parse(bytes.toString("utf8", 0, bytesRead)));
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+function only(value: unknown): unknown {
+  return Array.isArray(value) && value.length === 1 ? value[0] : undefined;
+}
+
+// Only the outer lane's diagnostic is uploaded. Preserve two hints about the
+// nested create before its error is cut short, without copying node output.
+export async function stagedCreateTimeout(statePath: string) {
+  const state = await readDiagnosticRecord(statePath).catch(() => undefined);
+  const cluster = asRecord(only(state?.resources));
+  const id = preparationIdentity(state?.prefix);
+  if (
+    !id ||
+    state?.statePath !== statePath ||
+    state.lane !== "staging-signin" ||
+    state.version !== 1 ||
+    cluster?.kind !== "k3d-cluster" ||
+    cluster.status !== "planned" ||
+    cluster.owner !== state.prefix
+  ) {
+    return;
+  }
+  const report = await readDiagnosticRecord(statePath + ".diagnostics.json").catch(() => undefined);
+  if (
+    report?.lane !== state.lane ||
+    report.preparationId !== id ||
+    report.cluster !== cluster.name ||
+    typeof report.failure !== "string"
+  ) {
+    return;
+  }
+  const timeout =
+    /^k3d cluster create (openclaw-k8s-[a-z0-9-]+-[a-f0-9]{12}) did not finish within [1-9]\d* ms \(attempt 1 of 1\)$/u.exec(
+      report.failure,
+    );
+  if (!timeout || timeout[1] !== cluster.name) {
+    return;
+  }
+  const server = `k3d-${timeout[1]}-server-0`;
+  if (only(cluster.nodes) !== server) {
+    return;
+  }
+
+  const starting = `Starting node '${server}'`;
+  const output = report.k3dCreateOutput;
+  const start =
+    typeof output === "string" &&
+    output
+      .split("\n")
+      .some((line) => /^INFO\[\d+\]\s+(.+)$/u.exec(line.trimEnd())?.[1] === starting);
+  const node = asRecord(only(report.containers));
+  const top = asRecord(node?.processes);
+  const uncordon =
+    node?.name === server &&
+    top?.status === "ok" &&
+    typeof top.value === "string" &&
+    sawUncordon(top.value, server);
+  return (
+    "k3d create timed out; unconfirmed creation requires reconciliation. " +
+    `server-start-line=${start ? "yes" : "unknown"} uncordon-observed=${uncordon ? "yes" : "unknown"}`
+  );
+}
+
+function sawUncordon(text: string, server: string) {
+  const [header, ...rows] = text.trim().split(/\r?\n/u);
+  const columns = header?.split(/\s+/u) ?? [];
+  const cmd = columns.indexOf("CMD");
+  const pid = columns.indexOf("PID");
+  if (pid < 0 || cmd <= pid || cmd !== columns.length - 1) {
+    return false;
+  }
+  const command = `kubectl uncordon ${server}`;
+  return rows.some((line) => {
+    const fields = line.trim().split(/\s+/u);
+    return /^[1-9]\d*$/u.test(fields[pid] ?? "") && fields.slice(cmd).join(" ") === command;
+  });
 }

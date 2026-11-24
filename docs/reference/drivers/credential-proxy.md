@@ -6,15 +6,11 @@ kind: reference/driver
 
 ## Overview
 
-`CredentialProxyDriver` defines staged delivery of TokenService-owned credentials for an Agent deployment. It shares one Driver registration with the selected Sandbox.
+`CredentialProxyDriver` configures and enforces credential injection. `SandboxDriver` enforces network policy and routing. OCC coordinates compatible implementations; neither contract owns the other.
 
-`LegacyEgressProxyDriver` serves existing protected-egress deployments. See the [legacy implementation walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
+`LegacyEgressProxyDriver` serves protected-egress deployments. See its [walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
 
-OpenClaw Control Plane (OCC) owns authorization, access bindings, execution identity, access expiry and
-withdrawal. Token Service owns credential acquisition, freshness, renewal, material
-custody and retirement. Provider adapters own provider-specific scope, injection
-and response rules. The proxy enforces requests and obtains eligible material;
-it does not run a credential renewal loop.
+OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Provider adapters define scope, injection, and response rules. The Proxy enforces requests and resolves credentials.
 
 Legacy Gateway sources remain Gateway-owned; new Source custody belongs to [TokenService](../../flows/token-service-static-custody.md). When static protection is required, neither
 the Gateway nor the Proxy may declare refresh, device authorization or managed
@@ -34,7 +30,9 @@ exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
 
-`CredentialProxyDriver` temporarily uses `credential_proxy_delivery`. Its required `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` operations receive a trusted Namespace, Agent revision, and signal; they reject a mismatched deployment or target. Optional `notifyCredentialUpdated` is source-scoped and receives no revision. OpenShell supports first-use Provider delivery and target checks. Status fails closed; target-bound removal and update notification are unavailable. The regular Agent workflow does not call this capability. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration) and [worker configuration amendment](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md#amendment-select-native-delivery-independently).
+OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
+
+OpenShell prepares admitted HTTP and managed MCP bindings with a Provider per projection. Accepted temporary MCP exceptions let bodyless legacy SSE GET and unsolicited JSON-RPC response POST reach substitution without an admitted RPC or tool match. See [Source lifecycle](../../flows/credential-source-lifecycle.md) and [implementation status](../credential-sources.md#implementation-status).
 
 ## Legacy protected egress
 
@@ -88,7 +86,7 @@ support with `assertAvailable`. Admission can then combine repository Git with
 independently admitted routes. Reduction can remove Git while preserving the exact
 recipient and other bindings. It does not convert v5 online authorization or v6
 observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
-The [admission source](../../../packages/occ/src/index.ts) and
+The [admission source](../../../packages/occ/src/deployment-revision.ts) and
 [version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
 

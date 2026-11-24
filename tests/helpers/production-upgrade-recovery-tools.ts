@@ -9,6 +9,9 @@ export const helmTargetOverrides = [
   "HELM_KUBECAFILE",
   "HELM_KUBETLS_SERVER_NAME",
   "HELM_KUBEINSECURE_SKIP_TLS_VERIFY",
+  "HELM_KUBETOKEN",
+  "HELM_KUBEASUSER",
+  "HELM_KUBEASGROUPS",
 ];
 export const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 export const controller = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;

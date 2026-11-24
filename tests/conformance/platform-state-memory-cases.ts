@@ -9,10 +9,8 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { accessBindingsRemovedWithAgent } from "../../packages/occ/src/iam-policy-cleanup.ts";
 import type { RepositorySessionRepository } from "../../packages/occ/src/ports/repository-sessions.ts";
-import {
-  InMemoryPlatformState,
-  type PlatformOperation,
-} from "../../packages/occ/src/state/platform-state.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformOperation } from "../../packages/occ/src/ports/platform-operations.ts";
 import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
 import { seedSessionRevision, sessionAttempt } from "./repository-sessions.contract.ts";
 

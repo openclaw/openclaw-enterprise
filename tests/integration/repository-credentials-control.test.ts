@@ -65,7 +65,7 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { BoundListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
 import type { RegistryFixtureDefinition } from "../fixtures/repository-credentials/registry/material.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 type ResourceOwner = Pick<TestContext, "after">;
 type SessionResult = {

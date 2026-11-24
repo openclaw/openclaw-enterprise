@@ -107,16 +107,25 @@ For first-time setup, use [Local Setup](quickstart.md).
 
 ### Stop or remove a production deployment
 
-Inventory tenant workloads before uninstalling the control plane:
-
-```bash
-helm uninstall oce --namespace openclaw-system \
-  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
-```
+Inventory tenant workloads before uninstalling the control plane.
 
 Helm does not own external PostgreSQL, operator-created Secrets,
 or tenant workloads created by Compute. Retain database, bootstrap storage, and
 tenant resources until recovery and retention requirements are satisfied.
+
+Unset `HELM_KUBE*` overrides, including `HELM_KUBEAPISERVER`. Use the original
+Helm release storage. For `occ installation install`, unset `HELM_DRIVER` to
+use Secret storage.
+
+Set `KUBECONFIG_FILE` and `CONTEXT` to the installation's kubeconfig file and
+context. Verify the intended cluster, kubeconfig file, context, Helm release
+name, and namespace. Replace `oce` and `openclaw-system` if your values differ.
+After inventory, this command uninstalls the selected control-plane release.
+
+```bash
+helm uninstall oce --namespace openclaw-system \
+  --kubeconfig "${KUBECONFIG_FILE:?}" --kube-context "${CONTEXT:?}"
+```
 
 For startup diagnosis, see the [production startup flow](../flows/production-startup.md).
 For runtime proof, see the [production TUI flow](../flows/production-tui.md).

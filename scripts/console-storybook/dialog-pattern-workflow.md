@@ -10,7 +10,8 @@ simulated data.
    and **Create Secret**. Each is a centred box with the same corners, edge,
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
-   Create Secret).
+   Create Secret). In Stop and Delete, check the Agent name and ID before
+   confirming.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
    commands**. Each command includes the Namespace ID. Press Enter on **Copy
    Configuration command**, then on **Copy Secret command** if it appears. Only
@@ -47,6 +48,9 @@ simulated data.
 5. Open each **(phone)** story. The dialog is a full-width sheet on the bottom
    edge with rounded top corners. Stop, Delete and Create Secret are only as tall
    as their content. The drawer header keeps Close beside its title.
+   At short desktop and phone heights, open **Pages / Secrets / Create** and
+   **Replace value** and use Tab and Shift+Tab to check that the focused control
+   and its outline are fully visible.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.
@@ -87,3 +91,7 @@ return to Plugins, and open Configure plugins. The catalog must load instead of
 staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
+
+## Recover an unconfirmed template save
+
+Open **Pages / Credentials / Unconfirmed template save**. The preview edits Google OAuth and saves version 2, then omits the version from the response. Check that the warning and focused **Close** action are visible together, including at phone width. **Save new version** should be disabled. Press Enter to close the editor and confirm that the catalog shows one Google OAuth row at version 2.

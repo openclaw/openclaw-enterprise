@@ -7,6 +7,8 @@ import type { ChannelEgressOptions } from "../../apps/controller/src/drivers/com
 
 interface Fixture {
   listenerCapacity?: number;
+  upstreamProxies?: ChannelEgressOptions["upstreamProxies"];
+  proxyTrust?: ChannelEgressOptions["proxyTrust"];
   namespace: string;
   controllerImage: string;
   workspaceGateway: {
@@ -22,6 +24,8 @@ interface Fixture {
 /** Real chart resources; callers still need API/worker deployment and runtime proof. */
 export async function installManagedChannelEgressFixture({
   listenerCapacity = 62,
+  upstreamProxies,
+  proxyTrust,
   namespace,
   controllerImage,
   workspaceGateway,
@@ -86,6 +90,8 @@ export async function installManagedChannelEgressFixture({
     occListenerPort: 10000,
     inspectionPort: 19004,
     excludedCidrs: [...exclusions],
+    ...(upstreamProxies === undefined ? {} : { upstreamProxies }),
+    ...(proxyTrust === undefined ? {} : { proxyTrust }),
   };
   const values: Record<string, string | number | boolean> = {
     "images.controller": controllerImage,
@@ -99,10 +105,25 @@ export async function installManagedChannelEgressFixture({
   channelEgress.excludedCidrs.forEach((cidr, index) => {
     values[`channelEgress.excludedCidrs[${index}]`] = cidr;
   });
+  upstreamProxies?.forEach((endpoint, index) => {
+    values[`channelEgress.upstreamProxies[${index}].url`] = endpoint.url;
+    endpoint.addresses.forEach((address, addressIndex) => {
+      values[`channelEgress.upstreamProxies[${index}].addresses[${addressIndex}]`] = address;
+    });
+  });
+  if (proxyTrust) {
+    values["channelEgress.proxyTrust.caSecretName"] = proxyTrust.caSecretName;
+    values["channelEgress.proxyTrust.caKey"] = proxyTrust.caKey;
+  }
   const { stdout } = await renderProductionChart(values, { namespace, release });
   const items = (await parseProductionChart(stdout)).map(asRecord).filter((item) => {
     const metadata = asRecord(item?.metadata);
-    return typeof metadata?.name === "string" && metadata.name.includes(channelEgress.gatewayName);
+    return (
+      typeof metadata?.name === "string" &&
+      (metadata.name.includes(channelEgress.gatewayName) ||
+        asRecord(metadata.labels)?.["openclaw.dev/channel-egress-fleet"] ===
+          channelEgress.gatewayName)
+    );
   });
   assert.ok(
     items.length >= 12,

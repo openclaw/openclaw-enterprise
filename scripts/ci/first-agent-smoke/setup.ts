@@ -44,6 +44,9 @@ export function createApi(origin: string, key: string) {
         redirect: "error",
         signal: options?.signal ?? AbortSignal.timeout(30_000),
         headers: {
+          // This smoke rolls the API Deployment. Do not retain a NodePort connection
+          // to a Pod that can be removed during the next rollout.
+          connection: "close",
           "x-api-key": key,
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
@@ -960,11 +963,13 @@ export async function routeModelProvider(
     cleanup = [],
     credentialDigests,
     auditFailures = false,
+    slackStandIn = false,
   }: {
     journey?: string;
     cleanup?: (() => Promise<unknown>)[];
     credentialDigests?: Record<string, string>;
     auditFailures?: boolean;
+    slackStandIn?: boolean;
   } = {},
 ) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
@@ -1008,6 +1013,7 @@ export async function routeModelProvider(
     "--env",
     `${journey}=1`,
     ...(auditFailures ? ["--env", "PROBE_CODEX_AUDIT_FAILURES=1"] : []),
+    ...(slackStandIn ? ["--env", "PROBE_SLACK_STANDIN=1"] : []),
     // With digests, the stand-in answers only these credentials and names each caller.
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",
@@ -1035,6 +1041,7 @@ export async function routeModelProvider(
     modelAddress,
     platformNamespace: stack.state.platformNamespace,
     serverFile: "oce-first-agent-smoke.server",
+    additionalHosts: slackStandIn ? ["slack.com", "wss-primary.slack.com"] : [],
   });
 }
 
@@ -1044,6 +1051,8 @@ interface ModelEvent {
   text?: string;
   caller?: string;
   transport?: string;
+  method?: string;
+  peer?: string;
 }
 
 export async function modelEvents(): Promise<ModelEvent[]> {

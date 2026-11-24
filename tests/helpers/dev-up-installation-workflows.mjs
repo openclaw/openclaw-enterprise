@@ -390,7 +390,7 @@ export function registerInstallationKeycloak() {
         await page.goto(`${origin}/console/`);
         const signedIn = await api(page, "/api/auth/sign-in/email", {
           email: "admin@development.openclaw.invalid",
-          password: (await fixture.read("initial-admin-password")).trim(),
+          password: await fixture.read("initial-admin-password"),
         });
         assert.equal(signedIn.status, 200, "the recovery administrator remains usable");
         const admin = await api(page, "/api/auth/session");
@@ -512,7 +512,7 @@ export function registerInstallationKeycloak() {
               await recoveryPage.goto(`${origin}/console/`);
               const signedIn = await api(recoveryPage, "/api/auth/sign-in/email", {
                 email: "admin@development.openclaw.invalid",
-                password: (await fixture.read("initial-admin-password")).trim(),
+                password: await fixture.read("initial-admin-password"),
               });
               assert.equal(signedIn.status, 200);
               const recoveryCookies = await recovery.cookies(origin);

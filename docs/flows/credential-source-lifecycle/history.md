@@ -8,6 +8,10 @@ This record preserves the dated changes to the credential source lifecycle flow.
 
 ## Changelog
 
+- 2026-11-20 07:52: Trace managed source permission, standalone admission and live release checks. (authoring-run/6a2ac989-1b9e-4a4a-becf-4de572752f27 - d6853a84e)
+
+- 2026-11-20 04:19: Describe the staged worker and Compute path and its deployment hold. (authoring-run/4c6987ec-ea41-4485-98ca-62d6e617244f - daa612511)
+
 - 2026-11-20: Document native staged Proxy operation and holds. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 291d3b1de)
 
 - 2026-11-20 04:20: Link the separate internal static custody flow. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)

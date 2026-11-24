@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import type {
   Driver,
   BackendDefinition,
+  BackendRef,
   DriverCapability,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";
@@ -402,7 +403,8 @@ function validateOpenShellBackend(
       key !== "sandbox" &&
       key !== "credential_gateway" &&
       key !== "credential_refresh" &&
-      key !== "credential_proxy"
+      key !== "credential_proxy" &&
+      key !== "token_service"
     ) {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
@@ -448,6 +450,9 @@ function validateOpenShellBackend(
       ...(drivers.credential_refresh === undefined
         ? {}
         : { credential_refresh: drivers.credential_refresh as string }),
+      ...(drivers.token_service === undefined
+        ? {}
+        : { token_service: backendId(drivers.token_service, "TokenService Driver ID") }),
     },
   });
 }
@@ -470,6 +475,9 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
     ...(backend.drivers.credential_proxy === undefined
       ? []
       : [`credential_proxy:${backend.drivers.credential_proxy}`]),
+    ...(backend.drivers.token_service === undefined
+      ? []
+      : [`token_service:${backend.drivers.token_service}`]),
   ];
 }
 
@@ -524,6 +532,19 @@ export function assertConfiguredBackend(
   return backend;
 }
 
+export function resolveAgentBackendId(
+  backends: BackendMap,
+  value: BackendRef | undefined,
+  preserve?: BackendRef,
+): BackendRef {
+  const backendId = value === undefined ? (preserve ?? null) : value;
+  const backend = assertConfiguredBackend(backends, backendId, "Backend");
+  if (backend !== undefined && backend.type !== "chatgpt") {
+    throw new ScopeViolationError("The Agent Backend must support its Harness association.");
+  }
+  return backendId;
+}
+
 export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
   selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
@@ -555,6 +576,9 @@ export function validateSelectedBackendDrivers(
           backend.drivers.credential_refresh,
           "Credential Refresh Driver",
         );
+      }
+      if (backend.drivers.token_service !== undefined) {
+        requires("token_service", backend.drivers.token_service, "TokenService Driver");
       }
       if (backend.drivers.credential_proxy !== undefined) {
         requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");

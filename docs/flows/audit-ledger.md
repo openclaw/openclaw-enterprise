@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 11:24"
-last_updated_session: "authoring-run/b6bdb7b2-6bd6-4074-9551-f936deb0ad23"
+updated: "2026-11-24 11:55"
+last_updated_session: "authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2"
 ---
 
 # Audit ledger flow
@@ -165,11 +165,13 @@ For service API keys, `apps/controller/src/auth/service-keys.ts` commits the
 key change and audit record together. Issuance uses the Better Auth adapter on
 State's PostgreSQL connection. Revocation deletes the current key in State.
 
-Separately, the work queue commits queue
-and claim events with the corresponding change. The queue event records the API
-request ID when a request started the work. The claim event carries a distinct
-attempt ID. That ID also identifies later evidence for the same claim. A claim
-insert failure leaves the job available.
+The work queue commits queue
+and claim events with the corresponding change. When the API supplies a request
+ID, the queue event records it from
+`packages/occ/src/controller-work-recorder.ts:record`.
+The claim event carries a distinct attempt ID. That ID also identifies later
+evidence for the same claim. A claim insert failure leaves the job available.
+
 Repository cleanup and maintenance recovery save a queue record when they create
 or reopen follow-up work. The queue change and its audit record belong to the
 same SQL statement.
@@ -183,8 +185,17 @@ work `failed_permanent`) are ordinary details, not reserved metadata.
 
 ### 4. The transaction owner finishes or fails
 
-`packages/occ/src/state/postgres-state.ts:PostgresPlatformState` and
+`packages/occ/src/controller-transactions.ts:createControllerTransactions`,
+`packages/occ/src/state/postgres-state.ts:PostgresPlatformState`, and
 `packages/occ/src/ports/transaction.ts:RepositoryTransactionLifetime`
+
+Nested controller mutations use the current unit of work. The transaction scope
+keeps any registered compensation callbacks with that unit. Definite failures
+run compensation. OCC propagates an unknown commit before invoking these callbacks.
+
+PostgreSQL binds the read projection directly to the transaction lifetime.
+A write binds the unit of work and registers it for audit and Native IAM
+operations on the same client.
 
 After the callback returns, State closes admission to repository operations and
 waits for already admitted operations to settle before committing. On failure it
@@ -229,8 +240,8 @@ copies and array are immutable.
 
 ### 6. The Agent audit API saves a disclosure for each page
 
-`apps/controller/src/http/agent-audit.ts:createAgentAuditReader` and
-`packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
+`apps/controller/src/http/agent-audit.ts:createAgentAuditReader`,
+`packages/occ/src/agent-audit-reader.ts:listAgentAuditEvents`, and
 `apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
 The PostgreSQL audit reader requires enabled audit and a Native IAM Driver
@@ -290,7 +301,7 @@ The plugin and reader use `runtimeAuditReference` to match turn IDs that need
 a hash. The link requires the original session and message IDs.
 
 1. The analyst supplies the audit event ID. In a PostgreSQL transaction,
-   `packages/occ/src/index.ts:selectAgentAuditMessage` checks the human
+   `packages/occ/src/agent-audit-reader.ts:selectAgentAuditMessage` checks the human
    session and direct `read_audit` and `read_audit_content` grants on
    this Agent. State selects a linked turn event from the preceding 24 hours.
    Its revision must match `activeRevisionId`, and the Agent's desired state
@@ -342,11 +353,15 @@ a hash. The link requires the original session and message IDs.
 
 ## Changelog
 
+- 2026-11-24 11:55: Identify the modules that check message access and record queued work. (authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2 - bf3d0ed3a444c0c70768c713d66efee717152b7a)
+
 - 2026-11-24 11:24: Identify the separate API volume for pending HTTP chat records. (authoring-run/b6bdb7b2-6bd6-4074-9551-f936deb0ad23 - 24f84269c9fa2ae3dc49461b071931b1b27a27fa)
 
 - 2026-11-24 10:21: Identify queued HTTP chat records. (authoring-run/e84c6230-3e81-429a-93ee-4459af104384 - de7a98fdbb33b5ed3ac59b2a8ca004b2aeb5f705)
 
 - 2026-11-24 09:37: Trace background delivery of Gateway turn records. (authoring-run/d108b4d9-d114-4611-befc-6fb2787baee3 - 3e0ed219b6022212dbe331dfe48c940e3d24a94e)
+
+- 2026-11-22 10:38: Trace how PostgreSQL binds repository methods for read and write transactions. (authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999 - b766b8ed991110ad86ce9e44adb59215ddb91293)
 
 - 2026-11-20 16:35: Trace audit setting changes for running Gateways. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - fb0f4dc39a9b736919375069d258bab9c7d98b75)
 

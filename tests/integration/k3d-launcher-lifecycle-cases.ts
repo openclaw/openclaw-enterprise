@@ -58,6 +58,23 @@ export function registerLauncherLifecycleCases() {
     }
   });
 
+  test("k3d rejects a prepared native image built from a checkout", async (context) => {
+    // The saved checkout commit must trigger recovery even after reset removes the env file.
+    for (const afterReset of [false, true]) {
+      await assert.rejects(
+        runLauncher(context, "docker", ["test", "--harness", "openclaw"], {
+          checkoutBuiltState: true,
+          afterReset,
+        }),
+        {
+          code: 1,
+          stderr: /predates the pinned runtime; run '\.\/scripts\/k3d down --harness openclaw'/,
+        },
+        afterReset ? "after reset" : "when ready",
+      );
+    }
+  });
+
   test("k3d validates prepared state metadata before reset", async (context) => {
     await assert.rejects(
       runLauncher(context, "docker", ["reset"], { stateVersion: 2 }),
