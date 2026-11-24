@@ -12,6 +12,7 @@ import networkPolicySchema from "./network-policy-schema.mts";
 import { fixtureError as error, fixtureResponse as response } from "./preview-rules.mts";
 
 type NetworkPolicyScenario = {
+  deployed?: boolean;
   policyState?: string;
   policyRuleCount?: number;
   policyDenialCount?: number;
@@ -154,7 +155,7 @@ export function createNetworkPolicyFixture(
     namespaceId: string;
     createdAt: string;
     candidateRevisionId: string;
-    seedAgent: () => { id: unknown };
+    seedAgent: () => { id: unknown; activeRevisionId?: unknown };
   },
 ) {
   const policyGrant = {
@@ -166,12 +167,15 @@ export function createNetworkPolicyFixture(
     host: "example.org",
     ports: [{ from: 443, to: 443 }],
   };
-  let policyEditing = scenario.policyState !== "disabled";
   let policyPolls = 0;
   let policyReads = 0;
   const repositoryEditor = scenario.policyState === "repositoryEditor";
   let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
-  const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict;
+  const blockedByDefault = scenario.policyState === "repositoryPermissionsLimited";
+  const permissions = scenario.policyState === "repositoryPermissions" || blockedByDefault;
+  const deployedPermissions = permissions && scenario.deployed === true;
+  let policyEditing = permissions ? deployedPermissions : scenario.policyState !== "disabled";
+  const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict || permissions;
   const unreadableRevision = scenario.policyState === "repositoryRecovery";
   const repositoryCredential = scenario.policyRepositoryCredential;
   const repositoryLimits =
@@ -179,14 +183,20 @@ export function createNetworkPolicyFixture(
     canEditRepositoryGrants ||
     repositoryCredential !== undefined;
   const protectedExecution = scenario.policyState === "protected" || repositoryLimits;
-  const repositoryCeiling: readonly RepositoryNetworkGrant[] = repositoryLimits
+  const mixedCeiling: readonly RepositoryNetworkGrant[] = repositoryLimits
     ? [
         { repository: "example/application", access: "read" },
         { repository: "example/tooling", access: "write" },
       ]
     : [];
+  const repositoryCeiling = permissions
+    ? [{ repository: "example/application", access: "write" } as const]
+    : mixedCeiling;
   const repositoryChoices = canEditRepositoryGrants
-    ? [...repositoryCeiling, { repository: "example/tooling", access: "read" } as const]
+    ? [
+        ...repositoryCeiling,
+        ...repositoryCeiling.map(({ repository }) => ({ repository, access: "read" as const })),
+      ]
     : [];
   const initialAdditions =
     scenario.policyState === "protected"
@@ -202,6 +212,16 @@ export function createNetworkPolicyFixture(
     agentId: seedAgent().id,
     version: 1,
     additions: initialAdditions,
+    ...(deployedPermissions
+      ? {
+          repositoryNetworkPolicy: blockedByDefault
+            ? repositoryCeiling.map((grant) => ({
+                ...grant,
+                apiLimits: { default: "none", issues: "write", pull_requests: "write" } as const,
+              }))
+            : repositoryCeiling,
+        }
+      : {}),
     ...(scenario.policyState === "protected" || unreadableRevision
       ? { repositoryNetworkPolicy: [{ repository: "example/application", access: "read" }] }
       : {}),
@@ -396,6 +416,18 @@ export function createNetworkPolicyFixture(
         ...(repositoryLimits || protectedExecution || unreadableRevision
           ? {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
+              ...(permissions
+                ? {
+                    repositoryApiMaxima: [
+                      {
+                        repository: "example/application",
+                        access: "write",
+                        issues: blockedByDefault ? "read" : "write",
+                        pull_requests: "write",
+                      },
+                    ],
+                  }
+                : {}),
               repositoryNetworkPolicySaveSupported:
                 canEditRepositoryGrants || sandboxPolicy.repositoryNetworkPolicy !== undefined,
             }
@@ -418,10 +450,15 @@ export function createNetworkPolicyFixture(
         // (D773).
         ...(scenario.policyState === "unsupported" ||
         scenario.policyState === "protected" ||
-        canEditRepositoryGrants ||
+        (canEditRepositoryGrants && !deployedPermissions) ||
         unreadableRevision
           ? {}
-          : { defaultsRevisionId: candidateRevisionId, deployedPolicyVersion: 1 }),
+          : {
+              defaultsRevisionId: deployedPermissions
+                ? seedAgent().activeRevisionId
+                : candidateRevisionId,
+              deployedPolicyVersion: 1,
+            }),
         capability:
           scenario.policyState === "unsupported" || unreadableRevision
             ? null
@@ -514,9 +551,13 @@ export function createNetworkPolicyFixture(
         return error(409, "RESOURCE_CONFLICT");
       }
       const choices = Array.isArray(requested)
-        ? requested.map((grant: unknown) =>
-            repositoryChoices.find((choice) => isFixtureRepositoryGrant(grant, choice)),
-          )
+        ? requested.map((grant: unknown) => {
+            const approved = repositoryChoices.find((choice) =>
+              isFixtureRepositoryGrant(grant, choice),
+            );
+            // Preserve API limits from the Console for the next policy read.
+            return approved && typeof grant === "object" ? { ...grant, ...approved } : undefined;
+          })
         : undefined;
       if (
         (choices?.length === 0 &&
