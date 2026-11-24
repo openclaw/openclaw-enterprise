@@ -7,7 +7,7 @@ import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
 import {
-  admitRepositoryNetworkPolicy,
+  isCanonicalRepositoryNetworkPolicy,
   githubInstallationProfile,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -526,7 +526,7 @@ export class OpenShellGitRuntime {
       binding.profile !== "github-repository" ||
       !("scope" in delivery) ||
       delivery.scope !== "github-repository" ||
-      !isDeepStrictEqual(policy, admitRepositoryNetworkPolicy(policy.grants, policy.grants))
+      !isCanonicalRepositoryNetworkPolicy(policy)
     ) {
       throw new Error(
         "OpenShell repository network policy requires protected selected-repository Git.",

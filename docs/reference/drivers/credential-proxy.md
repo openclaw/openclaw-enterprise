@@ -32,7 +32,7 @@ The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/ind
 
 OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
 
-OpenShell deployment attaches new or retained Providers; only creation resolves TokenService material. Source replacement updates existing Providers and verifies serving receipts; absence creates nothing. Failed push retains custody. Cleanup attempts to delete owned Providers and profiles, retaining shared copies on native refusal. Stop retains the Source and IAM grants. Retry and live rotation qualification remain pending; [implementation status](../credential-sources.md#implementation-status) lists enforcement limits.
+OpenShell prepares admitted HTTP and managed MCP bindings with a Provider per projection. Accepted temporary MCP exceptions let bodyless legacy SSE GET and unsolicited JSON-RPC response POST reach substitution without an admitted RPC or tool match. See [Source lifecycle](../../flows/credential-source-lifecycle.md) and [implementation status](../credential-sources.md#implementation-status).
 
 ## Legacy protected egress
 

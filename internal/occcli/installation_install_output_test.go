@@ -201,50 +201,59 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			defer server.Close()
 			config := installationDoctorKubeconfig(t, server.URL)
 			chart := filepath.Join(root, "chart")
-			if err := os.Mkdir(chart, 0700); err != nil {
-				t.Fatal(err)
-			}
-			// An empty Helm chart isolates receipt/output handling from chart resources.
-			// The production command still runs its real snapshot, list, install and read.
-			if err := os.WriteFile(filepath.Join(chart, "Chart.yaml"), []byte("apiVersion: v2\nname: output-proof\nversion: 0.1.0\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			values := filepath.Join(root, "values.yaml")
-			if err := os.WriteFile(values, []byte("{}\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
 			const canary = "private-template-canary-7b1d"
+			valuesData := []byte("{}\n")
+			var refusal string
 			if phase.templateFailure == "stock" {
-				// Keep the stock chart intact; change only the Console host so the
-				// chart itself rejects the shared browser-session suffix.
-				chart = "../../deploy/helm/openclaw-enterprise"
-				original, err := os.ReadFile("../../deploy/examples/production/values.yaml")
+				if err := os.CopyFS(chart, os.DirFS("../../deploy/helm/openclaw-enterprise")); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				valuesData, err = os.ReadFile("../../deploy/examples/production/values.yaml")
 				if err != nil {
 					t.Fatal(err)
 				}
-				rejected := strings.ReplaceAll(string(original), "https://console.oce.example.internal", "https://"+canary+".unrelated.invalid")
-				if rejected == string(original) {
-					t.Fatal("stock fixture host was not replaced")
-				}
-				if err := os.WriteFile(values, []byte(rejected), 0600); err != nil {
+				// Invoke the stock suffix validation with a different Console host
+				// in an isolated copy of the template values.
+				refusal = fmt.Sprintf(`
+{{- $context := merge (dict "Values" (deepCopy .Values)) . -}}
+{{- $_ := set $context.Values.auth "baseUrl" %q -}}
+{{- include "openclaw.validate" $context -}}`, "https://"+canary+".unrelated.invalid")
+			} else {
+				if err := os.Mkdir(chart, 0700); err != nil {
 					t.Fatal(err)
 				}
-			} else if phase.templateFailure != "" {
-				if err := os.Mkdir(filepath.Join(chart, "templates"), 0700); err != nil {
+				// The empty chart isolates receipt and output handling from chart resources.
+				if err := os.WriteFile(filepath.Join(chart, "Chart.yaml"), []byte("apiVersion: v2\nname: output-proof\nversion: 0.1.0\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				template := `{{ fail .Values.privateDiagnostic }}`
-				if phase.templateFailure == "overflow" {
+				switch phase.templateFailure {
+				case "canary":
+					refusal = `{{ fail .Values.privateDiagnostic }}`
+				case "overflow":
 					// Excess diagnostics must be drained without changing Helm's failure
 					// or treating a partial message as evidence for guidance.
-					template = `{{ fail (repeat 200000 .Values.privateDiagnostic) }}`
+					refusal = `{{ fail (repeat 200000 .Values.privateDiagnostic) }}`
 				}
-				if err := os.WriteFile(filepath.Join(chart, "templates", "refusal.yaml"), []byte(template), 0600); err != nil {
+				if refusal != "" {
+					valuesData = []byte("privateDiagnostic: " + canary + "\n")
+				}
+			}
+			if refusal != "" {
+				templates := filepath.Join(chart, "templates")
+				if err := os.MkdirAll(templates, 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(values, []byte("privateDiagnostic: "+canary+"\n"), 0600); err != nil {
+				// Only live discovery from the fixture supplies the Job kind. Offline
+				// preflight passes, then the real install encounters the refusal.
+				template := `{{- if .Capabilities.APIVersions.Has "batch/v1/Job" -}}` + refusal + `{{- end -}}`
+				if err := os.WriteFile(filepath.Join(templates, "refusal.yaml"), []byte(template), 0600); err != nil {
 					t.Fatal(err)
 				}
+			}
+			values := filepath.Join(root, "values.yaml")
+			if err := os.WriteFile(values, valuesData, 0600); err != nil {
+				t.Fatal(err)
 			}
 			var outputAttempt, stderr bytes.Buffer
 			var output io.Writer = &outputAttempt
@@ -340,7 +349,7 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 				}
 			}
 			text := outputAttempt.String() + stderr.String()
-			if strings.Contains(text, canary) {
+			if strings.Contains(text, canary) || (err != nil && strings.Contains(err.Error(), canary)) {
 				t.Fatal("private template value escaped to output")
 			}
 			if phase.templateFailure == "" || phase.templateFailure == "overflow" {
