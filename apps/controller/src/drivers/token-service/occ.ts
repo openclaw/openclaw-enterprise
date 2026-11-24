@@ -416,18 +416,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return { status: "ready", source };
   }
 
-  private issueGitHubAppCredential(
-    scope: GitHubAppRepositorySelection,
-    keyRef: PrivateSecretRef,
-    signal: AbortSignal,
-  ) {
-    return withComputeAbortSignal(signal, () =>
-      this.store.withValue(keyRef, (privateKey) =>
-        this.githubAppIssuer.issue(scope, privateKey, signal),
-      ),
-    );
-  }
-
   private githubAppSigningKeyRef(
     client: (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
     {
@@ -453,6 +441,25 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       ...client,
       tokenServiceInstanceId: client.tokenServiceInstanceId,
     });
+  }
+
+  private mintGitHubInstallationToken(
+    registration:
+      | (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string })
+      | undefined,
+    source: {
+      readonly namespaceId: string;
+      readonly clientId: string;
+      readonly scope: GitHubAppRepositorySelection;
+    },
+    signal: AbortSignal,
+  ) {
+    const signingKey = this.githubAppSigningKeyRef(registration, source);
+    return withComputeAbortSignal(signal, () =>
+      this.store.withValue(signingKey, (privateKey) =>
+        this.githubAppIssuer.issue(source.scope, privateKey, signal),
+      ),
+    );
   }
 
   private assertCurrentGitHubAppRegistryScope(
@@ -495,11 +502,12 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
       // Serialize enrollment with client retirement before issuing against its signing key.
-      const key = this.githubAppSigningKeyRef(
-        await connectionTemplates.lockCredentialClient(input.clientId),
+      const client = await connectionTemplates.lockCredentialClient(input.clientId);
+      const issued = await this.mintGitHubInstallationToken(
+        client,
         { namespaceId: ref.namespaceId, clientId: input.clientId, scope },
+        signal,
       );
-      const issued = await this.issueGitHubAppCredential(scope, key, signal);
       const source: GitHubAppInstallationCredentialSource = {
         id: ref.id,
         namespaceId: ref.namespaceId,
@@ -854,11 +862,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
               : undefined;
           }
         }
-        const key = this.githubAppSigningKeyRef(
-          await connectionTemplates.findCredentialClient(current.clientId),
-          current,
-        );
-        const issued = await this.issueGitHubAppCredential(current.scope, key, signal);
+        const client = await connectionTemplates.findCredentialClient(current.clientId);
+        const issued = await this.mintGitHubInstallationToken(client, current, signal);
         const replacement = encodeGitHubAppCredential(issued, this.credentialProxy !== undefined);
         await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
         return { version: replacement.version, minted: true };
