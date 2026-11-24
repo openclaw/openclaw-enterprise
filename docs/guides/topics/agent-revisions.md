@@ -236,8 +236,9 @@ references do not restore earlier credential values. See the
 [Agent revision contract](../../reference/agents/deployment.md#revisions-and-deployment)
 for what it captures.
 
-If the new revision removes a model, check any saved OpenClaw chat that used
-it before sending more work. A chat that still shows the removed model can
-use the Agent's current default on the next turn. To follow that default,
-run `/model default -s` in the same conversation and confirm the selection.
-If the task requires the removed model, wait until it's available again.
+If a revision removes a model, a saved OpenClaw chat may still show it.
+Run `/model default -s` in that chat to clear the saved selection. Even if
+the reset names the Agent's default, a matching `channels.modelByChannel`
+rule can select a different model. Check the rule and confirm which model
+handled a harmless turn in the same chat before sending more work.
+If you need the removed model, wait until it's available again.
