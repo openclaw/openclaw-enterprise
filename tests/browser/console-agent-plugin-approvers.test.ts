@@ -1128,7 +1128,7 @@ for (const loss of [
     const ui = await managedAccessBrowser(t);
     const { fixture, sourceId, siblingId } = ui;
     const action = loss.includes("read") ? "read" : loss === "Agent update" ? "update" : null;
-    const sourceLoss = loss.includes("source");
+    const sourceLoss = !action && loss.includes("source");
     if (action) {
       ui.denyAgent(action);
     }

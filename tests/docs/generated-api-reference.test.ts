@@ -245,7 +245,7 @@ test("Agent and CredentialSource operations document the permissions they check"
     scope,
     condition: "bound_credential_source",
   });
-  // OCC authorizes the caller's operate on every listed or Harness source.
+  // OCC authorizes the caller's operate on every listed, Harness, or Plugin Source.
   assert.ok(
     permissions("createAgent").some((permission) =>
       isDeepStrictEqual(permission, sourceOperate("request_body")),
@@ -277,7 +277,7 @@ test("Agent and CredentialSource operations document the permissions they check"
   assert.match(page, /^\| `operate` \| `credential_source` \| `requested` \(when bound\) \|$/m);
   assert.match(
     page,
-    /Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists\./,
+    /Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection\./,
   );
 });
 

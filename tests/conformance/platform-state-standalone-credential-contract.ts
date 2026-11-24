@@ -158,7 +158,7 @@ export async function verifyStandaloneCredentialStateContract(
     }),
     refusal,
   );
-  // A generic policy can describe Plugins, but standalone v8 currently admits only one model.
+  // A Plugin binding must match an exact Plugin selection saved on the owning Agent.
   await assert.rejects(
     store.transact(async (transaction) => {
       const revision = await standaloneRevision(transaction, seed);
@@ -186,7 +186,7 @@ export async function verifyStandaloneCredentialStateContract(
         },
       });
     }),
-    refusal,
+    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
   );
   // The Agent may own both ready sources, but standalone v8 admits only its model source.
   await assert.rejects(

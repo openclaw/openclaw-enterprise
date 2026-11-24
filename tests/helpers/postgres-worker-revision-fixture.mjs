@@ -696,8 +696,9 @@ export function createWorkerRevisionFixtures(
             undefined,
             candidate.harness,
             compute,
+            [],
           );
-          assert.deepEqual(sources, credentialSources);
+          assert.deepEqual(sources.snapshots, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
             egressAdmission.admitProxyPlan(
