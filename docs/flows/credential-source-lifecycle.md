@@ -134,7 +134,7 @@ For each authorized Source, OCC sends Proxy the exact Source reference and a laz
 
 #### Retire the Source
 
-OCC checks blocking references, including saved Plugin selections, before static Source retirement. OAuth disconnect instead records revocation intent immediately to stop new token resolution. The selected Proxy retires delivery copies before TokenService removes custody. OpenShell requires the Sandbox to detach its Provider first. A Proxy failure returns `503` and retains custody for retry; the worker also retries OAuth retirement. Agent references can retain a disconnected OAuth Source row. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+OCC checks blocking references, including saved Plugin selections, before static Source retirement. A saved Plugin selection also blocks OAuth disconnect before revocation intent is recorded. Otherwise, OAuth disconnect records revocation intent to stop new token resolution. The selected Proxy retires delivery copies before TokenService removes custody. OpenShell requires the Sandbox to detach its Provider first. A Proxy failure returns `503` and retains custody for retry; the worker also retries OAuth retirement. Agent references can retain a disconnected OAuth Source row. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
 ## Debugging and Verification
 

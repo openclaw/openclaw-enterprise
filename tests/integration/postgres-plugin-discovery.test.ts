@@ -210,28 +210,30 @@ test(
 
     // Enter at the TokenService's post-exchange boundary with controlled token material.
     // The real owner resolves the original registration, records custody and creates the Source.
-    const { id: sourceId } = await owner.createSource(
-      {
-        kind: "oauth_refresh_token",
-        namespaceId,
-        name: "Slack account",
-        connectionTemplateId,
-        consent: {
-          kind: "connection_template",
-          ownerPrincipalId: principal.id,
-          version: pinned.version,
-          oauthClientId: pinned.oauthClientId,
+    const createSlackSource = (name: string) =>
+      owner.createSource(
+        {
+          kind: "oauth_refresh_token",
+          namespaceId,
+          name,
+          connectionTemplateId,
+          consent: {
+            kind: "connection_template",
+            ownerPrincipalId: principal.id,
+            version: pinned.version,
+            oauthClientId: pinned.oauthClientId,
+          },
+          grant: {
+            accessToken: randomUUID(),
+            refreshToken: randomUUID(),
+            expiresAt: new Date(Date.now() + 3600000).toISOString(),
+            requestedScopes: [scope],
+            grantedScopes: [scope],
+          },
         },
-        grant: {
-          accessToken: randomUUID(),
-          refreshToken: randomUUID(),
-          expiresAt: new Date(Date.now() + 3600000).toISOString(),
-          requestedScopes: [scope],
-          grantedScopes: [scope],
-        },
-      },
-      t.signal,
-    );
+        t.signal,
+      );
+    const { id: sourceId } = await createSlackSource("Slack account");
     const source = await inject("GET", `${path}/credential-sources/${sourceId}`);
     assert.equal(source.statusCode, 200, source.body);
     const metadata = source.json().data;
@@ -525,6 +527,35 @@ test(
         },
       },
     ]);
+    // A saved OAuth selection must block retirement before intent or custody changes. The
+    // editor retains exact Source operate and can remove the selection without Agent operate.
+    const { id: savedOAuthId } = await createSlackSource("Slack saved-only account");
+    await grant("credential_source", savedOAuthId);
+    const savedOAuthPath = `${path}/credential-sources/${savedOAuthId}`;
+    const custody = await state.read((view) =>
+      view.oauthCredentials.findTokenCustody(namespaceId, savedOAuthId),
+    );
+    assert.ok(custody);
+    const selectedOAuth = await memberPatch(selectSlack(savedOAuthId));
+    assert.equal(selectedOAuth.statusCode, 200, selectedOAuth.body);
+    const deleteOAuth = await inject("DELETE", savedOAuthPath, undefined, app);
+    assert.equal(deleteOAuth.statusCode, 409, deleteOAuth.body);
+    const retainedOAuth = await inject("GET", savedOAuthPath, undefined, app);
+    assert.equal(retainedOAuth.statusCode, 200, retainedOAuth.body);
+    assert.equal(retainedOAuth.json().data.state, "ready");
+    assert.equal(retainedOAuth.json().data.consent.revocationRequestedBy, undefined);
+    assert.deepEqual(
+      await state.read((view) => view.oauthCredentials.findTokenCustody(namespaceId, savedOAuthId)),
+      custody,
+    );
+    const clearedOAuth = await memberPatch({ configurationId, plugins: {} });
+    assert.equal(clearedOAuth.statusCode, 200, clearedOAuth.body);
+    const unboundOAuth = await inject("DELETE", savedOAuthPath, undefined, app);
+    assert.equal(unboundOAuth.statusCode, 503, unboundOAuth.body);
+    const pendingOAuth = await inject("GET", savedOAuthPath, undefined, app);
+    assert.equal(pendingOAuth.statusCode, 200, pendingOAuth.body);
+    assert.equal(pendingOAuth.json().data.state, "deleting");
+    assert.equal(pendingOAuth.json().data.consent.revocationRequestedBy, principal.id);
     // With no revision and only the model attached, the saved Slack slot alone protects its bearer.
     const slackBearerTemplate = await inject("POST", "/connection-templates", {
       namespaceId,

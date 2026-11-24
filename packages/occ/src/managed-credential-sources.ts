@@ -665,11 +665,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
             namespaceId,
             source.id,
           );
-          if (
-            blocking === "reference" ||
-            (source.connectionTemplateId !== undefined &&
-              (await savedPluginsReferenceSource(state, namespaceId, source.id)))
-          ) {
+          if (blocking === "reference") {
             throw new ResourceStateConflictError(
               "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
             );
@@ -677,6 +673,14 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           if (blocking === "withdrawal_work") {
             throw new CredentialWithdrawalInProgressError();
           }
+        }
+        if (
+          source.connectionTemplateId !== undefined &&
+          (await savedPluginsReferenceSource(state, namespaceId, source.id))
+        ) {
+          throw new ResourceStateConflictError(
+            "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
+          );
         }
         const deleting =
           source.state === "deleting"
