@@ -3,6 +3,7 @@ import {
   normalizePluginApprovers,
   normalizePluginDesiredState,
   pluginRuntimeHarnessRequirement,
+  type ConnectionTemplateVersion,
   type StoredCredentialSource,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
@@ -94,12 +95,14 @@ export async function validatePluginCredentialSources(
   plugins: PluginDesiredState | undefined,
   sources: readonly StoredCredentialSource[],
   harnessAuth?: HarnessAuthBinding | null,
+  templates?: ReadonlyMap<string, ConnectionTemplateVersion>,
 ): Promise<void> {
   if (plugins && Object.keys(plugins).length) {
     await driver?.credentials?.validate(
       plugins,
       sources,
       harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+      templates,
     );
   }
 }
@@ -133,6 +136,7 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
     driver: PluginDriver,
     plugins: PluginDesiredState | undefined,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    stagedPluginIds?: ReadonlySet<string>,
   ): void {
     if (plugins === undefined || Object.keys(plugins).length === 0) {
       return;
@@ -140,6 +144,7 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
     driver.validatePlacement?.(plugins, harness, dependencies.computeImplementation(), {
       sandbox: dependencies.sandboxImplementation(),
       gateway: dependencies.credentialGatewayImplementation(),
+      ...(stagedPluginIds === undefined ? {} : { stagedPluginIds }),
     });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {

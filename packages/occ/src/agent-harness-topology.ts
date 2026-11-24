@@ -49,6 +49,7 @@ interface AgentHarnessTopologyDependencies {
     driver: PluginDriver,
     plugins: PluginDesiredState | undefined,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    stagedPluginIds?: ReadonlySet<string>,
   ) => void;
   readonly validateRepositoryBrokerNetworkProxy: (
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
@@ -348,6 +349,7 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
       readonly workspaceSetup: boolean;
       readonly plugins: PluginDesiredState | undefined;
       readonly pluginDriver: PluginDriver | undefined;
+      readonly stagedPluginIds?: ReadonlySet<string>;
     },
     readConfiguration: () => Promise<Readonly<Configuration>>,
   ): Promise<void> {
@@ -378,7 +380,12 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
     }
     const harness = Object.freeze({ ...approved, mode: agent.executionMode });
     if (agent.pluginDriver) {
-      dependencies.validatePluginPlacement(agent.pluginDriver, agent.plugins, harness);
+      dependencies.validatePluginPlacement(
+        agent.pluginDriver,
+        agent.plugins,
+        harness,
+        agent.stagedPluginIds,
+      );
     }
     const values = agentRuntimeConfiguration(
       configuration.values,

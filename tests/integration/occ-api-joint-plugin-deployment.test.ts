@@ -712,7 +712,9 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       match.requestPolicy?.type === "http" &&
       match.requestPolicy.method === "GET",
   );
-  const action = gmailGet.find(({ match }) => match.requestPolicy?.path === "/gmail/v1/users/**");
+  const action = gmailGet.find(
+    ({ match }) => match.requestPolicy?.path === "/gmail/v1/users/me/messages",
+  );
   assert.ok(action);
   assert.ok(googleAccount.networkRequirementIds.includes(action.id));
   assert.deepEqual(googleAccount.toolIds, [action.toolId]);
@@ -731,8 +733,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       );
     }
   }
-  // This description covers the release before OCC intersects it with a source. Chat
-  // expands resource names across segments. A grant on /v1/** would also cover custom emojis.
+  // Parameterized Chat operations cannot become a broader credential-bearing subtree.
   const chatPaths = workspace.networkRequirements.flatMap(({ id, match }) =>
     googleAccount.networkRequirementIds.includes(id) &&
     match.host === "chat.googleapis.com" &&
@@ -741,9 +742,8 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       ? [match.requestPolicy.path]
       : [],
   );
-  assert.ok(chatPaths.includes("/v1/spaces/**"));
-  assert.ok(chatPaths.includes("/v1/users/**"));
-  assert.ok(!chatPaths.includes("/v1/**"));
+  assert.ok(chatPaths.includes("/v1/spaces"));
+  assert.ok(chatPaths.every((path) => !path.includes("*")));
   const release = record(
     JSON.parse(
       await readFile(new URL("oce-google-workspace/ai.openclaw.oce/release.json", catalog), "utf8"),

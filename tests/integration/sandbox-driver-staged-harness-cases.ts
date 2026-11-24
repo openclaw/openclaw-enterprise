@@ -900,12 +900,12 @@ ${NATIVE_WORKER_ENTRYPOINT}
     activeVersion: policyVersion,
     state: "POLICY_STATUS_LOADED",
   });
-  gateway.getSandboxConfig = async (workspace) => ({
-    workspace,
-    policy: policyRevision,
-    version: policyVersion,
-    configuration_admitted: true,
-  });
+  gateway.getSandboxConfig = async (workspace) => {
+    const effective = structuredClone(policyRevision);
+    // OpenShell marks the retained model endpoint when composing effective withdrawal evidence.
+    effective.network_policies["oce-agent-model"]!.endpoints[0]!.provider_credentialed = true;
+    return { workspace, policy: effective, version: policyVersion, configuration_admitted: true };
+  };
   assert.equal(
     (await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches,
     false,
@@ -1044,6 +1044,40 @@ ${NATIVE_WORKER_ENTRYPOINT}
   assert.equal(policyVersion, activeVersion + 1);
   await driver.withdrawStagedCredentialRoute(context, target.sandboxId, pluginBinding.bindingRef);
   assert.equal(policyVersion, activeVersion + 1, "a retry must observe the already reduced policy");
+
+  // The selected Proxy removes the withdrawn Provider. Recovery must keep the model and
+  // independent public discovery without recreating the Plugin's injection or exclusive route.
+  gateway.sandboxes.set(sandbox.name, {
+    ...gateway.sandboxes.get(sandbox.name)!,
+    spec: { ...gateway.sandboxes.get(sandbox.name)!.spec!, providers: [provider] },
+    resourceVersion: "3",
+  });
+  assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+  await driver.applyNetworkPolicy(context, {
+    snapshot: revision.sandboxPolicy!,
+    expectedProviderVersion: "3",
+    operationId: revision.id,
+  });
+  assert.deepEqual(policyRevision.network_policies, retainedNetworks);
+  await driver.prepareStagedHarness(context, [projections[0]!]);
+
+  // An absent required model blocks policy application even when optional Plugins were removed.
+  gateway.sandboxes.set(sandbox.name, {
+    ...gateway.sandboxes.get(sandbox.name)!,
+    spec: { ...gateway.sandboxes.get(sandbox.name)!.spec!, providers: [] },
+  });
+  assert.equal(
+    (await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches,
+    false,
+  );
+  await assert.rejects(
+    driver.applyNetworkPolicy(context, {
+      snapshot: revision.sandboxPolicy!,
+      expectedProviderVersion: "3",
+      operationId: revision.id,
+    }),
+    /required staged model Provider is absent/,
+  );
 
   await driver.cleanup({ ...fixture.context, revision });
   assert.equal(gateway.sandboxes.size, 0);

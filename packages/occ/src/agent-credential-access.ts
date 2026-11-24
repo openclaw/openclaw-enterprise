@@ -1,5 +1,10 @@
 import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
+import {
+  describePluginBindings,
+  pluginSourceIds,
+  type SelectedPluginBinding,
+} from "./plugin-credential-bindings.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
   MAX_AGENT_CREDENTIAL_SOURCES,
@@ -8,11 +13,14 @@ import {
   type Agent,
   type AgentCredentialSourceBinding,
   type ComputeDriver,
+  type ConnectionTemplateVersion,
+  type CredentialSource,
   type StoredCredentialSource,
   type CredentialSourceReference,
   type CredentialSourceSnapshot,
   type HarnessAuthBinding,
   type PluginDriver,
+  type PluginDeploymentDescription,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SecretBindings,
@@ -32,6 +40,7 @@ import {
 } from "./errors.ts";
 import { iamPolicyOperation, type IAMPolicyOperations } from "./iam-policy-operations.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
 
 type AgentOperateSource = SecretReference | CredentialSourceReference;
 
@@ -48,7 +57,7 @@ interface AgentCredentialAccessDependencies {
     CredentialSourceDrivers,
     "assertCredentialSourceOwnerSelected" | "credentialSourceOwner" | "credentialSourceType"
   >;
-  readonly requireTokenServiceOwner: (instanceId?: string) => void;
+  readonly requireTokenServiceOwner: (instanceId: string) => void;
   readonly offersProtectedType: (type: string) => boolean;
 }
 
@@ -93,7 +102,11 @@ export function assertHarnessSourceListed(
   }
 }
 
-function agentOperateSources(agent: Readonly<Agent>, secretBindings: SecretBindings) {
+function agentOperateSources(
+  agent: Readonly<Agent>,
+  secretBindings: SecretBindings,
+  pluginBindings: readonly SelectedPluginBinding[],
+) {
   const referenced = new Map<string, AgentOperateSource>();
   const add = (kind: AgentOperateSource["kind"], id: string): void => {
     referenced.set(`${kind}\u0000${id}`, { kind, namespaceId: agent.namespaceId, id });
@@ -111,6 +124,9 @@ function agentOperateSources(agent: Readonly<Agent>, secretBindings: SecretBindi
   }
   for (const { sourceId } of agent.credentialSources ?? []) {
     add("credential_source", sourceId);
+  }
+  for (const id of pluginSourceIds(pluginBindings)) {
+    add("credential_source", id);
   }
   return referenced.values();
 }
@@ -203,10 +219,162 @@ export function createAgentCredentialAccess({
     return sources;
   }
 
-  /**
-   * Freezes every source the Agent lists, including the one `harnessAuth` names. Each needs the
-   * Agent principal's `operate`, a ready record, and an offered source type.
-   */
+  /** An unrelated draft edit retains staged placement only while the Agent can use every selected Source. */
+  async function savedStagedPluginIds(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    bindings: readonly SelectedPluginBinding[],
+  ): Promise<ReadonlySet<string>> {
+    const staged = new Set(bindings.map(({ pluginId }) => pluginId));
+    for (const { pluginId, sourceId } of bindings) {
+      const { decision } = await authority.authorizationDecision(
+        agent.servicePrincipalId,
+        "operate",
+        {
+          kind: "credential_source",
+          namespaceId: agent.namespaceId,
+          id: sourceId,
+        },
+      );
+      if (!decision.allowed) {
+        staged.delete(pluginId);
+        continue;
+      }
+      const source = await state.credentialSources.findCredentialSource(
+        agent.namespaceId,
+        sourceId,
+      );
+      if (
+        !isManagedTokenServiceSource(source) ||
+        source.state !== "ready" ||
+        source.connectionTemplateId === undefined
+      ) {
+        staged.delete(pluginId);
+        continue;
+      }
+      try {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+      } catch (error) {
+        if (!(error instanceof DependencyUnavailableError)) {
+          throw error;
+        }
+        staged.delete(pluginId);
+      }
+    }
+    return staged;
+  }
+
+  /** Qualify readable Plugin Source metadata without using its credential. */
+  async function qualifyPluginCredentialSource(
+    state: PlatformReadView,
+    namespaceId: string,
+    source: Readonly<CredentialSource>,
+  ): Promise<ConnectionTemplateVersion> {
+    if (source.namespaceId !== namespaceId || source.state !== "ready") {
+      throw new ResourceStateConflictError(
+        "The Plugin connection requires a ready TokenService Source.",
+      );
+    }
+    requireTokenServiceOwner(source.tokenServiceInstanceId);
+    if (source.connectionTemplateId === undefined) {
+      throw new ResourceStateConflictError(
+        "The Plugin Source requires an associated Connection Template.",
+      );
+    }
+    const template = await state.connectionTemplates.findConnectionTemplate(
+      source.connectionTemplateId,
+    );
+    if (!template || (template.namespaceId !== undefined && template.namespaceId !== namespaceId)) {
+      throw new ResourceStateConflictError(
+        "The Plugin Source's Connection Template is unavailable.",
+      );
+    }
+    const current = template.current;
+    if (source.type === "static") {
+      if (current.mode !== "static_bearer") {
+        throw new ResourceStateConflictError(
+          "The static Plugin Source requires a static bearer Connection Template.",
+        );
+      }
+      return current;
+    }
+    if (
+      current.mode === "static_bearer" ||
+      source.consent.kind !== "connection_template" ||
+      source.consent.revocationRequestedBy !== undefined ||
+      source.consent.revokedAt !== undefined
+    ) {
+      throw new ResourceStateConflictError(
+        "The Plugin Source requires active consent for an OAuth Connection Template.",
+      );
+    }
+    const consent =
+      current.version === source.consent.version
+        ? current
+        : await state.connectionTemplates.findOAuthConnectionTemplateVersion(
+            template.id,
+            source.consent.version,
+          );
+    if (!consent) {
+      throw new ResourceStateConflictError(
+        "The Plugin Source's original OAuth consent version is unavailable.",
+      );
+    }
+    if (
+      current.mode !== consent.mode ||
+      current.issuer !== consent.issuer ||
+      current.tokenUrl !== consent.tokenUrl
+    ) {
+      throw new ResourceStateConflictError(
+        "Reconnect the Plugin Source after its Connection Template mode, issuer, or token endpoint changes.",
+      );
+    }
+    if (
+      current.mode === "mcp_discovery" &&
+      (!current.mcp ||
+        !consent.mcp ||
+        current.mcp.resource !== consent.mcp.resource ||
+        current.mcp.serverUrl !== consent.mcp.serverUrl)
+    ) {
+      throw new ResourceStateConflictError(
+        "The Plugin Source's MCP resource and server URL must match its original consent.",
+      );
+    }
+    return current;
+  }
+
+  /** Authorize each reported Source and resolve the Template version for this admission. */
+  async function authorizePluginCredentialSources(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    bindings: readonly SelectedPluginBinding[],
+    resolveSource: (sourceId: string) => Promise<Readonly<StoredCredentialSource> | undefined>,
+    attached: readonly StoredCredentialSource[] = [],
+  ) {
+    const sources = new Map(attached.map((source) => [source.id, source]));
+    const templates = new Map<string, ConnectionTemplateVersion>();
+    for (const sourceId of pluginSourceIds(bindings)) {
+      let source = sources.get(sourceId);
+      if (source === undefined) {
+        await authorizeSourceOperate(principalId, namespaceId, sourceId);
+        source = await resolveSource(sourceId);
+        // Gateway-backed selections continue to require their existing explicit attachment.
+        // Leave missing or unattached legacy Sources to the Plugin's slot validator.
+        if (!isManagedTokenServiceSource(source)) {
+          continue;
+        }
+      }
+      if (!isManagedTokenServiceSource(source)) {
+        continue;
+      }
+      templates.set(sourceId, await qualifyPluginCredentialSource(state, namespaceId, source));
+      sources.set(sourceId, source);
+    }
+    return { sources: [...sources.values()], templates };
+  }
+
+  /** Freeze explicit and Plugin-selected Sources after checking the Agent principal's exact grants. */
   async function admitCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -215,62 +383,89 @@ export function createAgentCredentialAccess({
     driver: PluginDriver | undefined,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
-  ): Promise<readonly CredentialSourceSnapshot[]> {
-    const bindings = agent.credentialSources ?? [];
-    if (bindings.length === 0) {
-      await validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
-      return [];
+    selected: readonly SelectedPluginBinding[],
+  ) {
+    const explicit = agent.credentialSources ?? [];
+    const attached =
+      explicit.length === 0
+        ? []
+        : await authorizeAgentCredentialSources(
+            state,
+            principalId,
+            agent.namespaceId,
+            explicit,
+            agent.harnessAuth,
+          );
+    const plugin = await authorizePluginCredentialSources(
+      state,
+      principalId,
+      agent.namespaceId,
+      selected,
+      (sourceId) => state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId),
+      attached,
+    );
+    const { sources } = plugin;
+    if (sources.length > MAX_AGENT_CREDENTIAL_SOURCES) {
+      throw new ScopeViolationError("The Agent revision has too many credential sources.");
     }
-    // A state refusal, so HTTP keeps the message instead of the generic "already exists".
-    if (sandbox === undefined) {
+    if (sources.length > 0 && sandbox === undefined) {
       throw new ResourceStateConflictError(
         "Agent credential sources require a selected Sandbox Driver.",
       );
     }
-    const sources = await authorizeAgentCredentialSources(
-      state,
-      principalId,
-      agent.namespaceId,
-      bindings,
+    await validatePluginCredentialSources(
+      driver,
+      agent.plugins,
+      sources,
       agent.harnessAuth,
+      plugin.templates,
     );
-    await validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
+    const staged = selected.filter(({ sourceId }) => plugin.templates.has(sourceId));
+    const descriptions =
+      staged.length > 0
+        ? await describePluginBindings(driver, agent.plugins, staged, sources)
+        : new Map<string, PluginDeploymentDescription>();
     const snapshots: CredentialSourceSnapshot[] = [];
-    for (const { sourceId } of bindings) {
+    for (const source of sources) {
+      const sourceId = source.id;
       await authority.authorizeAgentPrincipal(principalId, agent, "operate", {
         kind: "credential_source",
         namespaceId: agent.namespaceId,
         id: sourceId,
       });
-      const source = await state.credentialSources.lockCredentialSource(
-        agent.namespaceId,
-        sourceId,
-      );
-      if (source === undefined || source.state !== "ready") {
-        throw new ScopeViolationError("The credential source is unavailable.");
-      }
       compute.validateHarnessCredentialSources?.(harness, [source]);
       if (isManagedTokenServiceSource(source)) {
-        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        const current = plugin.templates.get(sourceId);
         snapshots.push({
           sourceId,
           tokenServiceInstanceId: source.tokenServiceInstanceId,
           sourceType: source.type,
+          ...(current && {
+            connectionTemplate: { id: current.templateId, version: current.version },
+          }),
         });
-        continue;
-      }
-      const owner = sourceDrivers.credentialSourceOwner(source);
-      if (owner.kind === "proxy") {
-        if (!offersProtectedType(source.type)) {
-          throw new CredentialSourceTypeNotOfferedError("proxy");
-        }
-        snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
       } else {
-        await sourceDrivers.credentialSourceType(owner.driver, source.type);
-        snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
+        const owner = sourceDrivers.credentialSourceOwner(source);
+        if (owner.kind === "proxy") {
+          if (!offersProtectedType(source.type)) {
+            throw new CredentialSourceTypeNotOfferedError("proxy");
+          }
+          snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
+        } else {
+          await sourceDrivers.credentialSourceType(owner.driver, source.type);
+          snapshots.push({
+            sourceId,
+            credentialGatewayId: owner.driver.id,
+            sourceType: source.type,
+          });
+        }
       }
     }
-    return immutableCopy(snapshots);
+    return {
+      snapshots: immutableCopy(snapshots),
+      descriptions,
+      templates: plugin.templates,
+    };
   }
 
   /** Returns the AccessBindings it created; existing exact grants are kept. */
@@ -356,6 +551,50 @@ export function createAgentCredentialAccess({
     return created;
   }
 
+  /** Ensure exact Source-use grants for every submitted Plugin selection. */
+  async function grantSelectedPluginSources(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    selected: readonly string[],
+  ): Promise<void> {
+    if (iamPolicy.occBindingDriver("createNamespaceAccessBinding") === undefined) {
+      return;
+    }
+    const created = await ensureAgentOperateGrants(
+      state,
+      agent.namespaceId,
+      agent,
+      selected.map((id) => ({ kind: "credential_source", namespaceId: agent.namespaceId, id })),
+    );
+    for (const binding of created) {
+      await state.audit.append({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId,
+        namespaceId: agent.namespaceId,
+        occurredAt: timestamp(),
+        kind: "mutation",
+        actorId: principalId,
+        source: "occ",
+        action: "openclaw.iam.access_bindings.create",
+        resource: {
+          kind: "credential_source",
+          id: binding.resourceId!,
+          namespaceId: agent.namespaceId,
+        },
+        outcome: "success",
+        details: {
+          bindingId: binding.id,
+          subjectKind: binding.subjectKind,
+          subjectId: binding.subjectId,
+          roleId: binding.roleId,
+          reason: "agent_plugin_selection",
+          agentId: agent.id,
+        },
+      });
+    }
+  }
+
   /**
    * A caller allowed to deploy the Agent gives its ServicePrincipal the exact operate grant it
    * lacks on each referenced Secret and credential source that the caller can operate, in the
@@ -367,12 +606,13 @@ export function createAgentCredentialAccess({
     principalId: string,
     agent: Readonly<Agent>,
     secretBindings: SecretBindings,
+    pluginBindings: readonly SelectedPluginBinding[] = [],
   ): Promise<void> {
     if (iamPolicy.occBindingDriver("createNamespaceAccessBinding") === undefined) {
       return;
     }
     const missing: AgentOperateSource[] = [];
-    for (const source of agentOperateSources(agent, secretBindings)) {
+    for (const source of agentOperateSources(agent, secretBindings, pluginBindings)) {
       const caller = (await authority.authorizationDecision(principalId, "operate", source))
         .decision;
       if (!caller.allowed) {
@@ -423,8 +663,12 @@ export function createAgentCredentialAccess({
   return {
     authorizeBoundCredentialSources,
     authorizeAgentCredentialSources,
+    authorizePluginCredentialSources,
+    qualifyPluginCredentialSource,
+    savedStagedPluginIds,
     admitCredentialSources,
     ensureAgentOperateGrants,
+    grantSelectedPluginSources,
     grantDeployedAgentSources,
   };
 }

@@ -513,6 +513,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     credentialRuntime?: {
       readonly sandbox: string | undefined;
       readonly gateway: string | undefined;
+      readonly stagedPluginIds?: ReadonlySet<string>;
     },
   ): void {
     const { managed, native } = splitOpenClawSelections(selections);
@@ -535,6 +536,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       selections,
       credentialRuntime?.sandbox,
       credentialRuntime?.gateway,
+      credentialRuntime?.stagedPluginIds,
     );
   }
 

@@ -7440,18 +7440,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         consumer.kind === "plugin" ? [consumer.pluginId] : [],
       ),
     );
-    const legacyPluginSelections =
-      stagedPluginIds.size === 0
-        ? revision.plugins?.plugins
-        : Object.fromEntries(
-            Object.entries(revision.plugins?.plugins ?? {}).filter(
-              ([pluginId]) => !stagedPluginIds.has(pluginId),
-            ),
-          );
     requireManagedCredentialRuntime(
-      legacyPluginSelections,
+      revision.plugins?.plugins,
       sandboxDriver?.implementation,
       this.credentialGatewayDriver?.implementation,
+      stagedPluginIds,
     );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
@@ -8419,28 +8412,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }
             }
           }
-          const credentialProjections =
-            serving || credentialActivationRequested
-              ? undefined
-              : (await context!.configureCredentialDeployment!(configuration, signal))
-                  .credentialProjections;
+          const { credentialProjections } = await context!.configureCredentialDeployment!(
+            configuration,
+            signal,
+          );
+          const projected = new Set(credentialProjections.map(({ bindingRef }) => bindingRef));
           if (
-            credentialProjections !== undefined &&
-            (credentialProjections.length !== staged.bindings.length ||
-              new Set(credentialProjections.map(({ bindingRef }) => bindingRef)).size !==
-                credentialProjections.length ||
-              credentialProjections.some((projection) => {
-                const binding = staged.bindings.find(
-                  ({ bindingRef }) => bindingRef === projection.bindingRef,
-                );
-                return (
-                  binding === undefined ||
-                  binding.projection.environment !== projection.environment ||
-                  (projection.placeholder.kind !== "runtime" &&
-                    (projection.placeholder.kind !== "proxy" ||
-                      !isNonEmptyString(projection.placeholder.value)))
-                );
-              }))
+            projected.size !== credentialProjections.length ||
+            staged.bindings.some(
+              ({ bindingRef, consumer }) => consumer.kind === "model" && !projected.has(bindingRef),
+            ) ||
+            credentialProjections.some((projection) => {
+              const binding = staged.bindings.find(
+                ({ bindingRef }) => bindingRef === projection.bindingRef,
+              );
+              return (
+                binding === undefined ||
+                binding.projection.environment !== projection.environment ||
+                (projection.placeholder.kind !== "runtime" &&
+                  (projection.placeholder.kind !== "proxy" ||
+                    !isNonEmptyString(projection.placeholder.value)))
+              );
+            })
           ) {
             throw new OwnershipFailure("The staged proxy returned invalid credential projections.");
           }
@@ -8469,7 +8462,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           if (network.state !== "applied" || !network.matches || injection.state !== "ready") {
             return incomplete();
           }
-          if (credentialProjections !== undefined) {
+          if (!serving && !credentialActivationRequested) {
             try {
               await sandboxDriver.prepareStagedHarness!(harnessContext, credentialProjections);
             } catch (error) {

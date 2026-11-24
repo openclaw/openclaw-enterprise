@@ -1,11 +1,15 @@
 import { pluginOwner } from "./agent-plugin-validation.ts";
+import type { AgentCredentialAccess } from "./agent-credential-access.ts";
+import { selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import { credentialGatewayOperation } from "./credential-source-drivers.ts";
 import { driverOperation } from "./driver-operation.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isSecretHarnessAuth,
+  pathCovered,
   type Agent,
   type Configuration,
+  type ConnectionTemplateVersion,
   type CredentialGatewayDriver,
   type StoredCredentialSource,
   type CredentialSourceContext,
@@ -59,6 +63,10 @@ export type ManagedMcpToolReader = (
   endpoint: string,
   accessToken: string,
   signal?: AbortSignal,
+  options?: {
+    readonly allowedMethods: readonly ("POST" | "GET" | "DELETE")[];
+    readonly beforeRequest: () => Promise<void>;
+  },
 ) => Promise<ReadonlySet<string>>;
 
 type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
@@ -81,6 +89,8 @@ interface PluginDiscoveryDependencies {
       }
     | undefined;
   readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly authorizePluginCredentialSources: AgentCredentialAccess["authorizePluginCredentialSources"];
+  readonly qualifyPluginCredentialSource: AgentCredentialAccess["qualifyPluginCredentialSource"];
   readonly secretDriver: (driverId: string) => SecretDriver;
   readonly readConfiguration: (
     metadata: ConfigurationOwnership,
@@ -91,6 +101,7 @@ interface PluginDiscoveryDependencies {
     driver: PluginDriver,
     plugins: PluginDesiredState,
     harness: Readonly<PluginHarness>,
+    stagedPluginIds?: ReadonlySet<string>,
   ) => void;
 }
 
@@ -471,21 +482,37 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       agentId,
       async ({ state, agent, driver }) => {
         const sources: StoredCredentialSource[] = [];
+        const templates = new Map<string, ConnectionTemplateVersion>();
         if (driver.credentials && agent.executionMode === "dedicated") {
-          for (const { sourceId } of agent.credentialSources ?? []) {
-            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
-            if (
-              (await canRead(principalId, ref)) &&
-              (await authorizationDecision(principalId, "operate", ref)).decision.allowed &&
-              (await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-                .allowed
-            ) {
-              const source = await state.credentialSources.findCredentialSource(
-                namespaceId,
-                sourceId,
-              );
-              if (source?.state === "ready") {
+          for (const source of await state.credentialSources.listCredentialSources(namespaceId)) {
+            const ref = { kind: "credential_source" as const, namespaceId, id: source.id };
+            if (source.state !== "ready" || !(await canRead(principalId, ref))) {
+              continue;
+            }
+            if (source.ownerCapability !== "token_service") {
+              if (
+                agent.credentialSources?.some(({ sourceId }) => sourceId === source.id) &&
+                (await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+                  .allowed
+              ) {
                 sources.push(source);
+              }
+              continue;
+            }
+            if (!source.connectionTemplateId) {
+              continue;
+            }
+            try {
+              const template = await dependencies.qualifyPluginCredentialSource(
+                state,
+                namespaceId,
+                source,
+              );
+              sources.push(source);
+              templates.set(source.id, template);
+            } catch (error) {
+              if (!(error instanceof ResourceStateConflictError)) {
+                throw error;
               }
             }
           }
@@ -494,7 +521,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
           ...(driver.credentials && agent.executionMode === "dedicated"
-            ? { credentialSlots: driver.credentials.choices(sources) }
+            ? { credentialSlots: driver.credentials.choices(sources, templates) }
             : {}),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });
@@ -683,29 +710,94 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
   ): Promise<PluginCatalogEntry> {
     const sourceRef = { kind: "credential_source" as const, id: connection.sourceId, namespaceId };
     const currentTarget = async () => {
-      await authorize(principalId, "operate", sourceRef);
       const target = await withSavedPluginTarget(
         principalId,
         namespaceId,
         agentId,
         async ({ state, namespace, agent, driver, harness }) => {
+          const callerAllowed = (await authorizationDecision(principalId, "operate", sourceRef))
+            .decision.allowed;
+          const saved = selectedPluginBindings(driver, agent.plugins).some(
+            (binding) =>
+              binding.pluginId === pluginId &&
+              binding.requirement === connection.slot &&
+              binding.connection === "default" &&
+              binding.sourceId === sourceRef.id,
+          );
+          if (!callerAllowed) {
+            if (!saved) {
+              await authorize(principalId, "operate", sourceRef);
+            }
+            await authorize(agent.servicePrincipalId, "operate", sourceRef);
+          }
           const source = await state.credentialSources.findCredentialSource(
             namespace.id,
             sourceRef.id,
           );
-          const target =
-            namespace.status === "ready" &&
-            source?.state === "ready" &&
-            agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-              ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
-              : undefined;
-          const secretRef =
-            source?.ownerCapability === "token_service" ? undefined : source?.secrets.token;
-          if (!target || !secretRef) {
+          if (namespace.status !== "ready" || source?.state !== "ready") {
             throw new ResourceStateConflictError(
-              "Choose a ready, compatible credential source from this Agent's saved credentials.",
+              "Choose a ready, compatible credential source for this Plugin slot.",
             );
           }
+          let template: ConnectionTemplateVersion | undefined;
+          let secretRef: SecretReference | undefined;
+          if (source.ownerCapability === "token_service") {
+            const qualified = await dependencies.authorizePluginCredentialSources(
+              state,
+              callerAllowed ? principalId : agent.servicePrincipalId,
+              namespaceId,
+              [
+                {
+                  pluginId,
+                  requirement: connection.slot,
+                  connection: "default",
+                  sourceId: source.id,
+                },
+              ],
+              async () => source,
+            );
+            template = qualified.templates.get(source.id);
+            if (!template) {
+              throw new ResourceStateConflictError(
+                "The Plugin Source has no approved Connection Template.",
+              );
+            }
+          } else {
+            if (
+              !callerAllowed ||
+              !agent.credentialSources?.some(({ sourceId }) => sourceId === source.id)
+            ) {
+              throw new ResourceStateConflictError(
+                "Choose a ready, compatible credential source from this Agent's saved credentials.",
+              );
+            }
+            await authorize(agent.servicePrincipalId, "operate", sourceRef);
+            secretRef = source.secrets.token;
+          }
+          const target = driver.credentials?.mcpToolDiscovery?.(
+            pluginId,
+            connection.slot,
+            source,
+            template,
+          );
+          if (!target || (source.ownerCapability !== "token_service" && !secretRef)) {
+            throw new ResourceStateConflictError(
+              "Choose a ready, compatible credential source for this Plugin slot.",
+            );
+          }
+          const endpoint = new URL(target.endpoint);
+          const methods =
+            template?.mode === "static_bearer"
+              ? (["POST", "GET", "DELETE"] as const).filter((method) =>
+                  template.destinations.some(
+                    (destination) =>
+                      destination.method === method &&
+                      destination.host === endpoint.hostname &&
+                      destination.port === Number(endpoint.port || 443) &&
+                      pathCovered(endpoint.pathname, destination.path),
+                  ),
+                )
+              : (["POST", "GET", "DELETE"] as const);
           return {
             driver,
             harness,
@@ -713,11 +805,10 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             secretRef,
             servicePrincipalId: agent.servicePrincipalId,
             ...target,
+            methods,
           };
         },
       );
-      await authorize(principalId, "operate", sourceRef);
-      await authorize(target.servicePrincipalId, "operate", sourceRef);
       return target;
     };
 
@@ -727,8 +818,9 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       throw new PluginDiscoveryError("invalid_response");
     }
     const selection = { [entry.id]: { enabled: true } };
-    dependencies.validatePluginPlacement(target.driver, selection, target.harness);
-    await authorize(principalId, "operate", sourceRef);
+    const staged =
+      target.source.ownerCapability === "token_service" ? new Set([pluginId]) : undefined;
+    dependencies.validatePluginPlacement(target.driver, selection, target.harness, staged);
     const validateCurrent = async () => {
       const current = await currentTarget();
       if (current.driver !== target.driver || !isDeepStrictEqual(current, target)) {
@@ -736,32 +828,57 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           "The Agent's plugin credential or catalog changed. Refresh and retry.",
         );
       }
-      dependencies.validatePluginPlacement(current.driver, selection, current.harness);
+      dependencies.validatePluginPlacement(current.driver, selection, current.harness, staged);
     };
-    const result = await invokePluginDiscovery(
-      target.driver,
-      async ({ accessToken }) => {
-        if (!accessToken) {
-          throw new PluginDiscoveryError("credentials_rejected");
-        }
-        const names = await readTools(target.endpoint, accessToken, signal);
-        return {
-          ...entry,
-          tools: [...names].map((name) => ({
-            id: name,
-            name,
-            ownerId: entry.id,
-          })),
-        };
-      },
-      // TODO(#4450): Acquire a usable managed MCP bearer through the Token Service once
-      // it supports these sources (#3811), and cover refresh of expired access tokens.
-      // Preserve the authorization recheck below; this direct Secret read requires a
-      // token that is already usable.
-      (invoke) => withPluginDiscoverySecret(namespaceId, target.secretRef, invoke),
-      validateCurrent,
-      signal,
-    );
+    let result: PluginCatalogEntry;
+    try {
+      result = await invokePluginDiscovery(
+        target.driver,
+        async ({ accessToken }) => {
+          if (!accessToken) {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          const names = await readTools(target.endpoint, accessToken, signal, {
+            allowedMethods: target.methods,
+            beforeRequest: validateCurrent,
+          });
+          return {
+            ...entry,
+            tools: [...names].map((name) => ({
+              id: name,
+              name,
+              ownerId: entry.id,
+            })),
+          };
+        },
+        async (invoke) => {
+          if (target.source.ownerCapability !== "token_service") {
+            return withPluginDiscoverySecret(namespaceId, target.secretRef!, invoke);
+          }
+          const source = target.source;
+          const owner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+          const deadline = AbortSignal.timeout(30_000);
+          const operation = signal ? AbortSignal.any([signal, deadline]) : deadline;
+          const resolved = await driverOperation(
+            () =>
+              owner.resolveCredential(
+                { sourceRef, tokenServiceInstanceId: source.tokenServiceInstanceId },
+                operation,
+              ),
+            "TokenService",
+          );
+          operation.throwIfAborted();
+          await validateCurrent();
+          return invoke({ accessToken: resolved.credential });
+        },
+        validateCurrent,
+        signal,
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      await validateCurrent();
+      throw error;
+    }
     await validateCurrent();
     return result;
   }
@@ -834,6 +951,17 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           };
         }
         const binding = harnessAuthBinding(agent.harnessAuth);
+        if (
+          credentialSource !== undefined &&
+          target.driver.discoveryCredential !== "none" &&
+          (binding?.method !== "credential_source" ||
+            binding.sourceId !== credentialSource.id ||
+            credentialSource.namespaceId !== namespaceId)
+        ) {
+          throw new ResourceStateConflictError(
+            "The selected credential source is not bound to this Agent's Harness.",
+          );
+        }
         const reference =
           credentialSource ??
           (binding?.method === "credential_source"

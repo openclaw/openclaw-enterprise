@@ -762,7 +762,7 @@ export interface AgentCredentialSourceBinding {
   readonly sourceId: string;
 }
 
-/** Private admission metadata for one non-model source frozen into a revision. */
+/** Private admission metadata for a credential Source frozen into a revision. */
 export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
@@ -771,14 +771,18 @@ export type CredentialSourceSnapshot = {
       readonly credentialGatewayId: string;
       readonly credentialProxyId?: never;
       readonly tokenServiceInstanceId?: never;
+      readonly connectionTemplate?: never;
     }
   | {
       readonly credentialProxyId: string;
       readonly credentialGatewayId?: never;
       readonly tokenServiceInstanceId?: never;
+      readonly connectionTemplate?: never;
     }
   | {
       readonly tokenServiceInstanceId: string;
+      /** The approved Template version used to admit this Source for a Plugin. */
+      readonly connectionTemplate?: { readonly id: string; readonly version: number };
       readonly credentialGatewayId?: never;
       readonly credentialProxyId?: never;
     }
@@ -1906,6 +1910,8 @@ export type {
   TokenServiceDeviceAuthorizationResult,
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
+
+export { intersectCredentialRequests } from "./deployment-request-match.ts";
 
 export {
   credentialProxyRoutingDetails,

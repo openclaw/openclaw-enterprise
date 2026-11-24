@@ -903,6 +903,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     environment: binding.projection.environment,
     placeholder: { kind: "proxy", value: `controlled-${binding.bindingRef}` },
   }));
+  let activeProjections = projections;
   const sandbox = {
     ...nativeSandboxIdentity(),
     async provisionHarness() {
@@ -970,7 +971,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     credentialSources: [pluginSource, modelSource],
     async configureCredentialDeployment(configuration) {
       assert.deepEqual(configuration.targetRef, target);
-      return { credentialProjections: projections };
+      return { credentialProjections: activeProjections };
     },
   };
   const fixture = dedicatedFirstDeployFixture({
@@ -1090,6 +1091,14 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     bindingRefs: [pluginBinding.bindingRef],
   };
   assert.deepEqual(removals, [removal, removal]);
+
+  // The trusted Worker omits the withdrawn optional binding on the next reconciliation.
+  activeProjections = projections.filter(
+    ({ bindingRef }) => bindingRef !== pluginBinding.bindingRef,
+  );
+  const continued = await fixture.prepare();
+  assert.equal(continued.preparedForCredentialActivation, true);
+  assert.deepEqual(prepared, activeProjections);
 });
 
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {

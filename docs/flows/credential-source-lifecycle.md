@@ -8,7 +8,7 @@ last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
 
 ## Overview
 
-An operator registers a credential with TokenService and selects its Source for an Agent. OpenClaw Control Plane (OCC) authorizes the Source, checks the model destination against the saved network permission, and records the approved policy in an Agent revision. Compute, Worker, Sandbox, and Credential Proxy then prepare the credential route before starting the Harness. The [credential reference](../reference/credential-sources.md#intended-credential-flow) describes the broader proposed model and plugin design; its [status table](../reference/credential-sources.md#implementation-status) separates current support from remaining work.
+OpenClaw Control Plane (OCC) authorizes selected Sources and records approved policy in the Agent revision. Compute, Worker, Sandbox, and Credential Proxy prepare credential delivery before Harness startup. See the [credential reference](../reference/credential-sources.md#intended-credential-flow) and [current limits](../reference/credential-sources.md#implementation-status).
 
 ## Entry Points
 
@@ -25,8 +25,9 @@ graph TD
   Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
   Register --> Associate["<b>OCC</b><br/>Grant creator access and audit"]
   Associate --> Kind{"Template-associated Source?"}
-  Kind -->|Yes| Discover["<b>OCC</b><br/>Expose associated Template ID; Plugin admission remains pending"]
-  Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize model Source and save policies"]
+  Kind -->|Yes| Discover["<b>OCC</b><br/>Resolve current Template for a selected Plugin Source"]
+  Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize Sources and save policies"]
+  Discover --> Admit
   Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
   Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
@@ -62,7 +63,7 @@ OCC authorizes `credential_source:create` on a ready Namespace and validates any
 
 The same POST accepts Gateway and protected Proxy requests. OCC checks the owner and access to referenced Secrets before registration. See [existing Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
 
-Template OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the authorization code, and calls the selected TokenService registration boundary with the grant and `connection_template` consent. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. `connectionTemplateId` retains the Template ID; `consent` retains the original Template version and OAuth client. See [Source metadata](../reference/credential-sources.md#read-and-list-sources). Resolving the current Template version during Plugin credential admission remains pending.
+OCC exchanges the authorization code from the [Template consent workflow](connection-templates.md#3-authorize-the-account-in-the-browser). TokenService then creates the OAuth Source and stores the tokens. OCC grants access and audits completion. The Source’s `connectionTemplateId` identifies the Template. `OAuthCredentialSource.consent` keeps the original consent version and client. Each new Plugin deployment resolves that Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 
 For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks the exact Agent and Source creation permissions, then stores the temporary challenge and issuer handle in `authentication_states`. After authorization, the selected TokenService exchanges the grant and asks OCC to recheck the session, caller, and selected owner before it creates the built-in OAuth Source and takes custody of the tokens. OCC grants the creator access, audits completion, and returns the Source ID. Cancelling an ungranted login creates no Source.
 
@@ -72,7 +73,7 @@ For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks t
 
 `packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`, `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 
-The caller binds a ready Source in the same Namespace and selects it for Harness authentication. OCC verifies the Source owner, the provider's authorized destination, the caller's and Agent's Source permissions, and one matching saved network grant within the Installation ceiling. OCC records the Source reference and separate network and per-binding injection policies in the Agent revision. An unsupported or ambiguous route is refused before deployment work is created.
+The caller binds a ready Source in the same Namespace and selects it for Harness authentication. OCC verifies the Source owner, the provider's authorized destination, the caller's and Agent's Source permissions, and one matching saved network grant within the Installation ceiling. OCC records the Source reference and separate network and per-binding injection policies in the Agent revision. For a Plugin connection, OCC also checks the requests reported by the Plugin Driver against the current Source Template. The [native qualifier](../../apps/controller/src/composition/openshell-credential-admission.ts) compiles the complete proposed policy against the selected Sandbox defaults. OCC refuses an unsupported or ambiguous policy before it saves a revision or queues deployment.
 
 <a id="4-resolve-the-source-at-dispatch"></a>
 <a id="pending-native-integration"></a>
@@ -87,7 +88,7 @@ OpenShell Proxy creates or reuses a Provider per projection, resolving each Sour
 
 For a built-in Codex account, OCC freezes three fixed requests in one Model binding. Worker projects the authorized account metadata with the placeholder; Compute and Sandbox receive no access or refresh token. See the [native policy limits](../reference/credential-sources.md#implementation-status).
 
-Sandbox compiles frozen HTTP and managed MCP bindings and refuses unenforceable overlaps. Compute waits for Sandbox policy and Proxy readiness. The [Proxy Driver reference](../reference/drivers/credential-proxy.md) owns MCP exceptions.
+Sandbox compiles frozen HTTP and managed MCP bindings. Managed MCP checks exact RPC and selected tool rules at the reviewed endpoint. Sandbox refuses overlaps with credential-free routes and broad Plugin grants it cannot preserve. A sole model route keeps its established endpoint for recovery. Compute checks Harness authentication support and waits for Sandbox policy and Proxy readiness during preparation. See the [Proxy Driver reference](../reference/drivers/credential-proxy.md) for MCP exceptions.
 
 ### 4. Activate and stop the Agent
 
@@ -101,7 +102,9 @@ On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absen
 
 `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
 
-OCC checks `agent:operate` on the exact Agent, saves a pending withdrawal for each affected Agent revision, and queues Worker reconciliation in the same transaction. That record denies further admitted or routed use of the Source before native reconciliation begins. Worker checks each withdrawal requester’s current authority. Compute asks the selected native Credential Proxy to remove the admitted binding from the recorded target. The paired Sandbox Driver derives the reduced policy from the Agent revision, applies it, and checks that the loaded and effective policies no longer permit the credential destination. Proxy then detaches the Provider and checks the corresponding receipt. For a present Sandbox, `REVOKED` confirms native revocation. Proxy can also complete removal when it independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves the withdrawal pending with `DEPENDENCY_UNAVAILABLE` for retry or operator replay.
+OCC checks exact `agent:operate`, records each pending revision withdrawal, and queues reconciliation in one transaction. Worker rechecks the requester. Compute asks Proxy to remove the binding from its recorded target. Sandbox verifies the reduced injection policy and removes exclusive network access while retaining independently approved routes. Proxy detaches the Provider and confirms a `REVOKED` receipt or Sandbox absence. Unconfirmed removal stays pending with `DEPENDENCY_UNAVAILABLE`.
+
+Worker derives active bindings from the immutable revision and confirmed withdrawals. It omits a revoked optional Plugin binding during retry and maintenance. Pending withdrawal, a missing required model, or failed policy or Provider readiness prevents activation. After the reduced policy loads, Proxy reports readiness as pending until the supervisor reports the Gateway’s current Provider-environment fingerprint.
 
 After confirmed detachment of each binding for the Source, Proxy attempts to retire those delivery Providers and profiles. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
 
@@ -136,7 +139,7 @@ For each authorized Source, OCC sends Proxy its exact reference and TokenService
 
 #### Retire the Source
 
-OCC refuses Source deletion with `409` while an Agent or revision still references it, before changing the Source, its OAuth revocation intent, or custody. An Agent operator can withdraw the credential and retire or replace the revision and saved references. Once the Source is unreferenced, OCC records any OAuth revocation intent and asks the selected Proxy to retire delivery copies before TokenService removes custody. On a Proxy failure, DELETE returns `503` and retains the Source and custody for retry; the OAuth worker can also retry pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+Before retirement, OCC checks stored Agent, revision, deployment and provisioning references. For Template-backed Sources it also asks the saved Plugin Drivers which Sources their slots select. A blocking reference returns `409` before OCC changes the Source, records OAuth revocation intent or touches custody. An authorized Agent operator can withdraw a deployed binding and remove the remaining references. Once clear, OCC records any OAuth revocation intent and asks the selected Proxy to retire delivery copies before TokenService removes custody. OpenShell requires prior detachment. A Proxy failure returns `503` and retains custody for retry. The OAuth worker also retries pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
 ## Debugging and Verification
 
@@ -182,6 +185,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 - 2026-11-23 13:39: Describe native aggregate HTTP Plugin delivery and its admission proof boundary. (authoring-run/e1b79e98-189c-4036-9eec-f550acf642b9 - 44e86dc26055e434c3690e8601c66d52e6ef0968)
 
 - 2026-11-23 13:30: Trace canonical static and OAuth Source creation through the selected TokenService and remove the separate association and saved connection. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
+
+- 2026-11-23 08:44: Trace Plugin selection of a Template-associated Source. (authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536 - 5dcfdf664)
 
 - 2026-11-23 08:04: Distinguish Template consent from the fixed built-in Codex OAuth preset. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
 

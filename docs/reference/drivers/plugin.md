@@ -59,12 +59,18 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
-  `choices(sources)` returns each slot with the attached ready sources that
-  match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
-  capabilities. `validate(selections, sources, modelSourceId)` refuses a
-  binding that names no matching attached source, or the source that
-  authenticates the model. OCC calls it at Agent create, update, provisioning,
-  and deployment.
+  For a dedicated Agent, OCC passes `choices(sources)` the ready Sources in
+  `Agent.credentialSources` that the caller can read and operate and the Agent
+  service principal can operate. OCC returns matching choices in `credentialSlots`.
+  A caller needs exact Source `operate` when saving a selection.
+  `selectedBindings({pluginId, selection})` reports Source IDs keyed by requirement
+  and connection. The OpenClaw Driver uses the `default` connection for each
+  selected slot. OCC uses these IDs to authorize and resolve each Source before
+  it asks the Driver to validate the selection or describe deployment.
+  `validate(selections, sources, modelSourceId)` checks the reviewed release and
+  slot and refuses the Source that authenticates the model. OCC checks the
+  [Template and consent](../credential-sources.md#bind-a-source-to-an-agent) for
+  credential-bearing requests.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

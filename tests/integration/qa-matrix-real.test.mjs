@@ -210,6 +210,17 @@ test(
         "openshell-git-model",
       );
     }
+    if (selection.optionalPluginWithdrawal) {
+      const { verifyOpenShellOptionalPluginWithdrawal } =
+        await import("../helpers/openshell-optional-plugin-withdrawal.ts");
+      await stage(
+        context,
+        "kubernetes/OpenClaw/OpenShell",
+        "optional Slack withdrawal preserves other native bindings and Source custody",
+        () => verifyOpenShellOptionalPluginWithdrawal(context),
+        "openshell-optional-plugin-withdrawal",
+      );
+    }
     if (selection.oidcAgentChat) {
       const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
       await stage(

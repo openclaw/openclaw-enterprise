@@ -95,6 +95,8 @@ alias, the existing Secret, and `OCE_MODEL_API_KEY` for a real model turn.
 `OCC_TEST_QA_OPENAI_KEY_FILE`, and `OCC_TEST_QA_OPENAI_MODEL`. Its disposable stack
 uses a controlled Git origin and real model provider.
 
+`openshell-optional-plugin-withdrawal`: native optional Plugin withdrawal.
+
 ### Harness destination overrides
 
 `harness-overrides` runs dedicated Codex and OpenClaw on Kubernetes/OpenShell. It deploys two Agents with

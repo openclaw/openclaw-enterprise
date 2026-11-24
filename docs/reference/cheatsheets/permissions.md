@@ -127,13 +127,17 @@ operation was not authorized.`
 - Model discovery for Agent creation requires `agent:create` in the exact
   Namespace. The supplied API key or service account token is used transiently; no resource is created.
 - [Checking an Agent create](../api.md#post-namespacesnamespaceidagentsvalidate) before saving
-  requires `agent:create` in the exact Namespace and creates nothing.
+  requires `agent:create` in the exact Namespace and `credential_source:operate` on
+  each Source submitted at a Plugin connection. The check creates no resources or grants.
 - [Create](../api.md#post-namespacesnamespaceidagents), [update](../api.md#patch-namespacesnamespaceidagentsagentid), and
   [deploy an Agent](../api.md#post-namespacesnamespaceidagentsagentiddeploy) also
   require `configuration:read`, `service_account:read` for current or new
   associations, `secret:operate` for bound Secrets, and `credential_source:operate`
-  for each source in `credentialSources`. At
-  deployment the Agent’s own service principal also needs `secret:operate` on each
+  for attached Sources. Create and deploy check every selected Plugin Source. An update
+  that submits Plugin selections checks both old and new Plugin Sources. An update that
+  submits `credentialSources` also checks the selected Plugin Sources. With Native IAM,
+  saving a selection grants the Agent service principal `operate` on the exact Source.
+  At deployment the Agent’s own service principal also needs `secret:operate` on each
   bound Secret and `credential_source:operate` on each source. The deploy
   [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
   for each source the caller can operate.

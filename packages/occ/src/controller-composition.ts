@@ -482,7 +482,10 @@ function createCredentialServices({
   installationId: string;
   stateAndAuthority: ReturnType<typeof createStateAndAuthority>;
   secretDriver: ReturnType<typeof createSecretOperations>["secretDriver"];
-  drivers: Pick<DriverRegistry, "hasSelection" | "selectedProxyOwner" | "selection">;
+  drivers: Pick<
+    DriverRegistry,
+    "hasSelection" | "selectedProxyOwner" | "selection" | "enabledPluginDrivers"
+  >;
   publicController: Pick<
     ControllerDispatch,
     | "selectedDriver"
@@ -575,6 +578,7 @@ function createCredentialServices({
     preparedIssuer,
     clock: resourceValues.now,
     selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+    pluginDrivers: () => drivers.enabledPluginDrivers(),
     retireDelivery: async (namespace, source, signal) => {
       if (!drivers.hasSelection("credential_proxy_delivery")) {
         return;
@@ -882,6 +886,8 @@ export function createControllerComposition(
     transactions,
     authority,
     authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
+    authorizePluginCredentialSources: agentCredentialAccess.authorizePluginCredentialSources,
+    qualifyPluginCredentialSource: agentCredentialAccess.qualifyPluginCredentialSource,
     sourceReader: pluginSourceReader,
     ownedTokenServiceDriver: (instanceId) =>
       managedCredentialSources.ownedTokenServiceDriver(instanceId),
@@ -992,6 +998,7 @@ export function createControllerComposition(
     harnessAuth: harnessAuthOperations,
     repositoryPolicy,
     validateSavedAgentTopology,
+    pluginDrivers: () => drivers.enabledPluginDrivers(),
     validateAgentPlugins: agentPlugins.validateAgentPlugins,
     guardAgentProvisioning: (state, namespaceId, agentId) =>
       provisioningWorker.guardAgentProvisioning(state, namespaceId, agentId),

@@ -102,7 +102,7 @@ The [implementation status](../credential-sources.md#implementation-status) list
 
 ## Read and list sources
 
-Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable. POST, PATCH, GET, and list return `connectionTemplateId` when a static association exists. They do not return a Template version. Updating the Template preserves the Source association; PATCH cannot change the associated ID. Plugin credential admission against the Template's current version remains pending; see [implementation status](../credential-sources.md#implementation-status).
+Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable. POST, PATCH, GET, and list return `connectionTemplateId` when a static association exists. They do not return a Template version. Updating the Template preserves the Source association; PATCH cannot change the associated ID. Plugin admission checks the Template's current version; see [implementation status](../credential-sources.md#implementation-status) for slot and delivery limits.
 
 ## Update a source
 

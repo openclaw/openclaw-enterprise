@@ -984,6 +984,7 @@ function revisionFromRow(
       namespaceId: metadata.namespaceId,
       executionAdmission,
       harnessAuth,
+      ...(admitted.plugins === undefined ? {} : { plugins: admitted.plugins }),
       ...(admitted.credential_deployment === undefined
         ? {}
         : { credentialDeployment: admitted.credential_deployment }),
@@ -4360,7 +4361,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           ...(found.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
         });
       },
-      createRevision: async (input, firstDeploymentDigest) => {
+      createRevision: async (input, firstDeploymentDigest, selectedPluginBindings) => {
         const revision = immutableCopy(input);
         await this.requireInitialized(context);
         try {
@@ -4402,7 +4403,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             decodeQueryRows(
               await client.query(
                 `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability,
-                        cs.driver_id, cs.token_service_instance_id
+                        cs.driver_id, cs.token_service_instance_id, cs.connection_template_id
                    FROM occ.credential_sources AS cs
                    JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                    WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
@@ -4415,6 +4416,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
+              ...(row.connection_template_id == null
+                ? {}
+                : { connectionTemplateId: text(row, "connection_template_id") }),
               ...(row.driver_id == null ? {} : { driverId: text(row, "driver_id") }),
               ...(row.token_service_instance_id == null
                 ? {}
@@ -4429,7 +4433,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           revision.gatewayManagedMode !== owner.gatewayManagedMode ||
           !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-          !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+          !credentialSourcesMatch(owner, revision, selectedPluginBindings)
         ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
         }
