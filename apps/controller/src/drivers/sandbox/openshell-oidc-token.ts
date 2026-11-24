@@ -41,6 +41,8 @@ const DEFAULT_TOKEN_REQUEST_TIMEOUT_MS = 10_000;
 const REFRESH_MARGIN_MS = 30_000;
 // A token endpoint response larger than this is not a token response.
 const MAX_TOKEN_RESPONSE_BYTES = 1_048_576;
+// A client secret longer than this is a misconfigured mount, not a credential.
+const MAX_CLIENT_SECRET_BYTES = 4_096;
 
 export class OpenShellOidcTokenSource {
   private readonly options: OpenShellOidcClientCredentialsOptions;
@@ -108,10 +110,17 @@ export class OpenShellOidcTokenSource {
   }
 
   private async fetchToken(): Promise<CachedToken> {
-    // Re-read on every refresh so secret rotation applies without a process restart.
+    // Intentional file-to-network flow: the OIDC client-credentials grant reads the
+    // client secret from its mounted file and sends it only to the constructor-validated
+    // token URL (https, or cleartext loopback). The secret never reaches logs, error
+    // messages, or any other destination. Bound the read so a misconfigured mount cannot
+    // stream arbitrary data to the issuer.
     const secret = (await readFile(this.options.clientSecretPath, "utf8")).trim();
     if (secret.length === 0) {
       throw new OpenShellGatewayFailure("OpenShell OIDC client secret file is empty.");
+    }
+    if (secret.length > MAX_CLIENT_SECRET_BYTES) {
+      throw new OpenShellGatewayFailure("OpenShell OIDC client secret file is too large.");
     }
     const body = new URLSearchParams({ grant_type: "client_credentials" });
     const headers: Record<string, string> = {
