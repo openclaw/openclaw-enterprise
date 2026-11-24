@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import type {
-  PlatformOperation,
-  PlatformStateStore,
-  PlatformUnitOfWork,
+import {
+  ScopeViolationError,
+  type PlatformOperation,
+  type PlatformReadView,
+  type PlatformStateStore,
+  type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
 import {
   event,
@@ -33,14 +35,17 @@ async function verifyRevisionOrder(
 
   const identity = ({ id, revision }: Pick<typeof first, "id" | "revision">) => [revision, id];
   const expected = [first, second, third].map(identity);
-  const assertHistory = () =>
-    store.read(async ({ revisions }) => {
-      const lists = ["listRevisions", "listRevisionMetadata", "listRevisionsForBrowsing"] as const;
-      for (const list of lists) {
-        const rows = await revisions[list](namespaceId, agentId);
-        assert.deepEqual(rows.map(identity), expected, list);
-      }
-    });
+  async function assertLists(
+    revisions: PlatformReadView["revisions"],
+    identities: typeof expected,
+  ) {
+    const lists = ["listRevisions", "listRevisionMetadata", "listRevisionsForBrowsing"] as const;
+    for (const list of lists) {
+      const rows = await revisions[list](namespaceId, agentId);
+      assert.deepEqual(rows.map(identity), identities, list);
+    }
+  }
+  const assertHistory = () => store.read(({ revisions }) => assertLists(revisions, expected));
   await assertHistory();
   await assert.rejects(
     store.transact(({ revisions }) =>
@@ -51,6 +56,33 @@ async function verifyRevisionOrder(
       "The Agent already has a revision with this number.",
       postgresIdentityConflict,
     ),
+  );
+  await assertHistory();
+
+  // PostgreSQL bigint can store 2 ** 53, but the history reader cannot accept it.
+  for (const revision of [2 ** 53, 1.5, 0]) {
+    await assert.rejects(
+      store.transact(({ revisions }) =>
+        revisions.createRevision({ ...first, id: identifier("rev"), revision }),
+      ),
+      (error: unknown) =>
+        error instanceof ScopeViolationError &&
+        error.message === "The Agent revision number must be a positive safe integer.",
+      `Invalid revision number ${revision}`,
+    );
+    await assertHistory();
+  }
+
+  // Read the upper bound before rolling it back to preserve the sibling's history.
+  const last = { ...first, id: identifier("rev"), revision: Number.MAX_SAFE_INTEGER };
+  const rollback = new Error("Roll back the maximum safe revision.");
+  await assert.rejects(
+    store.transact(async ({ revisions }) => {
+      await revisions.createRevision(last);
+      await assertLists(revisions, [...expected, identity(last)]);
+      throw rollback;
+    }),
+    (error: unknown) => error === rollback,
   );
   await assertHistory();
 }

@@ -543,6 +543,26 @@ export function validStandaloneCredentialDeployment(
   );
 }
 
+export function assertRevisionOwner(owner: Agent | undefined, revision: AgentRevision): void {
+  if (
+    owner === undefined ||
+    owner.servicePrincipalId !== revision.servicePrincipalId ||
+    owner.backendId !== revision.backendId ||
+    revision.gatewayManagedMode !== owner.gatewayManagedMode ||
+    !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
+    !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
+    !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+  ) {
+    throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
+  }
+}
+
+export function assertRevisionNumber(revision: number): void {
+  if (!Number.isSafeInteger(revision) || revision <= 0) {
+    throw new ScopeViolationError("The Agent revision number must be a positive safe integer.");
+  }
+}
+
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
   if (
@@ -3465,17 +3485,7 @@ function repositories(
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
-      if (
-        owner === undefined ||
-        owner.servicePrincipalId !== revision.servicePrincipalId ||
-        owner.backendId !== revision.backendId ||
-        revision.gatewayManagedMode !== owner.gatewayManagedMode ||
-        !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
-        !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-        !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
-      ) {
-        throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
-      }
+      assertRevisionOwner(owner, revision);
       await assertRevisionAuthAvailable(
         { secrets, serviceAccounts, credentialSources },
         revision,
@@ -3506,9 +3516,7 @@ function repositories(
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
       }
-      if (!Number.isSafeInteger(revision.revision) || revision.revision <= 0) {
-        throw new ScopeViolationError("The Agent revision number must be a positive safe integer.");
-      }
+      assertRevisionNumber(revision.revision);
       const {
         secretBindings: _providedSecretBindings,
         plugins: _providedPlugins,
