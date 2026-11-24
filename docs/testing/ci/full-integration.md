@@ -27,7 +27,10 @@ receipt before starting the full suite. Missing admission metadata fails visibly
 Manual dispatch selects one supported `lane` or `all` on `main` and requires the
 dispatcher's [team approval](configuration.md#environments). The ordinary PR
 and merge-group checks still provide targeted premerge feedback. QA Advisory
-has its own schedule.
+has its own schedule. [Release OCE](../../release/README.md) calls Full Integration
+with `lane=all` for the selected commit in protected `main` history and
+requires a successful aggregate for that SHA in its own run. Release
+runs do not count toward scheduled coverage.
 
 ## Scenarios
 

@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { releaseWorkflow } from "./container-release/admission.ts";
 import {
   github,
   githubPages,
@@ -49,6 +51,11 @@ async function verifyPreparation(env: NodeJS.ProcessEnv) {
   assert.match(env.PREPARATION_ATTEMPT ?? "", /^[1-9][0-9]*$/);
   const runPath = `repos/${repository}/actions/runs/${env.PREPARATION_RUN_ID}`;
   const runResponse: unknown = await github(runPath);
+  assert.notEqual(
+    property(runResponse, "path"),
+    releaseWorkflow,
+    "Use Release OCE recovery for images prepared by Release OCE.",
+  );
   const workflow: unknown = await github(
     `repos/${repository}/actions/workflows/container-publish.yml`,
   );
@@ -74,14 +81,18 @@ async function verifyPreparation(env: NodeJS.ProcessEnv) {
     `${runPath}/attempts/${env.PREPARATION_ATTEMPT}/jobs`,
     "jobs",
   );
-  const nativeJobs: unknown[] = images.flatMap((image) => [
+  const nativeJobs = images.flatMap((image) => [
     `prepare / Prepare ${image} (amd64)`,
     `prepare / Prepare ${image} (arm64)`,
     `Assemble ${image} OCI image`,
   ]);
   nativeJobs.push("prepare / Smoke runtime (amd64)", "prepare / Smoke runtime (arm64)");
   for (const name of ["validate", ...nativeJobs]) {
-    const selected = jobs.filter((job) => property(job, "name") === name);
+    // Older Enterprise Containers runs assembled images in the caller.
+    const selected = jobs.filter((job) => {
+      const jobName = property(job, "name");
+      return jobName === name || (name.startsWith("Assemble ") && jobName === `prepare / ${name}`);
+    });
     assert.equal(selected.length, 1, `Exactly one successful ${name} job is required.`);
     assert.equal(property(selected[0], "head_sha"), env.SOURCE_SHA);
     assert.equal(property(selected[0], "status"), "completed");
