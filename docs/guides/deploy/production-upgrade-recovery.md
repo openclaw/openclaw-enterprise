@@ -21,10 +21,10 @@ chart and equivalent candidates. Resume checks images, nodes, live state,
 both Secret UIDs and data on a [reference switch](immutable-installation-upgrade.md),
 and `controller-compatibility-results.json` when selected.
 
-For runtime upgrades, freeze Configuration generations, Harness source bindings
-and destination authorization through writer shutdown. Resume rechecks them
-before first cutover while both writers serve. Reconcile forecast refusals and
-prepare with fresh evidence.
+For runtime upgrades, freeze Configuration generations, Harness authentication,
+Agent source bindings and destination authorization through writer shutdown.
+Resume rechecks destinations before cutover while both writers serve. Resolve
+refusals before preparing fresh evidence.
 
 Confirm completion against live state if output or markers are missing. Preserve
 `completed` markers, which block resume before live access. Clean up without

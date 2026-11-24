@@ -101,22 +101,29 @@ clearTimeout(identityDeadline);
 
 // The only input to this query is the caller's recorded selection. The joined
 // rows must still match the exact active revision, draft and Harness binding.
-// Pre-migration sources can predate owner_capability. Match the registered
-// Gateway ID below and leave ownership and grants to actual admission.
+// Read the draft's sources, which can differ from the active revision's snapshots.
+// Before migration 0050, the Harness source was the only stored binding.
+// Older sources lack owner_capability. Leave ownership and grants to admission.
 // An older valid Harness summary omitted overrides when none were recorded.
 const destinationQuery = `SELECT r.namespace_id, r.agent_id, r.id AS revision_id,
     cs.id AS source_id, cs.type AS source_type, cs.driver_id,
-    CASE WHEN cs.type = 'openai'
-      AND jsonb_typeof(r.admitted_spec #> '{harness,id}') = 'string'
+    CASE WHEN jsonb_typeof(r.admitted_spec #> '{harness,id}') = 'string'
       AND jsonb_typeof(r.admitted_spec #> '{harness,version}') = 'string'
       AND r.admitted_spec #>> '{harness,mode}' IN ('embedded', 'dedicated')
       AND COALESCE(jsonb_typeof(r.admitted_spec #> '{harness,configuration}'), 'object') = 'object'
       THEN COALESCE((r.admitted_spec #> '{harness,overrides}')::text, '{}')
     END AS overrides,
-    CASE WHEN cs.type = 'openai' AND jsonb_typeof(cs.config) = 'object' THEN (
-      (CASE WHEN cs.config ? 'base_url' THEN jsonb_build_object('base_url', cs.config -> 'base_url') ELSE '{}'::jsonb END) ||
-      (CASE WHEN cs.config ? 'authorized_base_url' THEN jsonb_build_object('authorized_base_url', cs.config -> 'authorized_base_url') ELSE '{}'::jsonb END)
-    )::text END AS config
+    (SELECT COALESCE(jsonb_agg(CASE
+        WHEN bound.state = 'ready' AND jsonb_typeof(bound.config) = 'object' THEN (
+          (CASE WHEN bound.config ? 'base_url' THEN jsonb_build_object('base_url', bound.config -> 'base_url') ELSE '{}'::jsonb END) ||
+          (CASE WHEN bound.config ? 'authorized_base_url' THEN jsonb_build_object('authorized_base_url', bound.config -> 'authorized_base_url') ELSE '{}'::jsonb END)
+        ) END ORDER BY attachment.position), '[]'::jsonb)::text
+      FROM jsonb_array_elements(COALESCE(to_jsonb(a) -> 'credential_sources',
+        jsonb_build_array(jsonb_build_object('sourceId', cs.id))))
+        WITH ORDINALITY AS attachment(binding, position)
+      JOIN occ.credential_sources bound ON bound.namespace_id = a.namespace_id
+        AND bound.id = attachment.binding ->> 'sourceId'
+      WHERE bound.type = 'openai') AS openai_configs
   FROM jsonb_to_recordset($1::jsonb) AS target(
     namespace_id text, agent_id text, revision_id text, source_id text,
     configuration_id text, generation bigint, execution_mode text
@@ -155,10 +162,13 @@ async function checkHarnessDestinations(client) {
     for (const agent of agents) {
       const row = byAgent.get(agent.agentId);
       if (!row || row.namespace_id !== agent.namespaceId || row.revision_id !== agent.destination.revisionId ||
-          row.source_id !== agent.destination.sourceId || typeof row.source_type !== "string" || !row.source_type) {
+          row.source_id !== agent.destination.sourceId || typeof row.source_type !== "string" || !row.source_type ||
+          typeof row.openai_configs !== "string") {
         throw new Error();
       }
-      if (row.source_type === "openai") openAiAgents.push({ agent, row });
+      const configs = JSON.parse(row.openai_configs);
+      if (!Array.isArray(configs) || (row.source_type === "openai" && configs.length === 0)) throw new Error();
+      if (configs.length > 0) openAiAgents.push({ agent, row, configs });
     }
     if (openAiAgents.length > 0) {
       await checkOpenAiHarnessDestinations(openAiAgents);
@@ -175,9 +185,10 @@ async function checkHarnessDestinations(client) {
 async function checkOpenAiHarnessDestinations(targets) {
   const gateway = drivers.credentialGatewayDriver;
   if (!gateway || targets.some(({ row }) => row.driver_id !== gateway.id)) throw new Error();
-  const sourceType = (await gateway.listSourceTypes({ signal: AbortSignal.timeout(5000) }))
-    .find((type) => type.type === "openai");
-  if (sourceType?.harnessAuth?.loginMode !== "api_key") throw new Error();
+  const sourceTypes = await gateway.listSourceTypes({ signal: AbortSignal.timeout(5000) });
+  if (sourceTypes.find((type) => type.type === "openai")?.harnessAuth?.loginMode !== "api_key") {
+    throw new Error();
+  }
   const { resolveConfiguredHarnessId } = await import("/app/packages/occ/src/configured-harness.ts");
   const { resolveApprovedProductionHarness } = await import("/app/apps/controller/src/composition/production-harness.ts");
   const { requireModelSourceDestination, savedModelProvider } = await import(
@@ -186,13 +197,10 @@ async function checkOpenAiHarnessDestinations(targets) {
   const { StoredCredentialSourceConfigError } = await import("/app/packages/occ/src/errors.ts");
   const { asRecord } = await import("/app/packages/utils/src/index.ts");
   let refused = false;
-  for (const { agent, row } of targets) {
+  for (const { agent, row, configs } of targets) {
     const overrides = typeof row.overrides === "string" && asRecord(JSON.parse(row.overrides));
-    const config = typeof row.config === "string" && asRecord(JSON.parse(row.config));
-    if (!overrides || !config || Object.entries(config).some(([key, value]) =>
-      (key !== "base_url" && key !== "authorized_base_url") || typeof value !== "string")) {
-      throw new Error();
-    }
+    const sourceType = sourceTypes.find((type) => type.type === row.source_type);
+    if (!overrides || !sourceType?.harnessAuth) throw new Error();
     const values = drafts.configurations[agent.configurationId];
     const harness = resolveApprovedProductionHarness(resolveConfiguredHarnessId(values), agent.destination.mode);
     if (!harness) throw new Error();
@@ -207,15 +215,24 @@ async function checkOpenAiHarnessDestinations(targets) {
       },
       values,
     );
-    try {
-      requireModelSourceDestination(config, savedModelProvider(resolved));
-    } catch (error) {
-      if (!(error instanceof StoredCredentialSourceConfigError)) throw error;
-      const message = error.field === "base_url"
-        ? "The bound OpenAI source still has config.base_url. Review its replacement and config.authorized_base_url before upgrading."
-        : "The bound OpenAI source's config.authorized_base_url does not authorize the retained Harness destination. Before upgrading, use occ agent deploy --harness-overrides to deploy and settle a revision with an explicitly authorized destination, or stop and settle this Agent.";
-      reportDraftRefusal(agent, message);
-      refused = true;
+    const provider = savedModelProvider(resolved);
+    for (const value of configs) {
+      const config = asRecord(value);
+      if (!config || Object.entries(config).some(([key, field]) =>
+        (key !== "base_url" && key !== "authorized_base_url") || typeof field !== "string")) {
+        throw new Error();
+      }
+      try {
+        requireModelSourceDestination(config, provider);
+      } catch (error) {
+        if (!(error instanceof StoredCredentialSourceConfigError)) throw error;
+        const message = error.field === "base_url"
+          ? "A bound OpenAI source still has config.base_url. Review its replacement and config.authorized_base_url before upgrading."
+          : "A bound OpenAI source's config.authorized_base_url does not authorize the retained Harness destination. Remove unintended bindings or deploy and settle a revision with a destination that every bound OpenAI source authorizes, or stop and settle this Agent.";
+        reportDraftRefusal(agent, message);
+        refused = true;
+        break;
+      }
     }
   }
   if (refused) process.exit(1);

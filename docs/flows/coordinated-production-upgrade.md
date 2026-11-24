@@ -82,15 +82,16 @@ graph TD
 ### 1. Prepare the candidate
 
 `installationUpgradeCommand` runs `scripts/upgrade-production:main`.
-Status reads markers. Plan checks profile, images and HEAD.
+Plan checks profile, images and HEAD.
 `profile_input` opens the profile and receipt together. Operators authenticate
 the receipt. `published_image_pair` checks package, digest, source, tag, run and
 attempt. Resume and migration apply use journal-bound digests. Apply and
 resume recheck approval, inputs and HTTPS trust.
 
-Both entry points refuse active kubectl preferences. Snapshots disable
-defaults and refuse selected exec or `auth-provider` credentials. Recovery
-rechecks profile target, CA and parameters under lock.
+Both entrypoints refuse active kubectl preferences. Exec plugins require an
+approved environment that already disables preferences. Private snapshots
+refuse built-in `auth-provider` entries. Profiled recovery rechecks the target,
+CA and parameters under lock.
 
 Before `prepare_upgrade`, refuse alternate Helm stores,
 [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
@@ -128,14 +129,14 @@ reads and records revision and Driver roles.
 
 Repository credentials require immutable images and common node architecture.
 `upgrade-image-identity.py:read_platform` verifies OCI hashes (2 MiB per blob,
-32 MiB total). The repository probe runs before preparation and resume. Its
-negative control requires an absent socket and confirmed clean broker exit.
+32 MiB total). The probe runs before preparation and resume. Its negative
+control requires an absent socket and confirmed nonzero broker exit
+without OOM or daemon error.
 
-For immutable switches, `prepare_upgrade` validates both Secrets, unrelated
-data and candidate YAML. Evidence binds both snapshots. Stage a successor
-using `--candidate-values` when immutable data changes. Prepared attempts keep
-their recorded Secret. Denied mutable Secret update reviews block. Inconclusive
-reviews warn.
+For immutable switches, `prepare_upgrade` checks Secrets, unrelated data
+and candidate YAML. Evidence binds snapshots. Stage a successor with
+`--candidate-values` for immutable data changes. Prepared attempts keep their
+Secret. Denied mutable Secret update reviews block. Inconclusive reviews warn.
 
 `preflight_startup` previews Certificates (45 seconds for a 30-second webhook).
 Refusal leaves writers serving and preserves diagnostics.
@@ -167,10 +168,11 @@ Log reads check Job and Pod identities, refuse NUL and report up to 32 fields.
 
 Kubernetes Compute uses the Pod service account and refuses single-cluster
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-Some images and inputs over 1 MiB defer draft checks. For retained Harness
-destinations, `checkHarnessDestinations` binds the Agent revision, Configuration
-generation and Harness source. Invalid bindings, refused or incomplete forecasts,
-and oversized source-backed drafts block shutdown. Deployment rechecks authorization.
+Some images and inputs over 1 MiB defer draft checks. `checkHarnessDestinations`
+binds the active revision, Configuration generation and Harness source. It checks
+all draft OpenAI sources against the candidate destination. Invalid bindings,
+refused or incomplete forecasts, and oversized source-backed drafts block shutdown.
+Deployment rechecks authorization.
 
 Two-cluster Jobs check API Pod, proxy and optional log/Event access and worker
 Pod patch and Job get, create and delete access. Missing grants require the

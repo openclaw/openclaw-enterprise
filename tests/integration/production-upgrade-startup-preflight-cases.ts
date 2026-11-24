@@ -3286,13 +3286,18 @@ exec "$0.fixture" "$@"
 
   async function retainedHarnessFixture(
     t: TestContext,
-    scenarios: readonly { name: string; override?: string; allowed: string }[],
+    scenarios: readonly {
+      name: string;
+      override?: string;
+      allowed: string;
+      additionalOpenAi?: string;
+    }[],
   ) {
     const provider = (baseUrl: string) => ({ protocol: "openai-responses", baseUrl });
     const { backend, drivers } = createCredentialProxyInstallationConfiguration();
     const gateway = drivers.credential_gateway;
     const tenant = restartInventory().namespaces[0]!;
-    const entries = scenarios.map(({ name, override, allowed }) => {
+    const entries = scenarios.map(({ name, override, allowed, additionalOpenAi }) => {
       const agent = {
         ...tenant.agents[0]!,
         id: `agt_${name}`,
@@ -3309,7 +3314,7 @@ exec "$0.fixture" "$@"
         overrides: JSON.stringify(override ? { modelProvider: provider(override) } : {}),
         config: JSON.stringify({ authorized_base_url: allowed }),
       };
-      return { agent, row };
+      return { agent, row, additionalOpenAi };
     });
     const agents = entries.map(({ agent }) => agent);
     const rows = entries.map(({ row }) => row);
@@ -3349,7 +3354,15 @@ exec "$0.fixture" "$@"
       databaseAnswer: (query) => {
         if (query.includes("occ.agent_revisions")) {
           forecasts += 1;
-          return { rows };
+          return {
+            rows: entries.map(({ row: { config, ...row }, additionalOpenAi }) => ({
+              ...row,
+              openai_configs: JSON.stringify([
+                JSON.parse(config),
+                ...(additionalOpenAi ? [{ authorized_base_url: additionalOpenAi }] : []),
+              ]),
+            })),
+          };
         }
         return { rows: [{ id: "ins_test" }] };
       },
@@ -3382,9 +3395,13 @@ exec "$0.fixture" "$@"
     if (skipWithoutHelm(t, realHelm)) {
       return;
     }
-    // Only the inherited destination without matching consent should refuse.
+    // The active revision used the primary source. A second source was saved on the draft.
     const { f, rows } = await retainedHarnessFixture(t, [
-      { name: "mismatch", allowed: retainedHarnessExplicitUrl },
+      {
+        name: "mismatch",
+        allowed: retainedHarnessDefaultUrl,
+        additionalOpenAi: retainedHarnessExplicitUrl,
+      },
       { name: "matching", allowed: retainedHarnessDefaultUrl },
       {
         name: "explicit",

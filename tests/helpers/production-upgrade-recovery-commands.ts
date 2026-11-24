@@ -1383,16 +1383,12 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         } else {
           const identity = optionalField(state.deploymentIdentities, component);
           const generation = optionalField(identity, "generation") ?? 1;
-          const reportedGeneration =
-            component === "worker" && take("report-worker-generation-drift")
-              ? journalInteger(generation, "Deployment generation", 1) + 1
-              : generation;
           out({
             metadata: {
               name: "openclaw-enterprise-" + component,
               uid: optionalField(identity, "uid") ?? component + "-deployment-uid",
               resourceVersion: optionalField(identity, "resourceVersion") ?? "1",
-              generation: reportedGeneration,
+              generation,
               labels: {
                 "app.kubernetes.io/instance": state.release,
                 "app.kubernetes.io/component": component,
@@ -1581,8 +1577,15 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             ) &&
             take("drift-worker-generation-after-drain")
           ) {
-            // The empty Pod list confirms drain. Only the next worker read reports drift.
-            writeFileSync(join(root, "report-worker-generation-drift"), "");
+            // Another actor edits the stopped Worker Deployment's spec without starting Pods.
+            const worker = record(
+              field(state.deploymentIdentities, "worker"),
+              "Worker Deployment identity",
+            );
+            worker.generation =
+              journalInteger(worker.generation, "Worker Deployment generation", 1) + 1;
+            worker.resourceVersion = String(Number(worker.resourceVersion) + 1);
+            save();
           }
           out({
             items:
