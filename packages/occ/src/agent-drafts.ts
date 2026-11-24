@@ -114,7 +114,7 @@ interface AgentDraftDependencies {
   >;
   readonly repositoryPolicy: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
-    "repositorySettings" | "reconcileAgentBindings"
+    "repositorySettings" | "reconcileAgentBindings" | "validateRepositoryClientSelection"
   >;
   readonly validateSavedAgentTopology: ReturnType<typeof createSavedAgentTopologyValidator>;
   readonly pluginDrivers: () => readonly PluginDriver[];
@@ -524,6 +524,11 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       );
       const { repositoryBindings, repositoryAccess } =
         dependencies.repositoryPolicy.repositorySettings(namespace.id, input);
+      await dependencies.repositoryPolicy.validateRepositoryClientSelection(principalId, {
+        namespaceId: namespace.id,
+        ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
+        ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+      });
       await dependencies.validateSavedAgentTopology(
         resolveHarness,
         {
@@ -951,6 +956,19 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         settings === undefined ? undefined : (settings.repositoryBindings ?? []);
       const repositoryAccess =
         settings === undefined ? undefined : (settings.repositoryAccess ?? null);
+      if (settings !== undefined) {
+        await dependencies.repositoryPolicy.validateRepositoryClientSelection(
+          principalId,
+          {
+            namespaceId: namespace.id,
+            ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
+            ...(settings.repositoryAccess === undefined
+              ? {}
+              : { repositoryAccess: settings.repositoryAccess }),
+          },
+          agent.repositoryAccess?.githubAppClientId,
+        );
+      }
       // The pair as it will be stored. A pending workspace setup is delivered by the first
       // deployment, so it is checked against the Configuration this update names. A completed
       // setup is delivered by every deployment, so it is checked when the update names another

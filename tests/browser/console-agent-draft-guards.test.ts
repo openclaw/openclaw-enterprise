@@ -1374,21 +1374,17 @@ async function openRepositoryCreate(
 const firstRepositoryDeploymentWarning =
   /Deploying without a repository policy can require a new Agent to add per-repository access later\./;
 
-test("Console requires a registered GitHub App Client before it can enroll a repository Source", async (t) => {
+test("Console requires a registered GitHub App Client for per-repository Agent access", async (t) => {
   const { page, requests, fixture, namespaceId, tooling } = await openRepositoryCreate(t);
-  await repositoryCheckbox(page, tooling.repository).click();
-  const source = page.getByLabel("GitHub Source", { exact: true });
-  await source.waitFor();
   assert.equal(pathRequests(requests, "GET", "/oauth-clients").length, 0);
-
-  // Client administration is requested only after the administrator chooses enrollment.
   const catalog = responseTo(page, "GET", fixture.origin + "/oauth-clients");
-  await source.selectOption("new");
+  await repositoryCheckbox(page, tooling.repository).click();
   assert.equal((await catalog).status(), 200);
   await page
-    .getByText("Register a GitHub App Client in Credentials before creating a GitHub Source.")
+    .getByText("Register a GitHub App Client in Credentials before saving repository access.")
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Create GitHub Source" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Save Agent draft" }).isDisabled(), true);
+  assert.equal(await page.getByLabel("GitHub Source", { exact: true }).count(), 0);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespaceId}/credential-sources`).length,
     0,
@@ -1624,7 +1620,7 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   assert.equal(admitted.status(), 202, await admitted.text());
 });
 
-test("Create Agent retains per-repository choices and requires a covering Git Source before save", async (t) => {
+test("Create Agent retains per-repository choices and requires a GitHub App Client before save", async (t) => {
   const { fixture, namespaceId, app, tooling, page, requests, agents, mode } =
     await openRepositoryCreate(t);
   // A retained draft may rebuild its form; the selected policy mode and narrower choices survive.
@@ -1646,12 +1642,15 @@ test("Create Agent retains per-repository choices and requires a covering Git So
   await repositoryCheckbox(page, tooling.repository).check();
   const access = page.getByLabel(`GitHub access for ${tooling.repository}`);
   assert.equal(await mode.inputValue(), "scoped");
-  assert.deepEqual(await access.locator("option").allTextContents(), ["Read-only", "Contributor"]);
+  assert.deepEqual(await access.locator("option").allTextContents(), [
+    "Read-only Git",
+    "Read/write Git",
+  ]);
   assert.equal(await access.inputValue(), "write");
   const save = page.getByRole("button", { name: "Save Agent draft" });
   await page
     .getByText(
-      "Select a GitHub Source that covers the selected repositories before saving the Agent draft.",
+      "Select a GitHub App Client and approved repository access before saving the Agent draft.",
     )
     .waitFor();
   assert.equal(await save.isDisabled(), true);
@@ -1673,7 +1672,7 @@ test("Create Agent retains per-repository choices and requires a covering Git So
   for (const name of [app.repository, "example/limited"]) {
     const select = page.getByLabel(`GitHub access for ${name}`);
     assert.equal(await select.inputValue(), "read");
-    assert.deepEqual(await select.locator("option").allTextContents(), ["Read-only"]);
+    assert.deepEqual(await select.locator("option").allTextContents(), ["Read-only Git"]);
   }
   await repositoryCheckbox(page, "example/limited").uncheck();
   assert.equal(await repositoryCheckbox(page, "example/outside").isDisabled(), true);
@@ -1682,7 +1681,7 @@ test("Create Agent retains per-repository choices and requires a covering Git So
   await mode.selectOption("scoped");
   assert.equal(await access.inputValue(), "read");
 
-  // The narrower choices remain selected, but no Agent can be created without a covering Source.
+  // The narrower choices remain selected, but no Agent can be created without a registered Client.
   assert.equal(await save.isDisabled(), true);
   assert.equal(pathRequests(requests, "POST", agents).length, 0);
   assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);

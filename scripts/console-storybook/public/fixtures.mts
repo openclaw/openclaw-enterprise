@@ -798,49 +798,6 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             credentialSources.set(id, saved);
             return response(saved, 201);
           }
-          if (input.type === "github-app-installation") {
-            const refs = Array.isArray(input.repositoryRefs) ? input.repositoryRefs : [];
-            const selected = refs.map((ref) =>
-              scenario.repositoryOptions?.find((option) => option.repositoryRef === ref),
-            );
-            if (
-              typeof input.name !== "string" ||
-              input.clientId !== "ccr_00000000-0000-4000-8000-000000000008" ||
-              !refs.length ||
-              refs.length > 16 ||
-              selected.some((option) => !option?.githubAccess)
-            ) {
-              return error(
-                400,
-                "INVALID_REQUEST",
-                "Select an App Client and approved GitHub repositories.",
-              );
-            }
-            const id = nextId("cs");
-            const saved: StoredCredentialSource = {
-              id,
-              namespaceId,
-              name: input.name,
-              type: "github-app-installation",
-              clientId: input.clientId,
-              state: "ready",
-              createdAt,
-              ref: { kind: "credential_source", namespaceId, id },
-              scope: {
-                appId: "12345",
-                installationId: "456",
-                repositories: selected.map((option, index) => ({
-                  repositoryId: String(789 + index),
-                  repository: option!.githubAccess!.repository.includes("/")
-                    ? option!.githubAccess!.repository
-                    : `example/${option!.githubAccess!.repository}`,
-                })),
-                permissions: { contents: "write", metadata: "read" },
-              },
-            };
-            credentialSources.set(id, saved);
-            return response(saved, 201);
-          }
           const material = input.secret;
           if (
             input.type !== "static" ||

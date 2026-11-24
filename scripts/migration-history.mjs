@@ -174,6 +174,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 98 && completedCount > 98) {
     return "preCodexPatSourceAdoption";
   }
+  if (count === 99 && completedCount > 99) {
+    return "preAgentRepositoryClientIntent";
+  }
   if (count === completedCount) {
     return "completed";
   }

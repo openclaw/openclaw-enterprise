@@ -17057,7 +17057,7 @@
                               "plugins": { "$ref": "#/components/schemas/def-6" },
                               "repositoryAccess": {
                                 "additionalProperties": false,
-                                "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                                "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                                 "properties": {
                                   "defaultProfile": {
                                     "maxLength": 128,
@@ -17065,10 +17065,20 @@
                                     "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                                     "type": "string"
                                   },
+                                  "githubAppClientId": {
+                                    "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
                                   "repositories": {
                                     "items": {
                                       "additionalProperties": false,
                                       "properties": {
+                                        "access": {
+                                          "anyOf": [
+                                            { "const": "read", "type": "string" },
+                                            { "const": "write", "type": "string" }
+                                          ]
+                                        },
                                         "profile": {
                                           "maxLength": 128,
                                           "minLength": 1,
@@ -17349,7 +17359,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources, named by a credential-source harnessAuth, or selected at a Plugin connection.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires administer permission on the Installation when selecting or changing the Agent's GitHub App Client. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources, named by a credential-source harnessAuth, or selected at a Plugin connection.",
         "operationId": "createAgent",
         "parameters": [
           {
@@ -17590,7 +17600,7 @@
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
                     "additionalProperties": false,
-                    "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                     "properties": {
                       "defaultProfile": {
                         "maxLength": 128,
@@ -17598,10 +17608,20 @@
                         "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                         "type": "string"
                       },
+                      "githubAppClientId": {
+                        "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
                       "repositories": {
                         "items": {
                           "additionalProperties": false,
                           "properties": {
+                            "access": {
+                              "anyOf": [
+                                { "const": "read", "type": "string" },
+                                { "const": "write", "type": "string" }
+                              ]
+                            },
                             "profile": {
                               "maxLength": 128,
                               "minLength": 1,
@@ -17921,7 +17941,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -17929,10 +17949,20 @@
                               "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                               "type": "string"
                             },
+                            "githubAppClientId": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "repositories": {
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
                                   "profile": {
                                     "maxLength": 128,
                                     "minLength": 1,
@@ -18121,6 +18151,12 @@
           {
             "action": "administer",
             "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
+          {
+            "action": "administer",
+            "condition": "github_app_client_selection",
             "resourceKind": "installation",
             "scope": "installation"
           },
@@ -20166,7 +20202,7 @@
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
                     "additionalProperties": false,
-                    "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                     "properties": {
                       "defaultProfile": {
                         "maxLength": 128,
@@ -20174,10 +20210,20 @@
                         "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                         "type": "string"
                       },
+                      "githubAppClientId": {
+                        "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
                       "repositories": {
                         "items": {
                           "additionalProperties": false,
                           "properties": {
+                            "access": {
+                              "anyOf": [
+                                { "const": "read", "type": "string" },
+                                { "const": "write", "type": "string" }
+                              ]
+                            },
                             "profile": {
                               "maxLength": 128,
                               "minLength": 1,
@@ -21990,7 +22036,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -21998,10 +22044,20 @@
                               "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                               "type": "string"
                             },
+                            "githubAppClientId": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "repositories": {
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
                                   "profile": {
                                     "maxLength": 128,
                                     "minLength": 1,
@@ -22447,7 +22503,7 @@
                             "plugins": { "$ref": "#/components/schemas/def-6" },
                             "repositoryAccess": {
                               "additionalProperties": false,
-                              "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                              "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                               "properties": {
                                 "defaultProfile": {
                                   "maxLength": 128,
@@ -22455,10 +22511,20 @@
                                   "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                                   "type": "string"
                                 },
+                                "githubAppClientId": {
+                                  "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
                                 "repositories": {
                                   "items": {
                                     "additionalProperties": false,
                                     "properties": {
+                                      "access": {
+                                        "anyOf": [
+                                          { "const": "read", "type": "string" },
+                                          { "const": "write", "type": "string" }
+                                        ]
+                                      },
                                       "profile": {
                                         "maxLength": 128,
                                         "minLength": 1,
@@ -22736,7 +22802,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Submitting Plugin selections also checks current and submitted Plugin Sources; submitting credentialSources checks the selected Plugin Sources. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
+        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires administer permission on the Installation when selecting or changing the Agent's GitHub App Client. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Submitting Plugin selections also checks current and submitted Plugin Sources; submitting credentialSources checks the selected Plugin Sources. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -22975,7 +23041,7 @@
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
                     "additionalProperties": false,
-                    "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                     "properties": {
                       "defaultProfile": {
                         "maxLength": 128,
@@ -22983,10 +23049,20 @@
                         "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                         "type": "string"
                       },
+                      "githubAppClientId": {
+                        "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
                       "repositories": {
                         "items": {
                           "additionalProperties": false,
                           "properties": {
+                            "access": {
+                              "anyOf": [
+                                { "const": "read", "type": "string" },
+                                { "const": "write", "type": "string" }
+                              ]
+                            },
                             "profile": {
                               "maxLength": 128,
                               "minLength": 1,
@@ -23336,7 +23412,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -23344,10 +23420,20 @@
                               "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                               "type": "string"
                             },
+                            "githubAppClientId": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "repositories": {
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
                                   "profile": {
                                     "maxLength": 128,
                                     "minLength": 1,
@@ -23536,6 +23622,12 @@
           {
             "action": "administer",
             "condition": "gateway_managed_mode_changed",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
+          {
+            "action": "administer",
+            "condition": "github_app_client_selection",
             "resourceKind": "installation",
             "scope": "installation"
           },
@@ -25635,7 +25727,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists, names in harnessAuth, or selects at a Plugin connection. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists, names in harnessAuth, or selects at a Plugin connection. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions, saved GitHub App repository access, or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires operate permission on the exact CredentialSource used for the Agent's saved GitHub App repository access. Requires create permission on the CredentialSource collection when deployment needs to create a GitHub App Source. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -26284,13 +26376,25 @@
             "condition": "explicit_repository_network_policy",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "github_app_source_for_deployment",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          },
+          {
+            "action": "create",
+            "condition": "github_app_source_missing",
+            "resourceKind": "credential_source",
+            "scope": "namespace"
           }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy-first": {
       "post": {
-        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists, names in harnessAuth, or selects at a Plugin connection. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection.",
+        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists, names in harnessAuth, or selects at a Plugin connection. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions, saved GitHub App repository access, or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires operate permission on the exact CredentialSource used for the Agent's saved GitHub App repository access. Requires create permission on the CredentialSource collection when deployment needs to create a GitHub App Source. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection.",
         "operationId": "deployAgentFirst",
         "parameters": [
           {
@@ -26596,6 +26700,20 @@
             "phase": "fresh_admission",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "github_app_source_for_deployment",
+            "phase": "fresh_admission",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          },
+          {
+            "action": "create",
+            "condition": "github_app_source_missing",
+            "phase": "fresh_admission",
+            "resourceKind": "credential_source",
+            "scope": "namespace"
           }
         ]
       }
@@ -36438,7 +36556,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -36446,10 +36564,20 @@
                               "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                               "type": "string"
                             },
+                            "githubAppClientId": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "repositories": {
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
                                   "profile": {
                                     "maxLength": 128,
                                     "minLength": 1,
@@ -37192,7 +37320,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -37200,10 +37328,20 @@
                               "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                               "type": "string"
                             },
+                            "githubAppClientId": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "repositories": {
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
                                   "profile": {
                                     "maxLength": 128,
                                     "minLength": 1,

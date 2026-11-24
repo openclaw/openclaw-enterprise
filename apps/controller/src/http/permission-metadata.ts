@@ -15,6 +15,9 @@ export interface RequiredPermission {
     | "provisioning_work"
     | "gateway_managed_mode_disabled"
     | "gateway_managed_mode_changed"
+    | "github_app_client_selection"
+    | "github_app_source_for_deployment"
+    | "github_app_source_missing"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "selected_plugin_source"
@@ -225,6 +228,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         ),
       );
     }
+    if (operationId === "createAgent" || updating) {
+      permissions.push(
+        requirement("administer", "installation", "installation", "github_app_client_selection"),
+      );
+    }
     if (operationId === "validateAgentCreate") {
       permissions.push(
         requirement("operate", "credential_source", "request_body", "bound_credential_source"),
@@ -276,6 +284,13 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       permissions.push(
         requirement("manage_policy", "agent", "requested", "explicit_repository_network_policy"),
         requirement("update", "sandbox_policy", "requested", "explicit_repository_network_policy"),
+        requirement(
+          "operate",
+          "credential_source",
+          "requested",
+          "github_app_source_for_deployment",
+        ),
+        requirement("create", "credential_source", "namespace", "github_app_source_missing"),
       );
     }
     if (operationId === "deployAgentFirst") {
@@ -362,6 +377,15 @@ function permissionDescription(
       if (condition === "gateway_managed_mode_changed") {
         return `Requires ${action} permission on the ${name} when the request changes the Agent's saved gatewayManagedMode setting.`;
       }
+      if (condition === "github_app_client_selection") {
+        return `Requires ${action} permission on the ${name} when selecting or changing the Agent's GitHub App Client.`;
+      }
+      if (condition === "github_app_source_for_deployment") {
+        return `Requires ${action} permission on the exact ${name} used for the Agent's saved GitHub App repository access.`;
+      }
+      if (condition === "github_app_source_missing") {
+        return `Requires ${action} permission on the ${name} collection when deployment needs to create a GitHub App Source.`;
+      }
       if (condition === "selected_secret") {
         return `Requires ${action} permission on the exact same-Namespace ${name} when a Secret reference is supplied.`;
       }
@@ -393,10 +417,10 @@ function permissionDescription(
         return `Requires ${action} permission on each ${name} the Agent lists, names in harnessAuth, or selects at a Plugin connection.`;
       }
       if (condition === "saved_sandbox_policy_for_deployment") {
-        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions or an explicit repository network policy list, including an empty list.`;
+        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions, saved GitHub App repository access, or an explicit repository network policy list, including an empty list.`;
       }
       if (condition === "explicit_repository_network_policy") {
-        return `Requires ${action} permission on the exact ${name} when the Agent has an explicit repository network policy list, including an empty list.`;
+        return `Requires ${action} permission on the exact ${name} when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list.`;
       }
       if (condition === "saved_sandbox_policy_additions") {
         return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`;

@@ -1727,6 +1727,8 @@ const RETRY_LATER_MESSAGES = Object.freeze({
     "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.",
   proxyRegistration: () =>
     "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.",
+  githubRepositoryEnrollment: () =>
+    "GitHub access could not be prepared. Verify that the registered GitHub App is installed for the selected repositories, then retry.",
 });
 
 /**
@@ -1742,7 +1744,7 @@ export class RetryLaterError extends DependencyUnavailableError {
   readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
-  constructor(reason: "proxyRegistration");
+  constructor(reason: "proxyRegistration" | "githubRepositoryEnrollment");
   constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail?: unknown) {
     super(
       RETRY_LATER_MESSAGES[reason](

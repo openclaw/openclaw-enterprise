@@ -998,12 +998,17 @@ export async function deploymentSandboxPolicy(
   namespaceId: string,
   agentId: string,
   expectedRepositoryPolicyVersion?: number | null,
+  hasDesiredRepositoryAccess = false,
 ): Promise<Readonly<SandboxPolicy> | undefined> {
   const policy = await state.sandboxPolicies.find(namespaceId, agentId);
   const savedVersion = policy?.repositoryNetworkPolicy === undefined ? null : policy.version;
   // Expecting no list must preserve legacy deploy permissions. Authorize read
   // before reporting any mismatch, including a newly saved deny-all list.
-  if (savedVersion !== null || typeof expectedRepositoryPolicyVersion === "number") {
+  if (
+    hasDesiredRepositoryAccess ||
+    savedVersion !== null ||
+    typeof expectedRepositoryPolicyVersion === "number"
+  ) {
     const target = { kind: "agent", id: agentId, namespaceId } as const;
     const resource = policyResource(namespaceId, agentId);
     await authority.authorize(principalId, "read", resource);

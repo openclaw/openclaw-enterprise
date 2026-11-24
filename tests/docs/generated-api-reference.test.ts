@@ -232,12 +232,43 @@ test("Agent and CredentialSource operations document the permissions they check"
   ] as const) {
     assert.deepEqual(
       installationGrants(operationId),
-      [{ action: "administer", resourceKind: "installation", scope: "installation", condition }],
+      [
+        { action: "administer", resourceKind: "installation", scope: "installation", condition },
+        ...(operationId === "validateAgentCreate"
+          ? []
+          : [
+              {
+                action: "administer",
+                resourceKind: "installation",
+                scope: "installation",
+                condition: "github_app_client_selection",
+              },
+            ]),
+      ],
       operationId,
     );
   }
   // Deploy applies the mode already authorized on the saved draft.
   assert.deepEqual(installationGrants("deployAgent"), []);
+  assert.deepEqual(
+    permissions("deployAgent").filter((permission) =>
+      String(record(permission, "permission").condition).startsWith("github_app_source"),
+    ),
+    [
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+        condition: "github_app_source_for_deployment",
+      },
+      {
+        action: "create",
+        resourceKind: "credential_source",
+        scope: "namespace",
+        condition: "github_app_source_missing",
+      },
+    ],
+  );
 
   const sourceOperate = (scope: string) => ({
     action: "operate",

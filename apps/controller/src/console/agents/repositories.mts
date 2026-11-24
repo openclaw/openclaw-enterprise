@@ -17,7 +17,6 @@ import {
 import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
-  githubAccessLabel,
   repositoryProfiles,
   repositoryProfile,
   repositoryWriteAccessHelp,
@@ -301,7 +300,121 @@ export function createRepositoryFields(
   // a restored selection or a creator's explicit choice on catalog refresh.
   let chooseDefault = !initial.agentId && !intent && !state.selected.size && !initial.scopedGrants;
   const grants = new Map(initial.scopedGrants);
-  mode.value = initial.scopedGrants ? "scoped" : "profiles";
+  mode.value = intent?.githubAppClientId || initial.scopedGrants ? "scoped" : "profiles";
+  let selectedClientId = intent?.githubAppClientId ?? "";
+  let clientState: "idle" | "loading" | "ready" | "failed" = "idle";
+  let clients: { id: string; displayName: string; appId: string }[] = [];
+  const clientSelect = element("select", { id: "github-app-client" });
+  const clientStatus = element("p", { className: "hint", role: "status" });
+  const retryClients = button("Retry GitHub App Clients", () => void loadClients());
+  const clientField = element(
+    "div",
+    {},
+    field({
+      label: "GitHub App Client",
+      control: clientSelect,
+      help: "Choose a registered App. OCE creates the finite GitHub credential Source when you deploy; its key and token stay outside the Agent.",
+    }),
+    clientStatus,
+    retryClients,
+  );
+  clientSelect.addEventListener("change", () => {
+    selectedClientId = clientSelect.value;
+    changed();
+  });
+  async function loadClients() {
+    if (context.installationAdmin !== true || clientState === "loading") {
+      return;
+    }
+    clientState = "loading";
+    renderClient();
+    try {
+      const result = await context.request("/oauth-clients", {
+        installationAdministration: "required",
+        expectedStatus: 200,
+      });
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (!Array.isArray(result)) {
+        throw new Error("Invalid Client catalog response.");
+      }
+      clients = result.flatMap((entry) => {
+        const item = responseFields(entry);
+        return item.kind === "github-app" &&
+          typeof item.id === "string" &&
+          typeof item.displayName === "string" &&
+          typeof item.appId === "string"
+          ? [{ id: item.id, displayName: item.displayName, appId: item.appId }]
+          : [];
+      });
+      clientState = "ready";
+    } catch (error) {
+      if (requestFailure(error).status === 401) {
+        context.onExpired();
+      } else {
+        clientState = "failed";
+        clientStatus.textContent = `GitHub App Clients could not be loaded. ${describeFailure(error)} Retry the Client list.`;
+        setStatusTone(clientStatus, "danger");
+      }
+    } finally {
+      renderClient();
+      onChange(false);
+    }
+  }
+  function renderClient() {
+    clientField.hidden = !hasPolicy();
+    if (clientField.hidden) {
+      return;
+    }
+    if (context.installationAdmin === true && clientState === "idle") {
+      void loadClients();
+    }
+    const entries = clients.map((item) =>
+      element("option", { value: item.id }, `${item.displayName} (App ${item.appId})`),
+    );
+    if (selectedClientId && !clients.some(({ id }) => id === selectedClientId)) {
+      entries.push(
+        element(
+          "option",
+          {
+            value: selectedClientId,
+            disabled: context.installationAdmin === true && clientState === "ready",
+          },
+          context.installationAdmin === true && clientState === "ready"
+            ? "Unavailable GitHub App Client"
+            : "Saved GitHub App Client",
+        ),
+      );
+    }
+    clientSelect.replaceChildren(
+      element("option", { value: "" }, "Select a GitHub App Client"),
+      ...entries,
+    );
+    clientSelect.value = selectedClientId;
+    clientSelect.disabled =
+      state.disabled || context.installationAdmin !== true || clientState === "loading";
+    retryClients.hidden = clientState !== "failed";
+    retryClients.disabled = state.disabled;
+    if (clientState !== "failed") {
+      setStatusTone(clientStatus, null);
+      clientStatus.textContent =
+        clientState === "loading"
+          ? "Loading registered GitHub App Clients…"
+          : context.installationAdmin !== true && !selectedClientId
+            ? "Ask an Installation administrator to select a GitHub App Client."
+            : clientState === "ready" && !clients.length
+              ? "Register a GitHub App Client in Credentials before saving repository access."
+              : "";
+    }
+  }
+  function validClient() {
+    return (
+      Boolean(selectedClientId) &&
+      (context.installationAdmin !== true ||
+        (clientState === "ready" && clients.some(({ id }) => id === selectedClientId)))
+    );
+  }
   const scopeHint = element("p", { className: "hint", id: "repository-mode-help" });
   const modeField = element(
     "div",
@@ -332,6 +445,7 @@ export function createRepositoryFields(
     access,
     choices,
     cards,
+    clientField,
     announcements,
     validation,
     initial.agentId
@@ -564,7 +678,7 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Contributors can push. Opening PRs and creating issues depend on GitHub permissions and the deployed policy."
+      ? "Read-only Git permits clone and fetch. Read/write Git also permits push. Neither option grants GitHub REST or pull request access."
       : "After deploying with access profiles, you need a new Agent to switch to Per-repository access.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
@@ -914,9 +1028,9 @@ export function createRepositoryFields(
         const level = element(
           "select",
           { "aria-label": `GitHub access for ${label}`, disabled: !editable() || !available },
-          element("option", { value: "read" }, githubAccessLabel("read")),
+          element("option", { value: "read" }, "Read-only Git"),
           limit?.access === "write"
-            ? element("option", { value: "write" }, githubAccessLabel("write"))
+            ? element("option", { value: "write" }, "Read/write Git")
             : grant?.access === "write"
               ? element("option", { value: "write", disabled: true }, "Unavailable")
               : null,
@@ -1152,6 +1266,7 @@ export function createRepositoryFields(
       renderResults();
     }
     renderCards();
+    renderClient();
     for (const details of section.querySelectorAll<HTMLDetailsElement>(
       "details[data-access-customize]",
     )) {
@@ -1162,7 +1277,8 @@ export function createRepositoryFields(
     return (
       state.discovery === "ready" &&
       state.selected.size > 0 &&
-      [...state.selected.keys()].every((ref) => !invalid(ref))
+      [...state.selected.keys()].every((ref) => !invalid(ref)) &&
+      (!scoped() || validClient())
     );
   }
   function validate({ required = false } = {}) {
@@ -1173,6 +1289,13 @@ export function createRepositoryFields(
     }
     if (state.selected.size === 0 && !required) {
       return true;
+    }
+    if (hasPolicy() && !validClient()) {
+      validation.textContent =
+        "Select an available GitHub App Client before saving repository access.";
+      validation.hidden = false;
+      clientSelect.focus();
+      return false;
     }
     if (!state.selected.size || [...state.selected.keys()].some(invalid)) {
       validation.textContent = scoped()
@@ -1196,7 +1319,17 @@ export function createRepositoryFields(
   }
   function accessIntent(): RepositoryAccess {
     if (hasPolicy()) {
-      return { defaultProfile: "git-read", repositories: bindings() };
+      return {
+        defaultProfile: "github-repository",
+        ...(selectedClientId ? { githubAppClientId: selectedClientId } : {}),
+        repositories: [...state.selected.keys()].map((repositoryRef) => ({
+          repositoryRef,
+          access:
+            grants.get(repositoryRef)?.access ??
+            intent?.repositories.find((entry) => entry.repositoryRef === repositoryRef)?.access ??
+            "read",
+        })),
+      };
     }
     return {
       defaultProfile: state.profile,
@@ -1262,6 +1395,14 @@ export function createRepositoryFields(
         const allowedProfiles = option.allowedProfiles.filter((id) => id !== "github-installation");
         return allowedProfiles.length ? [{ ...option, allowedProfiles }] : [];
       });
+      if (intent?.githubAppClientId) {
+        for (const entry of intent.repositories) {
+          const limit = githubLimit(option(entry.repositoryRef));
+          if (limit && entry.access && !grants.has(entry.repositoryRef)) {
+            grants.set(entry.repositoryRef, { ...limit, access: entry.access });
+          }
+        }
+      }
       if (chooseDefault && context.installationAdmin !== false && state.options.some(githubLimit)) {
         mode.value = "scoped";
       }
@@ -1353,7 +1494,7 @@ export function createRepositoryFields(
       status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories.${next}`;
     } else {
       status.textContent = scoped()
-        ? "Select a repository to grant Contributor access, or Read-only if writes are disabled."
+        ? "Select approved repositories and choose Git read or write access."
         : loadedAfterReset
           ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
           : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
@@ -1462,372 +1603,5 @@ export function createRepositoryFields(
     notConfigured: () => state.discovery === "not-configured",
     /** The Installation has no repository access to offer: the section shows only its setup link. */
     unavailable: () => state.discovery === "draft-only" || state.discovery === "not-configured",
-  };
-}
-
-type GitSource = {
-  id: string;
-  name: string;
-  clientId: string;
-  repositories: readonly string[];
-  unavailable?: boolean;
-};
-
-const githubRepository = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
-const githubRepositoryName = /^[a-z0-9][a-z0-9._-]{0,99}$/;
-
-function qualifiedRepository(source: GitSource, configured: string): string | undefined {
-  if (githubRepository.test(configured)) {
-    return source.repositories.includes(configured) ? configured : undefined;
-  }
-  if (!githubRepositoryName.test(configured)) {
-    return undefined;
-  }
-  const matches = source.repositories.filter(
-    (repository) => githubRepository.test(repository) && repository.endsWith(`/${configured}`),
-  );
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
-function githubSource(value: unknown, namespaceId: string): GitSource | undefined {
-  const source = responseFields(value);
-  const scope = responseFields(source.scope);
-  if (
-    source.type !== "github-app-installation" ||
-    source.namespaceId !== namespaceId ||
-    source.state !== "ready" ||
-    typeof source.id !== "string" ||
-    typeof source.name !== "string" ||
-    typeof source.clientId !== "string" ||
-    !Array.isArray(scope.repositories) ||
-    !scope.repositories.every((entry) => typeof responseFields(entry).repository === "string")
-  ) {
-    return undefined;
-  }
-  return {
-    id: source.id,
-    name: source.name,
-    clientId: source.clientId,
-    repositories: scope.repositories.map((entry) => responseFields(entry).repository as string),
-  };
-}
-
-/** Enroll or select a finite GitHub Source. The server owns registry scope and Source authorization. */
-export function createGitSourceFields(
-  context: RepositoryContext,
-  onChange: () => void,
-  initial: { sourceId?: string | undefined; agentSourceIds?: readonly string[] | undefined } = {},
-) {
-  const select = element("select", { id: "github-source" });
-  const sourceName = element("input", {
-    id: "github-source-name",
-    type: "text",
-    maxlength: "160",
-    value: "GitHub repository access",
-  });
-  const client = element("select", { id: "github-app-client" });
-  const status = element("p", { className: "hint", role: "status" });
-  let clients: { id: string; displayName: string; appId: string }[] = [];
-  let clientsLoaded = false;
-  let clientsLoading = false;
-  let choices: GitSource[] = [];
-  let enabled = false;
-  let selected = initial.sourceId ?? "";
-  let original = initial.sourceId ?? "";
-  let refs: readonly string[] = [];
-  let names: readonly string[] = [];
-  let loading = false;
-  let attempted = false;
-  let loaded = false;
-  let unknownCreate = false;
-  let disabled = false;
-  const enroll = button("Create GitHub Source", async () => {
-    if (enroll.disabled || selected !== "new") {
-      return;
-    }
-    const name = sourceName.value.trim();
-    if (
-      !name ||
-      !refs.length ||
-      refs.length > 16 ||
-      !clients.some(({ id }) => id === client.value)
-    ) {
-      status.textContent =
-        "Select a registered GitHub App Client, enter a Source name, and choose between one and 16 approved repositories.";
-      setStatusTone(status, "danger");
-      return;
-    }
-    enroll.disabled = true;
-    let started = false;
-    try {
-      started = true;
-      const result = await context.request(
-        `${namespacePath(context.namespaceId)}/credential-sources`,
-        {
-          method: "POST",
-          expectedStatus: 201,
-          body: {
-            name,
-            type: "github-app-installation",
-            clientId: client.value,
-            repositoryRefs: refs,
-          },
-        },
-      );
-      if (!context.isCurrent()) {
-        return;
-      }
-      const created = githubSource(result, context.namespaceId);
-      if (
-        !created ||
-        created.name !== name ||
-        created.clientId !== client.value ||
-        created.repositories.length !== refs.length ||
-        (names.length && !names.every((repository) => qualifiedRepository(created, repository)))
-      ) {
-        throw new Error("The response did not confirm the requested GitHub Source.");
-      }
-      choices = [...choices.filter(({ id }) => id !== created.id), created];
-      selected = created.id;
-      status.textContent =
-        "GitHub Source created. The Agent's repository grants still control its access.";
-      setStatusTone(status, "success");
-    } catch (error) {
-      if (!context.isCurrent()) {
-        return;
-      }
-      const failure = requestFailure(error);
-      if (failure.status === 401) {
-        context.onExpired();
-        return;
-      }
-      unknownCreate = started && ![400, 403, 404, 409, 429].includes(failure.status ?? 0);
-      status.textContent = unknownCreate
-        ? "Source creation has an unknown outcome. Refresh GitHub Sources before creating another one."
-        : `GitHub Source was not created. ${describeFailure(error)}`;
-      setStatusTone(status, "danger");
-    } finally {
-      render();
-      onChange();
-    }
-  });
-  const refresh = button("Refresh GitHub Sources", () => {
-    void load();
-    if (selected === "new") {
-      void loadClients();
-    }
-  });
-  const createFields = element(
-    "div",
-    {},
-    field({
-      label: "GitHub App Client",
-      control: client,
-      help: "Choose an Installation-registered App. Its signing key remains in the selected TokenService.",
-    }),
-    field({ label: "GitHub Source name", control: sourceName }),
-    enroll,
-  );
-  const section = element(
-    "section",
-    { className: "repository-selection", hidden: true },
-    element("h2", {}, "GitHub credential"),
-    field({
-      label: "GitHub Source",
-      control: select,
-      help: "Select a shared installation-token Source or create one from the repositories selected above. Credential Proxy injects the token only on permitted requests; the Agent does not receive it. Repository grants remain separate.",
-    }),
-    createFields,
-    refresh,
-    status,
-  );
-  function render() {
-    const options = [
-      element("option", { value: "", disabled: true }, "Select a GitHub Source"),
-      ...choices.map(({ id, name, unavailable }) =>
-        element("option", { value: id, disabled: unavailable === true }, name),
-      ),
-      ...(context.installationAdmin === true
-        ? [element("option", { value: "new" }, "Create a GitHub Source…")]
-        : []),
-    ];
-    select.replaceChildren(...options);
-    select.value = selected;
-    select.disabled = disabled || loading;
-    createFields.hidden = selected !== "new";
-    client.disabled = disabled || clientsLoading || !clients.length || unknownCreate;
-    sourceName.disabled = disabled || loading || unknownCreate;
-    enroll.disabled =
-      disabled ||
-      loading ||
-      clientsLoading ||
-      unknownCreate ||
-      !client.value ||
-      !refs.length ||
-      refs.length > 16;
-    refresh.disabled = disabled || loading;
-  }
-  async function load() {
-    if (loading || disabled) {
-      return;
-    }
-    loading = true;
-    attempted = true;
-    render();
-    try {
-      const result = await context.request(
-        `${namespacePath(context.namespaceId)}/credential-sources`,
-        {
-          expectedStatus: 200,
-        },
-      );
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (!Array.isArray(result)) {
-        throw new Error("Invalid credential Source list.");
-      }
-      choices = result.flatMap((entry) => {
-        const source = githubSource(entry, context.namespaceId);
-        return source ? [source] : [];
-      });
-      if (!loaded && !selected && initial.agentSourceIds) {
-        const bound = choices.filter(({ id }) => initial.agentSourceIds!.includes(id));
-        if (bound.length === 1) {
-          selected = original = bound[0]!.id;
-        }
-      }
-      if (selected && selected !== "new" && !choices.some(({ id }) => id === selected)) {
-        choices.push({
-          id: selected,
-          name: `Unavailable Source (${selected})`,
-          clientId: "",
-          repositories: [],
-          unavailable: true,
-        });
-      }
-      loaded = true;
-      unknownCreate = false;
-      if (status.dataset.tone !== "success") {
-        status.textContent = choices.length
-          ? ""
-          : "No ready GitHub Sources are available in this Namespace.";
-        setStatusTone(status, null);
-      }
-    } catch (error) {
-      if (requestFailure(error).status === 401) {
-        context.onExpired();
-      } else {
-        status.textContent = `GitHub Sources could not be loaded. ${describeFailure(error)} Refresh to retry.`;
-        setStatusTone(status, "danger");
-      }
-    } finally {
-      loading = false;
-      render();
-      onChange();
-    }
-  }
-  async function loadClients() {
-    if (context.installationAdmin !== true || clientsLoaded || clientsLoading) {
-      return;
-    }
-    clientsLoading = true;
-    status.textContent = "Loading registered GitHub App Clients…";
-    setStatusTone(status, null);
-    render();
-    try {
-      const result = await context.request("/oauth-clients", {
-        installationAdministration: "required",
-        expectedStatus: 200,
-      });
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (!Array.isArray(result)) {
-        throw new Error("Invalid Client catalog response.");
-      }
-      clients = result.flatMap((entry) => {
-        const item = responseFields(entry);
-        return item.kind === "github-app" &&
-          typeof item.id === "string" &&
-          typeof item.displayName === "string" &&
-          typeof item.appId === "string"
-          ? [{ id: item.id, displayName: item.displayName, appId: item.appId }]
-          : [];
-      });
-      client.replaceChildren(
-        element("option", { value: "" }, "Select a GitHub App Client"),
-        ...clients.map((item) =>
-          element("option", { value: item.id }, `${item.displayName} (App ${item.appId})`),
-        ),
-      );
-      clientsLoaded = true;
-      status.textContent = "";
-      if (!clients.length) {
-        status.textContent =
-          "Register a GitHub App Client in Credentials before creating a GitHub Source.";
-      }
-    } catch (error) {
-      if (requestFailure(error).status === 401) {
-        context.onExpired();
-      } else {
-        status.textContent = `GitHub App Clients could not be loaded. ${describeFailure(error)}`;
-        setStatusTone(status, "danger");
-      }
-    } finally {
-      clientsLoading = false;
-      render();
-      onChange();
-    }
-  }
-  client.addEventListener("change", () => {
-    render();
-    onChange();
-  });
-  select.addEventListener("change", () => {
-    selected = select.value;
-    status.textContent = "";
-    setStatusTone(status, null);
-    render();
-    if (selected === "new") {
-      void loadClients();
-    }
-    onChange();
-  });
-  render();
-  const selectedSource = () =>
-    choices.find(({ id, unavailable }) => id === selected && !unavailable);
-  return {
-    section,
-    sourceId: () => {
-      const source = enabled ? selectedSource() : undefined;
-      return source && names.every((name) => qualifiedRepository(source, name))
-        ? source.id
-        : undefined;
-    },
-    qualifiedRepository: (configured: string) => {
-      const source = enabled ? selectedSource() : undefined;
-      return source ? qualifiedRepository(source, configured) : undefined;
-    },
-    selectedId: () => (selected && selected !== "new" ? selected : undefined),
-    pending: () => selected === "new" || loading,
-    dirty: () => selected !== "new" && selected !== original,
-    originalSourceId: () => original || undefined,
-    sync(
-      available: boolean,
-      selectedRefs: readonly string[],
-      locked = false,
-      repositoryNames: readonly string[] = [],
-    ) {
-      enabled = available;
-      section.hidden = !enabled;
-      refs = selectedRefs;
-      names = repositoryNames;
-      disabled = locked;
-      if (enabled && !attempted && !loading && !disabled) {
-        void load();
-      }
-      render();
-    },
   };
 }

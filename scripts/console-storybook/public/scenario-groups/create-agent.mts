@@ -985,7 +985,7 @@ export const createAgentFormScenarios = {
   },
 } satisfies Record<string, CreateAgentScenario>;
 
-const gitSourcePreview = {
+const gitClientPreview = {
   group: "Pages/Create Agent",
   path: create,
   credentialSourceTypes: modelCredentialSourceTypes,
@@ -998,14 +998,10 @@ const gitSourcePreview = {
     },
   ],
   actions: [
-    ...managedStaticForm.slice(0, -1),
+    ...managedStaticForm,
     { selector: 'input[data-repository-ref="application"]', click: true },
   ],
 } satisfies Partial<CreateAgentScenario>;
-const openGitSourceEnrollment = [
-  ...gitSourcePreview.actions,
-  { selector: "#github-source", value: "new" },
-];
 
 export const createAgentProvisioningScenarios = {
   createProvisioningSecrets: {
@@ -1744,6 +1740,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "GitHub repository access",
     path: create,
+    oauthCatalog: "ready",
     credentialSourceTypes: modelCredentialSourceTypes,
     repositoryDescriptionsPending: false,
     repositoryOptions: ["application", "tooling"].map((name) => ({
@@ -1763,16 +1760,16 @@ export const createAgentProvisioningScenarios = {
       { selector: "#provider-credential-secret", value: "sec_demo_model" },
     ],
     description:
-      "Selecting a GitHub repository shows the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only; tooling starts at Contributor. Change tooling to Read-only, remove it and undo removal to confirm the narrower choice is retained. Saving and deployment require a supporting Installation.",
+      "Selecting a GitHub repository shows the registered App Client picker and changes the action to Save Agent draft. Application allows only Read-only Git; tooling starts at Read/write Git. Change tooling to Read-only Git, remove it and undo removal to confirm the narrower choice is retained. Saving and deployment require a supporting Installation.",
     steps: [
       "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
       "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
     ],
   },
-  createGitHubSource: {
-    ...gitSourcePreview,
-    name: "Create a GitHub Source from a registered App",
+  createGitHubClient: {
+    ...gitClientPreview,
+    name: "GitHub repository access with a registered App",
     oauthCatalog: "ready",
     repositoryOptions: [
       {
@@ -1783,45 +1780,45 @@ export const createAgentProvisioningScenarios = {
       },
     ],
     description:
-      "An Installation administrator selects an approved short repository name and creates a finite Source with a registered GitHub App Client. The Source response supplies its verified owner/repository name for the saved Agent policy.",
+      "An Installation administrator selects an approved short repository and a registered GitHub App Client. The Agent saves the Client, repository reference and access; OCE prepares a finite credential Source at deployment.",
     steps: [
-      "Confirm application is selected before an owner is known. Choose Create a GitHub Source…, choose Repository automation in GitHub App Client, and create the Source.",
-      "Confirm the created Source is selected. Save Agent draft and inspect its selected Source and example/application repository policy.",
+      "Confirm application is selected before an owner is known, then choose Repository automation in GitHub App Client.",
+      "Save Agent draft. Inspect its repositoryAccess for the Client ID, approved application reference, and read access. No GitHub Source creation request is sent from the Console.",
     ],
     gap: "Simulated Console proof. No GitHub mint, PostgreSQL, IAM, or OpenShell runtime is exercised.",
   },
-  createGitHubSourceNoClients: {
-    ...gitSourcePreview,
-    name: "GitHub Source without a registered App",
+  createGitHubClientNoClients: {
+    ...gitClientPreview,
+    name: "GitHub repository access without a registered App",
     oauthCatalog: "empty",
-    actions: openGitSourceEnrollment,
+    actions: gitClientPreview.actions,
     description:
-      "The administrator sees the prerequisite and cannot create a Source until a GitHub App Client is registered.",
+      "The administrator sees the prerequisite and cannot save repository access until a GitHub App Client is registered.",
   },
-  createGitHubSourceLoading: {
-    ...gitSourcePreview,
+  createGitHubClientLoading: {
+    ...gitClientPreview,
     name: "GitHub App Clients loading",
     oauthCatalog: "ready",
-    actions: openGitSourceEnrollment,
+    actions: gitClientPreview.actions,
     rules: [{ path: "/oauth-clients", method: "GET", hold: true }],
-    description: "Client discovery is pending. Source creation remains unavailable.",
+    description: "Client discovery is pending. Saving repository access remains unavailable.",
   },
-  createGitHubSourceError: {
-    ...gitSourcePreview,
+  createGitHubClientError: {
+    ...gitClientPreview,
     name: "GitHub App Client discovery failed",
     oauthCatalog: "ready",
-    actions: openGitSourceEnrollment,
+    actions: gitClientPreview.actions,
     rules: [{ path: "/oauth-clients", method: "GET", status: 503 }],
-    description: "The administrator can refresh after the Client catalog request fails.",
+    description: "The administrator can retry after the Client catalog request fails.",
   },
-  createGitHubSourceMember: {
-    ...gitSourcePreview,
-    name: "GitHub Source selection for a member",
+  createGitHubClientMember: {
+    ...gitClientPreview,
+    name: "GitHub repository Client selection for a member",
     oauthCatalog: "ready",
     observabilityDenied: true,
     actions: managedStaticForm.slice(0, -1),
     description:
-      "A member cannot open the Installation Client catalog or enroll a GitHub App Source.",
+      "A member cannot open the Installation Client catalog. An Installation administrator must select a Client for new repository access.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

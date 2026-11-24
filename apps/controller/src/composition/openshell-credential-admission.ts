@@ -101,6 +101,74 @@ export function openShellRepositorySourceCeiling(
   }
 }
 
+export function prepareOpenShellRepositorySource(
+  registry: GitHubRepositoryRegistry,
+  {
+    namespaceId,
+    access,
+    bindings,
+    ceiling,
+  }: Parameters<NonNullable<ControllerOptions["prepareStagedRepositorySource"]>>[0],
+): ReturnType<NonNullable<ControllerOptions["prepareStagedRepositorySource"]>> {
+  try {
+    const selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+    const contents = selected.permissions.contents;
+    if (selected.nativeGit !== "v1" || (contents !== "read" && contents !== "write")) {
+      return undefined;
+    }
+    const requested = access.repositories.flatMap(({ repositoryRef, access: level }) => {
+      const repository = registry.repositories.find(
+        (entry) => entry.repositoryRef === repositoryRef,
+      );
+      if (!repository || !level) {
+        return [];
+      }
+      const limits = ceiling.filter(
+        ({ repository: limit }) =>
+          limit === repository.repository ||
+          (repository.repository.includes("/") &&
+            matchesConfiguredGitHubRepository(
+              { repository: limit },
+              { repository: repository.repository },
+            )),
+      );
+      if (
+        !limits.length ||
+        (level === "write" &&
+          (contents !== "write" || limits.some((limit) => limit.access !== "write")))
+      ) {
+        return [];
+      }
+      return [{ repository, access: level }];
+    });
+    if (requested.length !== bindings.length || requested.length !== access.repositories.length) {
+      return undefined;
+    }
+    return {
+      appId: registry.appId,
+      installationId: registry.githubInstallationId,
+      resolveGrants(source) {
+        const verified = selectedSourceRepositories(registry, { namespaceId, source, bindings });
+        if (
+          verified.length !== requested.length ||
+          source.scope.repositories.length !== verified.length
+        ) {
+          return undefined;
+        }
+        const grants = requested.flatMap(({ repository, access }) => {
+          const match = source.scope.repositories.find((entry) =>
+            matchesConfiguredGitHubRepository(repository, entry),
+          );
+          return match ? [{ repository: match.repository, access }] : [];
+        });
+        return grants.length === requested.length ? grants : undefined;
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Revalidate the Source and saved Agent grants against the currently selected Namespace registry. */
 export function admitOpenShellRepositoryCredentials(
   registry: GitHubRepositoryRegistry | undefined,

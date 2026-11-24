@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 import { oauthScopeTokenPattern, staticKeyHttpMethodPattern } from "../connection-templates.ts";
-import { RequestId, NamespaceId, ConnectionTemplateId } from "./common.ts";
+import { RequestId, NamespaceId, ConnectionTemplateId, OAuthClientId } from "./common.ts";
 
-export { ConnectionTemplateId } from "./common.ts";
+export { ConnectionTemplateId, OAuthClientId } from "./common.ts";
 
 const HttpsUrl = Type.String({ maxLength: 2048, pattern: "^https://[^\\s/]" });
 export const OAuthScope = Type.String({
@@ -49,9 +49,6 @@ const Meta = Type.Object(
   { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
   { additionalProperties: false },
 );
-export const OAuthClientId = Type.String({
-  pattern: "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-});
 const DisplayName = Type.String({ minLength: 1, maxLength: 200 });
 const ClientSecret = Type.String({ minLength: 1, maxLength: 4096, writeOnly: true });
 const AuthMethod = Type.Union([

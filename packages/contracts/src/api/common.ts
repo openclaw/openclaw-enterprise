@@ -36,6 +36,7 @@ export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
+export const OAuthClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMServicePrincipalId = Type.String({ minLength: 1, maxLength: 200 });
@@ -793,12 +794,22 @@ export const RepositoryBindingRequestsSchema = Type.Array(RepositoryBindingReque
 export const RepositoryAccessSchema = Type.Object(
   {
     defaultProfile: RepositoryBindingSelector,
-    repositories: Type.Array(RepositoryBindingRequestSchema, { maxItems: 16 }),
+    githubAppClientId: Type.Optional(OAuthClientId),
+    repositories: Type.Array(
+      Type.Object(
+        {
+          ...RepositoryBindingRequestSchema.properties,
+          access: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 16 },
+    ),
   },
   {
     additionalProperties: false,
     description:
-      "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+      "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
   },
 );
 

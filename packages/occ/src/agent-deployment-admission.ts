@@ -117,12 +117,14 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import type { createHarnessAuthOperations } from "./harness-auth.ts";
+import type { ManagedCredentialSources } from "./managed-credential-sources.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
 import type { NativeWorkerSupportSource } from "./native-worker-support.ts";
 import { withAgentIdentityName } from "./openclaw-roster.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { createRepositoryPolicyOperations } from "./repository-policy.ts";
-import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
+import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 export interface FirstDeploymentGuard {
   readonly digest: string;
@@ -153,7 +155,7 @@ interface PreparedModelCredentialDeployment {
 }
 
 export interface DeploymentAdmissionDependencies {
-  readonly transactions: Pick<ControllerTransactions, "transact">;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<
     ControllerAuthority,
     "authorize" | "authorizeAgentPrincipal" | "holdAuthority"
@@ -174,7 +176,9 @@ export interface DeploymentAdmissionDependencies {
     | "applyRepositoryStandingApproval"
     | "repositoryNetworkPolicyCeiling"
     | "repositoryGrantAuthority"
+    | "prepareRepositorySource"
   >;
+  readonly prepareGitHubAppSource: ManagedCredentialSources["prepareDeploymentGitHubAppSource"];
   readonly sandboxPolicy: Pick<
     ReturnType<typeof createSandboxPolicyOperations>,
     "admitDeploymentSnapshot"
@@ -647,7 +651,19 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       first === undefined
         ? await dependencies.channels.prepareOrdinaryDeploymentChannels(principalId, input)
         : undefined;
-    const request = { principalId, input, resolveHarness, ordinaryPreparation, first, auditEvent };
+    const repository =
+      first && "error" in first.preparation
+        ? undefined
+        : await prepareGitHubRepository(principalId, input);
+    const request = {
+      principalId,
+      input,
+      resolveHarness,
+      ordinaryPreparation,
+      first,
+      auditEvent,
+      repository,
+    };
     const prepared =
       ordinaryPreparation ??
       (first && "prepared" in first.preparation ? first.preparation.prepared : undefined);
@@ -667,11 +683,93 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     return admitPreparedDeployment(request);
   }
 
+  async function prepareGitHubRepository(principalId: string, input: NormalizedDeploymentInput) {
+    const agent = await dependencies.transactions.read(async (state) => {
+      const candidate = await state.agents.findAgent(input.namespaceId, input.agentId);
+      if (
+        !candidate?.repositoryAccess?.githubAppClientId ||
+        !candidate.repositoryAccess.repositories.length
+      ) {
+        return undefined;
+      }
+      await dependencies.authority.authorize(principalId, "deploy", {
+        kind: "agent",
+        id: input.agentId,
+        namespaceId: input.namespaceId,
+      });
+      const policy = await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        input.namespaceId,
+        input.agentId,
+        input.expectedRepositoryPolicyVersion,
+        true,
+      );
+      if (policy?.repositoryNetworkPolicy !== undefined) {
+        throw new ResourceStateConflictError(
+          "An existing repository network policy conflicts with the Agent's GitHub access selection. Review the saved grants before deploying.",
+        );
+      }
+      if ((await exactNamespace(state, input.namespaceId)).status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (candidate.status !== "active") {
+        throw new AgentDeletingError();
+      }
+      await refuseActiveStagedReplacement(state, candidate);
+      if (
+        candidate.executionMode !== "dedicated" ||
+        candidate.harnessAuth?.method !== "credential_source"
+      ) {
+        throw new ResourceStateConflictError(
+          "GitHub App repository access requires a Dedicated Agent using a TokenService model credential.",
+        );
+      }
+      const modelSourceId = candidate.harnessAuth.sourceId;
+      await dependencies.authority.authorize(principalId, "operate", {
+        kind: "credential_source",
+        id: modelSourceId,
+        namespaceId: input.namespaceId,
+      });
+      const model = await state.credentialSources.findCredentialSource(
+        input.namespaceId,
+        modelSourceId,
+      );
+      if (
+        !isManagedTokenServiceSource(model) ||
+        model.type === "github-app-installation" ||
+        model.state !== "ready"
+      ) {
+        throw new ResourceStateConflictError(
+          "Select a ready TokenService model credential before deploying GitHub access.",
+        );
+      }
+      dependencies.ownedTokenServiceDriver(model.tokenServiceInstanceId);
+      return candidate;
+    });
+    const registration = agent && dependencies.repositoryPolicy.prepareRepositorySource(agent);
+    if (!agent || !registration) {
+      return undefined;
+    }
+    const access = agent.repositoryAccess!;
+    const sourceId = await dependencies.prepareGitHubAppSource(principalId, agent.namespaceId, {
+      clientId: access.githubAppClientId!,
+      appId: registration.appId,
+      installationId: registration.installationId,
+      scopeKey: registration.scopeKey,
+      repositoryRefs: access.repositories.map(({ repositoryRef }) => repositoryRef),
+      matches: (source) => registration.resolveGrants(source) !== undefined,
+    });
+    return { access, resolveGrants: registration.resolveGrants, sourceId };
+  }
+
   type AdmissionRequest = {
     principalId: string;
     input: NormalizedDeploymentInput;
     resolveHarness: HarnessResolver;
     ordinaryPreparation: PreparedDeploymentChannels | undefined;
+    repository: Awaited<ReturnType<typeof prepareGitHubRepository>>;
     first: FirstDeploymentGuard | undefined;
     auditEvent: ((result: Readonly<AuthorizedAgentDeployment>) => AuditEvent) | undefined;
   };
@@ -686,6 +784,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       input,
       resolveHarness,
       ordinaryPreparation,
+      repository,
       first,
       auditEvent,
     }: AdmissionRequest,
@@ -793,19 +892,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           );
         }
       }
-      const activeRevision =
-        lockedAgent.activeRevisionId === undefined
-          ? undefined
-          : await state.revisions.findRevision(
-              namespace.id,
-              lockedAgent.id,
-              lockedAgent.activeRevisionId,
-            );
-      if (activeRevision?.executionAdmission.version === 8) {
-        throw new ResourceStateConflictError(
-          "Replacing an active staged managed-credential revision is not supported. Complete Stop before deploying again.",
-        );
-      }
+      await refuseActiveStagedReplacement(state, lockedAgent);
       const policy = await deploymentSandboxPolicy(
         state,
         dependencies.authority,
@@ -813,7 +900,21 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         namespace.id,
         lockedAgent.id,
         input.expectedRepositoryPolicyVersion,
+        repository !== undefined,
       );
+      const desiredRepository =
+        lockedAgent.repositoryAccess?.githubAppClientId &&
+        lockedAgent.repositoryAccess.repositories.length !== 0
+          ? lockedAgent.repositoryAccess
+          : undefined;
+      if (
+        !isDeepStrictEqual(repository?.access, desiredRepository) ||
+        (repository !== undefined && policy?.repositoryNetworkPolicy !== undefined)
+      ) {
+        throw new ResourceStateConflictError(
+          "The saved GitHub App or repository access changed. Review the Agent before deploying.",
+        );
+      }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -904,10 +1005,21 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             } satisfies PluginRevisionState)
           : undefined;
       const selectedPlugins = selectedPluginBindings(driver, lockedAgent.plugins);
+      const credentialAgent =
+        repository === undefined ||
+        lockedAgent.credentialSources?.some(({ sourceId }) => sourceId === repository.sourceId)
+          ? lockedAgent
+          : {
+              ...lockedAgent,
+              credentialSources: [
+                ...(lockedAgent.credentialSources ?? []),
+                { sourceId: repository.sourceId },
+              ],
+            };
       await dependencies.credentialAccess.grantDeployedAgentSources(
         state,
         principalId,
-        lockedAgent,
+        credentialAgent,
         storedSecretBindings(metadata.secretBindings),
         selectedPlugins,
       );
@@ -986,7 +1098,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const admittedSources = await dependencies.credentialAccess.admitCredentialSources(
         state,
         principalId,
-        lockedAgent,
+        credentialAgent,
         sandbox,
         driver,
         revisionHarness,
@@ -1078,7 +1190,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const repositorySources = credentialSources.filter(
         ({ sourceType }) => sourceType === "github-app-installation",
       );
-      const repositoryGrants = policy?.repositoryNetworkPolicy;
+      let repositoryGrants = policy?.repositoryNetworkPolicy;
       let stagedRepositorySource: Readonly<GitHubAppInstallationCredentialSource> | undefined;
       if (
         repositorySources.length > 0 ||
@@ -1096,13 +1208,21 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           source.type !== "github-app-installation" ||
           source.state !== "ready" ||
           source.tokenServiceInstanceId !== stagedModel.source.tokenServiceInstanceId ||
-          !repositoryGrants?.length
+          (repository === undefined && !repositoryGrants?.length)
         ) {
           throw new ResourceStateConflictError(
             "Staged Repository delivery requires one ready GitHub App Source and a saved Repository network policy.",
           );
         }
         stagedRepositorySource = source;
+        if (repository) {
+          repositoryGrants = repository.resolveGrants(source);
+          if (!repositoryGrants?.length) {
+            throw new ResourceStateConflictError(
+              "The approved GitHub installation does not cover the saved repository access. Review the selected App and repositories.",
+            );
+          }
+        }
       }
       const admitRepository = () =>
         dependencies.repositoryPolicy.admitRepositoryCredentials(
@@ -1486,6 +1606,25 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     };
     // Authorization after a lock wait must see IAM changes committed by the lock holder.
     return dependencies.transactions.transact(admit, { readCommitted: true });
+  }
+
+  async function refuseActiveStagedReplacement(
+    state: Pick<PlatformReadView, "revisions">,
+    agent: Readonly<Agent>,
+  ) {
+    if (agent.activeRevisionId === undefined) {
+      return;
+    }
+    const active = await state.revisions.findRevision(
+      agent.namespaceId,
+      agent.id,
+      agent.activeRevisionId,
+    );
+    if (active?.executionAdmission.version === 8) {
+      throw new ResourceStateConflictError(
+        "Replacing an active staged managed-credential revision is not supported. Complete Stop before deploying again.",
+      );
+    }
   }
 
   return admitAgentDeployment;

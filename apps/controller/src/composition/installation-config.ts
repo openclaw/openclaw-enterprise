@@ -5,6 +5,7 @@ import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
 import {
   admitOpenShellRepositoryCredentials,
   openShellRepositorySourceCeiling,
+  prepareOpenShellRepositorySource,
   supportsOpenShellCredentialDeployment,
 } from "./openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
@@ -241,6 +242,7 @@ export function installationControllerOptions(
   | "modelCredentialPreset"
   | "repositoryCredentialAdmission"
   | "stagedRepositoryCeiling"
+  | "prepareStagedRepositorySource"
   | "supportsStagedRepositoryRecipient"
   | "supportsCredentialDeployment"
 > {
@@ -251,6 +253,8 @@ export function installationControllerOptions(
     ...(repositoryRegistry && {
       stagedRepositoryCeiling: (input) =>
         openShellRepositorySourceCeiling(repositoryRegistry, input),
+      prepareStagedRepositorySource: (input) =>
+        prepareOpenShellRepositorySource(repositoryRegistry, input),
     }),
     supportsStagedRepositoryRecipient: ({ compute, sandbox, proxy, harness }) => {
       if (

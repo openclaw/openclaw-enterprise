@@ -182,11 +182,26 @@ export const GitHubRepositoryGrants = {
   ...story("createGitHubRepositoryGrants"),
   name: "GitHub repository access",
 };
-export const GitHubSource = story("createGitHubSource");
-export const GitHubSourceNoClients = story("createGitHubSourceNoClients");
-export const GitHubSourceLoading = story("createGitHubSourceLoading");
-export const GitHubSourceError = story("createGitHubSourceError");
-export const GitHubSourceMember = story("createGitHubSourceMember");
+export const GitHubClient = {
+  ...story("createGitHubClient"),
+  name: "GitHub repository access with a registered App",
+};
+export const GitHubClientNoClients = {
+  ...story("createGitHubClientNoClients"),
+  name: "GitHub repository access without a registered App",
+};
+export const GitHubClientLoading = {
+  ...story("createGitHubClientLoading"),
+  name: "GitHub App Clients loading",
+};
+export const GitHubClientError = {
+  ...story("createGitHubClientError"),
+  name: "GitHub App Client discovery failed",
+};
+export const GitHubClientMember = {
+  ...story("createGitHubClientMember"),
+  name: "GitHub repository Client selection for a member",
+};
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",

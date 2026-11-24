@@ -145,6 +145,11 @@ operation was not authorized.`
   bound Secret and `credential_source:operate` on each source. The deploy
   [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
   for each source the caller can operate.
+- Selecting or changing an Agent's GitHub App Client requires
+  `installation:administer`. Deploying the saved GitHub access also requires
+  `agent:manage_policy` and `sandbox_policy:read` and `update`. The caller needs
+  `credential_source:operate` on the Source and `credential_source:create` in the
+  Namespace if deployment needs to create one.
 - Selecting or changing an [Agent Gateway channel proxy credential](../agents/network-proxy.md)
   requires `secret:operate` on that exact same-Namespace Secret. Deployment also
   checks the Agent principal's exact Secret grant.

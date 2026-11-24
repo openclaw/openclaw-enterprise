@@ -5,6 +5,7 @@ import { createServer } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
 
+import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import {
@@ -27,6 +28,7 @@ import {
   fixtureRepositoryId,
 } from "../fixtures/repository-credentials/github/protocol.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -38,7 +40,7 @@ import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 test(
-  "two Codex OAuth Agents admit distinct repository grants against one GitHub App Source",
+  "Agent deployment enrolls one shared GitHub App Source and freezes each Agent's Repository grants",
   {
     skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to a migrated PostgreSQL fixture.",
   },
@@ -48,12 +50,22 @@ test(
       {
         label: "staged-repository-source-admission",
         authSecret: "staged-repository-source-admission-secret",
+        requestAudit: true,
         controllerOptions: {
           ...installationControllerOptions(undefined),
           iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
         },
+        appOptions: {
+          provisionAuthAccount: (
+            ...args: Parameters<ReturnType<typeof createPostgresAuthAccountProvisioner>>
+          ) => provision(...args),
+        },
       },
     );
+    const provision = createPostgresAuthAccountProvisioner({
+      state,
+      installationId: controller.installation.id,
+    });
     await controller.applyIAMConfiguration();
     const createdNamespace = await inject("POST", "/namespaces", {
       name: `Repository ${randomUUID()}`,
@@ -338,20 +350,6 @@ test(
     assert.equal(sourcesAfterRejection.statusCode, 200, sourcesAfterRejection.body);
     assert.deepEqual(sourcesAfterRejection.json().data, []);
     corruptedReply = undefined;
-    const enrolled = await request("POST", `${base}/credential-sources`, sourceInput);
-    assert.equal(enrolled.statusCode, 201, enrolled.body);
-    const gitSource = enrolled.json().data;
-    assert.equal(gitSource.type, "github-app-installation");
-    assert.equal(gitSource.clientId, clientId);
-    const allowedShortNames = repositories.map(({ repository }) => repository.split("/")[1]).sort();
-    assert.deepEqual(
-      github.issuesOfTokens.map(({ requestedNames }) => requestedNames),
-      [allowedShortNames, allowedShortNames],
-    );
-    assert.deepEqual(
-      gitSource.scope.repositories,
-      repositories.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
-    );
     // The provider grant is synthetic; custody and the Agent admission path are real.
     const modelSource = await owner.createSource(
       {
@@ -382,60 +380,151 @@ test(
       values: createHarnessConfiguration("codex", "gpt-4.1"),
     });
     assert.equal(config.statusCode, 201, config.body);
-    // The Source may write, but the mounted Installation ceiling allows only reads on the first repo.
+    const issueCountBeforeSave = github.issuesOfTokens.length;
+    const selected = (access: "read" | "write") => ({
+      githubAppClientId: clientId,
+      defaultProfile: "github-repository" as const,
+      repositories: [
+        { repositoryRef: repositories[0]!.repositoryRef, access: "read" as const },
+        { repositoryRef: repositories[1]!.repositoryRef, access },
+      ],
+    });
+    // The Namespace registry can issue writes, but the Installation ceiling permits only reads
+    // on the first repository. Refuse the Agent request before any provider mint.
     const broaderAgent = await request("POST", `${base}/agents`, {
       name: `Broader Git ${randomUUID()}`,
       configurationId: config.json().data.id,
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: modelSource.id },
-      credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSource.id }],
-      repositoryBindings: [
-        { repositoryRef: repositories[0]!.repositoryRef, profile: "github-repository" },
-      ],
-      repositoryNetworkPolicy: [{ repository: repositories[0]!.repository, access: "write" }],
+      credentialSources: [{ sourceId: modelSource.id }],
+      repositoryAccess: {
+        githubAppClientId: clientId,
+        defaultProfile: "github-repository",
+        repositories: [{ repositoryRef: repositories[0]!.repositoryRef, access: "write" }],
+      },
     });
     assert.equal(broaderAgent.statusCode, 409, broaderAgent.body);
-    assert.match(broaderAgent.body, /ceiling/i);
+    assert.equal(broaderAgent.json().error.code, "RESOURCE_CONFLICT");
+    assert.equal(github.issuesOfTokens.length, issueCountBeforeSave);
+
+    // This delegate may deploy the saved Agent and use its model Source, but cannot enroll a
+    // Namespace credential Source. A deployment must not turn Agent deployment into mint authority.
+    const roleId = `role-${randomUUID()}`;
+    await pool.query("INSERT INTO occ.iam_roles (id,name,permissions) VALUES ($1,$2,$3::jsonb)", [
+      roleId,
+      "Repository deploy delegate",
+      JSON.stringify([
+        { action: "deploy", resourceKind: "agent" },
+        { action: "manage_policy", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "sandbox_policy" },
+        { action: "update", resourceKind: "sandbox_policy" },
+        { action: "operate", resourceKind: "credential_source" },
+      ]),
+    ]);
+    const credentials = { email: `deploy-${randomUUID()}@example.test`, password: randomUUID() };
+    const account = await inject("POST", "/api/auth/accounts", {
+      ...credentials,
+      name: "Repository deploy delegate",
+      roleId,
+    });
+    assert.equal(account.statusCode, 201, account.body);
+    const delegateId = account.json().data.principalId;
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings (id,namespace_id,identity_subject_id,role_id) VALUES ($1,$2,$3,$4)",
+      [`binding-${randomUUID()}`, namespaceId, delegateId, roleId],
+    );
+    const delegateSession = await signInToControllerApp(app, credentials);
     const agents = [];
-    for (const grants of [
-      [
-        { repository: repositories[0]!.repository, access: "read" },
-        { repository: repositories[1]!.repository, access: "write" },
-      ],
-      [{ repository: repositories[1]!.repository, access: "read" }],
-    ] as const) {
+    let gitSourceId: string | undefined;
+    for (const access of ["write", "read"] as const) {
+      const grants = [
+        { repository: repositories[0]!.repository, access: "read" as const },
+        { repository: repositories[1]!.repository, access },
+      ];
       const created = await request("POST", `${base}/agents`, {
         name: `Saved Git ${randomUUID()}`,
         configurationId: config.json().data.id,
         executionMode: "dedicated",
         harnessAuth: { method: "credential_source", sourceId: modelSource.id },
-        credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSource.id }],
-        repositoryBindings: repositories.map(({ repositoryRef }) => ({
-          repositoryRef,
-          profile: "github-repository",
-        })),
-        repositoryNetworkPolicy: grants,
+        credentialSources: [{ sourceId: modelSource.id }],
+        repositoryAccess: selected("read"),
       });
       assert.equal(created.statusCode, 201, created.body);
       const agent = created.json().data;
       assert.equal(agent.gatewayManagedMode, true);
+      assert.deepEqual(agent.credentialSources, [{ sourceId: modelSource.id }]);
+      const updated = await request("PATCH", `${base}/agents/${agent.id}`, {
+        configurationId: config.json().data.id,
+        repositoryAccess: selected(access),
+      });
+      assert.equal(updated.statusCode, 200, updated.body);
+      assert.deepEqual(updated.json().data.credentialSources, [{ sourceId: modelSource.id }]);
+      assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + agents.length);
       const path = `${base}/agents/${agent.id}/sandbox-policy/networking`;
       assert.equal((await request("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
       const current = await request("GET", path);
       assert.equal(current.statusCode, 200, current.body);
-      assert.deepEqual(current.json().data.policy.repositoryNetworkPolicy, grants);
+      assert.equal(current.json().data.policy.repositoryNetworkPolicy, undefined);
       const saved = await request("PUT", path, {
         expectedVersion: current.json().data.policy.version,
         additions: [modelGrant],
-        repositoryNetworkPolicy: grants,
       });
       assert.equal(saved.statusCode, 200, saved.body);
+      assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + agents.length);
+      if (agents.length === 0) {
+        const denied = await app.inject({
+          method: "POST",
+          url: `${base}/agents/${agent.id}/deploy`,
+          headers: {
+            host: new URL(delegateSession.origin).host,
+            ...authenticatedHeaders(delegateSession),
+          },
+          payload: {},
+        });
+        assert.equal(denied.statusCode, 403, denied.body);
+        assert.match(denied.json().error.message, /CredentialSource create/);
+        assert.equal(github.issuesOfTokens.length, issueCountBeforeSave);
+        const denial = await pool.query(
+          `SELECT kind,outcome FROM occ.audit_events
+             WHERE actor_id=$1 AND resource_id=$2 AND action='openclaw.agents.deploy'`,
+          [delegateId, agent.id],
+        );
+        assert.deepEqual(denial.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
+
+        // The selected Client authenticates, but the installation belongs to another App.
+        // Deployment must explain the setup failure without minting or enrolling a Git Source.
+        github.setAppIdentityId(Number(fixtureAppId) + 1);
+        const enrollmentFailure = await request("POST", `${base}/agents/${agent.id}/deploy`, {});
+        assert.equal(enrollmentFailure.statusCode, 503, enrollmentFailure.body);
+        assert.match(
+          enrollmentFailure.json().error.message,
+          /Verify that the registered GitHub App is installed for the selected repositories/,
+        );
+        assert.equal(github.issuesOfTokens.length, issueCountBeforeSave);
+        const sources = await request("GET", `${base}/credential-sources`);
+        assert.equal(sources.statusCode, 200, sources.body);
+        assert.ok(
+          sources
+            .json()
+            .data.every(({ type }: { type: string }) => type !== "github-app-installation"),
+        );
+        github.setAppIdentityId(Number(fixtureAppId));
+      }
       const admitted = await request("POST", `${base}/agents/${agent.id}/deploy`, {});
+      assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + 1);
       assert.equal(admitted.statusCode, 202, admitted.body);
       const revision = await nativeController.transact((unit) =>
         unit.revisions.findRevision(namespaceId, agent.id, admitted.json().data.id),
       );
       assert.ok(revision);
+      const repositorySnapshot = revision.credentialSources?.find(
+        ({ sourceType }) => sourceType === "github-app-installation",
+      );
+      assert.ok(repositorySnapshot);
+      gitSourceId ??= repositorySnapshot.sourceId;
+      assert.equal(repositorySnapshot.sourceId, gitSourceId);
       // Worker must accept the PostgreSQL-loaded policy after JSONB changes object key order.
       assert.equal(isNativeStagedRepositoryRevision(revision), true);
       if (agents.length === 0) {
@@ -467,20 +556,44 @@ test(
             "standing-approval": false,
           },
         );
+        // A stored revision cannot manufacture write authority from the Agent's saved read
+        // request, even when its finite Source can issue write-capable installation tokens.
+        await assert.rejects(
+          () =>
+            pool.query(
+              `INSERT INTO occ.agent_revisions
+                 (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at,
+                  backend_id, gateway_managed_mode)
+               SELECT $4, namespace_id, agent_id, revision_number + 1,
+                      jsonb_set(admitted_spec,
+                        '{sandbox_policy,repositoryNetworkPolicy,grants,0,access}', '"write"'),
+                      admitted_at, backend_id, gateway_managed_mode
+                 FROM occ.agent_revisions
+                WHERE namespace_id=$1 AND agent_id=$2 AND id=$3`,
+              [namespaceId, agent.id, revision.id, `rev_${randomUUID()}`],
+            ),
+          (error: unknown) => {
+            const failure = error as { code?: string; where?: string };
+            return (
+              failure.code === "23514" &&
+              failure.where?.includes("guard_sandbox_repository_policy_revision") === true
+            );
+          },
+        );
       }
       assert.deepEqual(admitted.json().data.credentialSources, [
         { sourceId: modelSource.id },
-        { sourceId: gitSource.id },
+        { sourceId: gitSourceId },
       ]);
       assert.deepEqual(
         revision.credentialSources?.map(({ sourceId }) => sourceId),
-        [modelSource.id, gitSource.id],
+        [modelSource.id, gitSourceId],
       );
       assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
       const repositoryBinding = revision.credentialDeployment?.bindings.find(
         ({ consumer }) => consumer.kind === "repository",
       );
-      assert.equal(repositoryBinding?.sourceRef.id, gitSource.id);
+      assert.equal(repositoryBinding?.sourceRef.id, gitSourceId);
       const routes =
         revision.credentialDeployment?.injectionPolicies.find(
           ({ bindingRef }) => bindingRef === repositoryBinding?.bindingRef,
@@ -505,6 +618,21 @@ test(
       );
       agents.push(agent.id);
     }
+    assert.ok(gitSourceId);
+    const enrolled = await request("GET", `${base}/credential-sources/${gitSourceId}`);
+    assert.equal(enrolled.statusCode, 200, enrolled.body);
+    const gitSource = enrolled.json().data;
+    assert.equal(gitSource.type, "github-app-installation");
+    assert.equal(gitSource.clientId, clientId);
+    const allowedShortNames = repositories.map(({ repository }) => repository.split("/")[1]).sort();
+    assert.deepEqual(
+      github.issuesOfTokens.map(({ requestedNames }) => requestedNames),
+      [allowedShortNames, allowedShortNames],
+    );
+    assert.deepEqual(
+      gitSource.scope.repositories,
+      repositories.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
+    );
     // The Namespace registry and Installation ceiling approve the third repository, but the
     // selected Source token covers only the first two. Admission must refuse before a revision
     // or delivery work can turn that broader saved Repo grant into credential authority.
@@ -584,30 +712,30 @@ test(
     );
     const draft = await request("PATCH", agentPath, {
       configurationId: config.json().data.id,
-      credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSource.id }],
-      repositoryBindings: [
-        { repositoryRef: repositories[0]!.repositoryRef, profile: "github-repository" },
-      ],
+      repositoryAccess: {
+        githubAppClientId: clientId,
+        defaultProfile: "github-repository",
+        repositories: [{ repositoryRef: repositories[0]!.repositoryRef, access: "read" }],
+      },
     });
     assert.equal(draft.statusCode, 200, draft.body);
+    assert.deepEqual(draft.json().data.credentialSources, [{ sourceId: modelSource.id }]);
     const view = await request("GET", existingPolicyPath);
     assert.equal(view.statusCode, 200, view.body);
-    assert.equal(view.json().data.repositoryNetworkPolicySaveSupported, true);
-    assert.equal(view.json().data.repositoryNetworkPolicySupportsAdditions, true);
     assert.deepEqual(view.json().data.policy.additions, [modelGrant]);
-    const newGrants = [{ repository: repositories[0]!.repository, access: "read" }];
-    const repoPolicy = await request("PUT", existingPolicyPath, {
-      expectedVersion: view.json().data.policy.version,
-      additions: view.json().data.policy.additions,
-      repositoryNetworkPolicy: newGrants,
-    });
-    assert.equal(repoPolicy.statusCode, 200, repoPolicy.body);
+    assert.equal(view.json().data.policy.repositoryNetworkPolicy, undefined);
+    const newGrants = repositories.map(({ repository }) => ({ repository, access: "read" }));
     const active = await request("GET", agentPath);
     assert.equal(active.statusCode, 200, active.body);
     assert.equal(active.json().data.activeRevisionId, firstId);
     const live = await request("POST", `${agentPath}/deploy`, {});
     assert.equal(live.statusCode, 409, live.body);
     assert.match(live.body, /Complete Stop before deploying again/);
+    assert.equal(
+      github.issuesOfTokens.length,
+      issueCountBeforeSave + 1,
+      "an active Agent cannot cause a mint for its newly selected Repository scope",
+    );
     const stopped = await request("POST", `${agentPath}/stop`);
     assert.equal(stopped.statusCode, 202, stopped.body);
     const retired = await state.transact((unit) =>
@@ -615,6 +743,11 @@ test(
     );
     assert.equal(retired?.desiredRuntimeState, "stopped");
     assert.equal(retired?.activeRevisionId, undefined);
+    const sharedScope = await request("PATCH", agentPath, {
+      configurationId: config.json().data.id,
+      repositoryAccess: selected("read"),
+    });
+    assert.equal(sharedScope.statusCode, 200, sharedScope.body);
     const second = await request("POST", `${agentPath}/deploy`, {});
     assert.equal(second.statusCode, 202, second.body);
     const history = await state.read((view) => view.revisions.listRevisions(namespaceId, agentId));

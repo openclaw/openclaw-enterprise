@@ -10,7 +10,6 @@ import type {
   PluginApprovers,
   AgentPluginCredentialSlot,
   PresetLaunchSettings,
-  RepositoryNetworkGrant,
   SecretBindings,
   SecretMetadata,
   SecretReference,
@@ -49,12 +48,7 @@ import {
   askAdministratorTo,
   CONFIGURATION_CREATE_REFUSED,
 } from "./access-reasons.mjs";
-import { repositoryReviewFrom, reviewRepositoryDraft } from "./detail.mjs";
-import {
-  createGitSourceFields,
-  createRepositoryFields,
-  FIRST_REPOSITORY_DEPLOYMENT_WARNING,
-} from "./repositories.mjs";
+import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
   createSecretReferenceField,
@@ -199,7 +193,6 @@ export interface CreateAgentDraft {
   modelCredentialSecret: SecretMetadata | CredentialSourceReference | null | undefined;
   repositoryAccess: ReturnType<Repositories["access"]>;
   scopedGrants?: ReturnType<Repositories["scopedGrants"]>;
-  gitSourceId?: string | undefined;
   stagedChannelSecrets: SecretMetadata[];
   savedSecret: SecretMetadata | undefined;
   savedCredentialSource: RegisteredCredential | undefined;
@@ -2225,7 +2218,6 @@ function renderAgentForm(
   let savedSecret = draft.savedSecret;
   let savedConfiguration = draft.savedConfiguration;
   let savedAgent: SavedAgent | undefined;
-  let policyUnconfirmed = false;
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
@@ -2431,7 +2423,6 @@ function renderAgentForm(
   // The collapsed Runtime details still name the selected execution mode.
   const runtimeModeSummary = element("span", { className: "muted" });
   let repositories: Repositories;
-  let gitSourceFields: ReturnType<typeof createGitSourceFields>;
   const form = element(
     "form",
     { id: formId, className: "agent-form agent-card", novalidate: "" },
@@ -2468,21 +2459,6 @@ function renderAgentForm(
       // New-Agent repository choices authorize Agent create: read them once an answer allows it,
       // never to learn the answer (finding 2909).
       { held: namespacePermissions?.agents?.create !== true },
-    )).section,
-    (gitSourceFields = createGitSourceFields(
-      context,
-      () => {
-        if (gitSourceFields?.dirty()) {
-          edited = true;
-        }
-        updateControls();
-      },
-      {
-        sourceId: draft.gitSourceId,
-        agentSourceIds: (
-          agent.credentialSources as readonly AgentCredentialSourceBinding[] | undefined
-        )?.map(({ sourceId }) => sourceId),
-      },
     )).section,
     pluginFields.section,
     element(
@@ -2597,7 +2573,6 @@ function renderAgentForm(
     oauthLogin: oauthLogin.capture(),
     repositoryAccess: repositories.access(),
     scopedGrants: repositories.scopedGrants(),
-    gitSourceId: gitSourceFields.selectedId(),
     savedSecret,
     savedCredentialSource,
     savedConfiguration,
@@ -2794,15 +2769,11 @@ function renderAgentForm(
     channelEditor.replaceChildren(channels, ...(modeWarning ? [modeWarning] : []));
     updateControls();
   }
-  const usesRepositoryModelSecret = () =>
-    repositories.scoped() &&
-    !gitSourceFields.sourceId() &&
-    (binding?.method ?? authMethod.value) === "api_key";
   // TODO: Remove Gateway model enrollment when its remaining consumers use TokenService.
   function gatewayModelType() {
     const method = binding?.method ?? authMethod.value;
     const scoped = repositories.scoped();
-    if (scoped && gitSourceFields.sourceId()) {
+    if (scoped) {
       return undefined;
     }
     if (
@@ -2827,7 +2798,6 @@ function renderAgentForm(
     savedCredentialSource?.owner === "token_service" ||
     (!binding &&
       !savedCredentialSource &&
-      !usesRepositoryModelSecret() &&
       nativeProvider.value === "openai" &&
       mode.value === "dedicated" &&
       authMethod.value === "api_key" &&
@@ -3190,9 +3160,9 @@ function renderAgentForm(
         nextStatus =
           "Credential Sources require a ready Namespace. Saving the Agent is unavailable until then.";
       } else if (!modeUnavailable && repositories.scoped()) {
-        nextStatus = gitSourceFields.sourceId()
-          ? "Save the Agent and its GitHub access as a draft. Review it before deploying a new version."
-          : "Select a GitHub Source that covers the selected repositories before saving the Agent draft.";
+        nextStatus = repositories.hasValidSelection()
+          ? "Save the Agent and its GitHub access as a draft. OCE prepares the credential Source when you deploy."
+          : "Select a GitHub App Client and approved repository access before saving the Agent draft.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
@@ -3294,7 +3264,6 @@ function renderAgentForm(
     const managedStatic = usesManagedStatic();
     credentialStorageField.hidden = Boolean(
       binding ||
-      usesRepositoryModelSecret() ||
       nativeProvider.value !== "openai" ||
       mode.value !== "dedicated" ||
       authMethod.value !== "api_key",
@@ -3412,21 +3381,15 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
-    gitSourceFields.sync(
-      repositories.scoped(),
-      repositories.bindings().map(({ repositoryRef }) => repositoryRef),
-      planLocked || repositoryRetryLocked(),
-      repositories.repositoryNames(),
-    );
     const checkingSecret = modelCredentialPicker.pendingStatus();
     const submitUnavailable =
       Boolean(checkingSecret) ||
       (!savedAgent &&
         (repositoryRetryLocked() ||
-          (requiresRepositories() && !repositories.hasValidSelection()) ||
+          ((requiresRepositories() || repositories.scoped()) &&
+            !repositories.hasValidSelection()) ||
           !repositories.isSettled() ||
-          repositories.blocksCreate() ||
-          (repositories.scoped() && (!gitSourceFields.sourceId() || gitSourceFields.pending())))) ||
+          repositories.blocksCreate())) ||
       pending ||
       outcomeUnknown ||
       !capabilitiesSettled() ||
@@ -3454,7 +3417,7 @@ function renderAgentForm(
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
       submitReason = accessStatus;
-    } else if (!savedAgent && repositories.scoped() && !gitSourceFields.sourceId()) {
+    } else if (!savedAgent && repositories.scoped() && !repositories.hasValidSelection()) {
       submitReason = capabilityStatus;
     } else if (!repositoryDeploymentWarning.hidden) {
       submitReason = repositoryDeploymentWarning;
@@ -3478,9 +3441,7 @@ function renderAgentForm(
     retryPermissionCheck.disabled = pending || permissionsReading;
     submit.hidden = credentialGrantRefused;
     submit.textContent = savedAgent
-      ? policyUnconfirmed
-        ? "Recheck saved GitHub access"
-        : "Retry credential access"
+      ? "Retry credential access"
       : repositories.scoped()
         ? "Save Agent draft"
         : "Create Agent";
@@ -3529,12 +3490,8 @@ function renderAgentForm(
         ]
           .filter(Boolean)
           .join(" "),
-        savedAgent && !policyUnconfirmed
-          ? link(
-              " Open saved Agent",
-              `agents/${savedAgent.id}?revision=draft${repositories.scoped() ? "&reviewRepositories=1" : ""}`,
-              context,
-            )
+        savedAgent
+          ? link(" Open saved Agent", `agents/${savedAgent.id}?revision=draft`, context)
           : null,
       ].filter((node) => node !== null),
     );
@@ -4038,23 +3995,6 @@ function renderAgentForm(
       return;
     }
     const repositoryBindings = repositories.bindings();
-    let repositoryNetworkPolicy: RepositoryNetworkGrant[] | undefined;
-    const scopedGrants = repositories.scopedGrants();
-    if (repositories.scoped() && scopedGrants !== undefined) {
-      repositoryNetworkPolicy = [];
-      for (const [, grant] of scopedGrants) {
-        const repository = grant.repository.includes("/")
-          ? grant.repository
-          : gitSourceFields.qualifiedRepository(grant.repository);
-        if (!repository) {
-          feedback.textContent =
-            "Select a GitHub Source that covers the selected repositories before saving the Agent draft.";
-          return;
-        }
-        repositoryNetworkPolicy.push({ ...grant, repository });
-      }
-      repositoryNetworkPolicy.sort((a, b) => (a.repository < b.repository ? -1 : 1));
-    }
     const body = {
       name: name.value.trim(),
       executionMode: mode.value,
@@ -4073,21 +4013,6 @@ function renderAgentForm(
     if (savedRepositoryModel() && !repositories.scoped()) {
       feedback.textContent =
         "Select per-repository GitHub access to reuse the saved model credential.";
-      return;
-    }
-    if (usesRepositoryModelSecret() && savedCredentialSource?.owner === "token_service") {
-      feedback.textContent =
-        "Remove per-repository GitHub access to continue with the saved TokenService credential.";
-      return;
-    }
-    if (
-      repositories.scoped() &&
-      !gitSourceFields.sourceId() &&
-      ((binding?.method ?? authMethod.value) === "codex_pat" ||
-        (usesRepositoryModelSecret() && !savedCredentialSource && !gatewaySourceType))
-    ) {
-      feedback.textContent =
-        "Per-repository GitHub access needs a Dedicated Codex Agent and an OpenAI API-key Secret offered by the Credential Gateway.";
       return;
     }
     if (
@@ -4306,7 +4231,7 @@ function renderAgentForm(
           harnessAuth = { method: "credential_source", sourceId: source.id };
         }
       }
-      if (!savedAgent && repositoryNetworkPolicy === undefined && shouldProvision()) {
+      if (!savedAgent && shouldProvision()) {
         const plan = {
           requestId: provisioningRequestId,
           ...(nativeAdmin.checked && nativeAdminAvailable ? { nativeAdmin: true } : {}),
@@ -4328,10 +4253,6 @@ function renderAgentForm(
       }
       let credentialSources = agent.credentialSources as
         readonly AgentCredentialSourceBinding[] | undefined;
-      const gitSourceId = gitSourceFields.sourceId();
-      if (gitSourceId && !credentialSources?.some(({ sourceId }) => sourceId === gitSourceId)) {
-        credentialSources = [...(credentialSources ?? []), { sourceId: gitSourceId }];
-      }
       if (harnessAuth.method === "credential_source") {
         const { sourceId } = harnessAuth;
         if (!credentialSources?.some((source) => source.sourceId === sourceId)) {
@@ -4389,7 +4310,6 @@ function renderAgentForm(
         mutationStarted = true;
         const agentBody = {
           ...body,
-          ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
           harnessAuth,
           credentialSources,
           configurationId: savedConfiguration.id,
@@ -4431,7 +4351,6 @@ function renderAgentForm(
           throw new Error("The Agent creation response did not identify the expected Agent.");
         }
         savedAgent = { id, name: body.name, configurationId: savedConfiguration.id };
-        policyUnconfirmed = repositoryNetworkPolicy !== undefined;
         createdServicePrincipalId = servicePrincipalId;
         repositories.recordSuccessfulSave();
         if (!context.isCurrent()) {
@@ -4441,34 +4360,6 @@ function renderAgentForm(
       }
       // Grant retries reread exact bindings, so uncertain model or channel grants never recreate the Agent.
       mutationStarted = false;
-      let repositoryReview: ReturnType<typeof repositoryReviewFrom>;
-      if (repositoryNetworkPolicy !== undefined) {
-        policyUnconfirmed = true;
-        showSavedStatus();
-        // Even a server that ignored an unfamiliar field must not lead us to grant
-        // credentials or deploy. Retries inspect this draft and never repeat creation.
-        const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(savedAgent.id)}/sandbox-policy/networking`;
-        const view = responseFields(
-          await request(path, { expectedStatus: 200 }).catch((cause: unknown) => {
-            if (requestFailure(cause).status === 401) {
-              throw cause;
-            }
-            return undefined;
-          }),
-        );
-        if (!context.isCurrent()) {
-          return;
-        }
-        repositoryReview = repositoryReviewFrom(view, namespaceId, savedAgent.id);
-        if (!repositoryReview || !sameValue(repositoryReview.grants, repositoryNetworkPolicy)) {
-          feedback.textContent =
-            "The Agent draft was saved, but its GitHub access could not be confirmed. Do not deploy it. Select Recheck saved GitHub access.";
-          focusFeedbackLine(feedback);
-          return;
-        }
-        policyUnconfirmed = false;
-        showSavedStatus();
-      }
       const credential =
         savedSecret ??
         modelCredentialSecret ??
@@ -4483,7 +4374,6 @@ function renderAgentForm(
             : undefined;
       const needsCredentialAccess =
         modelGrant ||
-        gitSourceId ||
         Object.values(savedConfiguration.secretBindings ?? {}).some(
           (binding) => binding?.source?.kind === "secret",
         );
@@ -4518,21 +4408,10 @@ function renderAgentForm(
         if (modelGrant) {
           await ensureCredentialOperateBinding(context, grantAgent, modelGrant);
         }
-        if (gitSourceId) {
-          await ensureCredentialOperateBinding(context, grantAgent, {
-            kind: "credential_source",
-            namespaceId,
-            id: gitSourceId,
-          });
-        }
         await grantConfigurationSecretAccess(grantAgent, stagedChannelSecrets, savedConfiguration);
       }
       if (context.isCurrent()) {
-        context.navigate(
-          repositoryReview
-            ? reviewRepositoryDraft(namespaceId, savedAgent.id, repositoryReview)
-            : `agents/${savedAgent.id}?revision=draft`,
-        );
+        context.navigate(`agents/${savedAgent.id}?revision=draft`);
       }
     } catch (cause) {
       const error = requestFailure(cause);

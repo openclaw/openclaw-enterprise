@@ -8,15 +8,15 @@ last_updated_session: "authoring-run/7a822e28-b4b9-453a-ae0d-313b27e85a4e"
 
 ## Overview
 
-Codex uses prepared sessions; [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
-receives placeholders. Workers authorize signed requests against live grants.
-[Enrollment](../guides/repository-credentials/openshell-enrollment.md); [qualification](../testing/repository-credentials.md).
+For TokenService Git, Deploy authorizes Source use or creation before revision
+admission. OpenShell injects the finite token on admitted Git routes.
+[Git setup](../guides/repository-credentials.md); [qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
-- `apps/controller/src/index.ts:createFastifyApp` registers repository-option and Agent lifecycle routes.
 - `apps/controller/src/console/agents/repositories.mts:createRepositoryFields`
-  renders discovery and inherited or custom access.
+  renders approved choices.
+- `packages/occ/src/agent-deployment-admission.ts:prepareGitHubRepository` resolves the Source.
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
 
@@ -106,7 +106,7 @@ Catalogs omit sender metadata, credentials and provider descriptions.
 
 Save Configuration first. Reuse it after a confirmed Agent rejection. For scoped retries, reload successfully and select a repository and profile. After an uncertain outcome, read both resources.
 
-Requests carry only refs and optional profiles. OCC preserves order. Nonempty selections require bound policy or a selected Repo Driver. Missing policy returns `409 RESOURCE_CONFLICT`. GitHub defaults legacy profiles to `git-write` without provider or control-socket calls.
+Requests carry refs and optional profiles. TokenService Git also saves a Client and access per ref. Nonempty selections require bound policy or a selected Repo Driver. Legacy GitHub defaults to `git-write` without provider calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. Each binding gets one grant with a

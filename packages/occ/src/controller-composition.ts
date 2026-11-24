@@ -202,6 +202,7 @@ export interface ControllerOptions {
   }) => boolean;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly stagedRepositoryCeiling?: import("./repository-policy.ts").StagedRepositoryCeiling;
+  readonly prepareStagedRepositorySource?: import("./repository-policy.ts").PrepareStagedRepositorySource;
   readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
@@ -586,6 +587,7 @@ function createCredentialServices({
     bindCreator: iamPolicy.bindCreator,
   });
   const managedCredentialSources: ManagedCredentialSources = createManagedCredentialSources({
+    installationId,
     transactions,
     authority,
     iamPolicy,
@@ -878,6 +880,8 @@ export function createControllerComposition(
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     repositoryCredentialAdmission: options.repositoryCredentialAdmission,
     stagedRepositoryCeiling: options.stagedRepositoryCeiling,
+    prepareStagedRepositorySource: options.prepareStagedRepositorySource,
+    validateDeploymentGitHubAppClient: managedCredentialSources.validateDeploymentGitHubAppClient,
     supportsStagedRepositoryRecipient: options.supportsStagedRepositoryRecipient,
     ownedTokenServiceDriver: (instanceId) =>
       managedCredentialSources.ownedTokenServiceDriver(instanceId),
@@ -1099,6 +1103,7 @@ export function createControllerComposition(
     channels: deploymentChannels,
     harnessAuth: harnessAuthOperations,
     repositoryPolicy,
+    prepareGitHubAppSource: managedCredentialSources.prepareDeploymentGitHubAppSource,
     sandboxPolicy: sandboxPolicyOperations,
     plugins: agentPlugins,
     enabledPluginDrivers: () => drivers.enabledPluginDrivers(),

@@ -15,8 +15,9 @@ When eligible **Per-repository access** choices are available and none is select
 Select a repository to **Save Agent draft** with its access instead. Saving a
 draft does not deploy it. For TokenService Git, you can add
 **Per-repository access** to an existing Dedicated Agent whose earlier
-deployments used only standalone model credentials. Save the repository grants
-in the draft, complete **Stop**, then deploy the new version. Older deployments
+deployments used only standalone model credentials. Save a GitHub App Client and
+access for each approved repository, complete **Stop**, then deploy. OCC uses or
+creates the Source during deployment. Older deployments
 with unscoped Git require a new Agent. A saved deny-all list counts as a
 repository policy.
 

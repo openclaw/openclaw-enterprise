@@ -495,6 +495,25 @@ export function credentialSourcesMatch(
   }
   const expectedBindings = new Map<string, string>();
   const expectedSources = new Set(explicit);
+  const repositoryAccess = owner.repositoryAccess;
+  if (repositoryAccess?.githubAppClientId && repositoryAccess.repositories.length > 0) {
+    const binding = revision.credentialDeployment?.bindings.find(
+      ({ consumer }) => consumer.kind === "repository",
+    );
+    if (binding?.sourceRef.namespaceId !== owner.namespaceId) {
+      return false;
+    }
+    if (
+      !revision.credentialSources?.some(
+        (source) =>
+          source.sourceId === binding.sourceRef.id &&
+          source.sourceType === "github-app-installation",
+      )
+    ) {
+      return false;
+    }
+    expectedSources.add(binding.sourceRef.id);
+  }
   for (const { pluginId, requirement, connection, sourceId } of selected) {
     const key = JSON.stringify([pluginId, requirement, connection]);
     if (!owner.plugins?.[pluginId]?.enabled || expectedBindings.has(key)) {
@@ -520,6 +539,67 @@ export function credentialSourcesMatch(
     expectedBindings.size === 0 &&
     frozen.length === expectedSources.size &&
     frozen.every((id) => expectedSources.delete(id))
+  );
+}
+
+/** In-memory mirror of the revision guard for grants derived from saved GitHub access. */
+function matchesGitHubRepositoryGrants(
+  access: NonNullable<Agent["repositoryAccess"]>,
+  revision: Readonly<AgentRevision>,
+  source: Readonly<CredentialSource> | undefined,
+): boolean {
+  if (
+    source?.ownerCapability !== "token_service" ||
+    source.type !== "github-app-installation" ||
+    source.state !== "ready" ||
+    source.clientId !== access.githubAppClientId ||
+    revision.harnessAuth.method !== "credential_source" ||
+    source.tokenServiceInstanceId !== revision.harnessAuth.tokenServiceInstanceId
+  ) {
+    return false;
+  }
+  const contents = source.scope.permissions.contents;
+  const repositoryBindings = revision.repositoryCredentials?.bindings;
+  const grants = revision.sandboxPolicy?.repositoryNetworkPolicy?.grants;
+  const selections = access.repositories;
+  if (
+    (contents !== "read" && contents !== "write") ||
+    repositoryBindings?.length !== selections.length ||
+    grants?.length !== selections.length ||
+    source.scope.repositories.length !== selections.length
+  ) {
+    return false;
+  }
+  const expected = new Map<string, "read" | "write">();
+  for (const selection of selections) {
+    const admitted = repositoryBindings.find(
+      ({ repositoryRef }) => repositoryRef === selection.repositoryRef,
+    );
+    if (
+      admitted?.profile !== "github-repository" ||
+      selection.access === undefined ||
+      (selection.access === "write" && contents !== "write")
+    ) {
+      return false;
+    }
+    const pin = admitted.grant.repositoryId;
+    const matching = source.scope.repositories.filter(({ repositoryId, repository }) => {
+      const canonical = repository.toLowerCase();
+      return (
+        pin === repositoryId ||
+        pin === `github-repository:${canonical}` ||
+        pin === `github-repository:${canonical.split("/")[1]}`
+      );
+    });
+    const repository = matching[0]?.repository.toLowerCase();
+    if (matching.length !== 1 || !repository || expected.has(repository)) {
+      return false;
+    }
+    expected.set(repository, selection.access);
+  }
+  return grants.every(
+    ({ repository, access, apiLimits }) =>
+      apiLimits === undefined && expected.get(repository) === access && expected.delete(repository),
   );
 }
 
@@ -3937,10 +4017,24 @@ function repositories(
       const policy = snapshot.sandboxPolicies.get(key);
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      const access = owner.repositoryAccess;
+      let matchesSavedPolicy =
+        isDeepStrictEqual(grants, admittedPolicy?.grants) &&
+        (grants === undefined || revision.sandboxPolicy?.version === policy?.version);
+      if (access?.githubAppClientId && access.repositories.length > 0) {
+        const sourceId = revision.credentialDeployment?.bindings.find(
+          ({ consumer }) => consumer.kind === "repository",
+        )?.sourceRef.id;
+        const source = sourceId && (await findCredentialSource(revision.namespaceId, sourceId));
+        matchesSavedPolicy =
+          grants === undefined &&
+          admittedPolicy !== undefined &&
+          revision.sandboxPolicy?.version === (policy?.version ?? 1) &&
+          matchesGitHubRepositoryGrants(access, revision, source || undefined);
+      }
       if (
-        !isDeepStrictEqual(grants, admittedPolicy?.grants) ||
-        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy)) ||
-        (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
+        !matchesSavedPolicy ||
+        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy))
       ) {
         throw new ScopeViolationError(
           "Revision repository network policy must match the saved policy.",

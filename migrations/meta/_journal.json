@@ -694,6 +694,13 @@
       "when": 1787000000099,
       "tag": "0099_codex_pat_source_adoption",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1787000000100,
+      "tag": "0100_agent_repository_client_intent",
+      "breakpoints": true
     }
   ]
 }

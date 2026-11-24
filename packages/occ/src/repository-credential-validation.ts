@@ -10,6 +10,8 @@ import { ScopeViolationError } from "./errors.ts";
 
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendIdentifier = /^(?!\s)(?!.*\s$).{1,200}$/;
+const credentialClientIdentifier =
+  /^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function boundedToken(value: unknown): value is string {
   return typeof value === "string" && token.exec(value)?.[0] === value;
@@ -81,10 +83,20 @@ export function validRepositoryBindingSelections(
 }
 
 export function validRepositoryAccess(value: unknown): value is RepositoryAccess {
+  const hasClient =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "githubAppClientId");
   if (
-    !exactObject(value, ["defaultProfile", "repositories"]) ||
+    !exactObject(value, [
+      "defaultProfile",
+      "repositories",
+      ...(hasClient ? ["githubAppClientId"] : []),
+    ]) ||
     !boundedToken(value.defaultProfile) ||
     isInstallationRepositoryProfile(value.defaultProfile) ||
+    (hasClient &&
+      (typeof value.githubAppClientId !== "string" ||
+        credentialClientIdentifier.exec(value.githubAppClientId)?.[0] !== value.githubAppClientId ||
+        value.defaultProfile !== "github-repository")) ||
     !Array.isArray(value.repositories) ||
     value.repositories.length > 16
   ) {
@@ -95,11 +107,22 @@ export function validRepositoryAccess(value: unknown): value is RepositoryAccess
     if (entry === null || typeof entry !== "object") {
       return false;
     }
-    const keys = Object.hasOwn(entry, "profile") ? ["repositoryRef", "profile"] : ["repositoryRef"];
+    const hasProfile = Object.hasOwn(entry, "profile");
+    const hasAccess = Object.hasOwn(entry, "access");
+    const keys = [
+      "repositoryRef",
+      ...(hasProfile ? ["profile"] : []),
+      ...(hasAccess ? ["access"] : []),
+    ];
     if (
       !exactObject(entry, keys) ||
       !boundedToken(entry.repositoryRef) ||
-      (keys.length === 2 && !boundedToken(entry.profile)) ||
+      (hasProfile && !boundedToken(entry.profile)) ||
+      (hasClient
+        ? !hasAccess ||
+          (entry.access !== "read" && entry.access !== "write") ||
+          (entry.profile ?? value.defaultProfile) !== "github-repository"
+        : hasAccess) ||
       seen.has(entry.repositoryRef)
     ) {
       return false;

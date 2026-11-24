@@ -1,4 +1,5 @@
 import { driverOperation } from "./driver-operation.ts";
+import { createHash } from "node:crypto";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isSourceProviderPresetId,
@@ -12,6 +13,7 @@ import {
   type StaticCredentialSource,
   type CredentialSourceMetadata,
   type CredentialSourceReference,
+  type GitHubAppInstallationCredentialSource,
   type Namespace,
   type PluginDriver,
   type SourceProviderPresetId,
@@ -109,6 +111,7 @@ function managedSourceConfig(
 }
 
 interface ManagedCredentialSourceDependencies {
+  readonly installationId: string;
   readonly transactions: Pick<
     ControllerTransactions,
     "read" | "transact" | "requireIndependentMutation"
@@ -270,7 +273,15 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       () =>
         owner.createSource(registration, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
       "TokenService",
-    );
+    ).catch((error: unknown) => {
+      if (
+        registration.kind === "github_app_installation" &&
+        error instanceof DependencyUnavailableError
+      ) {
+        throw new RetryLaterError("githubRepositoryEnrollment");
+      }
+      throw error;
+    });
     if (
       !isManagedTokenServiceSource(created) ||
       created.namespaceId !== namespaceId ||
@@ -316,6 +327,88 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       );
       return metadata;
     });
+  }
+
+  async function validateDeploymentGitHubAppClient(clientId: string, appId: string): Promise<void> {
+    const client = await dependencies.transactions.read((state) =>
+      state.connectionTemplates.findCredentialClient(clientId),
+    );
+    if (
+      client?.kind !== "github-app" ||
+      client.appId !== appId ||
+      client.namespaceId !== undefined ||
+      client.tokenServiceInstanceId !== currentTokenServiceInstanceId()
+    ) {
+      throw new ResourceStateConflictError(
+        "Select a registered GitHub App Client for the approved installation and selected TokenService.",
+      );
+    }
+  }
+
+  async function prepareDeploymentGitHubAppSource(
+    principalId: string,
+    namespaceId: string,
+    input: {
+      readonly clientId: string;
+      readonly appId: string;
+      readonly installationId: string;
+      readonly repositoryRefs: readonly string[];
+      readonly scopeKey: readonly string[];
+      readonly matches: (source: Readonly<GitHubAppInstallationCredentialSource>) => boolean;
+    },
+  ): Promise<string> {
+    const instanceId = currentTokenServiceInstanceId();
+    await validateDeploymentGitHubAppClient(input.clientId, input.appId);
+    const eligibleSources = await dependencies.transactions.read(async (state) =>
+      (await state.credentialSources.listCredentialSources(namespaceId)).filter(
+        (source) =>
+          isManagedTokenServiceSource(source) &&
+          source.type === "github-app-installation" &&
+          source.state === "ready" &&
+          source.tokenServiceInstanceId === instanceId &&
+          source.clientId === input.clientId &&
+          source.scope.appId === input.appId &&
+          source.scope.installationId === input.installationId &&
+          input.matches(source),
+      ),
+    );
+    for (const source of eligibleSources) {
+      const { decision } = await dependencies.authority.authorizationDecision(
+        principalId,
+        "operate",
+        credentialSourceRef(source),
+      );
+      if (decision.allowed) {
+        return source.id;
+      }
+    }
+    const key = createHash("sha256")
+      .update(JSON.stringify([instanceId, input.clientId, input.installationId, input.scopeKey]))
+      .digest("hex");
+    const source = await createManagedCredentialSource(
+      principalId,
+      namespaceId,
+      {
+        kind: "github_app_installation",
+        clientId: input.clientId,
+        name: `GitHub repository access ${key}`,
+        repositoryRefs: input.repositoryRefs,
+      },
+      (resource, phase) => ({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: dependencies.installationId,
+        namespaceId,
+        occurredAt: dependencies.clock().toISOString(),
+        kind: "mutation",
+        actorId: principalId,
+        source: "occ",
+        action: "openclaw.credential_sources.create",
+        resource,
+        outcome: "success",
+        ...(phase === undefined ? {} : { details: { phase } }),
+      }),
+    );
+    return source.id;
   }
 
   async function updateManagedCredentialSource(
@@ -938,6 +1031,8 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     currentTokenServiceInstanceId,
     ownedTokenServiceDriver,
     createManagedCredentialSource,
+    prepareDeploymentGitHubAppSource,
+    validateDeploymentGitHubAppClient,
     updateManagedCredentialSource,
     adoptCodexPatCredentialSource,
     deleteCredentialSource,

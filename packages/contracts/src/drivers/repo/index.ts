@@ -38,7 +38,10 @@ export interface RepositoryBindingSelection {
 /** Desired editing intent; admission always resolves concrete binding profiles. */
 export interface RepositoryAccess {
   readonly defaultProfile: string;
-  readonly repositories: readonly RepositoryBindingRequest[];
+  readonly githubAppClientId?: string;
+  readonly repositories: readonly (RepositoryBindingRequest & {
+    readonly access?: "read" | "write";
+  })[];
 }
 
 export interface RepositoryOption {

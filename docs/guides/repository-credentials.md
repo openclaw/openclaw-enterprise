@@ -7,7 +7,7 @@ The worker Token Service owns GitHub App credentials. Choose an
 For a dedicated OpenShell Agent with managed GitHub App credentials, follow
 [Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
 For an Installation with TokenService and native Credential Proxy, use
-[a GitHub Source](#select-a-github-source-for-an-openshell-agent).
+[GitHub App access](#select-a-github-source-for-an-openshell-agent).
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
@@ -49,7 +49,9 @@ docker build -f deploy/runtime/Dockerfile \
 The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
-## Select a GitHub Source for an OpenShell Agent
+<a id="select-a-github-source-for-an-openshell-agent"></a>
+
+## Set GitHub App access for an OpenShell Agent
 
 This path requires the selected TokenService, the paired OpenShell Sandbox and
 Credential Proxy, and qualified runtime images. Dedicated Codex can use the
@@ -69,13 +71,13 @@ registry ConfigMap. Set the GitHub Backend's `registryPath` to
 1. As Installation administrator, open **Credentials → Credential clients →
    Register client**. Select **GitHub App**, enter the App ID, and select its
    PEM signing key. TokenService verifies the key and keeps it private.
-2. In the Agent's **Repositories** settings, choose the approved repositories
-   and their access levels. Under **GitHub credential**, select a Source or use
-   **Create a GitHub Source…** to mint a finite installation token. Pick the
-   registered Client and enter a Source name.
-3. Select the model credential, then save and deploy. The Agent's saved grants
-   control which Git requests can use the Source. Credential Proxy injects the
-   token on those requests.
+2. In the Agent's **Repositories** settings, choose the approved repositories,
+   their access levels, and the registered GitHub App Client. Selecting or
+   changing the Client requires Installation administration.
+3. Select the model credential, then save and deploy. Deploy requires permission
+   to use an eligible Namespace Source or to create one. TokenService mints a
+   finite installation token when needed. Credential Proxy injects it only on
+   requests allowed by the Agent's saved grants.
 
 Use **Rotate GitHub App key** on the same Client to replace its signing key.
 TokenService uses that key at the next mint. Existing installation tokens keep

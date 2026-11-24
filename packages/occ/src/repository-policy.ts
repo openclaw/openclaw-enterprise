@@ -107,6 +107,21 @@ export type StagedRepositoryCeiling = (input: {
   readonly ceiling: RepositoryNetworkPolicyCeiling;
 }) => RepositoryNetworkPolicyCeiling;
 
+export type PrepareStagedRepositorySource = (input: {
+  readonly namespaceId: string;
+  readonly access: RepositoryAccess;
+  readonly bindings: readonly AdmittedRepositoryBinding[];
+  readonly ceiling: RepositoryNetworkPolicyCeiling;
+}) =>
+  | {
+      readonly appId: string;
+      readonly installationId: string;
+      readonly resolveGrants: (
+        source: Readonly<GitHubAppInstallationCredentialSource>,
+      ) => readonly RepositoryNetworkGrant[] | undefined;
+    }
+  | undefined;
+
 interface RepositoryPolicyDependencies {
   readonly installationId: string;
   readonly configurationDriver: () => ConfigurationDriver;
@@ -126,6 +141,8 @@ interface RepositoryPolicyDependencies {
       }) => readonly DeploymentRequestMatch[] | undefined)
     | undefined;
   readonly stagedRepositoryCeiling: StagedRepositoryCeiling | undefined;
+  readonly prepareStagedRepositorySource: PrepareStagedRepositorySource | undefined;
+  readonly validateDeploymentGitHubAppClient: (clientId: string, appId: string) => Promise<void>;
   readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
@@ -806,6 +823,59 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     };
   }
 
+  function prepareRepositorySource(
+    agent: Pick<Agent, "namespaceId" | "repositoryAccess" | "repositoryBindings">,
+  ) {
+    const access = agent.repositoryAccess;
+    if (!access?.githubAppClientId || access.repositories.length === 0) {
+      return undefined;
+    }
+    const resolved = resolveRepositoryBindings(
+      agent.namespaceId,
+      agent.repositoryBindings,
+      "saved",
+      installationRepositoryAdmission,
+    );
+    const prepared =
+      resolved?.resolution.nativeGit === "v1" &&
+      dependencies.prepareStagedRepositorySource?.({
+        namespaceId: agent.namespaceId,
+        access,
+        bindings: resolved.resolution.bindings,
+        ceiling: dependencies.repositoryNetworkPolicyCeiling,
+      });
+    if (!prepared || !resolved?.unchanged()) {
+      throw new ResourceStateConflictError(
+        "The selected GitHub App and repository access are unavailable. Review the approved repositories and access levels before deploying.",
+      );
+    }
+    return {
+      ...prepared,
+      scopeKey: resolved.resolution.bindings.map(({ grant }) => grant.grantId).sort(),
+    };
+  }
+
+  async function validateRepositoryClientSelection(
+    principalId: string,
+    agent: Pick<Agent, "namespaceId" | "repositoryAccess" | "repositoryBindings">,
+    previousClientId?: string,
+  ) {
+    const clientId = agent.repositoryAccess?.githubAppClientId;
+    if (!clientId) {
+      return;
+    }
+    if (clientId !== previousClientId) {
+      await dependencies.authority.authorize(principalId, "administer", {
+        kind: "installation",
+        id: dependencies.installationId,
+      });
+    }
+    const registration = prepareRepositorySource(agent);
+    if (registration) {
+      await dependencies.validateDeploymentGitHubAppClient(clientId, registration.appId);
+    }
+  }
+
   function admitRepositoryCredentials(
     agent: Readonly<Agent>,
     compute: ComputeDriver,
@@ -1372,6 +1442,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   }
 
   return {
+    prepareRepositorySource,
+    validateRepositoryClientSelection,
     namespaceRepositoryNetworkPolicyCeiling,
     qualifyRepositoryEdit,
     repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,

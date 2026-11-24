@@ -91,11 +91,7 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import {
-  createGitSourceFields,
-  createRepositoryFields,
-  FIRST_REPOSITORY_DEPLOYMENT_WARNING,
-} from "./repositories.mjs";
+import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -3518,7 +3514,14 @@ export async function renderAgentDetail(
     );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
+    const automaticGit = Boolean(
+      agent.repositoryAccess?.githubAppClientId && agent.repositoryAccess.repositories.length,
+    );
+    if (automaticGit) {
+      reviewRepositories = false;
+    }
     const firstGitHubDraft =
+      !automaticGit &&
       revisionResult.status === "fulfilled" &&
       revisionResult.value.revisions.length === 0 &&
       agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
@@ -4275,6 +4278,7 @@ export async function renderAgentDetail(
       const showRepositoryWarning =
         !deployUnavailable &&
         !reviewRepositories &&
+        !automaticGit &&
         callerPermissions?.deploy === true &&
         callerPermissions.sandboxPolicyRead &&
         isDedicatedCodex(values) &&
@@ -4839,7 +4843,7 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
-      !reviewRepositories && hasRepositoryPermissions(values)
+      !reviewRepositories && !automaticGit && hasRepositoryPermissions(values)
         ? element(
             "p",
             { className: "hint" },
@@ -6437,7 +6441,7 @@ export async function renderAgentDetail(
           repositoryBindings
             ?.map(
               (binding) =>
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+                `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
             .join(", ") ?? "None",
         ],
@@ -6523,7 +6527,7 @@ export async function renderAgentDetail(
           { className: "agent-card" },
           snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
-          !(draft && reviewRepositories) &&
+          !(draft && (reviewRepositories || agent.repositoryAccess?.githubAppClientId)) &&
             repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
@@ -6583,6 +6587,21 @@ export async function renderAgentDetail(
     return holder;
   }
 
+  function draftRepositoryLabel(binding: { repositoryRef: string; profile: string }) {
+    const selected = agent.repositoryAccess?.githubAppClientId
+      ? agent.repositoryAccess.repositories.find(
+          ({ repositoryRef }) => repositoryRef === binding.repositoryRef,
+        )
+      : undefined;
+    if (selected?.access === "write") {
+      return "Read/write Git";
+    }
+    if (selected?.access === "read") {
+      return "Read-only Git";
+    }
+    return repositoryProfile(binding.profile)?.label ?? "Unknown access level";
+  }
+
   function repositoryAccessSummary(reason: string) {
     const bindings = agent.repositoryBindings ?? [];
     return element(
@@ -6601,15 +6620,12 @@ export async function renderAgentDetail(
             "ul",
             { className: "repository-access-summary" },
             ...bindings.map((binding) =>
-              element(
-                "li",
-                {},
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
-              ),
+              element("li", {}, `${binding.repositoryRef} · ${draftRepositoryLabel(binding)}`),
             ),
           )
         : null,
-      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+      !agent.repositoryAccess?.githubAppClientId &&
+        bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
         ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
         : null,
       element("p", { className: "muted", role: "status" }, reason),
@@ -6620,10 +6636,6 @@ export async function renderAgentDetail(
     // Drawn only when the permission answer allows Agent saves or is unknown: a caller it denies
     // reads the summary instead (renderRepositoryTab).
     let saveState = "idle";
-    let pendingGitGrant: { sourceId: string; savedAgent: PageAgent } | undefined;
-    const gitFields = createGitSourceFields(context, () => update(), {
-      agentSourceIds: agent.credentialSources?.map(({ sourceId }) => sourceId),
-    });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
     const refuse = (text: string) => {
@@ -6664,25 +6676,15 @@ export async function renderAgentDetail(
         fields?.setDisabled(true);
         return;
       }
-      const dirty = Boolean(fields?.isDirty() || gitFields?.dirty() || pendingGitGrant);
+      const dirty = Boolean(fields?.isDirty());
       const pending = saveState === "saving";
       const outcomeUnknown = saveState === "uncertain";
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      const selected = fields?.bindings() ?? [];
-      const nativeGit = selected.some(({ profile }) => profile === "github-repository");
-      gitFields.sync(
-        nativeGit,
-        selected.map(({ repositoryRef }) => repositoryRef),
-        locked,
-        fields?.repositoryNames() ?? [],
-      );
-      save.textContent = pendingGitGrant ? "Retry GitHub Source access" : "Save repository access";
       save.disabled =
         locked ||
         !dirty ||
-        (!pendingGitGrant && nativeGit && (!gitFields.sourceId() || gitFields.pending())) ||
         !fields?.isSettled() ||
         fields.blocksCreate() ||
         (fields.bindings().length > 0 && !fields.hasValidSelection());
@@ -6748,11 +6750,9 @@ export async function renderAgentDetail(
           return;
         }
         if (
-          !pendingGitGrant &&
-          (fresh.configurationId !== agent.configurationId ||
-            !sameValue(fresh.credentialSources ?? [], agent.credentialSources ?? []) ||
-            JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
-            JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings))
+          fresh.configurationId !== agent.configurationId ||
+          JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
+          JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
         ) {
           saveState = "conflict";
           refuse(
@@ -6760,67 +6760,26 @@ export async function renderAgentDetail(
           );
           return;
         }
-        if (pendingGitGrant) {
-          const intended = pendingGitGrant.savedAgent;
-          if (
-            fresh.id !== intended.id ||
-            fresh.namespaceId !== intended.namespaceId ||
-            fresh.servicePrincipalId !== intended.servicePrincipalId ||
-            fresh.configurationId !== intended.configurationId ||
-            !sameValue(fresh.credentialSources ?? [], intended.credentialSources ?? []) ||
-            !sameValue(fresh.repositoryAccess, intended.repositoryAccess) ||
-            !fresh.credentialSources?.some(({ sourceId }) => sourceId === pendingGitGrant!.sourceId)
-          ) {
-            saveState = "conflict";
-            refuse(
-              "The Agent or its GitHub Source changed after repository access was saved. Reload this draft before granting access.",
-            );
-            return;
-          }
-        }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
         // is implemented; this preflight cannot prevent a write between requests.
         const repositoryAccess = fields.access();
-        const sourceId = pendingGitGrant?.sourceId ?? gitFields.sourceId();
-        const originalId = gitFields.originalSourceId();
-        const credentialSources = (fresh.credentialSources ?? []).filter(
-          ({ sourceId }) => sourceId !== originalId,
+        mutationStarted = true;
+        const savedAgent = agentForPage(
+          await request(path, {
+            method: "PATCH",
+            expectedStatus: 200,
+            body: { configurationId: fresh.configurationId, repositoryAccess },
+          }),
         );
-        if (sourceId && !credentialSources.some((entry) => entry.sourceId === sourceId)) {
-          credentialSources.push({ sourceId });
+        if (
+          savedAgent.configurationReadError ||
+          savedAgent.configurationId !== fresh.configurationId ||
+          !sameValue(savedAgent.repositoryAccess, repositoryAccess)
+        ) {
+          throw new Error("The response did not confirm this Agent’s repository access.");
         }
-        let savedAgent = pendingGitGrant ? fresh : undefined;
-        if (!savedAgent) {
-          mutationStarted = true;
-          savedAgent = agentForPage(
-            await request(path, {
-              method: "PATCH",
-              expectedStatus: 200,
-              body: { configurationId: fresh.configurationId, repositoryAccess, credentialSources },
-            }),
-          );
-          if (
-            savedAgent.configurationReadError ||
-            savedAgent.configurationId !== fresh.configurationId ||
-            !sameValue(savedAgent.repositoryAccess, repositoryAccess) ||
-            !sameValue(savedAgent.credentialSources ?? [], credentialSources)
-          ) {
-            throw new Error(
-              "The response did not confirm this Agent’s repository access and GitHub Source.",
-            );
-          }
-          saved = true;
-          fields.recordSuccessfulSave();
-        }
-        if (sourceId && context.installationAdmin === true) {
-          pendingGitGrant = { sourceId, savedAgent };
-          await ensureCredentialOperateBinding(context, savedAgent, {
-            kind: "credential_source",
-            namespaceId: context.namespaceId,
-            id: sourceId,
-          });
-          pendingGitGrant = undefined;
-        }
+        saved = true;
+        fields.recordSuccessfulSave();
         if (context.isCurrent()) {
           data.setDraftEditorState({ dirty: false, saving: false });
           await refreshDraftInPlace({ agent: savedAgent, saved: "Repository access saved." });
@@ -6834,21 +6793,11 @@ export async function renderAgentDetail(
         } else {
           refuse(
             rejectionMessage(
-              pendingGitGrant
-                ? new Error(
-                    "Repository access was saved, but Agent access to the GitHub Source was not confirmed. Retry GitHub Source access.",
-                  )
-                : saved
-                  ? error
-                  : refusedSave(error, "agent", mutationStarted),
+              saved ? error : refusedSave(error, "agent", mutationStarted),
               mutationStarted,
             ),
           );
-          if (
-            !pendingGitGrant &&
-            mutationStarted &&
-            !refusedWriteStatuses.includes(requestFailure(error).status)
-          ) {
+          if (mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status)) {
             saveState = "uncertain";
           }
         }
@@ -6862,14 +6811,7 @@ export async function renderAgentDetail(
       }
     }
     update();
-    return element(
-      "section",
-      { className: "agent-card" },
-      fields.section,
-      gitFields.section,
-      actions,
-      feedback,
-    );
+    return element("section", { className: "agent-card" }, fields.section, actions, feedback);
   }
 
   // Edits carried through a save conflict, merged over the Configuration Reload draft reread
