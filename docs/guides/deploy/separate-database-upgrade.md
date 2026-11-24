@@ -65,6 +65,19 @@ after a log-read failure or to confirm cleanup. If a create is unknown, the appl
 Job fails, or cleanup is unresolved, keep writers stopped and reconcile the
 original Job, Pod, and database history. Preserve both evidence locations,
 including the lock and any retained kubeconfig snapshot.
+
+For pending migrations, `--apply-for-installation` takes PostgreSQL
+`SHARE` locks on existing tables in `occ` and `drizzle` and rechecks
+the Installation ID. The migration transaction holds these locks through
+commit or rollback. Read-only checks and unguarded apply are unchanged.
+
+If the apply Job logs `MIGRATION_DATABASE_BUSY`, the migrator could not lock
+the existing tables for the pending schema change. A transaction can still
+commit after its API Pod exits. Keep writers stopped and ask the database
+operator to identify the conflicting lock. Let the transaction settle, then
+check the original write and migration history. Preserve the failed Job's
+evidence. Do not replay the Job or retry a write based only on Pod removal.
+
 After a failed verification Job has ended and its cleanup is confirmed, address
 the failure and run the same command to retry verification.
 

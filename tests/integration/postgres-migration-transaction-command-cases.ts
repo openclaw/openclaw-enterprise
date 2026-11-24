@@ -17,6 +17,7 @@ export type MigrationCommandResult =
   | {
       ok: false;
       code:
+        | "MIGRATION_DATABASE_BUSY"
         | "MIGRATION_HISTORY_PENDING"
         | "MIGRATION_HISTORY_UNSUPPORTED"
         | "MIGRATION_HISTORY_NOT_EMPTY"

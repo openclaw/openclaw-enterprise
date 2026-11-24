@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: 2026-11-21
-last_updated_session: authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0
+updated: 2026-11-24
+last_updated_session: authoring-run/12c5a182-c126-478a-a686-f210351f21be
 ---
 
 # Production image upgrade flow
@@ -248,19 +248,19 @@ Skip stopped writers. Stopped workers lack prospective checks.
 Sequential patches test UID, resource version and replicas. Conflicts can leave
 the API stopped. Verify Pod absence and original Deployments at zero. Operators
 stop other writers/autoscalers and keep nodes reachable.
-Separate mode rechecks Secret identities before stopping writers and again before
-recording their stopped UIDs and generations, then exits 3. `apply_database_migration`
-requires irreversible SQL approval, a verified separate render and no Helm
-submission. Its journal records Job create/delete intent. Unknown effects retain
-the lock and kubeconfig snapshot. Cleanup observes prior deletes.
-Verification retries require a cleaned failed Job. Resume requires completed
-journaled verification and rechecks both Secret identities. Fence Secret edits
-because Jobs reference them by name.
+Separate mode rechecks both Secrets before stopping writers and before recording
+stopped UIDs and generations, then exits 3. `apply_database_migration` requires
+irreversible SQL approval, verified separate render and no Helm submission.
+[Pending apply](../guides/deploy/separate-database-upgrade.md) locks existing tables
+and rechecks Installation ownership transactionally.
+Journal Job create/delete intent. Unknown effects retain
+lock and kubeconfig snapshot. Cleanup observes prior deletes. Verification retries
+require failed Job cleanup. Resume requires journaled verification and rechecks
+Secret identities. Freeze Secrets through both Jobs, which read them by name.
 
-After quiescence, `verify_pair_nodes` runs again. Fresh `helm status` must match
-reconciliation except for Helm v4 live `.info.resources`. A mismatch leaves
-writers stopped before protected file or Installation Secret writes. Resume can
-find candidate settings from a prior attempt.
+Repeat `verify_pair_nodes`. Compare fresh `helm status` with reconciliation,
+excluding Helm v4 live `.info.resources`. On mismatch, keep writers stopped
+before protected file or Secret writes. Resume may find prior candidate settings.
 
 Protected files change atomically. Resource-version checks preserve unrelated
 mutable Secret data. Reference switches preserve both Secrets. Both OCC templates
@@ -374,6 +374,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-24 03:23: Guard separate apply. (authoring-run/12c5a182-c126-478a-a686-f210351f21be - 3ab8f42b0e1933c0d9510c3f2331d089d244ba1a)
 - 2026-11-21 09:16: Trace rendered mode and retry. (authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0 - f9fb2a1f6fed7afd4ba8e69737f611e55604f587)
 - 2026-11-21 03:11: Reconcile publication selection with current upgrade admission and recovery. (authoring-run/5e8acf3b-45b0-4fbd-801d-493e4787e9dc - e67cd3cd0357e002ccc62f410454649ea4bfefd9)
 

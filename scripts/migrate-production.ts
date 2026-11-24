@@ -136,6 +136,7 @@ try {
     (error.code === "MIGRATION_HISTORY_UNSUPPORTED" ||
       error.code === "MIGRATION_HISTORY_NOT_EMPTY" ||
       error.code === "MIGRATION_HISTORY_PENDING" ||
+      error.code === "MIGRATION_DATABASE_BUSY" ||
       error.code === "MIGRATION_REGISTRATION_PENDING")
   ) {
     code = error.code;
