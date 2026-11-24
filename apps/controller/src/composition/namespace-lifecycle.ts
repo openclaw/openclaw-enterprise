@@ -1,5 +1,8 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { withTenantAccessHint } from "../drivers/compute/operation-context.ts";
+import {
+  withComputeAbortSignal,
+  withTenantAccessHint,
+} from "../drivers/compute/operation-context.ts";
 import type { ComputeDriver, SandboxDriver } from "@openclaw-enterprise/contracts";
 import {
   SandboxNamespaceRefusedError,
@@ -60,9 +63,19 @@ export function sandboxNamespaceLifecycleBinding(
       },
       async deleteNamespace({ namespace, signal }) {
         try {
-          const context = await resolve(namespace, signal);
-          // The Sandbox cleans tenant resources through the Namespace's own plane client.
-          await withTenantAccessHint(() => sandbox.cleanup(context));
+          const cleanup = async (lifetime: AbortSignal) => {
+            const context = await resolve(namespace, lifetime);
+            // The Sandbox cleans tenant resources through the Namespace's own plane client.
+            await withTenantAccessHint(() => sandbox.cleanup(context));
+            lifetime.throwIfAborted();
+          };
+          if (sandbox.confirmHarnessPod === undefined) {
+            await cleanup(signal);
+          } else {
+            // Bound the SDK transport too. Abandoning a pending mutation would leave its outcome unknown.
+            const lifetime = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
+            await withComputeAbortSignal(lifetime, () => cleanup(lifetime));
+          }
           return { namespaceId: namespace.id, namespaceDeleted: true };
         } catch (error) {
           signal.throwIfAborted();

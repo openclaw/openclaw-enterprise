@@ -1,0 +1,29 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
+    "OCC_TEST_DATABASE_URL",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_OPENSANDBOX_PACKAGE_ROOT",
+    "OCC_TEST_OPENSANDBOX_ROUTING_FILE",
+    "OCC_TEST_OPENSANDBOX_MODEL_PLACEHOLDER",
+    "OCC_TEST_CODEX_OPENAI_BASE_URL",
+    "OCC_GATEWAY_API_KEY_PATH",
+    "NODE_EXTRA_CA_CERTS"
+  ],
+  "optionalEnv": [
+    "OCC_TEST_OPENSANDBOX_MODEL_CA_PATH",
+    "OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE"
+  ],
+  "env": {
+    "OCC_TEST_OPENSANDBOX_K3D_REAL": "1"
+  },
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/opensandbox-k3d-real.test.ts",
+      "expectedTests": ["OpenSandbox operator runs and retires a real dedicated Codex Agent"]
+    }
+  ]
+}

@@ -11970,7 +11970,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw invalidObservation();
     }
     let candidates = 0;
-    let candidateReady = false;
+    let readyPod: { name: string; uid: unknown } | undefined;
     // Validate the whole observation before trusting uniqueness, including entries after a Ready Pod.
     for (const item of pods.items) {
       const pod = asRecord(item);
@@ -12026,9 +12026,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw invalidObservation();
       }
       candidates += 1;
-      candidateReady = ready;
+      if (ready) {
+        readyPod = { name: metadata.name, uid: metadata.uid };
+      }
     }
-    return candidates === 1 && candidateReady;
+    if (candidates !== 1 || readyPod === undefined) {
+      return false;
+    }
+    const sandbox = this.sandboxDriverForRevision(revision);
+    if (sandbox?.confirmHarnessPod === undefined) {
+      return true;
+    }
+    const { name: podName, uid: podUid } = readyPod;
+    if (!isNonEmptyString(podUid)) {
+      throw invalidObservation();
+    }
+    // A matching selector cannot establish ownership. Check the observed UID again at activation.
+    const confirm = sandbox.confirmHarnessPod.bind(sandbox);
+    return withComputeAbortSignal(AbortSignal.timeout(REQUEST_TIMEOUT_MS), async () => {
+      const context = await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, namespace),
+        namespace,
+      );
+      context.signal.throwIfAborted();
+      const confirmed = await confirm({ ...context, revision, podName, podUid });
+      context.signal.throwIfAborted();
+      return confirmed === true;
+    });
   }
 
   private async revisionPods(

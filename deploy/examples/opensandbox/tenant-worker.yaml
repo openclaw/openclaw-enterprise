@@ -1,0 +1,24 @@
+# Replace both namespace placeholders before applying to one approved tenant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: TENANT_NAMESPACE
+  name: openclaw-opensandbox-worker
+rules:
+  - apiGroups: [sandbox.opensandbox.io]
+    resources: [batchsandboxes]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: TENANT_NAMESPACE
+  name: openclaw-opensandbox-worker
+subjects:
+  - kind: ServiceAccount
+    namespace: INSTALLATION_NAMESPACE
+    name: openclaw-enterprise-worker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openclaw-opensandbox-worker
