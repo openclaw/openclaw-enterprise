@@ -302,6 +302,8 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  automationId: "cron-example",
+  expectedConfigRevision: "revision-1",
   modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
@@ -342,6 +344,7 @@ export const parameterExamples = {
   download: "false",
   tailLines: "100",
   sinceSeconds: "300",
+  offset: "0",
   limit: "20",
   cursor: "opaque-cursor-from-the-previous-response",
   code: "example-provider-code",
@@ -352,6 +355,13 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  createAgentAutomation: {
+    name: "Morning report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+    prompt: "Prepare a report.",
+  },
+  updateAgentAutomation: { expectedConfigRevision: "revision-1", enabled: false },
   chatWithAgent: {
     messages: [{ role: "user", content: "Reply with a short greeting." }],
     stream: false,
@@ -417,6 +427,7 @@ export const requestExamples = {
     secrets: source.secrets,
   },
   updateCredentialSource: { adoption: "live", secrets: source.secrets },
+  pushAgentCredentials: { sources: [source.id] },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
   updateServiceAccountCredential: {
@@ -484,6 +495,29 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  createAgentAutomation: {
+    id: "cron-example",
+    configRevision: "revision-1",
+    name: "Morning report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+    payload: { kind: "agentTurn", message: "Prepare a report." },
+  },
+  getAgentAutomation: {
+    id: "cron-example",
+    configRevision: "revision-1",
+    name: "Morning report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+  },
+  updateAgentAutomation: {
+    id: "cron-example",
+    configRevision: "revision-2",
+    name: "Morning report",
+    enabled: false,
+  },
+  listAgentAutomations: { jobs: [], total: 0, nextOffset: null },
+  listAgentAutomationRuns: { entries: [], total: 0, nextOffset: null },
   createModelProvider: modelProvider,
   updateModelProvider: modelProvider,
   getModelProvider: modelProvider,
@@ -739,6 +773,7 @@ export const responseExamples = {
   validateAgentSandboxPolicy: { success: true, data: [] },
   getAgentSandboxRecommendations: { recommendations: [], truncated: false },
   withdrawAgentCredentialSource: withdrawal,
+  pushAgentCredentials: { results: [{ sourceId: source.id, outcome: "succeeded" }] },
   getAgentCredentialWithdrawal: withdrawal,
   getAgentWorkspaceFile: {
     name: "AGENTS.md",

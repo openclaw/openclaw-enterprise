@@ -295,6 +295,8 @@ export const agents = occSchema.table(
     backendId: text("backend_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
+    networkProxyUrl: text("network_proxy_url"),
+    networkProxySecretId: text("network_proxy_secret_id"),
     sandboxPolicyEditing: boolean("sandbox_policy_editing").notNull().default(false),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
     pluginDriver: jsonb("plugin_driver").$type<PluginDriverIdentity>(),
@@ -323,6 +325,10 @@ export const agents = occSchema.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    check(
+      "agents_network_proxy_shape",
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxySecretId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxySecretId} IS NULL OR ${table.networkProxySecretId} <> ''))`,
+    ),
     unique("agents_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("agents_namespace_id_name_unique").on(table.namespaceId, table.name),
     unique("agents_namespace_id_id_service_principal_id_unique").on(
@@ -538,6 +544,7 @@ export const credentialSources = occSchema.table(
       () => tokenServiceInstances.id,
       { onDelete: "restrict", onUpdate: "restrict" },
     ),
+    backendRef: jsonb("backend_ref").$type<Readonly<Record<string, string>>>(),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -574,6 +581,15 @@ export const credentialSources = occSchema.table(
       OR (${table.type} <> 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.state} IN ('ready', 'deleting'))
     ) ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL
       AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
+    ),
+    check(
+      "credential_sources_backend_ref_valid",
+      sql`${table.backendRef} IS NULL OR (
+      ${table.tokenServiceInstanceId} IS NOT NULL
+      AND jsonb_typeof(${table.backendRef}) = 'object'
+      AND ${table.backendRef} <> '{}'::jsonb
+      AND NOT jsonb_path_exists(${table.backendRef}, 'strict $.* ? (@.type() != "string" || @ == "")', '{}'::jsonb, true)
+    )`,
     ),
     check(
       "credential_sources_driver_id_valid",
@@ -708,11 +724,22 @@ export const agentRevisions = occSchema.table(
     revisionNumber: bigint("revision_number", { mode: "number" }).notNull(),
     backendId: text("backend_id"),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
+    networkProxyUrl: text("network_proxy_url"),
+    networkProxySecretId: text("network_proxy_secret_id"),
     firstDeploymentDigest: text("first_deployment_digest"),
+    networkProxyAdmission: text("network_proxy_admission"),
     admittedSpec: jsonb("admitted_spec").$type<Record<string, unknown>>().notNull(),
     admittedAt: timestamp("admitted_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    check(
+      "agent_revisions_network_proxy_shape",
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxySecretId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxySecretId} IS NULL OR ${table.networkProxySecretId} <> ''))`,
+    ),
+    check(
+      "agent_revisions_network_proxy_admission_shape",
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyAdmission} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND ${table.networkProxyAdmission} IS NOT NULL AND length(${table.networkProxyAdmission}) BETWEEN 1 AND 8192)`,
+    ),
     check(
       "agent_revisions_first_deployment_digest",
       sql`${table.firstDeploymentDigest} IS NULL OR (${table.revisionNumber} = 1 AND ${table.firstDeploymentDigest} ~ '^[a-f0-9]{64}$')`,

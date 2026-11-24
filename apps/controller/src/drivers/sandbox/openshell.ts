@@ -1,7 +1,14 @@
 import { admitsFrozenWorkspace } from "./inspected-workspace-release.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
+import {
+  compileOpenShellCredentialPolicy,
+  openShellNetworksOverlappingCredentialPath,
+  credentialPolicyFailure,
+} from "./openshell-credential-policy.ts";
+
 import { compileOpenShellBoundGitRule } from "./openshell-git-network-policy.ts";
 import { posix } from "node:path";
+import { randomUUID } from "node:crypto";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
   validateNamespaceGatewayResources,
@@ -74,6 +81,7 @@ import {
 import {
   AGENT_POLICY_PREFIX,
   openShellAgentNetworkRules,
+  openShellNetworkRouteMayOverlap,
   openShellPolicyCandidate,
   sameOpenShellPolicy,
 } from "./openshell-policy.ts";
@@ -2539,7 +2547,7 @@ function sandboxLaunchSpec(
   };
 }
 
-/** Compile the admitted native credential route into the Sandbox-owned network policy. */
+/** Compile the frozen aggregate policy into exact, default-deny HTTP routes. */
 function stagedCredentialPolicies(
   policy: Readonly<Record<string, unknown>>,
   revision: Readonly<AgentRevision>,
@@ -2549,69 +2557,48 @@ function stagedCredentialPolicies(
   readonly admitted: Readonly<Record<string, unknown>>;
 } {
   const deployment = revision.credentialDeployment;
-  const binding = deployment?.bindings[0];
-  const injection = deployment?.injectionPolicies[0];
-  const request = injection?.allowedRequests[0];
-  const port = request?.ports[0]?.from;
-  if (
-    !deployment ||
-    deployment.bindings.length !== 1 ||
-    deployment.injectionPolicies.length !== 1 ||
-    !binding ||
-    !injection ||
-    injection.bindingRef !== binding.bindingRef ||
-    injection.allowedRequests.length !== 1 ||
-    !request ||
-    request.requestPolicy?.type !== "http" ||
-    request.ports.length !== 1 ||
-    !port ||
-    request.ports[0]?.to !== port
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The staged native credential route is unsupported.",
-    );
+  if (!deployment) {
+    credentialPolicyFailure();
   }
-  const grants = snapshot.additions.filter(
-    (grant) =>
-      grant.binary === request.binary &&
-      grant.host.toLowerCase() === request.host.toLowerCase() &&
-      grant.ports.some(({ from, to }) => from <= port && port <= to),
+  const { credentialRoutes: routes, publicRoutes } = compileOpenShellCredentialPolicy(
+    deployment,
+    snapshot.defaults,
   );
-  if (grants.length !== 1) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The staged native credential route has no exact network grant.",
-    );
-  }
+  const httpDestinations = [...routes, ...publicRoutes];
   const networks = asRecord(policy.network_policies);
   const defaults = asRecord(snapshot.defaults);
   if (!networks || !defaults) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The staged native network policy is unavailable.",
-    );
+    credentialPolicyFailure();
   }
-  const withoutCredentialRoute = (value: unknown): unknown => {
+  const withoutHttpRoutes = (value: unknown): unknown => {
     const rule = asRecord(value);
     if (!rule || !Array.isArray(rule.endpoints)) {
       return value;
     }
     const endpoints = rule.endpoints.flatMap((value) => {
       const endpoint = asRecord(value);
-      if (
-        typeof endpoint?.host !== "string" ||
-        endpoint.host.toLowerCase() !== request.host.toLowerCase() ||
-        !Array.isArray(endpoint.ports) ||
-        !endpoint.ports.includes(port)
-      ) {
+      if (typeof endpoint?.host !== "string" || !Array.isArray(endpoint.ports)) {
         return [value];
       }
-      const ports = endpoint.ports.filter((selected) => selected !== port);
-      return ports.length === 0 ? [] : [{ ...endpoint, ports }];
+      const ports = endpoint.ports.filter(
+        (port) =>
+          !httpDestinations.some(
+            (route) =>
+              route.host.toLowerCase() === (endpoint.host as string).toLowerCase() &&
+              route.port === port,
+          ),
+      );
+      return ports.length === endpoint.ports.length
+        ? [value]
+        : ports.length === 0
+          ? []
+          : [{ ...endpoint, ports }];
     });
     return endpoints.length === 0 ? undefined : { ...rule, endpoints };
   };
   const desiredDefaults: Record<string, unknown> = {};
   for (const [name, rule] of Object.entries(defaults)) {
-    const desired = withoutCredentialRoute(rule);
+    const desired = withoutHttpRoutes(rule);
     if (
       !sameOpenShellPolicy(networks[name], rule) &&
       !sameOpenShellPolicy(networks[name], desired)
@@ -2625,55 +2612,88 @@ function stagedCredentialPolicies(
     }
   }
   const extraPrefix = "oce-staged-extra-";
+  const routePrefix = "oce-staged-http-";
   const trusted = Object.fromEntries(
     Object.entries(networks).filter(
       ([name]) =>
         !name.startsWith(AGENT_POLICY_PREFIX) &&
         !name.startsWith(extraPrefix) &&
+        !name.startsWith(routePrefix) &&
         !Object.hasOwn(defaults, name),
     ),
   );
-  const additions: Record<string, unknown> = openShellAgentNetworkRules(snapshot.additions);
-  const name = `${AGENT_POLICY_PREFIX}${grants[0]!.id}`;
-  const ordinary = asRecord(additions[name]);
-  const endpoint = asRecord(Array.isArray(ordinary?.endpoints) ? ordinary.endpoints[0] : undefined);
-  const extraPorts = Array.isArray(endpoint?.ports)
-    ? endpoint.ports.filter((selected) => selected !== port)
-    : [];
-  if (extraPorts.length > 0) {
-    const extraName = `${extraPrefix}${sha256Hex(name, 12)}`;
-    if (Object.hasOwn(defaults, extraName) || Object.hasOwn(additions, extraName)) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "The staged network rule name conflicts with an admitted rule.",
-      );
+  const additions = openShellAgentNetworkRules(snapshot.additions) as Record<string, unknown>;
+  const original = { ...additions };
+  for (const [name, rule] of Object.entries(additions)) {
+    const desired = withoutHttpRoutes(rule);
+    if (sameOpenShellPolicy(rule, desired)) {
+      continue;
     }
-    additions[extraName] = {
-      ...ordinary,
-      name: extraName,
-      endpoints: [{ ...endpoint, ports: extraPorts }],
+    delete additions[name];
+    if (desired !== undefined) {
+      const extraName = `${extraPrefix}${sha256Hex(name, 12)}`;
+      if (Object.hasOwn(defaults, extraName) || Object.hasOwn(additions, extraName)) {
+        credentialPolicyFailure();
+      }
+      additions[extraName] = { ...asRecord(desired), name: extraName };
+    }
+  }
+  const idleNetworks = { ...trusted, ...desiredDefaults, ...additions };
+  const admitted: Record<string, unknown> = { ...idleNetworks };
+  const compiled: readonly ((typeof routes)[number] | (typeof publicRoutes)[number])[] = [
+    ...routes,
+    ...publicRoutes,
+  ];
+  for (const [index, route] of compiled.entries()) {
+    const matching = snapshot.additions.filter(
+      (grant) =>
+        grant.binary === route.binary &&
+        grant.host.toLowerCase() === route.host.toLowerCase() &&
+        grant.ports.some(({ from, to }) => from <= route.port && route.port <= to),
+    );
+    const originalName =
+      matching.length === 1 ? `${AGENT_POLICY_PREFIX}${matching[0]!.id}` : undefined;
+    const matchingRoutes =
+      originalName === undefined
+        ? []
+        : compiled.filter(
+            (candidate) =>
+              candidate.binary === route.binary &&
+              candidate.host.toLowerCase() === route.host.toLowerCase() &&
+              matching[0]!.ports.some(
+                ({ from, to }) => from <= candidate.port && candidate.port <= to,
+              ),
+          );
+    const name =
+      originalName !== undefined &&
+      matchingRoutes.length === 1 &&
+      Object.hasOwn(original, originalName)
+        ? originalName
+        : `${routePrefix}${sha256Hex(JSON.stringify([route.binary, route.host.toLowerCase(), route.port, route.path, "provider" in route ? route.provider : "public", index]), 16)}`;
+    if (Object.hasOwn(admitted, name)) {
+      credentialPolicyFailure();
+    }
+    const endpointPath = "provider" in route ? route.endpointPath : route.path;
+    admitted[name] = {
+      name,
+      binaries: [{ path: route.binary }],
+      endpoints: [
+        {
+          host: route.host,
+          ports: [route.port],
+          ...(endpointPath === undefined ? {} : { path: endpointPath }),
+          protocol: "provider" in route ? route.protocol : "rest",
+          ...("provider" in route && route.protocol === "mcp" ? { mcp: route.mcp } : {}),
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          rules: route.rules,
+          ...("provider" in route ? { credential_binding: { provider: route.provider } } : {}),
+        },
+      ],
     };
   }
-  delete additions[name];
-  const idleNetworks = { ...trusted, ...desiredDefaults, ...additions };
-  const credentialRule = {
-    name,
-    binaries: [{ path: request.binary }],
-    endpoints: [
-      {
-        host: request.host,
-        ports: [port],
-        protocol: "rest",
-        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        rules: [
-          { allow: { method: request.requestPolicy.method, path: request.requestPolicy.path } },
-        ],
-        credential_binding: { provider: openShellProviderName(binding.sourceRef.id) },
-      },
-    ],
-  };
   return {
     idle: { ...policy, network_policies: idleNetworks },
-    admitted: { ...policy, network_policies: { ...idleNetworks, [name]: credentialRule } },
+    admitted: { ...policy, network_policies: admitted },
   };
 }
 
@@ -3875,20 +3895,27 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    const plugin = openShellPluginPolicy(
-      context.revision,
-      context.requirements,
-      this.options.gateway.managedPluginMiddleware,
-      this.options.providers ?? [],
-    );
+    if (staged && context.requirements.credentialAttachments.length > 0) {
+      credentialPolicyFailure();
+    }
+    const plugin = staged
+      ? undefined
+      : openShellPluginPolicy(
+          context.revision,
+          context.requirements,
+          this.options.gateway.managedPluginMiddleware,
+          this.options.providers ?? [],
+        );
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
-    const mcpPolicies = openShellManagedMcpPolicies(
-      context.revision,
-      context.requirements,
-      this.options.providers ?? [],
-    );
+    const mcpPolicies = staged
+      ? []
+      : openShellManagedMcpPolicies(
+          context.revision,
+          context.requirements,
+          this.options.providers ?? [],
+        );
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
@@ -5411,6 +5438,156 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("The Sandbox is unavailable or has different ownership.");
     }
     return { client, request, sandbox };
+  }
+
+  /** Apply the staged binding's reducing policy and confirm the effective route is absent. */
+  async withdrawStagedCredentialRoute(
+    context: SandboxLogContext,
+    sandboxId: string,
+    bindingRef: string,
+  ): Promise<void> {
+    const snapshot = context.revision.sandboxPolicy;
+    const deployment = context.revision.credentialDeployment;
+    const binding = deployment?.bindings.find((candidate) => candidate.bindingRef === bindingRef);
+    if (
+      !sandboxId ||
+      !bindingRef ||
+      !snapshot ||
+      snapshot.driverId !== this.id ||
+      snapshot.implementation !== this.implementation ||
+      context.revision.executionAdmission.version !== 8 ||
+      context.revision.executionAdmission.mode !== "standalone" ||
+      deployment?.proxyDriverId !== this.id ||
+      !binding
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The staged credential route does not match the admitted binding.",
+      );
+    }
+    const routes = compileOpenShellCredentialPolicy(deployment).credentialRoutes;
+    const selected = routes.filter((route) => route.binding.bindingRef === bindingRef);
+    if (selected.length === 0) {
+      throw new OpenShellSandboxConfigurationFailure("The staged credential binding has no route.");
+    }
+    const { client, request, sandbox } = await this.policyTarget(context);
+    if (sandbox.id !== sandboxId) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The staged credential route belongs to a different Sandbox.",
+      );
+    }
+    if (!client.getPolicyStatus || !client.updatePolicy || !client.getSandboxConfig) {
+      throw new DependencyUnavailableError("The staged Sandbox policy cannot be reduced.");
+    }
+    const baseline = await this.networkPolicyBaseline(client, request, sandbox, context.signal);
+    const admitted = stagedCredentialPolicies(baseline, context.revision, snapshot).admitted;
+    const admittedNetworks = asRecord(admitted.network_policies);
+    const current = await client.getPolicyStatus(request, context.signal);
+    const currentNetworks = asRecord(asRecord(current.policy)?.network_policies);
+    if (!admittedNetworks || !currentNetworks) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The current staged Sandbox policy is unavailable.",
+      );
+    }
+    if (current.state !== "POLICY_STATUS_LOADED" || current.activeVersion !== current.version) {
+      throw new DependencyUnavailableError("The current staged Sandbox policy is not loaded.");
+    }
+    const removable = new Map<string, string>();
+    for (const [name, value] of Object.entries(admittedNetworks)) {
+      const rule = asRecord(value);
+      const endpoints = rule?.endpoints;
+      if (!Array.isArray(endpoints) || endpoints.length !== 1) {
+        continue;
+      }
+      const provider = asRecord(asRecord(endpoints[0])?.credential_binding)?.provider;
+      const route = routes.find(
+        (candidate) =>
+          candidate.provider === provider &&
+          candidate.endpointPath === asRecord(endpoints[0])?.path &&
+          candidate.host === asRecord(endpoints[0])?.host &&
+          sameOpenShellPolicy(rule?.binaries, [{ path: candidate.binary }]) &&
+          sameOpenShellPolicy(asRecord(endpoints[0])?.ports, [candidate.port]),
+      );
+      if (route) {
+        removable.set(name, route.binding.bindingRef);
+      }
+    }
+    if (
+      removable.size !== routes.length ||
+      [...removable.values()].filter((ref) => ref === bindingRef).length !== selected.length
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The admitted staged credential routes differ from the revision.",
+      );
+    }
+    const retained = Object.fromEntries(
+      Object.entries(admittedNetworks).filter(([name]) => Object.hasOwn(currentNetworks, name)),
+    );
+    if (
+      Object.keys(admittedNetworks).some(
+        (name) => !Object.hasOwn(currentNetworks, name) && !removable.has(name),
+      ) ||
+      !sameOpenShellPolicy(current.policy, { ...admitted, network_policies: retained })
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The current Sandbox policy differs from the admitted credential routes.",
+      );
+    }
+    const reduced = {
+      ...admitted,
+      network_policies: Object.fromEntries(
+        Object.entries(currentNetworks).filter(([name]) => removable.get(name) !== bindingRef),
+      ),
+    };
+    const overlapsSelected = (networks: Record<string, unknown>) =>
+      selected.some((route) =>
+        openShellNetworkRouteMayOverlap(
+          openShellNetworksOverlappingCredentialPath(networks, route.path),
+          route,
+        ),
+      );
+    if (overlapsSelected(reduced.network_policies)) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The reduced Sandbox policy still permits the selected credential path.",
+      );
+    }
+    if (!sameOpenShellPolicy(current.policy, reduced)) {
+      if (!sandbox.resourceVersion) {
+        throw new DependencyUnavailableError("The staged Sandbox resource version is unavailable.");
+      }
+      await client.updatePolicy(
+        {
+          ...request,
+          policy: reduced,
+          expectedResourceVersion: sandbox.resourceVersion,
+          requestId: randomUUID(),
+        },
+        context.signal,
+      );
+    }
+    const observed = await client.getPolicyStatus(request, context.signal);
+    if (
+      observed.state !== "POLICY_STATUS_LOADED" ||
+      observed.activeVersion !== observed.version ||
+      !sameOpenShellPolicy(observed.policy, reduced)
+    ) {
+      throw new DependencyUnavailableError("The reduced Sandbox policy is not loaded.");
+    }
+    const effective = await client.getSandboxConfig(
+      request.workspace,
+      request.sandbox,
+      context.signal,
+    );
+    const effectiveNetworks = asRecord(asRecord(effective.policy)?.network_policies);
+    if (
+      effective.workspace !== request.workspace ||
+      effective.configuration_admitted !== true ||
+      effective.configuration_error ||
+      effective.version !== observed.version ||
+      !effectiveNetworks ||
+      overlapsSelected(effectiveNetworks)
+    ) {
+      throw new DependencyUnavailableError("The effective reduced Sandbox policy is unconfirmed.");
+    }
   }
 
   async observeNetworkPolicy(

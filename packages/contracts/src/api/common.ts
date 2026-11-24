@@ -1,5 +1,9 @@
 import { Type } from "typebox";
 import {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+} from "../repository-network-policy.ts";
+import {
   BACKEND_ID_MAX_CHARACTERS,
   BACKEND_ID_PATTERN,
   NAME_MAX_CHARACTERS,
@@ -67,8 +71,17 @@ export const RevisionHarnessSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+export const SandboxPolicyVersion = Type.Integer({ minimum: 1, maximum: 2147483647 });
 export const AgentDeploymentBody = Type.Object(
-  { harnessOverrides: Type.Optional(HarnessSettings) },
+  {
+    harnessOverrides: Type.Optional(HarnessSettings),
+    expectedRepositoryPolicyVersion: Type.Optional(
+      Type.Union([SandboxPolicyVersion, Type.Null()], {
+        description:
+          "Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409.",
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 export const AgentStopQuery = Type.Object(
@@ -80,7 +93,7 @@ export const FirstDeploymentIntent = Type.Object(
     key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
     expectedConfigurationId: ConfigurationId,
     expectedGeneration: ConfigurationGeneration,
-    ...AgentDeploymentBody.properties,
+    harnessOverrides: AgentDeploymentBody.properties.harnessOverrides,
   },
   { additionalProperties: false },
 );
@@ -789,6 +802,31 @@ export const GatewayManagedModeSchema = Type.Boolean({
     "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
 });
 
+export const AgentNetworkProxySchema = Type.Object(
+  {
+    url: Type.String({
+      minLength: 1,
+      maxLength: 2048,
+      description:
+        "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+    }),
+    credentialSecretId: Type.Optional(SecretId),
+  },
+  { additionalProperties: false },
+);
+
+export const RepositoryNetworkGrantSchema = Type.Object(
+  {
+    repository: Type.String({
+      pattern: repositoryNetworkGrantPattern.source,
+      description: "Canonical lowercase GitHub owner/name without a .git suffix.",
+      not: { type: "string", pattern: "\\.git$|\\s" },
+    }),
+    access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+  },
+  { additionalProperties: false },
+);
+
 export const CreateAgentBody = Type.Object(
   {
     initialWorkspaceFiles: Type.Optional(
@@ -818,10 +856,18 @@ export const CreateAgentBody = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
+    repositoryNetworkPolicy: Type.Optional(
+      Type.Array(RepositoryNetworkGrantSchema, {
+        description:
+          "Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access.",
+        maxItems: maxRepositoryNetworkGrants,
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -858,6 +904,7 @@ export const ProvisionAgentBody = Type.Object(
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -893,6 +940,7 @@ export const ValidateAgentCreateBody = Type.Object(
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: Type.Optional(
@@ -947,6 +995,7 @@ export const UpdateAgentBody = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(Type.Union([AgentNetworkProxySchema, Type.Null()])),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -957,6 +1006,7 @@ export const UpdateAgentBody = Type.Object(
     anyOf: [
       { required: ["configurationId"] },
       { required: ["gatewayManagedMode"] },
+      { required: ["networkProxy"] },
       { required: ["modelProviderId"] },
     ],
   },

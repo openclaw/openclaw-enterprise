@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, readdir, rm, open, writeFile } from "node:fs/promises";
 import { readdirSync, statSync } from "node:fs";
@@ -416,6 +416,51 @@ test("a writable destination does not expose unverified staging bytes", async (t
   assert.equal(observedMode, 0o600);
   assert.deepEqual(await readFile(destination), body);
   assert.equal(statSync(destination).mode & 0o777, 0o666);
+});
+
+test("Docker-only setup probes the Docker server without downloading tools", async (t) => {
+  const dir = await temporaryDirectory(t, "ci-docker-only-tools-");
+  const bin = join(dir, "bin");
+  const scripts = join(dir, "scripts", "ci");
+  const setup = join(scripts, "setup-tools.sh");
+  await mkdir(bin);
+  await mkdir(scripts, { recursive: true });
+  await copyFile(new URL("../../scripts/ci/setup-tools.sh", import.meta.url), setup);
+  // Abort any tool download in this fixture, even if a future setup ignores its exit status.
+  await writeFile(
+    join(scripts, "download-pinned.sh"),
+    "echo attempted > ./download-attempt\nexit 75\n",
+  );
+  await writeFile(
+    join(bin, "docker"),
+    `#!/bin/sh
+[ "$*" = "version --format {{.Server.Version}}" ] || exit 64
+if [ "$DOCKER_EXIT" != 0 ]; then
+  echo 'Docker server unavailable' >&2
+  exit "$DOCKER_EXIT"
+fi
+echo 29.9.2
+`,
+    { mode: 0o755 },
+  );
+
+  const runSetup = (dockerExit: string) =>
+    spawnSync("/bin/bash", ["-p", setup, "docker-only"], {
+      encoding: "utf8",
+      env: {
+        RUNNER_TEMP: dir,
+        PATH: `${bin}:${dirname(process.execPath)}`,
+        DOCKER_EXIT: dockerExit,
+      },
+      timeout: 15_000,
+    });
+  const ready = runSetup("0");
+  assert.equal(ready.status, 0, ready.stderr);
+  assert.match(ready.stdout, /^29\.9\.2$/m);
+  const unavailable = runSetup("23");
+  assert.equal(unavailable.status, 23, unavailable.stderr);
+  assert.match(unavailable.stderr, /Docker server unavailable/);
+  assert.ok(!(await readdir(dir)).includes("download-attempt"), "unexpected pinned tool download");
 });
 
 for (const tool of ["yq", "k3d"]) {

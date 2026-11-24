@@ -65,7 +65,9 @@ Create the namespace with the derived name. Compute refuses it unless it is
 | Label      | `app.kubernetes.io/managed-by`                             | `openclaw-enterprise`                                                          |
 | Label      | `openclaw.dev/namespace`, `openclaw.dev/gateway-namespace` | the Namespace ID                                                               |
 | Label      | `openclaw-enterprise.io/gateway`                           | first 12 hexadecimal characters of SHA-256(`<gatewayNamespace>/<gatewayName>`) |
-| Label      | `pod-security.kubernetes.io/enforce`, `audit`, `warn`      | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/enforce`                       | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/audit`                         | `restricted`                                                                   |
+| Label      | `pod-security.kubernetes.io/warn`                          | `restricted`                                                                   |
 
 The gateway label is the selector of the Gateway's `https` listener; see
 [Gateway routing](../../gateway-routing.md). Also add the OpenShell Sandbox
@@ -109,6 +111,41 @@ Continue only if both names print and the command succeeds. A forbidden `get`
 naming the worker means it lacks that read. For `NotFound`, check the context,
 tenant and object. An impersonation or discovery error leaves access unknown;
 ask an authorized operator to check. Success does not verify contents or readiness.
+
+### Check the OpenShell Gateway
+
+Before starting reconciliation with label discovery, verify the OpenShell
+Gateway's access separately from the OCE worker's named reads.
+Set the variables below from the Gateway deployment and tenant binding.
+Use a kubeconfig context without preset impersonation. Your operator must
+already be allowed to impersonate that Gateway ServiceAccount.
+
+```bash
+(
+  gateway="system:serviceaccount:${GATEWAY_NAMESPACE:?set the Gateway namespace}:${GATEWAY_SERVICE_ACCOUNT:?set the Gateway ServiceAccount}"
+  k() {
+    kubectl --kubeconfig "${KUBECONFIG_FILE:?set the kubeconfig file}" \
+      --context "${CONTEXT:?set the context}" --as="$gateway" "$@"
+  }
+  uid=$(k get namespace "${TENANT_NAMESPACE:?set the verified tenant name}" -o jsonpath='{.metadata.uid}') || exit 1
+  [ "$uid" = "${TENANT_UID:?set the verified tenant UID}" ] || { echo 'Tenant UID mismatch' >&2; exit 1; }
+  k auth can-i list namespaces --all-namespaces &&
+  k auth can-i watch namespaces --all-namespaces &&
+  k auth can-i list sandboxes.agents.x-k8s.io --all-namespaces &&
+  k auth can-i watch sandboxes.agents.x-k8s.io --all-namespaces &&
+  k auth can-i create tokenreviews.authentication.k8s.io --all-namespaces
+)
+```
+
+[Cluster-wide discovery](../openshell-sandbox.md#gateway-kubernetes-authority)
+exposes Sandbox specs across tenants. The UID must match, and all five checks must print `yes`. Scope Namespace
+`get` to the tenant name with `resourceNames`. The Gateway reads the UID on
+Sandbox creation and restart and uses TokenReviews to authenticate Sandboxes.
+
+A `no` means the Gateway lacks that permission. If impersonation or the
+review itself fails, Gateway access is unknown. Stop and have an authorized
+operator resolve either failure. These checks do not establish workload
+admission or readiness.
 
 ## Runtime behavior
 

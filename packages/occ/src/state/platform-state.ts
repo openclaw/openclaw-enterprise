@@ -1,4 +1,4 @@
-import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
+import { isCanonicalRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -51,6 +51,7 @@ import {
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
+  normalizeAgentNetworkProxy,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { StoredSendReceipt } from "../egress-send-receipts.ts";
@@ -571,7 +572,10 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     revision.compute === null ||
     Array.isArray(revision.compute) ||
     Object.keys(revision.compute).some(
-      (key) => !["id", "implementation", "admission", "runtimeInputs"].includes(key),
+      (key) =>
+        !["id", "implementation", "admission", "runtimeInputs", "networkProxyAdmission"].includes(
+          key,
+        ),
     ) ||
     !Object.hasOwn(revision.compute, "id") ||
     !Object.hasOwn(revision.compute, "implementation") ||
@@ -1137,6 +1141,14 @@ function assertCredentialSource(source: CredentialSource): void {
   }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
+  const backendRef = "backendRef" in source ? source.backendRef : undefined;
+  const validBackendRef =
+    backendRef === undefined ||
+    (source.ownerCapability === "token_service" &&
+      source.tokenServiceInstanceId !== undefined &&
+      isPlainRecord(backendRef) &&
+      Object.keys(backendRef).length > 0 &&
+      Object.values(backendRef).every((value) => typeof value === "string" && value.length > 0));
   const validOwner =
     source.ownerCapability === "token_service"
       ? source.egress === undefined &&
@@ -1175,6 +1187,7 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
+    !validBackendRef ||
     !validOwner ||
     (source.state !== "registering" && source.state !== "ready" && source.state !== "deleting")
   ) {
@@ -2177,6 +2190,8 @@ function repositories(
         if (
           agent.namespaceId === namespaceId &&
           (harnessSecretReference(agent.harnessAuth, namespaceId, secretId) ||
+            agent.networkProxy?.credentialSecretId === secretId ||
+            activeRevision?.networkProxy?.credentialSecretId === secretId ||
             harnessSecretReference(activeRevision?.harnessAuth, namespaceId, secretId) ||
             secretBindingsReference(activeRevision?.secretBindings, namespaceId, secretId))
         ) {
@@ -2196,6 +2211,7 @@ function repositories(
         if (
           revision !== undefined &&
           (secretBindingsReference(revision.secretBindings, namespaceId, secretId) ||
+            revision.networkProxy?.credentialSecretId === secretId ||
             harnessSecretReference(revision.harnessAuth, namespaceId, secretId))
         ) {
           add("agent", revision.agentId);
@@ -3115,11 +3131,15 @@ function repositories(
         pluginApprovers: _providedPluginApprovers,
         repositoryBindings: _providedRepositoryBindings,
         repositoryAccess: _providedRepositoryAccess,
+        networkProxy: _providedNetworkProxy,
         ...withoutPlugins
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
         gatewayManagedMode: agent.gatewayManagedMode ?? true,
+        ...(agent.networkProxy === undefined
+          ? {}
+          : { networkProxy: normalizeAgentNetworkProxy(agent.networkProxy) }),
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -3203,6 +3223,7 @@ function repositories(
       nextCredentialSources,
       gatewayManagedMode,
       nextPluginDriver,
+      nextNetworkProxy,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -3269,14 +3290,18 @@ function repositories(
         pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
         credentialSources: _currentCredentialSources,
+        networkProxy: _currentNetworkProxy,
         ...withoutPlugins
       } = current;
+      const proxy = nextNetworkProxy === undefined ? current.networkProxy : nextNetworkProxy;
+      const networkProxy = proxy == null ? undefined : normalizeAgentNetworkProxy(proxy);
       const updated = immutableCopy({
         ...withoutPlugins,
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
         gatewayManagedMode: gatewayManagedMode ?? current.gatewayManagedMode,
+        ...(networkProxy === undefined ? {} : { networkProxy }),
         ...(pluginDriver === undefined ? {} : { pluginDriver }),
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
@@ -3415,6 +3440,7 @@ function repositories(
             backendId,
             configurationId,
             configurationGeneration,
+            networkProxy,
             harness,
             createdAt,
           }) =>
@@ -3426,6 +3452,7 @@ function repositories(
               backendId,
               configurationId,
               configurationGeneration,
+              ...(networkProxy === undefined ? {} : { networkProxy }),
               harness,
               createdAt,
             }),
@@ -3437,6 +3464,13 @@ function repositories(
     },
     createRevision: async (input, firstDeploymentDigest) => {
       const revision = immutableCopy(input);
+      const admission = revision.compute?.networkProxyAdmission;
+      if (
+        (revision.networkProxy === undefined) !== (admission === undefined) ||
+        (admission !== undefined && (admission.length < 1 || admission.length > 8192))
+      ) {
+        throw new ScopeViolationError("The AgentRevision Network proxy admission is invalid.");
+      }
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -3445,6 +3479,7 @@ function repositories(
         owner.servicePrincipalId !== revision.servicePrincipalId ||
         owner.backendId !== revision.backendId ||
         revision.gatewayManagedMode !== owner.gatewayManagedMode ||
+        !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
         !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
       ) {
@@ -3468,7 +3503,8 @@ function repositories(
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (
-        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        !isDeepStrictEqual(grants, admittedPolicy?.grants) ||
+        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy)) ||
         (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
       ) {
         throw new ScopeViolationError(

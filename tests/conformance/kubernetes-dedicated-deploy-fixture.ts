@@ -334,6 +334,23 @@ export function recordingNativeSandbox(provisions: SandboxHarnessContext[]) {
   >;
 }
 
+export function refusingNativeSandbox(provisions: SandboxHarnessContext[], nextError: () => Error) {
+  return {
+    ...recordingNativeSandbox(provisions),
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      throw nextError();
+    },
+    async harnessStatus() {
+      return assert.fail("failed provisioning is reported without a status read");
+    },
+    async withdrawHarnessExposure() {},
+  } satisfies Partial<SandboxDriver>;
+}
+
 export function readyNativeHarnessPod(
   namespace: string,
   labels: HarnessWorkloadRequirements["labels"],

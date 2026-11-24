@@ -11,6 +11,7 @@ import {
 } from "../fixtures/skipper-private-git-origin.mjs";
 import {
   cleanEnvironment,
+  type FixtureCommandResult,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
@@ -358,6 +359,52 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
   assert.equal(origin.snapshot().tokens[0]?.revoked, true);
 });
 
+type DenialCommand = ReturnType<typeof createGitAclDenialCommand>;
+type CheckDenial = (...input: Parameters<DenialCommand>) => ReturnType<typeof run>;
+
+// Compare inside the predicate so an assertion failure never prints captured credentials.
+function accepted(result: FixtureCommandResult, marker: string) {
+  return result.code === 0 && result.stdout === `${marker}\n` && result.stderr === "";
+}
+
+function refused(result: FixtureCommandResult, marker: string) {
+  return result.code === 1 && result.stderr === `${marker}\n` && result.stdout === "";
+}
+
+async function assertRestDenialLayers(checkDenial: CheckDenial, capture: string) {
+  const target = {
+    method: "GET",
+    path: "/repos/fixture/c/issues/42",
+    host: "api.github.com",
+  } as const;
+  const { method, path } = target;
+  const replay = async (layer: string, ruleLayer: string) => {
+    const body = {
+      layer,
+      ...target,
+      port: 443,
+      error: "policy_denied",
+      protocol: "rest",
+      rule_missing: { type: "rest_allow", layer: ruleLayer, method, path },
+    };
+    await writeFile(capture, `${JSON.stringify(body)}\n403 application/json\n`, { mode: 0o600 });
+    return checkDenial({ kind: "rest", ...target }, ["/bin/sh", "-c", 'cat < "$1"', "--", capture]);
+  };
+
+  assert.ok(
+    accepted(await replay("l7", "l7"), "403 native-rest-policy"),
+    "a complete native L7 REST denial must pass",
+  );
+  assert.ok(
+    refused(await replay("l4", "l7"), "ACL_NATIVE_REST_DENIAL"),
+    "a non-L7 layer must fail REST denial classification",
+  );
+  assert.ok(
+    refused(await replay("l7", "l4"), "ACL_NATIVE_REST_DENIAL"),
+    "a non-L7 rule_missing.layer must fail REST denial classification",
+  );
+}
+
 test("private Git network origin tracks the rotated credential and retains redaction fingerprints", async (t) => {
   const origin = await startSkipperPrivateGitOrigin({
     networkAcl: "issued",
@@ -533,6 +580,64 @@ test("private Git network origin tracks the rotated credential and retains redac
       "Git denial requires complete output",
     );
   }
+
+  const commandOptions = {
+    env: cleanEnvironment({ GITHUB_TOKEN: alias }),
+    signal: t.signal,
+    allowFailure: true,
+  };
+  const checkDenial: CheckDenial = (...input) => {
+    const [, ...args] = denial(...input);
+    return run(process.execPath, args, commandOptions);
+  };
+
+  // Keep the request identical and change only the CA curl trusts for this invocation.
+  const directory = await temporaryDirectory(t, "git-network-origin-curl-");
+  const ca = join(directory, "ca.pem");
+  const authHeader = join(directory, "authorization");
+  await writeFile(ca, origin.tls.ca, { mode: 0o600 });
+  await writeFile(authHeader, `Authorization: ${basic(renewed)}\n`, { mode: 0o600 });
+  const target = new URL("/fixture/c.git/info/refs?service=git-upload-pack", origin.origin);
+  const curlFlags = ["--disable", "--silent", "--show-error", "--max-time", "5", "--noproxy", "*"];
+  const curlArgs = [...curlFlags, "--header", `@${authHeader}`, target.href];
+  const variant = {
+    kind: "variant",
+    method: "GET",
+    path: target.pathname,
+    host: target.hostname,
+  } as const;
+  const beforeTls = origin.snapshot().requests;
+  const beforeTlsGit = network.requests().length;
+  const untrusted = await run("curl", curlArgs, commandOptions);
+  assert.equal(untrusted.code, 60, "curl must reject the untrusted certificate");
+  assert.ok(
+    untrusted.stdout === "" && !representations.some((value) => untrusted.stderr.includes(value)),
+    "untrusted curl must emit neither an HTTP response nor credentials",
+  );
+  const rejectedTls = await checkDenial(variant, ["curl", ...curlArgs]);
+  assert.ok(
+    refused(rejectedTls, "ACL_DENIAL_CAPTURE"),
+    "the denial command must reject a certificate failure as a transport error",
+  );
+  assert.equal(origin.snapshot().requests, beforeTls, "untrusted curl must never send HTTP");
+
+  const trusted = await checkDenial(variant, ["curl", ...curlArgs, "--cacert", ca]);
+  assert.ok(
+    accepted(trusted, "200 upload-advertisement"),
+    "the fixture CA must allow the same Git discovery request",
+  );
+  assert.equal(origin.snapshot().requests, beforeTls + 1);
+  const [request] = network.requests().slice(beforeTlsGit);
+  assert.ok(
+    request?.repository === "fixture/c" &&
+      request.operation === "upload-advertise" &&
+      request.method === "GET" &&
+      request.authenticated &&
+      request.credentialIndex === 2,
+    "the origin must observe Git discovery with the renewed credential",
+  );
+
+  await assertRestDenialLayers(checkDenial, join(directory, "curl-response"));
   const observations = JSON.stringify([origin.snapshot(), network.requests(), fingerprints]);
   for (const credential of representations) {
     assert.ok(!observations.includes(credential), "credential leaked into observations");

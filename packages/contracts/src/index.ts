@@ -1,5 +1,6 @@
 import type { Static } from "typebox";
 
+import type { AgentNetworkProxy } from "./agent-network-proxy.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { DeploymentPolicy } from "./deployment-policy.ts";
 import type {
@@ -14,6 +15,11 @@ import type {
 } from "./drivers/credential-proxy/index.ts";
 
 export type { NetworkDestinationRule } from "./network-destination.ts";
+export type { AgentNetworkProxy } from "./agent-network-proxy.ts";
+export {
+  normalizeAgentNetworkProxy,
+  validNetworkProxyAuthorization,
+} from "./agent-network-proxy.ts";
 export {
   NetworkDestinationRuleSchema,
   normalizeNetworkDestinationRules,
@@ -167,6 +173,11 @@ export {
 } from "./sandbox-policy.ts";
 export {
   maxRepositoryNetworkGrants,
+  parseRepositoryApiLimits,
+  type RepositoryApiLevel,
+  type RepositoryApiLimits,
+  type RepositoryApiMaximum,
+  isCanonicalRepositoryNetworkPolicy,
   repositoryNetworkGrantPattern,
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
@@ -348,6 +359,7 @@ export interface OpenShellBackendDefinition {
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
+    readonly token_service?: string;
   };
 }
 
@@ -601,6 +613,8 @@ type CredentialSourceOwner =
       readonly driverId?: never;
       /** Present for registrations owned by an Installation-selected credential store. */
       readonly tokenServiceInstanceId?: string;
+      /** Private, nonsecret reference interpreted by the selected TokenService. */
+      readonly backendRef?: Readonly<Record<string, string>>;
     };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
@@ -1121,6 +1135,8 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  /** Upstream proxy for Gateway channel traffic on future deployments. */
+  readonly networkProxy?: AgentNetworkProxy;
   /** Installation provider selected for future deployments. */
   readonly modelProviderId?: string;
   readonly sandboxPolicyEditing?: boolean;
@@ -1155,6 +1171,7 @@ export interface ConfigurationReadError {
     | "pluginApprovers"
     | "repositoryBindings"
     | "repositoryAccess"
+    | "networkProxy"
     | "harnessAuth"
     | "credentialSources"
     | "secretBindings"
@@ -1169,6 +1186,7 @@ export type AgentMetadata = Omit<
   | "pluginApprovers"
   | "repositoryBindings"
   | "repositoryAccess"
+  | "networkProxy"
   | "harnessAuth"
   | "credentialSources"
 >;
@@ -1213,6 +1231,8 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
 }
 
 export interface AgentRevision extends Scope {
+  /** Gateway channel proxy selection saved for this deployment. */
+  readonly networkProxy?: AgentNetworkProxy;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   /** Immutable staged credential and network authority for this revision's selected Proxy. */
@@ -1241,6 +1261,8 @@ export interface AgentRevision extends Scope {
     readonly admission?: string;
     /** Optional private runtime inputs; separate from authority admission for older readers. */
     readonly runtimeInputs?: string;
+    /** Private Compute-owned admission for this revision's Gateway channel proxy. */
+    readonly networkProxyAdmission?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1275,7 +1297,7 @@ export type AgentRevisionMetadata = Pick<
  * return this projection without decoding the full admitted snapshot.
  */
 export type AgentRevisionSummary = AgentRevisionMetadata &
-  Pick<AgentRevision, "configurationId" | "configurationGeneration"> & {
+  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "networkProxy"> & {
     readonly harness: RevisionHarnessDescriptor;
   };
 
@@ -1304,6 +1326,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.sandboxPolicy === undefined
       ? {}
       : { sandboxPolicy: immutableCopy(revision.sandboxPolicy) }),
+    ...(revision.networkProxy === undefined
+      ? {}
+      : { networkProxy: immutableCopy(revision.networkProxy) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
@@ -1705,6 +1730,14 @@ export {
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
 } from "./api/agent-credential-push.ts";
+export {
+  AgentAutomationParams,
+  CreateAgentAutomationBody,
+  UpdateAgentAutomationBody,
+  DeleteAgentAutomationQuery,
+  AgentAutomationPageQuery,
+  AgentAutomationResponse,
+} from "./api/agent-automations.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
@@ -1813,6 +1846,8 @@ export type {
   DeploymentPolicyValidationContext,
   NetworkPolicyCapabilities,
 } from "./deployment-policy.ts";
+export { pathCovered } from "./deployment-request-match.ts";
+export { validRequestPath } from "./request-path.ts";
 
 export type {
   BearerCredentialProjection,

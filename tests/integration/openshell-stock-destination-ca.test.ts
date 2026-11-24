@@ -52,6 +52,10 @@ test("OpenShell destination CA fixture accepts a single CA and refuses a substit
       message: certificateOnly,
     },
   );
+  assert.throws(
+    () => stockDestinationCa("fixture-platform", "git-fixture-ca", sourcePem.repeat(2)),
+    { message: certificateOnly },
+  );
   const rejected = `${sourcePem}-----BEGIN PRIVATE KEY-----\nsynthetic-rejected-material\n-----END PRIVATE KEY-----\n`;
   assert.throws(
     () => stockDestinationCa("fixture-platform", "git-fixture-ca", rejected),
@@ -79,13 +83,29 @@ test("OpenShell destination CA fixture accepts a single CA and refuses a substit
       ),
     /ConfigMap identity does not match/u,
   );
+  const marker = "synthetic-ca-readback-marker";
+  const binaryMarker = Buffer.from(marker).toString("base64");
+  const readbackRefusal = "destination CA ConfigMap does not match the certificate-only input";
+  const redactedReadbackRefusal = (unexpectedData: string) => (error: unknown) => {
+    assert.ok(
+      error instanceof Error && error.message === readbackRefusal,
+      "expected the certificate-only readback refusal",
+    );
+    const diagnostic = inspect(error, { showHidden: true, depth: null, maxStringLength: null });
+    assert.ok(
+      !diagnostic.includes(unexpectedData),
+      "ConfigMap readback refusal must omit returned data",
+    );
+    return true;
+  };
   assert.throws(
     () =>
       assertStockDestinationCaReadback(
-        { ...input.configMap, binaryData: { unrelated: "YQ==" } },
+        { ...input.configMap, binaryData: { unrelated: binaryMarker } },
         expectedSource,
       ),
-    /does not match the certificate-only input/u,
+    redactedReadbackRefusal(binaryMarker),
+    "nonempty binaryData",
   );
 
   const managed = stockManagedDestinationCa(
@@ -122,15 +142,39 @@ test("OpenShell destination CA fixture accepts a single CA and refuses a substit
     );
   }
 
+  // A valid generation identity cannot authorize changed or additional data.
+  for (const [description, readback] of Object.entries({
+    "changed certificate bytes": { ...generation, data: { "ca.crt": managed.pem + marker } },
+    "extra data key": { ...generation, data: { ...generation.data, extra: marker } },
+    "empty binaryData": { ...generation, binaryData: {} },
+  })) {
+    assert.throws(
+      () => assertStockDestinationCaReadback(readback, managed),
+      redactedReadbackRefusal(marker),
+      description,
+    );
+  }
+
   const items = [{ key: "ca.crt", path: "ca.crt" }];
   assertStockDestinationCaProjection({ name: managed.name, items }, managed.name);
   assert.throws(
     () => assertStockDestinationCaProjection({ name: "decoy", items }, managed.name),
     /must project the managed destination CA ConfigMap/u,
   );
+  for (const [description, projection] of Object.entries({
+    "missing projection items": { name: managed.name },
+    "wrong projection key": { name: managed.name, items: [{ key: "other", path: "ca.crt" }] },
+    "wrong projection path": { name: managed.name, items: [{ key: "ca.crt", path: "other" }] },
+  })) {
+    assert.throws(
+      () => assertStockDestinationCaProjection(projection, managed.name),
+      { message: "Supervisor CA volume must project only ca.crt to ca.crt" },
+      description,
+    );
+  }
 });
 
-test("OpenShell stock Supervisor fixture refuses a substituted imported image", async () => {
+test("OpenShell stock Supervisor fixture refuses a substituted imported image", async (t) => {
   const sha256 = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
   const config = sha256("stock config");
   const mediaType = "application/vnd.oci.image.manifest.v1+json";
@@ -144,13 +188,35 @@ test("OpenShell stock Supervisor fixture refuses a substituted imported image", 
     mediaType: "application/vnd.oci.image.index.v1+json",
     manifests: [descriptor],
   });
-  const selected = stockSupervisorManifest(index, sha256(index), "linux/amd64");
+  const indexDigest = sha256(index);
+  const selected = stockSupervisorManifest(index, indexDigest, "linux/amd64");
+  // Equivalent JSON still changes the bytes named by the upstream digests.
+  const digestMismatch = { message: "stock image metadata does not match its digest" };
+  assert.throws(
+    () => stockSupervisorManifest(` ${index}`, indexDigest, "linux/amd64"),
+    digestMismatch,
+  );
+  assert.throws(() => stockSupervisorManifest(index, indexDigest, "linux/arm64"), {
+    message: "stock Supervisor index has no unique platform manifest",
+  });
   const inspected = {
     Id: descriptor.digest,
     Descriptor: selected,
     Os: "linux",
     Architecture: "amd64",
   };
+  const inspectedConfig = { Id: config, Os: "linux", Architecture: "amd64" };
+  const inspectLocal = t.mock.fn(async () => inspectedConfig);
+  await assert.rejects(
+    stockSupervisorConfig(selected, ` ${manifest}`, inspectLocal, "linux/amd64"),
+    digestMismatch,
+  );
+  assert.equal(
+    inspectLocal.mock.callCount(),
+    0,
+    "unverified metadata must stop before local inspection",
+  );
+
   // buildx may append a display newline to the exact bytes named by the descriptor.
   const calls: string[][] = [];
   const expectedConfig = await stockSupervisorConfig(
@@ -176,7 +242,7 @@ test("OpenShell stock Supervisor fixture refuses a substituted imported image", 
       manifest,
       async (flags) => {
         assert.deepEqual(flags, []);
-        return { Id: config, Os: "linux", Architecture: "amd64" };
+        return inspectedConfig;
       },
       "linux/amd64",
     ),

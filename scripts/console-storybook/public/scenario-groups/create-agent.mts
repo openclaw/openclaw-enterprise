@@ -81,7 +81,7 @@ type CreateAgentScenario = {
   provisioningCancelledByStop?: true;
   provisioningNamesDeploymentWait?: true;
   readOnlyPermissionSummary?: true;
-  repositoryDescriptionsPending?: true;
+  repositoryDescriptionsPending?: boolean;
   repositoryNotConfigured?: true;
   sandboxDriverUnavailable?: true;
   secretCreateNotPermitted?: true;
@@ -288,6 +288,19 @@ function ordinarySaveRefused(permission: "Secret operate" | "Configuration read"
 }
 
 export const createAgentFormScenarios = {
+  createNetworkProxy: {
+    group: "Pages/Create Agent",
+    name: "Gateway channel proxy",
+    path: create,
+    actions: form,
+    description:
+      "The Agent form offers an optional Network proxy URL and existing Secret selector for Gateway channel traffic only.",
+    steps: [
+      "Enter an HTTP or HTTPS endpoint without URL credentials.",
+      "Select a proxy credential Secret when authentication is required, then create the Agent.",
+    ],
+    gap: "Simulated UI proof; provisioning, Secret authorization, and proxy routing are not exercised.",
+  },
   createNamespaceProvisioning: {
     group: "Pages/Create Agent",
     name: "Namespace still provisioning",
@@ -1687,6 +1700,34 @@ export const createAgentProvisioningScenarios = {
     ],
     description:
       "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
+  },
+  createGitHubRepositoryGrants: {
+    group: "Pages/Create Agent",
+    name: "GitHub repository access",
+    path: create,
+    repositoryDescriptionsPending: false,
+    repositoryOptions: ["application", "tooling"].map((name) => ({
+      repositoryRef: name,
+      ...(name === "application" ? { description: "Customer portal and API." } : {}),
+      githubAccess: {
+        repository: `example/${name}`,
+        access: name === "tooling" ? "write" : "read",
+      },
+      displayName: `example/${name}`,
+      allowedProfiles: ["github-repository"],
+    })),
+    actions: [
+      ...repositoryForm,
+      { selector: 'input[data-repository-ref="application"]', click: true },
+      { selector: 'input[data-repository-ref="tooling"]', click: true },
+    ],
+    description:
+      "Check a repository to select it. Application allows only Read-only. Tooling starts at Contributor. Only application has a description. Change tooling to Read-only, press its × button and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
+    steps: [
+      "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
+      "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
+    ],
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

@@ -1,6 +1,7 @@
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
+import { isAgentAutomationOperation, relayAgentAutomation } from "./http/agent-automations.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
@@ -1329,7 +1330,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
         operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents")
+        operation.operationId === "listAgentAuditEvents" ||
+        isAgentAutomationOperation(operation.operationId))
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -1343,6 +1345,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
       operation.operationId !== "listAgentAuditEvents" &&
+      operation.operationId !== "listAgentAutomations" &&
+      operation.operationId !== "listAgentAutomationRuns" &&
+      operation.operationId !== "deleteAgentAutomation" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
@@ -2083,6 +2088,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (isAgentAutomationOperation(operation.operationId)) {
+      if (admissions.get(request)?.method !== "session") {
+        throw failure(403, "FORBIDDEN", "Agent automations require a human controller session.");
+      }
+      await relayAgentAutomation({
+        controller,
+        actorId: context.actorId,
+        operation,
+        request,
+        reply,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditMutation: async (reason) => {
+          await options.auditSink.append(
+            event(
+              operation,
+              request,
+              { kind: "agent", id: agentId, namespaceId },
+              "mutation",
+              context,
+              undefined,
+              reason === undefined ? undefined : { outcome: "failure", reasonCode: reason },
+            ),
+          );
+        },
+      });
+      return;
     }
 
     if (operation.operationId === "listAgentAuditEvents") {
@@ -3355,7 +3388,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
         ...(operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents"
+        operation.operationId === "listAgentAuditEvents" ||
+        isAgentAutomationOperation(operation.operationId)
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
@@ -3645,10 +3679,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.setErrorHandler(async (error, request, reply) => {
     // A caller's own denial names a resource ID only when this request carried it or the caller
     // may already read that resource.
-    const actorId = contexts.get(request)?.actorId;
+    const requestContext = contexts.get(request);
+    const actorId = requestContext?.actorId;
+    const credentialRetry = requestContext?.operation.operationId === "pushAgentCredentials";
+    const sent = requestedValues(request);
+    const sources = credentialRetry
+      ? (request.body as { readonly sources?: unknown } | undefined)?.sources
+      : undefined;
+    // This operation's explicit Source selection is a reference list. "all" does not name IDs.
+    const requested = Array.isArray(sources)
+      ? (value: string) => sent(value) || sources.includes(value)
+      : sent;
     let mapped = requestFailure(error, {
-      requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
+      requested: await nameableIds(error, actorId, requested, routeOwners(request)),
       ...(actorId === undefined ? {} : { actorId }),
+      ...(credentialRetry ? { agentPrincipalRecovery: "retry_credential_delivery" as const } : {}),
       ...((await administratorRestricted(error, actorId)) ? { administratorRestricted: true } : {}),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
@@ -3699,7 +3744,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               undefined,
               undefined,
               {
-                decisionReason: error.message,
+                decisionReason: credentialRetry
+                  ? "Grant the Agent service principal credential_source:operate on the Source, then retry credential delivery."
+                  : error.message,
                 reasonCode: "AGENT_PRINCIPAL_NOT_AUTHORIZED",
                 details: {
                   servicePrincipalId: error.principalId,

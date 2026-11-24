@@ -20,6 +20,7 @@ import { appendFile, readFile, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { proveControlledChannelProxy } from "./first-agent-smoke/channel-proxy.ts";
 import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.ts";
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
@@ -132,7 +133,7 @@ async function smoke() {
         modelDirectory,
         process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
           process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        { credentialDigests },
+        { credentialDigests, slackStandIn: true },
       ),
     );
     const [embedded, codex, control] = await initialAdmissions({
@@ -164,6 +165,10 @@ async function smoke() {
         chatTurn(stack, embedded.agent, embeddedRevision),
         chatTurn(stack, codex.agent, codexRevision),
       ]),
+    );
+    assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");
+    await smokeStep("controlled-channel-proxy", () =>
+      proveControlledChannelProxy(stack, [codex, control], modelDirectory, smokeStep),
     );
   } catch (error) {
     await diagnostics(diagnosticStack);

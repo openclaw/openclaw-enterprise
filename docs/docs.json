@@ -146,6 +146,10 @@
                     "label": "Gateway managed mode"
                   },
                   {
+                    "page": "reference/agents/network-proxy",
+                    "label": "Network Proxy"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },
@@ -220,6 +224,10 @@
                   {
                     "page": "reference/agent-native-admin",
                     "label": "Native Admin UI"
+                  },
+                  {
+                    "page": "reference/agent-automations",
+                    "label": "Automation API"
                   },
                   {
                     "page": "guides/topics/agent-troubleshoot",
@@ -1365,6 +1373,7 @@
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
+              "flows/agent-automations",
               "flows/agent-http-chat",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",

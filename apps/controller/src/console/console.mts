@@ -49,6 +49,7 @@ import {
   oauthClientsPage,
   createNavigation,
   pages,
+  type AgentsLanding,
 } from "./navigation.mjs";
 import {
   brandContents,
@@ -111,6 +112,7 @@ interface MountedView {
   administrationEnded: Set<() => void>;
   rechecked: Set<AgentRecheckHandler>;
   deferredConfigurationFocus?: { editor: HTMLTextAreaElement; cancel: AbortController };
+  deferredAgentSearch?: AgentSearchFocus;
   metaReads: Set<string>;
   resumeHandlers: Set<() => void>;
   revalidators: Set<() => Promise<unknown>>;
@@ -123,6 +125,8 @@ interface MountedView {
   diagnostics?: Shell["diagnostics"];
 }
 
+type ReturnFocus = { href: string } | { key: string };
+
 interface RetainedView {
   owner: string;
   snapshot: HTMLDivElement;
@@ -130,7 +134,7 @@ interface RetainedView {
   title: string | null;
   scope: string | null;
   scrollY: number;
-  returnHref: string | null;
+  returnFocus: ReturnFocus | null;
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -1015,13 +1019,21 @@ function clearPasswordInputs() {
     });
 }
 
-function retainMountedView(returnLink: Element | null) {
+function retainMountedView(returnControl: Element | null, scrollY = window.scrollY) {
   const owner = sessionOwnerKey(session);
   // The mounted view's own node, never another page shown in its place: an Agent page renders
   // hidden behind the page that stands in for it (finding 1542).
   const view = mountedViewState?.view ?? null;
   if (!owner || mountedRouteKey === null || !view?.isConnected || view.hidden) {
     return;
+  }
+  let returnFocus: ReturnFocus | null = null;
+  if (returnControl instanceof HTMLElement && view.contains(returnControl)) {
+    if (returnControl instanceof HTMLAnchorElement) {
+      returnFocus = { href: returnControl.dataset.returnFocusHref ?? returnControl.href };
+    } else if (returnControl.dataset.refocusKey) {
+      returnFocus = { key: returnControl.dataset.refocusKey };
+    }
   }
   retainedViews.set(mountedRouteKey, {
     owner,
@@ -1032,11 +1044,8 @@ function retainMountedView(returnLink: Element | null) {
     state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector<HTMLHeadingElement>(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
-    scrollY: window.scrollY,
-    returnHref:
-      returnLink instanceof HTMLAnchorElement && view.contains(returnLink)
-        ? (returnLink.dataset.returnFocusHref ?? returnLink.href)
-        : null,
+    scrollY,
+    returnFocus,
   });
   while (retainedViews.size > 16) {
     retainedViews.delete(retainedViews.keys().next().value!);
@@ -1063,8 +1072,8 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
   }
 }
 
-// Names a recheck that outlasts stillCheckingDelayMs, so a held page is not mistaken
-// for a stuck one (finding 1442). Mounted Agent checks stay visible beside scrolled drafts.
+// Names a pending recheck so a held page is not mistaken for a stuck one (finding 1442).
+// Mounted Agent checks stay visible beside scrolled drafts.
 function showStillChecking({ mountedAgent = false } = {}) {
   const container = mountedAgent ? app : app.querySelector(".content .page-actions");
   if (!container) {
@@ -1139,6 +1148,60 @@ function holdShownView({ busyCue = true, keepFocus = false } = {}) {
     app.querySelector<HTMLHeadingElement>(".content h1")!.focus({ preventScroll: true });
   }
   return shell;
+}
+
+const agentSearchSelector = 'input[type="search"][data-refocus-key="agent-search"]';
+
+function captureAgentSearch(route: string) {
+  const input = document.activeElement;
+  const owner = sessionOwnerKey(session);
+  if (!owner || !(input instanceof HTMLInputElement) || !input.matches(agentSearchSelector)) {
+    return null;
+  }
+  const { value, selectionStart, selectionEnd, selectionDirection } = input;
+  const range = [selectionStart, selectionEnd, selectionDirection ?? undefined] as const;
+  return { owner, route, value, range };
+}
+
+type AgentSearchFocus = NonNullable<ReturnType<typeof captureAgentSearch>>;
+
+function matchingAgentSearch(view: HTMLElement, search: AgentSearchFocus) {
+  const input = view.querySelector<HTMLInputElement>(agentSearchSelector);
+  return input?.value === search.value && !input.disabled && input.checkVisibility() ? input : null;
+}
+
+function restoreAgentSearch(view: HTMLElement, search: AgentSearchFocus) {
+  if (document.hidden || !document.hasFocus() || document.activeElement !== document.body) {
+    return;
+  }
+  const input = matchingAgentSearch(view, search);
+  if (input) {
+    input.focus();
+    input.setSelectionRange(...search.range);
+  }
+}
+
+// Only the uninterrupted focus on this error panel's Retry can carry the selection forward.
+function focusSearchRetry(view: HTMLElement, signal: AbortSignal, discard: () => void) {
+  const retry = view.querySelector<HTMLButtonElement>(":scope > .state-panel > button");
+  if (!retry || !document.hasFocus() || document.activeElement !== document.body) {
+    return discard();
+  }
+  retry.addEventListener("blur", discard, { once: true, signal });
+  retry.addEventListener(
+    "keydown",
+    ({ key }) => {
+      if (key === "Escape") {
+        discard();
+      }
+    },
+    { signal },
+  );
+  signal.addEventListener("abort", discard, { once: true });
+  retry.focus();
+  if (document.activeElement !== retry) {
+    discard();
+  }
 }
 
 // The control focused in the shown page, which a refocus recheck blurs when it holds the page
@@ -1264,13 +1327,20 @@ function markMountedRoute(current: Route) {
 
 function resetReads({
   retainView = false,
-  returnLink = null,
+  returnControl = null,
   keepShell = false,
-}: { retainView?: boolean; returnLink?: Element | null; keepShell?: boolean } = {}) {
+  retainedScrollY,
+}: {
+  retainView?: boolean;
+  returnControl?: Element | null;
+  keepShell?: boolean;
+  retainedScrollY?: number | undefined;
+} = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
     mountedViewState.deferredConfigurationFocus?.cancel.abort();
     delete mountedViewState.deferredConfigurationFocus;
+    delete mountedViewState.deferredAgentSearch;
     mountedViewState.resumeDrafts = resumeDrafts;
     mountedViewState.active = null;
   }
@@ -1286,7 +1356,7 @@ function resetReads({
     shellUI.reset();
   }
   if (retainView) {
-    retainMountedView(returnLink);
+    retainMountedView(returnControl, retainedScrollY);
   } else {
     mountedRouteKey = null;
   }
@@ -1645,12 +1715,14 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
-  confirmAgentPermissions = reuseView && !fromNavigation,
+  confirmAgentPermissions: confirmOnLoad = reuseView && !fromNavigation,
   // Set only by Back and Forward (popstate).
   restoreHistory = null,
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
+  agentsLanding = null,
+  retrySearch = null,
 }: {
   fromNavigation?: boolean;
   reuseView?: boolean;
@@ -1659,6 +1731,8 @@ async function loadPage({
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
+  agentsLanding?: AgentsLanding | null;
+  retrySearch?: AgentSearchFocus | null;
 } = {}) {
   noteConsoleLoad();
   if (loggingOut) {
@@ -1668,6 +1742,17 @@ async function loadPage({
   const resumingView = reuseView && !fromNavigation;
   const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
+  // A Retry must keep confirming draft Channels access even if Refresh fails before reading the
+  // Agent. Resolve an implicit revision from the mounted route until the fresh Agent is read.
+  const confirmForAgent = (agent: AgentRead | null | undefined) =>
+    confirmOnLoad ||
+    (fromRefresh &&
+      Boolean(current.agentId) &&
+      current.url.searchParams.get("tab") === "channels" &&
+      (current.url.searchParams.get("revision") ?? agent?.activeRevisionId ?? "draft") === "draft");
+  let confirmAgentPermissions = confirmForAgent(
+    mountedRouteKey === routeKey(current) ? mountedAgent : null,
+  );
   const privatePage = hasKey(pages, current.feature) ? current.feature : null;
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -1725,12 +1810,27 @@ async function loadPage({
     forgetRuntimeDenials(current.namespace, current.agentId);
     forgetAgentRevisionDenials(sessionOwnerKey(session), current.namespace, current.agentId);
   }
+  const deferredSearch =
+    resumingView && !document.hidden && document.activeElement === document.body
+      ? mountedViewState?.deferredAgentSearch
+      : undefined;
+  const focused = document.activeElement;
+  // The Consumers link closes its inspector before navigating, so the native dialog returns
+  // focus to the Secret row that opened it. A directly linked inspector has no such row.
+  const leavingSecretRow =
+    fromNavigation &&
+    !restoreHistory &&
+    shownFeature === "secrets" &&
+    current.agentId &&
+    focused?.matches("button[data-refocus-key]");
   const active = resetReads({
     retainView: knownPrivateState,
     // Namespaces rows and snapshot shortcuts mark themselves for return focus too.
-    returnLink:
-      openingAgent || document.activeElement?.matches?.("a[data-return-focus-href]")
-        ? document.activeElement
+    returnControl:
+      leavingSecretRow ||
+      (focused instanceof HTMLAnchorElement &&
+        (openingAgent || focused.matches("[data-return-focus-href]")))
+        ? focused
         : null,
   });
   if (abandonedCreation) {
@@ -1754,7 +1854,20 @@ async function loadPage({
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
   // list (finding 1636). The pending shell also replaces a pressed sidebar link (finding 1653).
   // On refocus, restore the reader’s place only if we reuse the view (finding 1654).
-  const refocused = resumingView ? focusInShownView() : null;
+  let refocused = resumingView ? focusInShownView() : null;
+  const listRoute =
+    current.feature === "agents" && current.namespace && !current.agentId && !current.creating
+      ? routeKey(current)
+      : null;
+  const trackDeletionLanding =
+    agentsLanding === "deletion-status-unavailable" && listRoute !== null;
+  let search =
+    retrySearch ??
+    (listRoute && previousMountedRouteKey === listRoute
+      ? (deferredSearch ?? (refocused && captureAgentSearch(listRoute)))
+      : null);
+  let searchForRetry: AgentSearchFocus | null = null;
+  let admittedSearch: AgentSearchFocus | null = null;
   let shell: LoadingShell | null =
     knownPrivateState && !openingAgent
       ? holdShownView({ busyCue: !resumingView, keepFocus: !resumingView })
@@ -1767,11 +1880,46 @@ async function loadPage({
     document.activeElement === app.querySelector<HTMLHeadingElement>(".content h1")
       ? document.activeElement
       : null;
-  let agentReturnHref: string | null = null;
+  // A reader who moves away and back has still moved on. Exempt only our own heading transfer.
+  let expectedHeading: HTMLElement | null = null;
+  const retainedFocus = retainedView?.returnFocus;
+  const trackSecretReturn =
+    fromNavigation &&
+    restoreHistory !== null &&
+    current.feature === "secrets" &&
+    retainedFocus != null &&
+    "key" in retainedFocus;
+  let returnFocusMoved = false;
+  const onFocus = (event: FocusEvent) => {
+    if (event.target !== expectedHeading && event.target !== document.body) {
+      returnFocusMoved = true;
+      // Both snapshots can return focus to Search if the new control later blurs.
+      refocused = null;
+      search = null;
+      if (mountedViewState?.deferredAgentSearch) {
+        delete mountedViewState.deferredAgentSearch;
+        document.removeEventListener("focusin", onFocus, true);
+      }
+    }
+  };
+  if (search || trackSecretReturn || trackDeletionLanding) {
+    document.addEventListener("focusin", onFocus, { capture: true, signal: lifetime.signal });
+  }
+  const pendingSearch = () =>
+    search &&
+    search.route === listRoute &&
+    search.route === routeKey(route()) &&
+    search.owner === sessionOwnerKey(session) &&
+    document.activeElement !== null &&
+    document.activeElement === (retrySearch ? heldHeading : document.body)
+      ? search
+      : null;
+  let returnFocus: ReturnFocus | null = null;
   // Gives a refocus its reader's place back once the reused view's shell is usable.
   let restoreRefocus: (() => void) | null = null;
   let pendingAgentHeading: HTMLHeadingElement | null = null;
   let focusAgentResult = false;
+  let showDeletionStatusNotice = false;
   // The page kept on screen while an Agent's overview renders behind it, and the Agent's title
   // until it reveals (findings 1516, 1526).
   let shownStandIn: { view: HTMLElement } | null = null;
@@ -1872,7 +2020,9 @@ async function loadPage({
               heldHeading = headingFocused
                 ? app.querySelector<HTMLHeadingElement>(".content h1")
                 : null;
+              expectedHeading = heldHeading;
               heldHeading?.focus({ preventScroll: true });
+              expectedHeading = null;
             };
             if (!accessResolved) {
               shell = pendingNamespaceShell = renderPendingNamespaceShell(privatePage);
@@ -2065,6 +2215,11 @@ async function loadPage({
       )?.id ??
       null;
     const selectedNamespace = namespaceId;
+    showDeletionStatusNotice =
+      trackDeletionLanding &&
+      selectedNamespace === current.namespace &&
+      previousOwner !== null &&
+      owner === previousOwner;
     const unscopedAgentId = current.namespace === null ? current.agentId : null;
     // Record the history position while keeping the Agent's Namespace provisional.
     replaceUrl(pageUrl(current.target, unscopedAgentId ? null : selectedNamespace));
@@ -2095,7 +2250,6 @@ async function loadPage({
         ? `${namespacePath}/agents/${encodeURIComponent(current.agentId)}`
         : null;
     const agentPermissionsPath = agentPath === null ? null : `${agentPath}/permissions`;
-    const confirmDetailPermissions = confirmAgentPermissions && agentPermissionsPath !== null;
     const itemsPath = collectionPath(current.feature, namespacePath);
     const permissionsRead =
       !scopedNamespaceUnavailable &&
@@ -2112,6 +2266,7 @@ async function loadPage({
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (agentPath !== null) {
         firstAgent = (await request(agentPath)) as AgentRead;
+        confirmAgentPermissions = confirmForAgent(firstAgent);
       } else if (itemsPath !== null) {
         if (current.feature === "backends") {
           // Backends need Installation administration, like the probe. A caller this load knows
@@ -2131,7 +2286,14 @@ async function loadPage({
             throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
           }
         }
-        firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
+        try {
+          firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
+        } catch (error) {
+          if (search && document.hasFocus() && retryableAgentRecheck(error)) {
+            searchForRetry = pendingSearch();
+          }
+          throw error;
+        }
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -2140,6 +2302,7 @@ async function loadPage({
         replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
+    const confirmDetailPermissions = agentPermissionsPath !== null && confirmAgentPermissions;
     if (permissionsRead) {
       firstPermissions = await permissionsRead;
       if (!lifetime.isCurrent(active)) {
@@ -2213,6 +2376,8 @@ async function loadPage({
       unchanged =
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
+        (!current.agentId ||
+          matchesAgentIdentity(firstAgent, current.agentId, selectedNamespace)) &&
         // A matching refusal or malformed summary cannot readmit a foreground Agent view.
         (!confirmDetailPermissions || isAgentPermissionSummary(fresh.get(agentPermissionsPath))) &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
@@ -2225,24 +2390,26 @@ async function loadPage({
           );
         });
     }
-    // Resolve the old link in the admitted view, even if its reads were unfinished and we
+    // Resolve the old control in the admitted view, even if its reads were unfinished and we
     // must rebuild it. Capture focus before replacing the shell, not after it falls back to body
     // (or leaves the held heading).
     if (
       retained &&
-      retainedView &&
+      retainedFocus &&
       reuseView &&
       !scopedNamespaceUnavailable &&
+      ("href" in retainedFocus || trackSecretReturn) &&
       (document.activeElement === document.body ||
         (heldHeading !== null && document.activeElement === heldHeading))
     ) {
-      agentReturnHref = retainedView.returnHref;
+      returnFocus = retainedFocus;
     }
     // Move focus to the Agent's heading only if the opening heading still owns it.
     focusAgentResult = document.activeElement === pendingAgentHeading;
     // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
     // replacing the shell briefly leaves it on the body again.
     const restoreFocus = document.activeElement === document.body ? refocused : null;
+    admittedSearch = pendingSearch();
     // The Namespaces view is inert during the recheck. If Tab reached a shell control,
     // match that control when the shell is replaced, including the phone navigation toggle.
     const namespaceShellFocus =
@@ -2252,11 +2419,15 @@ async function loadPage({
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
+      if (firstAgent) {
+        retainedView.title = firstAgent.name;
+      }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
-      // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
+      // Landing notices stay on a refocus of the same view and clear on a new navigation.
       if (!resumingView) {
         shell.view.querySelector(":scope > .unopened-chat-link")?.remove();
+        updateDeletionStatusNotice(shell.view, showDeletionStatusNotice);
       }
       mountedViewState = retainedState;
       retainedState.active = active;
@@ -2776,6 +2947,7 @@ async function loadPage({
         resumed: resumingView,
       });
       showChatLinkFailure(shell.view, chatLinkFailure);
+      updateDeletionStatusNotice(shell.view, showDeletionStatusNotice);
       // A refocus rebuilds the list when its recheck reads changed (a re-grant, a row another
       // person deleted) or after a row write, which makes the list one it never reuses. Focus on
       // a row's name or icon returns to the same control in the rebuilt row instead of falling
@@ -2984,9 +3156,16 @@ async function loadPage({
       // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
       // behind a disclosure (finding D770).
       status === 403 ? undefined : "Retry",
-      status === 403 ? undefined : () => void loadPage({ confirmAgentPermissions }),
+      status === 403
+        ? undefined
+        : () => void loadPage({ confirmAgentPermissions, retrySearch: searchForRetry }),
       status === 403 ? null : requestId,
     );
+    if (searchForRetry) {
+      focusSearchRetry(shell.view, lifetime.signal, () => {
+        searchForRetry = null;
+      });
+    }
     if (status === 403 && requestId) {
       shell.view.querySelector(".state-panel")!.append(requestIdDisclosure(requestId));
     }
@@ -2998,8 +3177,33 @@ async function loadPage({
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh!.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
+      const mounted = mountedViewState;
+      if (
+        admittedSearch &&
+        search === admittedSearch &&
+        mounted?.active === active &&
+        mountedRouteKey === admittedSearch.route
+      ) {
+        if (document.hidden && matchingAgentSearch(shell.view, admittedSearch)) {
+          // Wait for the next foreground check instead of focusing the hidden page.
+          mounted.deferredAgentSearch = admittedSearch;
+        } else if (deferredSearch || retrySearch) {
+          restoreAgentSearch(shell.view, admittedSearch);
+        }
+      }
       restoreRefocus?.();
-      if (focusAgentResult && document.activeElement === document.body) {
+      if (showDeletionStatusNotice && mountedRouteKey === listRoute) {
+        // The retained scroll and row focus can leave the new status above the viewport.
+        const heading = app.querySelector<HTMLHeadingElement>(".content h1")!;
+        if (
+          !returnFocusMoved &&
+          document.hasFocus() &&
+          (document.activeElement === document.body || document.activeElement === heldHeading)
+        ) {
+          heading.focus({ preventScroll: true });
+        }
+        window.scrollTo({ top: 0, left: 0 });
+      } else if (focusAgentResult && document.activeElement === document.body) {
         const heading =
           shell.view.querySelector<HTMLHeadingElement>(":scope > .state-panel > h2") ??
           app.querySelector<HTMLHeadingElement>(".content h1")!;
@@ -3007,33 +3211,43 @@ async function loadPage({
         heading.focus({ preventScroll: true });
       } else if (
         fromNavigation &&
+        (!trackSecretReturn || (!returnFocusMoved && document.hasFocus())) &&
         previousMountedRouteKey !== routeKey(current) &&
         (document.activeElement === document.body ||
-          (agentReturnHref && document.activeElement === heldHeading))
+          (returnFocus && document.activeElement === heldHeading))
       ) {
+        const target = returnFocus;
         // A deployment being reread can receive return focus, but is not a link until it settles.
         const focusTarget =
-          agentReturnHref &&
+          target &&
           (!current.agentId || document.hasFocus()) &&
           Array.from(
             shell.view.querySelectorAll<HTMLElement & { href?: string }>(
-              "a[href], [data-return-focus-href]",
+              "href" in target ? "a[href], [data-return-focus-href]" : "button[data-refocus-key]",
             ),
           ).find(
             (item) =>
-              (item.dataset.returnFocusHref ?? item.href) === agentReturnHref &&
-              item.checkVisibility(),
+              ("href" in target
+                ? (item.dataset.returnFocusHref ?? item.href) === target.href
+                : item.dataset.refocusKey === target.key) && item.checkVisibility(),
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
+        const rebuiltList =
+          shell.view !== retainedView?.snapshot &&
+          ((current.feature === "agents" && !current.agentId && !current.creating) ||
+            (trackSecretReturn && mountedRouteKey === routeKey(current)));
         const restoreScroll = Boolean(
-          focusTarget && (current.agentId || current.feature === "namespaces"),
+          focusTarget && (current.agentId || current.feature === "namespaces" || rebuiltList),
         );
+        // Back can leave a rebuilt list scrolled past its heading when the old link is gone.
+        const revealFallback =
+          returnFocus && !focusTarget && rebuiltList && mountedRouteKey === routeKey(current);
         if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
-          preventScroll: !restoreScroll,
+          preventScroll: !(restoreScroll || revealFallback),
         });
       }
       if (fromRefresh && document.activeElement === document.body) {
@@ -3045,6 +3259,9 @@ async function loadPage({
           preventScroll: true,
         });
       }
+    }
+    if (!mountedViewState?.deferredAgentSearch) {
+      document.removeEventListener("focusin", onFocus, true);
     }
   }
 }
@@ -3063,6 +3280,21 @@ function showChatLinkFailure(view: HTMLElement, failure: keyof typeof chatLinkFa
         className: "unopened-chat-link",
         role: "status",
       }),
+    );
+  }
+}
+
+function updateDeletionStatusNotice(view: HTMLElement, show: boolean) {
+  view.querySelector(":scope > .agent-deletion-status-unavailable")?.remove();
+  if (show) {
+    view.prepend(
+      statusBlock(
+        "info",
+        null,
+        "Deletion requested. The Agent’s status is no longer available, so cleanup is unconfirmed.",
+        [],
+        { className: "agent-deletion-status-unavailable" },
+      ),
     );
   }
 }
@@ -3199,6 +3431,15 @@ async function revalidateMountedAgent(current: Route) {
   const recoveryFocus = focused?.matches('#configuration-editor-feedback[role="status"]')
     ? watchFocus()
     : undefined;
+  // An opted-in panel can outlive its focused action. Capture its tab before inert.
+  const focusPanel = focused?.closest('[role="tabpanel"][data-restore-panel-focus]');
+  const focusPanelLabel = focusPanel?.getAttribute("aria-labelledby");
+  const panelFocus = focusPanelLabel ? watchFocus() : undefined;
+  if (panelFocus) {
+    window.addEventListener("blur", () => panelFocus.abort(), {
+      signal: AbortSignal.any([panelFocus.signal, lifetime.signal]),
+    });
+  }
   let editorFocus = deferredFocus;
   if (
     focused instanceof HTMLTextAreaElement &&
@@ -3215,10 +3456,26 @@ async function revalidateMountedAgent(current: Route) {
     focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
   const selection =
     typeof textField?.selectionStart === "number"
-      ? ([textField.selectionStart, textField.selectionEnd] as const)
+      ? ([
+          textField.selectionStart,
+          textField.selectionEnd,
+          textField.selectionDirection ?? undefined,
+        ] as const)
       : null;
   const restoreFocus = (afterRetry = false) => {
     if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
+      return;
+    }
+    const restorePanel = !afterRetry && panelFocus;
+    if (
+      restorePanel &&
+      (restorePanel.signal.aborted ||
+        document.hidden ||
+        document.getSelection()?.isCollapsed === false ||
+        mountedViewState !== state ||
+        !isCurrent() ||
+        focusPanel?.getAttribute("aria-labelledby") !== focusPanelLabel)
+    ) {
       return;
     }
     const target = focused.isConnected
@@ -3229,11 +3486,14 @@ async function revalidateMountedAgent(current: Route) {
     if (!target?.closest(".content") || !target.checkVisibility()) {
       // A permission recheck can hide the focused control while this Agent view is inert.
       // If its panel is still visible, return to the tab that labels it.
-      const panel = target?.closest('[role="tabpanel"]');
+      const panel = target?.closest('[role="tabpanel"]') ?? (restorePanel ? focusPanel : null);
       if (panel && view.contains(panel) && panel.checkVisibility()) {
         const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
-        if (tab?.checkVisibility()) {
-          tab.focus();
+        if (
+          tab?.checkVisibility() &&
+          (!restorePanel || tab.getAttribute("aria-selected") === "true")
+        ) {
+          tab.focus(restorePanel ? { preventScroll: true } : undefined);
           return;
         }
       }
@@ -3262,7 +3522,7 @@ async function revalidateMountedAgent(current: Route) {
       (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
       target.value === textField?.value
     ) {
-      target.setSelectionRange(selection[0], selection[1]);
+      target.setSelectionRange(...selection);
     }
   };
   let checking = "session";
@@ -3276,10 +3536,24 @@ async function revalidateMountedAgent(current: Route) {
   }
   const mountedTitle = heading.textContent;
   let admittedAgentName: string | undefined;
-  let identityConcealed = false;
+  let scrollBeforeConceal: number | undefined;
+  let clearStillChecking: (() => void) | undefined;
+  const showPendingStatus = () => {
+    if (isCurrent()) {
+      clearStillChecking ??= showStillChecking({ mountedAgent: true });
+    }
+  };
   const concealDetails = () => {
     if (!isCurrent()) {
       return;
+    }
+    if (admittedAgentName === undefined) {
+      // Hiding the Agent ID can remove a header row and move the scroll anchor.
+      scrollBeforeConceal ??= window.scrollY;
+      heading.textContent = "Agent details";
+      if (agentIdentity) {
+        agentIdentity.hidden = true;
+      }
     }
     // Hold the page's space without painting details whose access check failed.
     view.style.opacity = "0";
@@ -3289,30 +3563,21 @@ async function revalidateMountedAgent(current: Route) {
     if (diagnostics) {
       diagnostics.hidden = true;
     }
-    if (admittedAgentName === undefined) {
-      identityConcealed = true;
-      heading.textContent = "Agent details";
-      if (agentIdentity) {
-        agentIdentity.hidden = true;
-      }
-    }
   };
   let retryNotBefore = 0;
   const detailFailure = (error: unknown): never => {
     concealDetails();
-    const { retryAfterSeconds } = requestFailure(error);
+    const { status, retryAfterSeconds } = requestFailure(error);
+    if (status !== 401 && !isAccessRefusal(status)) {
+      showPendingStatus();
+    }
     if (retryAfterSeconds !== undefined) {
       retryNotBefore = Math.max(retryNotBefore, performance.now() + retryAfterSeconds * 1000);
     }
     throw error;
   };
   let checked = false;
-  let clearStillChecking: (() => void) | undefined;
-  const stillChecking = setTimeout(() => {
-    if (isCurrent()) {
-      clearStillChecking = showStillChecking({ mountedAgent: true });
-    }
-  }, stillCheckingDelayMs);
+  const stillChecking = setTimeout(showPendingStatus, stillCheckingDelayMs);
   try {
     const resolvedSession = await readSession();
     if (!isCurrent()) {
@@ -3569,7 +3834,7 @@ async function revalidateMountedAgent(current: Route) {
         }, Math.ceil(delay));
       }
       // Retain the editor in memory only. A Retry goes through normal page admission.
-      resetReads({ retainView: true, keepShell: true });
+      resetReads({ retainView: true, keepShell: true, retainedScrollY: scrollBeforeConceal });
       view.replaceWith(warning);
       pageActions?.remove();
       if (refresh) {
@@ -3593,7 +3858,7 @@ async function revalidateMountedAgent(current: Route) {
     clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (checked && isCurrent()) {
-      if (identityConcealed) {
+      if (scrollBeforeConceal !== undefined) {
         heading.textContent = mountedTitle;
         if (agentIdentity) {
           agentIdentity.hidden = false;
@@ -3634,6 +3899,7 @@ async function revalidateMountedAgent(current: Route) {
       editorFocus?.cancel.abort();
     }
     recoveryFocus?.abort();
+    panelFocus?.abort();
   }
 }
 

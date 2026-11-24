@@ -3,6 +3,7 @@ import "./console-agent-detail-deployment.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import type { Locator, Page, Route, Request } from "playwright";
 import type { TSchema } from "typebox";
 import { IsSchema } from "typebox/schema";
@@ -256,6 +257,43 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   assert.equal(
     await page.getByRole("link", { name: /View harness authentication Secret metadata/ }).count(),
     0,
+  );
+});
+
+test("the Agent Network proxy editor never sends URL credentials to OCC", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Network proxy editor", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Proxy editor Agent",
+    nativeValues("proxy-editor"),
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const input = page.getByLabel("Network proxy URL");
+  await input.waitFor();
+  const password = randomUUID();
+  const unsafe = syntheticCredentialUrl({
+    protocol: "https",
+    username: "proxy-user",
+    password,
+    host: "proxy.example",
+  });
+
+  // A URL can contain a password before server validation runs. The browser must refuse it locally.
+  await input.fill(unsafe);
+  await page.getByRole("button", { name: "Save Network proxy for next deployment" }).click();
+  await page
+    .getByText("Use an HTTP or HTTPS proxy endpoint without credentials.", { exact: true })
+    .waitFor();
+  assert.equal(
+    requests.some(
+      ({ method, path }) =>
+        method === "PATCH" && path === `/namespaces/${namespace.id}/agents/${agent.id}`,
+    ),
+    false,
   );
 });
 
@@ -1521,7 +1559,10 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .waitFor();
   // The dialog names its target Agent as text, and in its accessible description.
   await dialog.getByText("Stop Candidate", { exact: true }).waitFor();
-  assert.equal(await accessibleDescription(dialog), `Agent: Stop Candidate ${STOP_CONFIRMATION}`);
+  assert.equal(
+    await accessibleDescription(dialog),
+    `Agent: Stop Candidate Agent ID: ${agent.id} ${STOP_CONFIRMATION}`,
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
@@ -2788,10 +2829,15 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // The entry to the draft sits in the version's Settings card, below its snapshot summary.
+  const openDraft = page
+    .locator("section.agent-card")
+    .filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) })
+    .getByRole("button", { name: "Open draft", exact: true });
   // Draft-only tabs open on this Agent. Back returns to the saved version's shortcut.
   const snapshotUrl = page.url();
   for (const name of ["Credentials", "Repositories"]) {
-    await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+    await openDraft.waitFor();
     const link = snapshot.getByRole("link", { name: `Draft ${name.toLowerCase()}` });
     assert.equal(await link.isVisible(), true);
     await link.press("Enter");
@@ -2805,7 +2851,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     await page.locator(settledView).waitFor();
     assert.ok(await hasFocus(link), name);
   }
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
+  await openDraft.click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
@@ -2855,7 +2901,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     true,
   );
   await page.locator(settledView).waitFor();
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  await openDraft.waitFor();
   assert.equal(await draftLinks.count(), 0);
   assert.ok(await hasFocus(page.getByRole("heading", { level: 1 })));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -2898,12 +2944,18 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // The entry to the draft sits in the version's Settings card, below its snapshot summary.
+  const settingsCard = page
+    .locator("section.agent-card")
+    .filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) });
   // Until the answer lands the page assumes an editor.
-  await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  await settingsCard
+    .getByRole("button", { name: "Edit current Configuration", exact: true })
+    .waitFor();
   const draftLinks = snapshot.getByRole("link", { name: /^Draft (credentials|repositories)$/ });
   assert.equal(await draftLinks.count(), 0);
   firstAnswer.release();
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  await settingsCard.getByRole("button", { name: "Open draft", exact: true }).waitFor();
   assert.equal(await draftLinks.count(), 2);
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {

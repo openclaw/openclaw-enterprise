@@ -255,7 +255,8 @@ model credential Secret: both are kept even when Create Agent made them.
 Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
 once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
 `delete` permission is required. After deletion starts, cleanup status replaces the tabs.
-The page checks it every few seconds and returns to Agents once the Agent is gone.
+The page checks it every few seconds. If that check cannot find the Agent, the Console
+returns to Agents and says cleanup is unconfirmed.
 **Refresh deletion status** checks it immediately. **Request deletion again**
 opens a new confirmation for an already deleting Agent. Use it after fixing a
 cleanup failure that exhausted its retries; cleanup still queued or running

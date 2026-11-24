@@ -3,6 +3,7 @@ import { constants, existsSync, symlinkSync } from "node:fs";
 import {
   chmod,
   cp,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -83,6 +84,53 @@ function doctorTargets(contents: string) {
     });
 }
 
+async function assertUnsafeWorkerStopReceipt(
+  receipt: string,
+  originalReceipt: Buffer,
+  unsafeReceipt: 0o644 | Buffer,
+  assertRefused: () => Promise<void>,
+) {
+  const access = typeof unsafeReceipt === "number" ? constants.O_RDONLY : constants.O_RDWR;
+  const file = await open(receipt, access | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await file.stat({ bigint: true });
+    assert.ok(opened.isFile(), "expected a regular worker stop receipt");
+
+    // Change and restore the opened file even if the refusal replaces the pathname.
+    if (typeof unsafeReceipt === "number") {
+      try {
+        await file.chmod(unsafeReceipt);
+        await assertRefused();
+        assert.equal((await file.stat({ bigint: true })).mode & 0o777n, BigInt(unsafeReceipt));
+        assert.deepEqual(await file.readFile(), originalReceipt);
+      } finally {
+        await file.chmod(0o600);
+      }
+    } else {
+      try {
+        const changed = await file.write(unsafeReceipt, 0, unsafeReceipt.length, 0);
+        assert.equal(changed.bytesWritten, unsafeReceipt.length);
+        await file.truncate(unsafeReceipt.length);
+        await assertRefused();
+        assert.deepEqual(await file.readFile(), unsafeReceipt);
+      } finally {
+        const restored = await file.write(originalReceipt, 0, originalReceipt.length, 0);
+        assert.equal(restored.bytesWritten, originalReceipt.length);
+        await file.truncate(originalReceipt.length);
+      }
+    }
+
+    const entry = await lstat(receipt, { bigint: true });
+    assert.deepEqual(
+      [entry.dev, entry.ino],
+      [opened.dev, opened.ino],
+      "worker stop receipt was replaced",
+    );
+  } finally {
+    await file.close();
+  }
+}
+
 export function registerWriterHandoffCases({
   fixture,
   realHelm,
@@ -92,6 +140,303 @@ export function registerWriterHandoffCases({
   realHelm: string;
   repository: string;
 }): void {
+  test("one-off channel transition fences both writers across Agent Stop", async (t) => {
+    for (const [scenario, refusal] of [
+      ["initial-zero", /worker Deployment .* is at zero replicas without a confirmed stop/u],
+      ["worker-zero", /worker Deployment .* is at zero replicas without a confirmed stop/u],
+      ["worker-uid", /OCC worker Deployment identity or replicas changed during Agent Stop/u],
+      [
+        "worker-generation",
+        /OCC worker Deployment identity or replicas changed during Agent Stop/u,
+      ],
+      ["api-generation", /OCC api Deployment identity or replicas changed during Agent Stop/u],
+      ["late-worker-access-denial", null],
+      ["late-worker-admission-denial", null],
+      ["unknown-agent-stop", null],
+      ["partial-writer-stop", null],
+      ["healthy-direct", null],
+      ["healthy-resume", null],
+    ] as const) {
+      await t.test(scenario, async (t) => {
+        const f = await fixture(t, {
+          agent: true,
+          controllerOnly: true,
+          candidates: true,
+          inventoryRequiresApi: true,
+        });
+        const valuesPath = join(f.directory, "values.json");
+        const installationPath = join(f.directory, "installation.json");
+        const values = record(JSON.parse(await readFile(valuesPath, "utf8")), "Helm values");
+        const installation = record(
+          JSON.parse(await readFile(installationPath, "utf8")),
+          "Installation",
+        );
+        values.slackProxy = { enabled: true };
+        const hostname = "openclaw-enterprise-slack-proxy.system.svc";
+        const compute = field(field(installation, "drivers"), "compute");
+        record(field(compute, "configuration"), "Compute configuration").runtime = {
+          channels: {
+            proxyUrl: `http://${hostname}:3128`,
+            managedProxy: {
+              hostname,
+              namespace: "system",
+              port: 3128,
+              podLabels: {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": "oce",
+                "app.kubernetes.io/component": "slack-proxy",
+              },
+            },
+          },
+        };
+        const installationBytes = JSON.stringify(installation);
+        await writeFile(installationPath, installationBytes);
+        await writeFile(valuesPath, JSON.stringify(values));
+        await writeFile(join(f.directory, "live-values"), JSON.stringify(values));
+        const state = await f.state();
+        record(field(state.secret, "data"), "live Installation Secret data")["installation.yaml"] =
+          Buffer.from(installationBytes).toString("base64");
+        state.channelStopCase = scenario;
+        state.worker = scenario === "initial-zero" ? 0 : 1;
+        state.deploymentIdentities = {
+          api: { uid: "api-deployment-uid", generation: 1, resourceVersion: "1" },
+          worker: {
+            uid: "worker-deployment-uid",
+            generation: scenario === "initial-zero" ? 2 : 1,
+            resourceVersion: scenario === "initial-zero" ? "2" : "1",
+          },
+        };
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+
+        // Prepare with the real one-off CLI. Bypass only the independent Envoy
+        // forwarding prerequisite. The Stop journal, OCC calls and inventory
+        // checks still run in the real channel helper.
+        const prepared = join(f.directory, "channel-candidates");
+        await execute(
+          "python3",
+          [
+            "scripts/upgrade-channel-egress",
+            "prepare",
+            "--values",
+            valuesPath,
+            "--installation",
+            installationPath,
+            "--namespace",
+            "system",
+            "--release",
+            "oce",
+            "--out-dir",
+            prepared,
+            "--excluded-cidr",
+            "192.0.2.0/24",
+          ],
+          { cwd: repository },
+        );
+        for (const name of ["values", "installation"]) {
+          await writeFile(
+            join(f.directory, `candidate-${name}.json`),
+            await readFile(join(prepared, `${name}.yaml`)),
+          );
+        }
+        await writeFile(
+          join(f.directory, "bin", "python3"),
+          `#!/usr/bin/env bash
+if [[ "$1" == scripts/setup-channel-egress && "$2" == check ]]; then exit 0; fi
+real_python=$(PATH="${"${PATH#*:}"}" command -v python3) || exit
+exec "$real_python" "$@"
+`,
+          { mode: 0o700 },
+        );
+
+        const run = (...args: string[]) => f.run("--channel-egress-one-off", ...args);
+        if (refusal) {
+          const result = await expectUpgradeFailure(run(), "the writer fence must refuse");
+          const events = await f.events();
+          assert.deepEqual(
+            events.filter((event) => event === "channel-agent-stop"),
+            scenario === "initial-zero" ? [] : ["channel-agent-stop"],
+          );
+          assert.deepEqual(
+            events.filter((event) =>
+              /^(?:writer-patch-|scale-|migration$|secret-replaced$|agent-deploy )/u.test(event),
+            ),
+            [],
+          );
+          assert.equal(result.code, 1);
+          assert.match(result.stderr, refusal);
+          const held = await f.state();
+          assert.equal(held.version, 1);
+          assert.equal(held.helmSubmissions ?? 0, 0);
+          assert.equal(held.dispatches, 0);
+          assert.equal(held.api, 1);
+          assert.equal(held.worker, scenario.endsWith("-zero") ? 0 : 1);
+          assert.deepEqual(held.secret, state.secret);
+          assert.equal(existsSync(f.evidence + ".migration-state.json"), false);
+          for (const name of [
+            "worker-stop-confirmed.json",
+            "database-migration-handoff.json",
+            "helm-started",
+          ]) {
+            assert.equal(existsSync(join(f.evidence, name)), false);
+          }
+          const journal = join(f.evidence, "channel-agent-operations.json");
+          if (scenario === "initial-zero") {
+            assert.equal(existsSync(journal), false);
+          } else {
+            const operations: unknown = JSON.parse(await readFile(journal, "utf8"));
+            const [agent] = list(field(operations, "targets"), "Agent operation records");
+            assert.equal(field(agent, "stop"), "complete");
+          }
+          return;
+        }
+
+        const journal = join(f.evidence, "channel-agent-operations.json");
+        const writerMutations = (events: string[]) =>
+          events.filter((event) =>
+            /^(?:writer-patch-|scale-|migration$|secret-replaced$|agent-deploy )/u.test(event),
+          );
+        if (scenario === "unknown-agent-stop") {
+          // Losing the Stop response leaves a sending journal even after the Agent stops.
+          await assert.rejects(run(), /Agent Stop is incomplete/u);
+          const originalJournal = await readFile(journal, "utf8");
+          const [agent] = list(
+            field(JSON.parse(originalJournal), "targets"),
+            "Agent operation records",
+          );
+          assert.equal(field(agent, "stop"), "sending");
+          await assert.rejects(run("--resume"), /stop outcome is unknown/u);
+          assert.equal(await readFile(journal, "utf8"), originalJournal);
+          const events = await f.events();
+          assert.equal(events.filter((event) => event === "channel-agent-stop").length, 1);
+          assert.deepEqual(writerMutations(events), []);
+          const held = await f.state();
+          assert.deepEqual([held.api, held.worker, held.version, held.dispatches], [1, 1, 1, 0]);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), false);
+          return;
+        }
+
+        if (
+          scenario === "late-worker-access-denial" ||
+          scenario === "late-worker-admission-denial"
+        ) {
+          const access = scenario === "late-worker-access-denial";
+          const diagnostic = access
+            ? /Kubernetes denied patch on worker Deployment/u
+            : /Server-side dry-run of the Worker stop failed/u;
+          const late = await expectUpgradeFailure(run(), "policy changed during Agent Stop");
+          assert.match(late.stderr, diagnostic);
+          assert.match(late.stderr, /Agent Stop was confirmed/u);
+          const originalJournal = await readFile(journal, "utf8");
+          const [agent] = list(
+            field(JSON.parse(originalJournal), "targets"),
+            "Agent operation records",
+          );
+          assert.equal(field(agent, "stop"), "complete");
+          const refusalEvents = access
+            ? ["worker-patch-access-review"]
+            : ["worker-patch-access-review", "writer-preview-worker"];
+          const beforeResume = await f.events();
+          assert.deepEqual(beforeResume, [
+            "worker-patch-access-review",
+            "writer-preview-worker",
+            "writer-preview-api",
+            "channel-agent-stop",
+            ...refusalEvents,
+          ]);
+          await assert.rejects(run("--resume"), diagnostic);
+          assert.equal(await readFile(journal, "utf8"), originalJournal);
+          const heldEvents = await f.events();
+          assert.deepEqual(heldEvents, [...beforeResume, ...refusalEvents]);
+          assert.deepEqual(writerMutations(heldEvents), []);
+          const held = await f.state();
+          assert.deepEqual([held.api, held.worker, held.version, held.dispatches], [1, 1, 1, 0]);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), false);
+
+          // Resolve the policy on the original evidence without replaying Stop.
+          delete held.denyWorkerPatch;
+          delete held.denyWorkerAdmission;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(held));
+          await run("--resume");
+        } else if (scenario === "partial-writer-stop") {
+          // Both previews pass. A later live conflict can stop the API alone.
+          await f.failNext("edit-worker-before-scale");
+          await assert.rejects(run(), /JSON Patch test failed/u);
+          const partial = await f.state();
+          assert.deepEqual(
+            [partial.api, partial.worker, partial.version, partial.dispatches],
+            [0, 1, 1, 0],
+          );
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), false);
+          const originalJournal = await readFile(journal, "utf8");
+          const before = await f.events();
+          await assert.rejects(run("--resume"), /OCC API is stopped during partial quiescence/u);
+          assert.deepEqual(await f.events(), before);
+          assert.equal(await readFile(journal, "utf8"), originalJournal);
+
+          // Represent an operator restoring only the same compatible API and no
+          // release, Secret or database changes. No helper action restores it.
+          partial.api = 1;
+          const identities = record(partial.deploymentIdentities, "Deployment identities");
+          const restoredApi = record(identities.api, "API Deployment identity");
+          restoredApi.generation = 3;
+          restoredApi.resourceVersion = "4";
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(partial));
+          await run("--resume");
+          assert.deepEqual(
+            (await f.events()).filter((event) =>
+              /^(?:channel-agent-stop$|writer-patch-|scale-)/u.test(event),
+            ),
+            [
+              "channel-agent-stop",
+              "writer-patch-api",
+              "scale-api",
+              "writer-patch-worker",
+              "writer-patch-api",
+              "scale-api",
+              "writer-patch-worker",
+              "scale-worker",
+            ],
+          );
+          const completed = await f.state();
+          assert.deepEqual(
+            [completed.version, completed.helmSubmissions, completed.dispatches],
+            [2, 1, 1],
+          );
+          return;
+        } else if (scenario === "healthy-resume") {
+          // Lose the response after replacing the Installation Secret. Resume
+          // must verify the recorded Stops and use the already replaced Secret.
+          await f.failNext("lost-secret-response");
+          await assert.rejects(run(), { code: 9 });
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), true);
+          assert.equal((await f.events()).filter((event) => event === "secret-replaced").length, 1);
+          await run("--resume");
+        } else {
+          await run();
+        }
+        const events = await f.events();
+        assert.deepEqual(
+          events.filter((event) => /^(?:channel-agent-stop$|writer-patch-|scale-)/u.test(event)),
+          [
+            "channel-agent-stop",
+            "writer-patch-api",
+            "scale-api",
+            "writer-patch-worker",
+            "scale-worker",
+          ],
+        );
+        assert.equal(events.filter((event) => event === "secret-replaced").length, 1);
+        const completed = await f.state();
+        assert.equal(completed.version, 2);
+        assert.equal(completed.helmSubmissions, 1);
+        assert.equal(completed.dispatches, 1);
+      });
+    }
+  });
+
   test("an aliased separate database deployment pauses before Helm and preserves the handoff on resume", async (t) => {
     let databaseId = "ins_test";
     const f = await fixture(t, {
@@ -146,7 +491,8 @@ export function registerWriterHandoffCases({
     const containers = list(field(pod, "containers"), "preflight migration Job containers");
     const args = list(field(containers[0], "args"), "preflight migration arguments");
     assert.deepEqual(args.slice(-2), ["--check-for-installation", "ins_test"]);
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), (error: unknown) => {
+    const resume = ["--resume", "--migration-history-checked"];
+    await assert.rejects(f.run(...resume), (error: unknown) => {
       const failure = readUpgradeFailure(error);
       return failure.code === 3 && /separate database deployment/.test(failure.stderr);
     });
@@ -154,45 +500,18 @@ export function registerWriterHandoffCases({
     assert.deepEqual([stopped.api, stopped.worker], [0, 0]);
     assert.equal(stopped.helmSubmissions ?? 0, 0);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
-    // A replacement with the same labels and replica count does not own this handoff.
-    const stateFile = join(f.directory, "state.json");
-    await writeFile(
-      stateFile,
-      JSON.stringify({
-        ...stopped,
-        deploymentIdentities: {
-          ...asRecord(stopped.deploymentIdentities),
-          worker: { uid: "replacement-worker" },
-        },
-      }),
-    );
-    await assert.rejects(
-      f.run("--resume", "--migration-history-checked"),
-      /worker Deployment changed/,
-    );
-    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
-    // Both writers stopped, but the application Secret/route can have changed.
-    // A valid migration check must not authorize replacing services on another DB.
-    await writeFile(stateFile, JSON.stringify({ ...stopped, denyWorkerPatch: true }));
-    databaseId = "ins_other";
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), (error: unknown) => {
-      const { stderr } = readUpgradeFailure(error);
-      assert.match(stderr, /does not identify the incumbent Installation/);
-      assert.doesNotMatch(stderr, /old release keeps serving/);
-      return true;
-    });
-    const refused = await f.state();
-    assert.equal(refused.helmSubmissions ?? 0, 0);
-    assert.deepEqual([refused.api, refused.worker], [0, 0]);
-    databaseId = "ins_test";
-    const resume = ["--resume", "--migration-history-checked"];
-    await runWithInjectedFault(f, "reject-helm-submission", ...resume);
-    const rejected = await f.state();
-    const intent = await assertHelmIntent(f, 1, 2);
-    assert.equal(rejected.version, 1);
-    assert.equal(rejected.helmSubmissions, 1);
+
+    // Losing the stop receipt after handoff must leave both recorded writers fenced.
+    const receipt = join(f.evidence, "worker-stop-confirmed.json");
+    const savedReceipt = join(f.directory, "saved-worker-stop-confirmed.json");
     const handoff = join(f.evidence, "database-migration-handoff.json");
-    const savedHandoff = join(f.directory, "saved-handoff.json");
+    const originalReceipt = await readFile(receipt);
+    const originalHandoff = await readFile(handoff);
+    const stoppedEvents = await f.events();
+    const fencedGuidance =
+      /Keep both writers fenced\. Preserve the evidence and reconcile the external migration and database migration history\./;
+    const unconfirmedStop = /worker Deployment .* is at zero replicas without a confirmed stop/;
+    const migrationJournal = f.evidence + ".migration-state.json";
     const settingsPaths = [
       join(f.directory, "values.yaml"),
       join(f.directory, "installation.json"),
@@ -204,15 +523,193 @@ export function registerWriterHandoffCases({
           inode: (await stat(path)).ino,
         })),
       );
+    const assertManagedApplyRefused = async () => {
+      assert.equal(existsSync(migrationJournal), false);
+      const beforeApplyCreations = list(
+        requireRecoveryPreflight(await f.state()).created,
+        "preflight creations before managed migration",
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--migration-apply-only"),
+        "managed migration requires the original private worker stop receipt",
+      );
+      assert.equal(failure.code, 1);
+      assert.match(failure.stderr, unconfirmedStop);
+      assert.match(failure.stderr, fencedGuidance);
+      assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
+
+      const held = await f.state();
+      assert.deepEqual([held.api, held.worker], [0, 0]);
+      assert.deepEqual(held.deploymentIdentities, stopped.deploymentIdentities);
+      assert.deepEqual(held.secret, stopped.secret);
+      assert.equal(held.version, stopped.version);
+      assert.equal(held.helmSubmissions ?? 0, 0);
+      assert.deepEqual(requireRecoveryPreflight(held).created, beforeApplyCreations);
+      assert.deepEqual(await f.events(), stoppedEvents);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      assert.equal(existsSync(migrationJournal), false);
+      assert.equal(
+        existsSync(join(f.evidence, "migration-deploy-apply", "preflight-migration-create.err")),
+        false,
+      );
+      assert.deepEqual(await readFile(handoff), originalHandoff);
+    };
+    await rename(receipt, savedReceipt);
+    try {
+      const failure = await expectUpgradeFailure(
+        f.run(...resume),
+        "the separate migration handoff requires the original worker stop receipt",
+      );
+      assert.equal(failure.code, 1);
+      assert.match(failure.stderr, unconfirmedStop);
+      assert.match(failure.stderr, fencedGuidance);
+      assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
+      const missingReceipt = await f.state();
+      assert.deepEqual([missingReceipt.api, missingReceipt.worker], [0, 0]);
+      assert.deepEqual(missingReceipt.deploymentIdentities, stopped.deploymentIdentities);
+      assert.equal(missingReceipt.version, stopped.version);
+      assert.equal(missingReceipt.helmSubmissions ?? 0, 0);
+      assert.deepEqual(await f.events(), stoppedEvents);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      assert.equal(existsSync(receipt), false);
+      assert.deepEqual(await readFile(savedReceipt), originalReceipt);
+      assert.deepEqual(await readFile(handoff), originalHandoff);
+
+      // A valid handoff alone cannot authorize a managed SQL Job.
+      await assertManagedApplyRefused();
+      assert.equal(existsSync(receipt), false);
+      assert.deepEqual(await readFile(savedReceipt), originalReceipt);
+    } finally {
+      await rename(savedReceipt, receipt);
+    }
+    await assertUnsafeWorkerStopReceipt(receipt, originalReceipt, 0o644, assertManagedApplyRefused);
+
+    // Keep the handoff and live writers unchanged, but bind the private receipt to another UID.
+    const confirmedStop = asRecord(JSON.parse(originalReceipt.toString("utf8")));
+    assert.ok(confirmedStop);
+    assert.equal(typeof confirmedStop.uid, "string");
+    const mismatchedReceipt = Buffer.from(
+      JSON.stringify({ ...confirmedStop, uid: "different-worker-uid" }),
+    );
+    assert.notEqual(confirmedStop.uid, "different-worker-uid");
+    await assertUnsafeWorkerStopReceipt(
+      receipt,
+      originalReceipt,
+      mismatchedReceipt,
+      assertManagedApplyRefused,
+    );
+
+    const stateFile = join(f.directory, "state.json");
+    // A concurrent edit after the earlier Deployment reads leaves both writers
+    // stopped and the Worker receipt valid. The API generation still fences Helm.
+    const originalSettings = await settings();
+    const originalMigrationCheck = await f.readEvidence("preflight-migration.log");
+    await f.failNext("edit-stopped-api-after-drain");
+    const apiDrift = await expectUpgradeFailure(
+      f.run(...resume),
+      "API generation drift after drain must block the first Helm submission",
+    );
+    assert.equal(apiDrift.code, 1);
+    assert.match(
+      apiDrift.stderr,
+      /the api Deployment changed during the separate database deployment/u,
+    );
+
+    const heldAfterDrift = await f.state();
+    const originalIdentities = record(
+      stopped.deploymentIdentities,
+      "stopped Deployment identities",
+    );
+    const apiBefore = record(originalIdentities.api, "stopped API Deployment identity");
+    const finalApi: unknown = JSON.parse(await f.readEvidence("quiescence-api-deployment.json"));
+    const finalApiMetadata = field(finalApi, "metadata");
+    assert.deepEqual(
+      [
+        field(finalApiMetadata, "uid"),
+        field(finalApiMetadata, "generation"),
+        field(field(finalApi, "spec"), "replicas"),
+      ],
+      [apiBefore.uid, Number(apiBefore.generation) + 1, 0],
+    );
+    const finalPods: unknown = JSON.parse(await f.readEvidence("quiescence-pods.json"));
+    assert.deepEqual(field(finalPods, "items"), []);
+    assert.deepEqual([heldAfterDrift.api, heldAfterDrift.worker], [0, 0]);
+    assert.deepEqual(
+      field(heldAfterDrift.deploymentIdentities, "worker"),
+      originalIdentities.worker,
+    );
+    assert.equal(heldAfterDrift.helmSubmissions ?? 0, 0);
+    assert.equal(heldAfterDrift.version, stopped.version);
+    assert.deepEqual(heldAfterDrift.secret, stopped.secret);
+    assert.deepEqual(await settings(), originalSettings);
+    assert.deepEqual(await f.events(), stoppedEvents);
+    assert.deepEqual(await readFile(receipt), originalReceipt);
+    assert.deepEqual(await readFile(handoff), originalHandoff);
+    assert.equal(await f.readEvidence("preflight-migration.log"), originalMigrationCheck);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    assert.equal(existsSync(migrationJournal), false);
+
+    // Exercise replacement separately from the simulated API generation change.
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        ...stopped,
+        deploymentIdentities: {
+          ...asRecord(stopped.deploymentIdentities),
+          worker: { uid: "replacement-worker" },
+        },
+      }),
+    );
+    await assert.rejects(f.run(...resume), /worker Deployment changed/);
+    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+    // Both writers stopped, but the application Secret/route can have changed.
+    // A valid migration check must not authorize replacing services on another DB.
+    await writeFile(stateFile, JSON.stringify({ ...stopped, denyWorkerPatch: true }));
+    databaseId = "ins_other";
+    await assert.rejects(f.run(...resume), (error: unknown) => {
+      const { stderr } = readUpgradeFailure(error);
+      assert.match(stderr, /does not identify the incumbent Installation/);
+      assert.doesNotMatch(stderr, /old release keeps serving/);
+      return true;
+    });
+    const refused = await f.state();
+    assert.equal(refused.helmSubmissions ?? 0, 0);
+    assert.deepEqual([refused.api, refused.worker], [0, 0]);
+    databaseId = "ins_test";
+    // A rejected submission leaves both writers fenced at the original Helm revision.
+    await f.failNext("reject-helm-submission");
+    const rejection = await expectUpgradeFailure(
+      f.run(...resume),
+      "the injected Helm rejection must fail the upgrade",
+    );
+    assert.equal(rejection.code, 9);
+    const rejected = await f.state();
+    const intent = await assertHelmIntent(f, 1, 2);
+    const helmIntent = join(f.evidence, "helm-started");
+    const originalHelmIntent = await readFile(helmIntent);
+    assert.deepEqual([rejected.api, rejected.worker], [0, 0]);
+    assert.equal(rejected.version, 1);
+    assert.equal(rejected.version, stopped.version);
+    assert.equal(rejected.helmStatus, "deployed");
+    assert.equal(rejected.helmSubmissions, 1);
+    assert.deepEqual(await f.events(), stoppedEvents);
+
+    const savedHandoff = join(f.directory, "saved-handoff.json");
     const attempts = () => readdir(join(f.evidence, "helm-attempts")).then((names) => names.sort());
     const preflights = () =>
       readdir(f.evidence).then((names) =>
         names.filter((name) => name.startsWith("upgrade-preflight-resume.")).sort(),
       );
-    const before = [await settings(), await attempts(), await preflights(), await f.events()];
+    const retryEffects = async () => [
+      await settings(),
+      await attempts(),
+      await preflights(),
+      await f.events(),
+    ];
+    const beforeRetry = await retryEffects();
 
     // Manual migration has no sibling journal to reject a missing handoff.
-    assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+    assert.equal(existsSync(migrationJournal), false);
     await rename(handoff, savedHandoff);
     try {
       await assert.rejects(
@@ -225,19 +722,102 @@ export function registerWriterHandoffCases({
         [0, 0, 1, 1, 0],
       );
       assert.deepEqual(await assertHelmIntent(f, 1, 2), intent);
-      assert.deepEqual(
-        [await settings(), await attempts(), await preflights(), await f.events()],
-        before,
-      );
+      assert.deepEqual(await retryEffects(), beforeRetry);
       assert.equal(existsSync(handoff), false);
     } finally {
       await rename(savedHandoff, handoff);
     }
 
+    const assertHelmRetryRefused = async (unsafeReceipt: "missing" | "public permissions") => {
+      const failure = await expectUpgradeFailure(
+        f.run(...resume),
+        "the recorded handoff must refuse a worker stop receipt with " + unsafeReceipt,
+      );
+      assert.equal(failure.code, 1);
+      assert.match(failure.stderr, fencedGuidance);
+      assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
+      const held = await f.state();
+      assert.deepEqual(
+        [held.api, held.worker, held.version, held.helmSubmissions, held.dispatches],
+        [0, 0, rejected.version, 1, 0],
+      );
+      assert.deepEqual(held.deploymentIdentities, rejected.deploymentIdentities);
+      assert.deepEqual(await retryEffects(), beforeRetry);
+      assert.deepEqual(await readFile(helmIntent), originalHelmIntent);
+      assert.deepEqual(await readFile(handoff), originalHandoff);
+      assert.equal(existsSync(receipt), unsafeReceipt !== "missing");
+    };
+    await rename(receipt, savedReceipt);
+    try {
+      await assertHelmRetryRefused("missing");
+    } finally {
+      await rename(savedReceipt, receipt);
+    }
+    await assertUnsafeWorkerStopReceipt(receipt, originalReceipt, 0o644, () =>
+      assertHelmRetryRefused("public permissions"),
+    );
+
     // The original evidence allows completion without stopping either writer again.
     await f.run(...resume);
     assert.equal((await f.state()).helmSubmissions, 2);
     assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+  });
+
+  test("preparation refuses active extra workloads that would block writer shutdown", async (t) => {
+    function writer(
+      component: string,
+      { kind = "Deployment", replicas = 1, namespace = "system", release = "oce" } = {},
+    ) {
+      return {
+        kind,
+        metadata: { namespace, name: "extra" },
+        spec: {
+          replicas,
+          template: {
+            metadata: {
+              labels: {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": release,
+                "app.kubernetes.io/component": component,
+              },
+            },
+          },
+        },
+      };
+    }
+    for (const workload of [writer("api"), writer("worker", { kind: "StatefulSet" })]) {
+      const f = await fixture(t);
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          workloadInventory: [workload],
+        }),
+      );
+      await assert.rejects(f.run(), /additional active (api|worker) Deployment or StatefulSet/);
+      const state = await f.state();
+      assert.deepEqual([state.api, state.worker], [1, 1]);
+      assert.deepEqual(await f.events(), []);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    }
+    const f = await fixture(t);
+    const own = writer("api");
+    own.metadata.name = "openclaw-enterprise-api";
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...(await f.state()),
+        workloadInventory: [
+          own,
+          writer("worker", { replicas: 0 }),
+          writer("api", { namespace: "elsewhere" }),
+          writer("api", { release: "other" }),
+          writer("collector"),
+        ],
+      }),
+    );
+    await f.run();
+    assert.ok((await f.events()).includes("migration"));
   });
 
   test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {
@@ -298,10 +878,47 @@ export function registerWriterHandoffCases({
       failure.stderr,
       /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker/,
     );
+    assert.equal(existsSync(join(f.evidence, "quiescence-worker-preview.err")), false);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
-  test("a mismatched worker review leaves the live patch authoritative", async (t) => {
+  test("worker admission can refuse a stop despite named patch access", async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyWorkerAdmission = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const failure = await expectUpgradeFailure(f.run(), "admission must stop quiescence");
+    assert.match(failure.stderr, /Server-side dry-run of the Worker stop failed/);
+    assert.doesNotMatch(failure.stderr, /Could not verify patch access/);
+    assert.match(
+      await f.readEvidence("quiescence-worker-preview.err"),
+      /admission webhook "writer-policy\.test" denied the Worker stop/,
+    );
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker, refused.version], [1, 1, 1]);
+    assert.deepEqual(await f.events(), []);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+
+    // Once the policy permits the stop, resume previews again and each live patch
+    // must still match the replicas and resource version observed before the preview.
+    delete refused.denyWorkerAdmission;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(refused));
+    await f.run("--resume");
+    assert.equal(
+      await readFile(join(f.directory, "worker-patch-previews"), "utf8"),
+      "worker\nworker\n",
+    );
+    assert.deepEqual(await f.events(), [
+      "scale-api",
+      "scale-worker",
+      "secret-replaced",
+      "migration",
+    ]);
+    assert.equal(existsSync(join(f.evidence, "channel-agent-operations.json")), false);
+    assert.equal(existsSync(join(f.evidence, "quiescence-api-preview.err")), false);
+  });
+
+  test("a mismatched worker access review cannot bypass the stop preview", async (t) => {
     const f = await fixture(t);
     const state = await f.state();
     state.denyWorkerPatch = true;
@@ -310,12 +927,31 @@ export function registerWriterHandoffCases({
     await assert.rejects(f.run(), (error: unknown) => {
       const { stderr } = readUpgradeFailure(error);
       assert.match(stderr, /Could not verify patch access to the worker Deployment/);
-      assert.match(stderr, /Forbidden: cannot patch the worker Deployment/);
+      assert.match(stderr, /Server-side dry-run of the Worker stop failed/);
       return true;
     });
-    assert.deepEqual(await f.events(), ["scale-api"]);
-    assert.equal((await f.state()).worker, 1);
+    assert.match(
+      await f.readEvidence("quiescence-worker-preview.err"),
+      /Forbidden: cannot patch the worker Deployment/,
+    );
+    assert.deepEqual(await f.events(), []);
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker], [1, 1]);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("quiescence requires the Worker stop preview to confirm zero replicas", async (t) => {
+    for (const fault of ["empty-worker-patch-preview", "nonzero-worker-patch-preview"]) {
+      await t.test(fault, async (t) => {
+        const f = await fixture(t);
+        await f.failNext(fault);
+        await assert.rejects(f.run(), /Server-side dry-run did not confirm zero replicas/);
+        assert.deepEqual(await f.events(), []);
+        const state = await f.state();
+        assert.deepEqual([state.api, state.worker, state.version], [1, 1, 1]);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      });
+    }
   });
 
   test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
@@ -1035,10 +1671,14 @@ export function registerWriterHandoffCases({
       );
       assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
       const lines = failure.stderr.trimEnd().split("\n");
-      assert.deepEqual(lines.slice(-3, -1), [
+      assert.deepEqual(lines.slice(-4, -2), [
         "upgrade-production-images: OpenClaw Doctor failed (exit 1) in Agent agt_a's gateway.",
         "upgrade-production-images: Agent agt_a's gateway container did not restart after it became Ready.",
       ]);
+      assert.match(
+        lines.at(-2) ?? "",
+        /^Upgrade: Starting OpenClaw Doctor checks for Agent 2 of 2\./u,
+      );
       const lastLine = lines.at(-1);
       assert.ok(lastLine);
       assert.match(
