@@ -196,9 +196,11 @@ domain that is not a DNS name.
 
 ### OIDC sign-in
 
-[OIDC controller settings](oidc.md) defines the provider URLs, client credentials,
-API egress and optional private CA trust. These API-only settings require the
-same guarded sign-in profile and recovery user and Google.
+OIDC requires the
+[single-controller external sign-in profile](../authentication/external-sign-in.md#external-sign-in-profile)
+and a recovery account. Google sign-in is optional. See
+[OIDC controller settings](oidc.md) for the API’s provider URLs, client
+credentials, egress requirements and optional private CA trust.
 
 ### Production Installation bootstrap environment
 

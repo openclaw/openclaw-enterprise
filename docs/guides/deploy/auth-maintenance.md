@@ -230,8 +230,15 @@ password Secret. Reopen ingress only after verification succeeds.
 
 ## Deactivate external sign-in
 
-Before stopping the API, use restricted access to confirm that the recovery administrator can sign in
-with a password. Review disabled accounts. If you use `host-only-exchange`,
+Before stopping the API, identify everyone who must retain access. OCE
+discards the generated password for accounts created at first OIDC sign-in.
+Deactivation ends all sessions and removes both external sign-in options.
+Keep external sign-in active unless each required user can sign in with a
+local password after the switch.
+
+Through [restricted access](#close-ingress-and-use-restricted-access), confirm
+that the recovery administrator can sign in with a password. Review disabled
+accounts. If you use `host-only-exchange`,
 password-only sign-in requires switching to
 [shared cookies](../../reference/agent-native-admin.md#shared-session-boundary).
 Every host that receives the cookie must be a trusted OCE ingress endpoint.
