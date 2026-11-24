@@ -115,10 +115,14 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
   assert.equal(await json.inputValue(), syntaxDraft);
   assert.equal(patches, 0);
   const cursor = await json.evaluate((node: HTMLTextAreaElement) => {
-    const { top } = node.getBoundingClientRect();
+    const { paddingTop, lineHeight } = getComputedStyle(node);
+    const firstLineTop =
+      node.getBoundingClientRect().top + node.clientTop + Number.parseFloat(paddingTop);
+    const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
     return {
       selection: [node.selectionStart, node.selectionEnd],
-      firstLineVisible: node.scrollTop === 0 && top >= 0 && top < window.innerHeight,
+      firstLineVisible:
+        node.scrollTop === 0 && firstLineTop >= 0 && firstLineBottom <= window.innerHeight,
     };
   });
   assert.deepEqual(cursor, { selection: [1, 1], firstLineVisible: true });
