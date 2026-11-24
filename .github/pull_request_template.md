@@ -7,9 +7,10 @@ For internal-only work, name the actual developer or operator workflow affected;
 do not invent an end-user benefit.
 -->
 
-## Problem
+## What Problem This Solves
 
 <!--
+Describe the concrete user, product, or operational problem.
 In 1–3 plain sentences, say who is affected, what happens today, and why it
 matters to them. For a bug, name the trigger if known. For a feature or internal
 work, describe the need in the actual workflow without inventing harm.
@@ -20,26 +21,36 @@ asked the assistant to monitor anything."
 Bad: "Turn off periodic checks on fresh installs."
 -->
 
-<!-- What is broken or missing? Link the related issue or prerequisite PR. -->
-
-## Change
-
-<!-- Describe the behavior change and scope. For a stack, name the intended base. -->
-
-## Verification
+## User Impact
 
 <!--
-Lead with the behavior checked and the observed result in plain language, then
-include exact commands and supporting evidence. Put long logs and commit hashes
-in links or optional <details>. Keep meaningful gaps, risks, and required
-actions visible; do not make readers decode commands to learn what was verified.
+"User impact: <what users, operators, or developers can now do or expect>."
+Lead with the concrete outcome in plain language, usually one sentence.
+For internal-only changes, say there is no user-visible change; do not invent a benefit.
+Keep important risks, breaking changes, migrations, and required user actions visible here.
 -->
 
-<!-- Exact checks and outcomes, including failures, skips, and unrun proof. -->
+## Why This Change Was Made
 
-## Risks
+<!--
+Briefly explain how the change addresses the problem without repeating the impact.
+Keep the body short. Leave file lists, internal acronyms, and root-cause walkthroughs
+in the diff or optional <details>; include technical detail only when it explains
+behavior or a material tradeoff. Do not hide risks or required actions in <details>.
+-->
 
-<!-- Security, compatibility, deployment impact, or "none identified" with context. -->
+## Evidence
+
+<!--
+Put repository-required verification evidence here. Show the most useful proof that this change works. Screenshots, screencasts,
+terminal output, focused tests, CI results, live observations, redacted logs,
+and artifact links are all useful.
+
+Start with the behavior checked and the result in plain language. Reviewers will
+inspect the code, tests, and CI; do not make them decode command lists to learn
+what was verified. Put exact commands, commit hashes, and long output in links
+or optional <details>. Keep the useful evidence summary and meaningful gaps visible.
+-->
 
 <!-- Keep credentials, tenant data, and private machine details out of this PR.
 Report unpatched vulnerabilities privately to security@openclaw.ai instead. -->
