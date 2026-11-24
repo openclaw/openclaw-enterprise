@@ -121,9 +121,9 @@ The worker emits fixed operational event classes through the same logger:
 - `worker.health`: reports readiness and pending work count at debug level.
   A failed check logs code `HEALTH_UNAVAILABLE` with `dependency`, the failed
   step (`work-queue`, `repository-credential-broker` or `readiness-report`), and
-  `cause`, the error class. The first check after start logs it as
-  `worker.health-warning`, because a sidecar can still be starting; every later
-  failure logs `worker.error`.
+  `cause`, the error class. If a dependency has never passed, a failure on the
+  first check or within 30 seconds of Worker startup logs
+  `worker.health-warning`. Other failures log `worker.error`.
 - `worker.completed`: includes `namespaceId`, work identity, attempt, outcome
   and a stable result code; for an Agent stop, deletion or credential-source
   withdrawal, an exhausted retry is `outcome: permanent` while `result` stays
