@@ -2,24 +2,15 @@
 rfc: index.md
 ---
 
-# Move an existing Codex PAT Source to TokenService
+# Enroll a Codex PAT in TokenService
 
-This amendment proposes moving an existing Codex personal access token (PAT) Source from Credential Gateway to the selected TokenService without changing the Source ID, Namespace, or IAM grants. An operator first stops and detaches the affected Agents, then adopts the Source and deploys new revisions. The Source becomes `static`, and TokenService holds the PAT. Dedicated Codex receives a Credential Proxy placeholder and continues to authenticate as `personalAccessToken`.
+An operator enrolls a Codex personal access token (PAT) as a new static Source in the selected TokenService. Dedicated Codex receives a Credential Proxy placeholder and authenticates as `personalAccessToken`. Hosted Apps discovery uses the same authorized Source and obtains account identity from the PAT issuer.
 
-## Ownership and migration
+## Ownership and cutover
 
-Migration preserves the existing Agent, service principal, Configuration, IAM grants, and revision history:
+An operator stops affected Agents, detaches the old Gateway Sources, and settles pending deployment, withdrawal, or dispatch before retiring the old Provider copies. Cutover can discard unreferenced Credential Gateway Source records and their Source-specific links. It preserves Agents, Namespace Secrets, and inactive revision history. If an old Source can still be used by a draft, active revision, or pending operation, the database refuses the cutover. SQL cannot retire Provider copies.
 
-1. **Stop and detach consumers.** Wait for Stop to finish, the active revision to clear, and its egress installation to retire. Update the Agent with its current Configuration ID, set `harnessAuth: null`, and remove the Source from `credentialSources` if listed. Finish any pending withdrawal or cleanup. Refuse adoption while a draft, active or pending revision, provisioning job, or unsettled authorized send can still use the Source. Stop alone does not detach the draft.
-2. **Authorize adoption.** The OpenClaw Control Plane (OCC) checks Source `update` and `operate`, and Secret `operate` on the Source's recorded same-Namespace `access_token` Secret. OCC selects the TokenService instance, records the admission intent, and commits its transaction before calling TokenService.
-3. **Transfer custody.** TokenService starts its ordinary Source mutation transaction and locks the Source. It rechecks the Namespace, ready state, Gateway owner, `codex-pat` type, exact Secret reference, and absence of live references or unsettled sends. Attachment admission uses the same Source lock. TokenService reads the authorized Secret through its selected Secret Driver and stores the PAT privately under the existing Source ID. It then asks the recorded Gateway owner to retire the old Provider and confirms its absence before changing ownership; the old and new Providers must not overlap.
-4. **Commit the owner change.** Under the same lock, TokenService removes the Source-to-Secret reference and changes the existing Source to `ownerCapability: token_service`, `type: static`, the selected instance, the Codex PAT preset, and ready state. It commits before returning sanitized Source metadata. The original Namespace Secret remains unchanged. The operator can then rebind the same Source to the same Agent and deploy a new revision.
-
-Inactive revisions and settled receipts remain unchanged and retain their original Gateway owner and execution details. They do not authorize another attachment or dispatch. Any send that could still dispatch this Source must settle under its original owner before adoption; a receipt with no selected material cannot authorize dispatch.
-
-The database needs a restricted transition because ordinary Source updates cannot change owner, type, or instance identity. Private custody and Gateway retirement are outside that transaction. A failure can leave orphan custody material or remove the old Provider before the owner change commits. Report failure and reconcile the known Provider and custody reference before retrying. The unchanged Namespace Secret is the recovery input; do not claim cross-store rollback or automatic orphan discovery.
-
-Existing PAT Secret and issued ServiceAccount broker paths are unchanged. [Codex device login](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/codex-device-login.md) remains a separate OAuth path.
+For an Agent bound directly to a PAT Secret, the operator re-enters the PAT through ordinary Source enrollment before using hosted Apps. The replacement Source receives a new ID and ordinary Source grants. The operator binds it to the Agent draft and deploys a new revision. Direct PAT Secret and issued ServiceAccount model authentication retain their broker paths. [Codex device login](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/codex-device-login.md) remains a separate OAuth path.
 
 ## PAT recipient and enforcement
 
@@ -44,19 +35,19 @@ Worker resolves the Source through TokenService; Credential Proxy creates and up
 
 ### API
 
-Add an adoption operation for an unbound Gateway `codex-pat` Source. Return sanitized Source metadata. Add Codex PAT to static Source permitted-use selection.
+Add Codex PAT to static Source permitted-use selection. Accept an authorized TokenService Source reference for hosted Apps discovery.
 
 ### IAM
 
-No new actions. Use the exact Source and Secret permissions above and preserve existing IAM bindings.
+Use the existing Source creation and use permissions and the existing Agent binding permissions.
 
 ### Database entities
 
-Permit only the verified owner/type/instance transition and Source-to-Secret reference removal. Do not create a second Source or rewrite history.
+Use the existing static Source state. The cutover migration can remove unreferenced Gateway-owned Sources and their exact Source links. Keep the ordinary owner, type, and instance immutability guards.
 
 ### Driver contract
 
-Add optional TokenService `adoptSource` for the existing Source identity. Its inputs identify the Source, expected Gateway and Secret, selected instance, preset, authorized Secret-read and Gateway-retirement callbacks, and cancellation. TokenService owns the transaction and returns the adopted Source. Refuse unsupported Drivers; `createSource` remains for new enrollment.
+Reuse TokenService `createSource` and `resolveCredential`. Withdraw the proposed `adoptSource` operation.
 
 Add optional fourth argument `modelPreset?: SourceProviderPresetId` to Compute's `resolveHarnessConfiguration`. Admission derives it from the locked Source before building the preset. Compute uses it to distinguish Codex PAT from an OpenAI API key and reject incompatible `modelProvider` overrides. Do not persist another copy. Credential Proxy and Sandbox reuse the [staged deployment contract](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/worker-credential-configuration.md).
 
@@ -66,6 +57,6 @@ Reuse static custody, Source IAM, and ordinary Proxy push. Specialize only the C
 
 ## Acceptance criteria
 
-- Through authenticated Fastify and PostgreSQL, prove Stop, detach, adoption, and redeployment preserve Source and Agent identities, grants, history, and the Namespace Secret. Verify one custody record, removal of the old reference, a sanitized response, and refusal of unauthorized or live transfers, wrong owners, unavailable inputs, failed retirement, and uncertain custody or commit.
+- Through authenticated Fastify and PostgreSQL, enroll a PAT as a static Source, bind it to an Agent, and verify that hosted Apps gets its account identity from the issuer. Check permission denial before hosted requests and preserve Namespace Secrets and inactive revisions during cutover.
 - Through ordinary Agent deployment, verify the trusted executable, admitted request policy, native Provider delivery and Source-update push, placeholder-only startup, and serving-process `personalAccessToken` readiness. Invalid authority, policy, or login must prevent activation.
 - Separately qualify a genuine Codex model turn and native Git on the final candidate. PostgreSQL and controlled transport checks do not prove live enforcement or authentication.
