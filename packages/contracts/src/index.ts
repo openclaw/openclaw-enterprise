@@ -1911,6 +1911,8 @@ export type {
   DeploymentPolicyValidationContext,
   NetworkPolicyCapabilities,
 } from "./deployment-policy.ts";
+export { pathCovered } from "./deployment-request-match.ts";
+export { validRequestPath } from "./request-path.ts";
 
 export type {
   BearerCredentialProjection,
