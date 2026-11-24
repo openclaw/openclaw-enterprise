@@ -35,7 +35,7 @@ and who can stop affected workloads if access must be revoked immediately.
 | Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
 | Secret-backed Harness API key        | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
-| TokenService-managed model key       | TokenService holds the credential for a managed Source; Credential Proxy manages its delivery copy.                            | Update the Source, retry a failed delivery, and verify a model request. See [managed model key replacement](#replace-a-tokenservice-managed-model-key).                                                                                                                                                                                  |
+| OCC TokenService-managed model key   | OCC TokenService holds the credential for a managed Source; Credential Proxy manages its delivery copy.                        | Update the Source, retry a failed delivery, and verify a model request. See [managed model key replacement](#replace-an-occ-tokenservice-managed-model-key).                                                                                                                                                                             |
 | Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                   | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
 | OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers. | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                          |
 | Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                        | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                      |
@@ -62,7 +62,7 @@ Obtain replacement API keys and channel credentials through the provider's
 supported process. A stored status does not prove that the provider accepts
 the replacement.
 
-### Replace a TokenService-managed model key
+### Replace an OCC TokenService-managed model key
 
 This development integration requires OCC TokenService and a compatible Credential
 Proxy delivery Driver. Check the [managed Source prerequisites](../../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source).
@@ -76,9 +76,12 @@ Proxy delivery Driver. Check the [managed Source prerequisites](../../reference/
    from an active Agent that still uses the Source, without sending the secret
    again. Confirm that the Source result is `succeeded`.
 3. Send a new model request through each affected running Agent using its existing
-   chat or supported endpoint. Verify a real response before revoking the old
-   upstream key. An active managed Proxy binding receives this update without
-   another Agent revision deployment. See [managed Source updates](../../reference/credential-sources/managed-static.md#update-a-source).
+   chat or supported endpoint. If the provider permits overlap, verify a response,
+   revoke the old key, and verify another response. The update path does not create
+   an Agent revision; rotation in the same running Harness still needs qualification.
+   See [managed Source updates](../../reference/credential-sources/managed-static.md#update-a-source).
+
+For native OpenShell custody, see the [development preview on main](../../reference/credential-sources.md#implementation-status) and check what a [credential push confirms](../../reference/credential-sources.md#retry-credential-delivery).
 
 ### Replace a Secret-backed model key
 
