@@ -336,13 +336,12 @@ retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 
-Run `kubectl describe pod <pod-name>` in the Agent's tenant namespace. Each
-`Readiness probe failed:` event reports the private HTTP endpoint's status or a
-connection failure. A `503` means the runtime's native, plugin, authentication,
-or identity gate has not passed. Check the container's startup-phase logs for
-the failing stage. See
-[Harness authentication](../../reference/harness-execution.md#harness-authentication)
-for the probe codes.
+Use the cluster’s kubeconfig and context. Run `kubectl describe pod <pod-name>`
+in the Pod’s namespace. For two-cluster dedicated execution, inspect the Gateway in the
+control cluster and the Harness in the execution cluster.
+`Readiness probe failed:` reports a connection failure or
+[HTTP status](../../reference/drivers/kubernetes-compute.md#troubleshooting).
+For `503`, check startup logs for unmet native, plugin, authentication or identity requirements.
 
 ## A Gateway log asks for a restart to apply the model catalog
 
