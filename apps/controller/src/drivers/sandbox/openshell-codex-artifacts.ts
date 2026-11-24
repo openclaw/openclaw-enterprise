@@ -4,7 +4,8 @@ import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
-import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
+import { repositoryDeploymentGrantsMatch } from "../repo/deployment-network.ts";
+import { AGENT_POLICY_PREFIX, openShellDeploymentNetworkRule } from "./openshell-policy.ts";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
 const CODEX_BINARIES = new Set([
@@ -178,6 +179,10 @@ export function openShellProtectedCodexArtifacts(
       refuse();
     }
   }
+  const { deploymentGrants } = snapshot;
+  if (deploymentGrants !== undefined) {
+    keys.push("deploymentGrants");
+  }
   exactKeys(snapshot, keys);
   if (
     revision.executionAdmission.mode !== "protected" ||
@@ -199,5 +204,19 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults);
+  const artifacts = qualifiedMap(snapshot.defaults);
+  if (deploymentGrants === undefined) {
+    return artifacts;
+  }
+  if (!repositoryDeploymentGrantsMatch(revision, deploymentGrants)) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/sandboxPolicy/deploymentGrants",
+        code: "INVALID_VALUE",
+        message: "Deployment grants must match the admitted online repository credentials.",
+      },
+    ]);
+  }
+  const rule = openShellDeploymentNetworkRule(deploymentGrants);
+  return immutableCopy({ ...artifacts, [rule.name]: rule });
 }

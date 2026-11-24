@@ -11,6 +11,7 @@ import type {
   RepositoryOptions,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
+import { githubActionsDownloads } from "./actions-downloads.ts";
 import {
   allowsGitHubRepositoryNetworkGrant,
   githubInstallationProfile,
@@ -163,8 +164,12 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution {
-    const { bindings, sessionDurationSeconds } = this.resolveBindings(input);
-    return Object.freeze({ bindings, sessionDurationSeconds });
+    const { bindings, sessionDurationSeconds, deploymentGrants } = this.resolveBindings(input);
+    return Object.freeze({
+      bindings,
+      sessionDurationSeconds,
+      ...(deploymentGrants && { deploymentGrants }),
+    });
   }
 
   /** Provider policy shared by Installation admission and the legacy Driver adapter. */
@@ -195,6 +200,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       return Object.freeze({
         bindings,
         sessionDurationSeconds: this.#duration,
+        ...(selected && { deploymentGrants: githubActionsDownloads }),
         ...(selected &&
           selectedGrants && {
             requiresNetworkPolicy: selected.requiresNetworkPolicy,

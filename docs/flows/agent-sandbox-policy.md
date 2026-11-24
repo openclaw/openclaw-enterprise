@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-23"
-last_updated_session: "authoring-run/33927adf-1105-42ee-be57-c37d2132a624"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/fd190d55-dbb6-4279-8986-86bc1e22ed2b"
 ---
 
 # Agent sandbox policy flow
@@ -70,18 +70,18 @@ records separate network and method/path injection policies in the revision ([st
 
 `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
-Legacy protected execution rejects nonempty additions at save, deploy, and
-live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
+Protected execution refuses Agent additions and live apply
+(`409 SANDBOX_POLICY_PROTECTED_EXECUTION`). Managed revisions likewise block both.
 A repository-only Proxy permits a model exception with no repositories and one ready
-Gateway static Harness Source. Managed revisions block nonempty
-edits and live apply. Protected dedicated Codex admits the Sandbox-approved
-[artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-`checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
-version and empty additions before credential provisioning. That snapshot
-cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
+Gateway static Harness Source. Unreadable scoped revisions report `protectedExecution: null`.
 
-Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
-excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
+Before provisioning credentials, OCC verifies the Driver, version, purpose,
+declared [artifact rules](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules)
+and empty additions. For dedicated Codex v5, the Repo Driver declares
+[Actions downloads](../reference/drivers/openshell-sandbox.md#github-actions-downloads).
+OCC submits the grants through `admitNetworkPolicy` only when online bindings
+match the Proxy plan and no repository policy is saved. Both compilers exclude
+ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
 immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
 policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
 uses selected Namespace permissions and saved grants. Admission passes saved or deployed
@@ -129,8 +129,8 @@ reader marker. Explicit lists block live application.
 ### 2. Freeze deployment or enqueue live application
 
 `packages/occ/src/sandbox-policy.ts:admitDeploymentSnapshot` freezes Driver
-defaults and additions in `AgentRevision.sandboxPolicy`. The OpenShell Driver
-provisions from that snapshot.
+defaults, additions and any deployment grants in `AgentRevision.sandboxPolicy`.
+OpenShell provisions from that snapshot.
 
 For a saved repository policy and a bound Channel Secret,
 `packages/occ/src/deployment-channels.ts:startDeploymentValidation` checks
@@ -268,6 +268,10 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 23:33: Trace deployment grants. (authoring-run/fd190d55-dbb6-4279-8986-86bc1e22ed2b - d2e6a17b51)
+
+- 2026-11-24 22:10: Trace Actions downloads. (authoring-run/85d2abf4-8c31-4c42-91f0-181ae3391c03 - 3922deaa26)
 
 - 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
 

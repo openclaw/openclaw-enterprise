@@ -53,6 +53,41 @@ export const SandboxNetworkGrantsSchema = Type.Array(SandboxNetworkGrantSchema, 
 });
 export type SandboxNetworkGrant = Type.Static<typeof SandboxNetworkGrantSchema>;
 
+/** A Repo Driver's immutable, named set for deployment admission only. */
+export type SandboxDeploymentGrants = {
+  readonly id: string;
+  readonly grants: readonly SandboxNetworkGrant[];
+};
+
+const SandboxDeploymentGrantsSchema = Type.Object(
+  {
+    id: SandboxNetworkGrantSchema.properties.id,
+    grants: Type.Array(SandboxNetworkGrantSchema, { minItems: 1, maxItems: 256 }),
+  },
+  { additionalProperties: false },
+);
+
+export function validateSandboxDeploymentGrants(
+  value: unknown,
+): asserts value is SandboxDeploymentGrants {
+  if (
+    !isPolicyJsonValue(value) ||
+    !Check(SandboxDeploymentGrantsSchema, value) ||
+    new Set(value.grants.map((grant) => grant.id)).size !== value.grants.length ||
+    value.grants.some(
+      (grant) => grant.host.startsWith("*") || networkMatchDetails(grant, "").length > 0,
+    )
+  ) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/deploymentGrants",
+        code: "INVALID_VALUE",
+        message: "Supply a named set of 1 to 256 valid grants with unique IDs and exact hosts.",
+      },
+    ]);
+  }
+}
+
 /** The defaults are an opaque, nonsecret Driver snapshot. OCC never interprets provider syntax. */
 export interface SandboxPolicySnapshot {
   readonly driverId: string;
@@ -60,6 +95,7 @@ export interface SandboxPolicySnapshot {
   readonly version: number;
   readonly defaults: Readonly<OpenClawConfigurationDocument>;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly deploymentGrants?: SandboxDeploymentGrants;
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
 }
 

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
   SandboxPolicySnapshot,
@@ -12,7 +15,9 @@ import {
   OpenShellLegacyEgressProxyDriver,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
-import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
+import { defaultDeploymentSandboxPolicy } from "../../packages/occ/src/sandbox-policy-admission.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { openShellGitRuntimeFixture, registry } from "../helpers/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
@@ -21,6 +26,7 @@ import type { OpenShellNetworkPolicyRule } from "../../apps/controller/src/drive
 
 const native =
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+const actionsDownloads = "oce-egress-actions-downloads";
 
 function artifact(): OpenShellNetworkPolicyRule {
   return {
@@ -56,11 +62,13 @@ function sandbox(
   rules: readonly OpenShellNetworkPolicyRule[],
   names?: readonly string[],
   backend = newBackend(),
+  openShellGit?: ReturnType<typeof openShellGitRuntimeFixture>["runtime"],
 ) {
   t.after(() => backend.client.close());
   return new OpenShellSandboxDriver(
     {
       integrationMode: "legacy",
+      ...(openShellGit && { egress: repositoryEgress }),
       gateway: {},
       kubernetes: {
         userNamespaces: false,
@@ -77,7 +85,7 @@ function sandbox(
         ...(names === undefined ? {} : { codexArtifactRuleNames: names }),
       },
     },
-    { id: "artifact-sandbox", backend },
+    { id: "artifact-sandbox", backend, ...(openShellGit && { openShellGit }) },
   );
 }
 
@@ -219,6 +227,227 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
     },
   };
 }
+
+const repositoryEgress = {
+  middlewareName: "artifact-exchange",
+  repositoryMiddlewareName: "oce-prepared-git",
+  authorityScope: "execution",
+} as const;
+
+function repositorySandbox(
+  t: TestContext,
+  rules: readonly OpenShellNetworkPolicyRule[],
+  names?: readonly string[],
+) {
+  return sandbox(t, rules, names, newBackend(), openShellGitRuntimeFixture().runtime);
+}
+
+function resolveRepository(selected: boolean) {
+  const driver = new GitHubRepositoryPolicy(
+    { driverId: "repo-driver", backendId: registry.backendId },
+    selected
+      ? {
+          ...registry,
+          repositories: registry.repositories.map((repo) => ({
+            ...repo,
+            namespaces: [
+              {
+                namespaceId: "namespace-a",
+                profiles: ["github-repository"],
+                permissions: { metadata: "read", actions: "read", contents: "read" },
+              },
+            ],
+          })),
+        }
+      : registry,
+    { sessionDurationSeconds: 60 },
+  );
+  return driver.resolve({
+    namespaceId: "namespace-a",
+    bindings: [
+      { repositoryRef: "application", profile: selected ? "github-repository" : "git-write" },
+    ],
+  });
+}
+
+function onlineRepositoryRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
+  const revision = protectedRevision(snapshot);
+  const { policyReductionVersion: _, ...plan } = revision.egressPlan!;
+  const repository = {
+    ...revision.repositoryCredentials!,
+    bindings: resolveRepository(true).bindings,
+  };
+  return {
+    ...revision,
+    repositoryCredentials: repository,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      ...plan,
+      repositoryGit: repository,
+      repositoryGitAuthorization: "online-request",
+    },
+  };
+}
+
+// Pin the complete published host set independently of the Driver's range expansion.
+const expectedDownloads = {
+  name: actionsDownloads,
+  binaries: [{ path: "/usr/local/bin/gh" }],
+  endpoints: [
+    "results-receiver.actions.githubusercontent.com",
+    ...Array.from({ length: 200 }, (_, n) => n)
+      .filter((n) => n < 20 || (n >= 30 && n < 50) || n >= 100)
+      .map((n) => `productionresultssa${n}.blob.core.windows.net`),
+  ].map((host) => ({
+    host,
+    ports: [443],
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    tls: "NETWORK_TLS_MODE_SKIP",
+  })),
+};
+
+function selectedPolicy(driver: OpenShellSandboxDriver) {
+  const { deploymentGrants } = resolveRepository(true);
+  assert.ok(deploymentGrants, "selected repository declares Actions download destinations");
+  return defaultDeploymentSandboxPolicy(
+    driver,
+    2,
+    true,
+    { id: "codex", mode: "dedicated" },
+    { repositoryCredentials: true, deploymentGrants },
+  )!;
+}
+
+test("repository downloads compile alongside inspected artifacts and leave old revisions unchanged", (t) => {
+  const plugin = artifact();
+  const driver = repositorySandbox(t, [plugin, { ...plugin, name: "ambient" }], [plugin.name]);
+  const historical = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  const snapshot = selectedPolicy(driver);
+  assert.deepEqual(snapshot.defaults, historical.defaults);
+  assert.deepEqual(snapshot.additions, []);
+  assert.equal(resolveRepository(false).deploymentGrants, undefined);
+  const revision: AgentRevision = JSON.parse(JSON.stringify(onlineRepositoryRevision(snapshot)));
+  const compiled = openShellEgressConfiguration(revision.egressPlan!, repositoryEgress, revision);
+  assert.deepEqual(compiled.network_policies, {
+    ...historical.defaults,
+    [actionsDownloads]: expectedDownloads,
+  });
+  assert.deepEqual(
+    openShellProtectedCodexArtifacts(onlineRepositoryRevision(historical)),
+    historical.defaults,
+  );
+  assert.throws(
+    () =>
+      sandbox(
+        t,
+        [{ ...plugin, name: actionsDownloads }],
+        [actionsDownloads],
+      ).admitProtectedCodexArtifactPolicy(1),
+    ConfigurationValidationError,
+  );
+});
+
+test("deployment grants cannot become Agent additions or disappear in an older Sandbox Driver", (t) => {
+  const driver = repositorySandbox(t, [artifact()]);
+  const snapshot = selectedPolicy(driver);
+  const deploymentGrants = snapshot.deploymentGrants!;
+  const grants = deploymentGrants.grants;
+  assert.equal(driver.admitNetworkPolicy(grants.slice(0, 32), 1).additions.length, 32);
+  assert.throws(
+    () => driver.admitNetworkPolicy(grants.slice(0, 33), 1),
+    ConfigurationValidationError,
+  );
+  const scope = { repositoryCredentials: true, deploymentGrants };
+  assert.throws(() => driver.admitNetworkPolicy(grants.slice(0, 1), 1, {}, scope), {
+    name: "SandboxNetworkPolicyConflictError",
+  });
+  const template = grants[0]!;
+  const oversized = Array.from({ length: 257 }, (_, i) => ({
+    ...template,
+    id: "destination-" + i,
+    host: "storage" + i + ".example.com",
+  }));
+  assert.throws(
+    () =>
+      driver.admitNetworkPolicy(
+        [],
+        1,
+        {},
+        { ...scope, deploymentGrants: { ...deploymentGrants, grants: oversized } },
+      ),
+    ConfigurationValidationError,
+  );
+  const legacy = driver.admitNetworkPolicy.bind(driver);
+  const ignoresGrants: OpenShellSandboxDriver["admitNetworkPolicy"] = (
+    additions,
+    version,
+    defaults,
+  ) => legacy(additions, version, defaults);
+  t.mock.method(driver, "admitNetworkPolicy", ignoresGrants);
+  assert.throws(() => selectedPolicy(driver), { name: "ResourceStateConflictError" });
+});
+
+test("frozen deployment grants reject changes to the rule or the repository that qualified", (t) => {
+  const driver = repositorySandbox(t, [artifact()]);
+  const snapshot = selectedPolicy(driver);
+  const revision = onlineRepositoryRevision(snapshot);
+  const set = snapshot.deploymentGrants!;
+  const [first, ...rest] = set.grants;
+  assert.ok(first);
+  const reject = (changed: AgentRevision) =>
+    assert.throws(() => openShellProtectedCodexArtifacts(changed), ConfigurationValidationError);
+  for (const altered of [
+    { ...set, id: "unknown-grant-set" },
+    { ...set, grants: [{ ...first, binary: "/usr/bin/curl" }, ...rest] },
+    { ...set, grants: [{ ...first, host: "outside.example.com" }, ...rest] },
+    { ...set, grants: [{ ...first, ports: [{ from: 80, to: 80 }] }, ...rest] },
+    { ...set, grants: rest },
+    { ...set, credentialAlias: "forbidden" },
+  ]) {
+    reject({ ...revision, sandboxPolicy: { ...snapshot, deploymentGrants: altered } });
+  }
+  reject({
+    ...revision,
+    sandboxPolicy: { ...snapshot, defaults: { [actionsDownloads]: expectedDownloads } },
+  });
+  const plan = revision.egressPlan!;
+  const repository = revision.repositoryCredentials!;
+  const gitOnly = protectedRevision(snapshot).repositoryCredentials!;
+  reject({
+    ...revision,
+    repositoryCredentials: gitOnly,
+    egressPlan: { ...plan, repositoryGit: gitOnly },
+  });
+  const different = {
+    ...repository,
+    bindings: repository.bindings.map((b) => ({ ...b, repositoryRef: "another" })),
+  };
+  reject({ ...revision, egressPlan: { ...plan, repositoryGit: different } });
+  const denyAll = admitRepositoryNetworkPolicy([], [])!;
+  reject({ ...revision, sandboxPolicy: { ...snapshot, repositoryNetworkPolicy: denyAll } });
+  // Native Git uses this same repository profile, but has its own network policy.
+  const grants = [{ repository: "example/application", access: "read" }];
+  const native = {
+    ...revision,
+    executionAdmission: { version: 9, mode: "protected" },
+    egressPlan: { ...plan, repositoryGitAuthorization: "network-policy" },
+    sandboxPolicy: {
+      ...snapshot,
+      repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants)!,
+    },
+  } satisfies AgentRevision;
+  assert.deepEqual(
+    openShellProtectedCodexArtifacts({
+      ...native,
+      sandboxPolicy: {
+        ...driver.admitProtectedCodexArtifactPolicy(1).snapshot,
+        repositoryNetworkPolicy: native.sandboxPolicy.repositoryNetworkPolicy,
+      },
+    }),
+    {},
+  );
+  reject(native);
+});
 
 test("protected Git compilation carries the complete frozen artifact map without ambient defaults", (t) => {
   const snapshot = sandbox(t, [artifact()], [artifact().name]).admitProtectedCodexArtifactPolicy(

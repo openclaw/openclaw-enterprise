@@ -81,11 +81,13 @@ import {
 import {
   AGENT_POLICY_PREFIX,
   openShellAgentNetworkRules,
+  openShellDeploymentNetworkRule,
   openShellNetworkRouteMayOverlap,
   openShellPolicyCandidate,
   sameOpenShellPolicy,
 } from "./openshell-policy.ts";
 import type {
+  SandboxDeploymentGrants,
   SandboxNetworkGrant,
   RepositoryNetworkPolicy,
   ProtectedCodexArtifactPolicyAdmission,
@@ -3859,6 +3861,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "The protected repository execution must retain its admitted Harness credential source.",
       );
     }
+    if (!plan && context.revision.sandboxPolicy?.deploymentGrants !== undefined) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Deployment network grants require the paired protected egress policy.",
+      );
+    }
     const egressPolicy =
       plan && protectedEgressPolicy(this.options, context.requirements, context.revision);
     if (plan !== undefined && context.revision.harness.id !== "codex") {
@@ -5301,6 +5308,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       !Array.isArray(policy.grants) ||
       network.driverId !== this.id ||
       network.implementation !== this.implementation ||
+      network.deploymentGrants !== undefined ||
       network.additions.length !== 0 ||
       !isDeepStrictEqual(
         network.defaults,
@@ -5349,12 +5357,34 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials?: boolean },
+    scope?: {
+      readonly repositoryCredentials?: boolean;
+      readonly deploymentGrants?: SandboxDeploymentGrants;
+    },
   ): SandboxPolicySnapshot {
     const rules = defaults ?? networkPolicies(this.options);
-    // First, so the named refusal answers even when another check below would also fail.
+    const deploymentGrants = scope?.deploymentGrants;
+    if (deploymentGrants !== undefined) {
+      // Qualified artifact names exclude the entire generated egress namespace.
+      if (
+        !this.openShellGit ||
+        !this.options.egress ||
+        scope?.repositoryCredentials !== true ||
+        additions.length !== 0 ||
+        !isDeepStrictEqual(
+          defaults,
+          this.admitProtectedCodexArtifactPolicy(version).snapshot.defaults,
+        )
+      ) {
+        throw new SandboxNetworkPolicyConflictError(
+          "Deployment grants require protected repository access, qualified defaults and no Agent additions.",
+        );
+      }
+      openShellDeploymentNetworkRule(deploymentGrants);
+    }
+    // Name a conflicting route before checking ordinary Agent additions.
     if (scope?.repositoryCredentials === true) {
-      const overlap = this.gitRouteOverlap(rules, additions);
+      const overlap = this.gitRouteOverlap(rules, deploymentGrants?.grants ?? additions);
       if (overlap !== undefined) {
         throw new SandboxNetworkPolicyConflictError(gitRouteOverlapMessage(overlap));
       }
@@ -5380,6 +5410,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       version,
       defaults: rules as OpenClawConfigurationDocument,
       additions,
+      ...(deploymentGrants === undefined ? {} : { deploymentGrants }),
     });
   }
 
@@ -5640,7 +5671,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     if (
       context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
-      input.snapshot.repositoryNetworkPolicy !== undefined
+      input.snapshot.repositoryNetworkPolicy !== undefined ||
+      context.revision.sandboxPolicy?.deploymentGrants !== undefined ||
+      input.snapshot.deploymentGrants !== undefined
     ) {
       throw new Error("Deploy a new revision to change repository network policy.");
     }

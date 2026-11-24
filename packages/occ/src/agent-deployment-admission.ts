@@ -178,7 +178,7 @@ export interface DeploymentAdmissionDependencies {
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly pluginDriver: (harnessId: string, byConfiguration: boolean) => PluginDriver;
   readonly selection: (
-    capability: "compute" | "sandbox" | "credential_proxy",
+    capability: "compute" | "sandbox" | "credential_proxy" | "repo",
   ) => RegisteredDriver | undefined;
   readonly selectedCompute: () => ComputeDriver;
   readonly sandboxDriver: () => SandboxDriver | undefined;
@@ -934,6 +934,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           sandbox?.id,
           Date.parse(createdAt),
         );
+      const repositorySelection = dependencies.selection("repo");
       const admittedRepository = admitRepository();
       const resolvedRepositoryCredentials = admittedRepository?.credentials;
       if (resolvedRepositoryCredentials !== undefined) {
@@ -1034,6 +1035,17 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       if (protectedSandbox) {
         assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.resolution);
       }
+      const deploymentGrants =
+        protectedExecution &&
+        executionAdmission.version === 5 &&
+        revisionHarness.id === "codex" &&
+        revisionHarness.mode === "dedicated" &&
+        repositoryGrants === undefined &&
+        repositoryCredentials !== undefined &&
+        egressPlan?.repositoryGitAuthorization === "online-request" &&
+        isDeepStrictEqual(egressPlan.repositoryGit, repositoryCredentials)
+          ? admittedRepository?.resolution.deploymentGrants
+          : undefined;
       const sandboxSnapshot = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
         policy,
         principalId,
@@ -1041,7 +1053,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         revisionHarness,
         sandbox,
         executionAdmission,
-        repositoryCredentials !== undefined,
+        {
+          repositoryCredentials: repositoryCredentials !== undefined,
+          ...(deploymentGrants === undefined ? {} : { deploymentGrants }),
+        },
         stagedModel !== undefined,
       );
       const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
@@ -1110,27 +1125,38 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const assertRepositoryNetworkPolicyDrivers = () => {
         // State locks do not freeze the process-local Driver registrations.
         if (
-          policyCompute &&
+          (policyCompute || deploymentGrants) &&
           (computeSelection === undefined ||
             dependencies.selection("compute") !== computeSelection ||
             !unchangedDriver(computeSelection) ||
             sandboxSelection === undefined ||
             dependencies.selection("sandbox") !== sandboxSelection ||
             !unchangedDriver(sandboxSelection) ||
-            (protectedSandbox &&
+            ((protectedSandbox || deploymentGrants) &&
               (proxySelection === undefined ||
                 dependencies.selection("credential_proxy") !== proxySelection ||
                 !unchangedDriver(proxySelection))) ||
-            !policyCompute.unchanged() ||
+            (deploymentGrants && dependencies.selection("repo") !== repositorySelection) ||
+            policyCompute?.unchanged() === false ||
             ownerUnchanged?.() === false)
         ) {
           throw new ResourceStateConflictError(
             "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
           );
         }
-        if (protectedSandbox && admittedRepository) {
+        if ((protectedSandbox || deploymentGrants) && admittedRepository) {
           const current = admitRepository();
-          assertSelectedRepositoryGrants(repositoryGrants, current?.resolution);
+          if (protectedSandbox) {
+            assertSelectedRepositoryGrants(repositoryGrants, current?.resolution);
+          }
+          if (
+            deploymentGrants &&
+            !isDeepStrictEqual(current?.resolution, admittedRepository.resolution)
+          ) {
+            throw new ResourceStateConflictError(
+              "The selected repository policy changed during deployment.",
+            );
+          }
           if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
             throw new ResourceStateConflictError(
               "The selected repository credentials changed during deployment.",
@@ -1233,6 +1259,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const result = Object.freeze({ revision, authorization });
       if (auditEvent) {
         await state.audit.append(auditEvent(result));
+      }
+      if (deploymentGrants) {
+        assertProvidersCurrent();
       }
       return result;
     };

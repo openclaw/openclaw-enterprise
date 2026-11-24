@@ -21,6 +21,7 @@ import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
+  SandboxDeploymentGrants,
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
@@ -240,12 +241,17 @@ export interface SandboxDriver extends Driver {
    * `scope.repositoryCredentials` marks a policy for an Agent or revision with repository
    * bindings, which a Driver may route only through its own repository path; it refuses an
    * overlapping policy with a `SandboxNetworkPolicyConflictError` naming the rule.
+   * A supplied deployment set requires exact acknowledgement alongside qualified
+   * protected defaults and empty Agent additions.
    */
   admitNetworkPolicy?(
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials?: boolean },
+    scope?: {
+      readonly repositoryCredentials?: boolean;
+      readonly deploymentGrants?: SandboxDeploymentGrants;
+    },
   ): SandboxPolicySnapshot;
   /**
    * Side-effect-free admission of the exact ACL against the base network snapshot.

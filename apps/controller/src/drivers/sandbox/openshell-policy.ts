@@ -1,7 +1,15 @@
 import { isDeepStrictEqual } from "node:util";
 import { asRecord, immutableCopy, numericLastLabel, sha256Hex } from "@openclaw-enterprise/utils";
-import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
-import type { SandboxNetworkGrant, SandboxPolicySnapshot } from "@openclaw-enterprise/contracts";
+import {
+  ConfigurationValidationError,
+  validateSandboxDeploymentGrants,
+  validateSandboxNetworkGrants,
+} from "@openclaw-enterprise/contracts";
+import type {
+  SandboxDeploymentGrants,
+  SandboxNetworkGrant,
+  SandboxPolicySnapshot,
+} from "@openclaw-enterprise/contracts";
 
 export const AGENT_POLICY_PREFIX = "oce-agent-";
 
@@ -62,41 +70,59 @@ export function openShellNetworkRouteMayOverlap(
   return false;
 }
 
+function networkGrantEndpoint(grant: SandboxNetworkGrant) {
+  const ports = [
+    ...new Set(
+      grant.ports.flatMap(({ from, to }) => {
+        if (to - from > 1023) {
+          throw new Error("OpenShell grants support at most 1024 ports.");
+        }
+        return Array.from({ length: to - from + 1 }, (_, i) => from + i);
+      }),
+    ),
+  ];
+  if (ports.length > 1024) {
+    throw new Error("OpenShell grants support at most 1024 ports.");
+  }
+  return {
+    host: grant.host,
+    ports,
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    tls: "NETWORK_TLS_MODE_SKIP",
+  };
+}
+
 export function openShellAgentNetworkRules(additions: readonly SandboxNetworkGrant[]) {
   validateSandboxNetworkGrants(additions);
   return Object.fromEntries(
     additions.map((grant) => {
-      const ports = [
-        ...new Set(
-          grant.ports.flatMap(({ from, to }) => {
-            if (to - from > 1023) {
-              throw new Error("OpenShell grants support at most 1024 ports.");
-            }
-            return Array.from({ length: to - from + 1 }, (_, i) => from + i);
-          }),
-        ),
-      ];
-      if (ports.length > 1024) {
-        throw new Error("OpenShell grants support at most 1024 ports.");
-      }
       const name = `${AGENT_POLICY_PREFIX}${grant.id}`;
       return [
         name,
-        {
-          name,
-          binaries: [{ path: grant.binary }],
-          endpoints: [
-            {
-              host: grant.host,
-              ports,
-              tls: "NETWORK_TLS_MODE_SKIP",
-              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-            },
-          ],
-        },
+        { name, binaries: [{ path: grant.binary }], endpoints: [networkGrantEndpoint(grant)] },
       ];
     }),
   );
+}
+
+export function openShellDeploymentNetworkRule(set: SandboxDeploymentGrants) {
+  validateSandboxDeploymentGrants(set);
+  const binary = set.grants[0]!.binary;
+  // OpenShell permits every listed binary to reach every endpoint in a rule.
+  if (set.grants.some((grant) => grant.binary !== binary)) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/deploymentGrants",
+        code: "INVALID_VALUE",
+        message: "OpenShell deployment grants must share one executable.",
+      },
+    ]);
+  }
+  return {
+    name: `oce-egress-${set.id}`,
+    binaries: [{ path: binary }],
+    endpoints: set.grants.map(networkGrantEndpoint),
+  };
 }
 
 /** Ignore protobuf default values; preserve every non-default field and array element. */

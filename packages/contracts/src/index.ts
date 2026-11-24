@@ -157,6 +157,7 @@ import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
   ProtectedCodexArtifactPolicyAdmission,
+  SandboxDeploymentGrants,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -169,6 +170,7 @@ export {
   SandboxNetworkGrantSchema,
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
+  validateSandboxDeploymentGrants,
   validateSandboxNetworkGrants,
 } from "./sandbox-policy.ts";
 export {

@@ -305,6 +305,7 @@ async function repositoryGitJourney(
     const sandbox = new OpenShellSandboxDriver(
       {
         integrationMode: "legacy",
+        egress: opts,
         gateway: {},
         kubernetes: {
           serviceAccount: { mode: "gatewayConfigured" },
@@ -577,10 +578,13 @@ async function repositoryGitJourney(
         ).read
       : undefined;
   const queued = await f.observerPool.query(
-    "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",
+    `SELECT w.idempotency_key, r.admitted_spec->'sandbox_policy' AS sandbox_policy
+       FROM occ.controller_work w JOIN occ.agent_revisions r ON r.id=w.revision_id
+      WHERE w.revision_id=$1`,
     [revision.id],
   );
   assert.equal(queued.rows.length, 1);
+  assert.deepEqual(queued.rows[0].sandbox_policy, revision.sandboxPolicy);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(revision.repositoryCredentials!.bindings.length, narrowProfile || standing ? 1 : 2);
   assert.equal(revision.executionAdmission.version, 5);
@@ -601,6 +605,17 @@ async function repositoryGitJourney(
   state.sandbox = sandbox.harnessResource!(context).resourceName;
   const release = new ProtectedExecutionDriver(owner);
   const wiring = await release.configure(context);
+  // Both profiles use online Git. Only the repository profile can follow
+  // the GitHub API's redirects to signed Actions log and artifact URLs.
+  const { defaults, additions, deploymentGrants } = revision.sandboxPolicy!;
+  assert.deepEqual(additions, []);
+  assert.equal(deploymentGrants?.grants.length, narrowProfile ? undefined : 141);
+  const policies = wiring.configuration.network_policies;
+  assert.ok(policies && typeof policies === "object");
+  const name = "oce-egress-actions-downloads";
+  const rules = Object.entries(policies);
+  assert.equal(Object.hasOwn(policies, name), !narrowProfile);
+  assert.deepEqual(Object.fromEntries(rules.filter(([key]) => key !== name)), defaults);
   state.policy = wiring.configuration;
   if (beforePrepare) {
     await beforePrepare({
